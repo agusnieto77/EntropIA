@@ -9,6 +9,20 @@ import type { DbClient } from '../types'
  *
  * The `initialize()` method auto-detects which mode to use.
  */
+
+/**
+ * Compute cosine similarity between two vectors of equal length.
+ * Returns 0 if vectors are different lengths or either has zero magnitude.
+ */
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0
+  const dot = a.reduce((sum, ai, i) => sum + ai * b[i]!, 0)
+  const magA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0))
+  const magB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0))
+  if (magA === 0 || magB === 0) return 0
+  return dot / (magA * magB)
+}
+
 export class EmbeddingRepo {
   private useVec0 = false
 
@@ -79,5 +93,40 @@ export class EmbeddingRepo {
   async deleteEmbedding(itemId: string): Promise<void> {
     const table = this.useVec0 ? 'vec_items' : 'embeddings_fallback'
     await this.client.execute(`DELETE FROM ${table} WHERE item_id = ?`, [itemId])
+  }
+
+  /**
+   * K-nearest-neighbor search: finds the N most similar items to the given itemId.
+   *
+   * In production (sqlite-vec available), this would use vec0's built-in KNN.
+   * In the fallback environment, loads all embeddings and computes cosine similarity in JS.
+   *
+   * Returns items sorted by distance ascending (most similar first).
+   */
+  async knnSearch(itemId: string, limit = 5): Promise<Array<{ itemId: string; distance: number }>> {
+    const embedding = await this.getEmbedding(itemId)
+    if (!embedding) return []
+
+    const table = this.useVec0 ? 'vec_items' : 'embeddings_fallback'
+    const allRows = await this.client.select<{ item_id: string; embedding: string }>(
+      `SELECT item_id, embedding FROM ${table} WHERE item_id != ?`,
+      [itemId]
+    )
+
+    const results = allRows
+      .map((row) => {
+        try {
+          const other = JSON.parse(row.embedding) as number[]
+          const distance = 1 - cosineSimilarity(embedding, other)
+          return { itemId: row.item_id, distance }
+        } catch {
+          return null
+        }
+      })
+      .filter((r): r is { itemId: string; distance: number } => r !== null)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, limit)
+
+    return results
   }
 }

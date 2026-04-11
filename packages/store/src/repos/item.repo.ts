@@ -61,10 +61,35 @@ export class ItemRepo {
 
   /**
    * Search items by text.
-   * - If a rawClient was provided (FTS5 available), delegates to searchByFts5.
-   * - Otherwise falls back to SQL LIKE on title and metadata.
+   * - If a rawClient was provided (FTS5 available), tries FTS5 first.
+   *   If FTS5 returns results, fetches those items from Drizzle and returns them.
+   * - Falls back to SQL LIKE on title and metadata if FTS5 is unavailable or returns nothing.
    */
   async searchByText(collectionId: string, query: string): Promise<Item[]> {
+    // Try FTS5 first if rawClient is available
+    if (this.ftsRepo && query.trim()) {
+      const ftsResults = await this.ftsRepo.search(query, 50)
+      if (ftsResults.length > 0) {
+        // Fetch the actual items from Drizzle using the IDs returned by FTS5
+        const ids = ftsResults.map((r) => r.itemId)
+        const rows = await this.db
+          .select()
+          .from(items)
+          .where(
+            and(
+              eq(items.collectionId, collectionId),
+              // Filter to items whose IDs are in the FTS5 result set
+              // We use an OR chain over all matched IDs
+              ids.length === 1 ? eq(items.id, ids[0]!) : or(...ids.map((id) => eq(items.id, id)))!
+            )
+          )
+          .orderBy(desc(items.updatedAt))
+
+        return rows
+      }
+    }
+
+    // Fallback: SQL LIKE on title and metadata
     const pattern = `%${query}%`
     return this.db
       .select()

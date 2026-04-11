@@ -330,4 +330,78 @@ describe('ItemRepo', () => {
       expect(results).toEqual([])
     })
   })
+
+  describe('searchByText with FTS5 integration', () => {
+    it('uses FTS5 results when rawClient is provided and FTS5 returns matches', async () => {
+      // FTS5 returns specific item IDs
+      const rawSelectMock = vi.fn().mockResolvedValue([
+        { item_id: 'item-fts-1', rank: -0.5 },
+        { item_id: 'item-fts-2', rank: -1.0 },
+      ])
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 0 }),
+        select: rawSelectMock,
+      } as unknown as DbClient
+
+      const ftsItem1 = {
+        id: 'item-fts-1',
+        title: 'Acta notarial de cabildo',
+        collectionId: 'col-1',
+        metadata: null,
+        createdAt: 100,
+        updatedAt: 200,
+      }
+      const ftsItem2 = {
+        id: 'item-fts-2',
+        title: 'Documento de cabildo',
+        collectionId: 'col-1',
+        metadata: null,
+        createdAt: 50,
+        updatedAt: 150,
+      }
+
+      // Drizzle mock returns the two items (for the follow-up findByIds query)
+      const selectResult = createChainMock([ftsItem1, ftsItem2])
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const repo2 = new ItemRepo(db.db, rawClient)
+      const results = await repo2.searchByText('col-1', 'cabildo')
+
+      // FTS5 was called (rawClient.select was invoked)
+      expect(rawSelectMock).toHaveBeenCalled()
+      // Results contain both FTS5-matched items
+      expect(results).toHaveLength(2)
+    })
+
+    it('falls back to LIKE when FTS5 returns no results', async () => {
+      // FTS5 returns nothing
+      const rawSelectMock = vi.fn().mockResolvedValue([])
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 0 }),
+        select: rawSelectMock,
+      } as unknown as DbClient
+
+      const likeItems = [
+        {
+          id: 'like-1',
+          title: 'Rare Document',
+          collectionId: 'col-1',
+          metadata: null,
+          createdAt: 100,
+          updatedAt: 200,
+        },
+      ]
+      const selectResult = createChainMock(likeItems)
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const repo2 = new ItemRepo(db.db, rawClient)
+      const results = await repo2.searchByText('col-1', 'rare')
+
+      // FTS5 was tried (rawClient.select was invoked)
+      expect(rawSelectMock).toHaveBeenCalled()
+      // FTS5 returned nothing, so Drizzle LIKE fallback was used
+      expect(results).toHaveLength(1)
+      expect(results[0]!.id).toBe('like-1')
+    })
+  })
 })

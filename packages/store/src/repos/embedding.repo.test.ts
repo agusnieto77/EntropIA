@@ -40,12 +40,22 @@ function createMockDbClient() {
       executedSql.push(sql)
       const sqlUpper = sql.trim().toUpperCase()
 
-      if (sqlUpper.includes('SELECT') && sqlUpper.includes('FROM') && sqlUpper.includes('WHERE')) {
-        const itemId = params?.[0] as string
-        if (store[itemId]) {
-          return [{ item_id: itemId, embedding: store[itemId] }] as T[]
+      if (sqlUpper.includes('SELECT') && sqlUpper.includes('FROM')) {
+        // knnSearch query: WHERE item_id != ?
+        if (sqlUpper.includes('WHERE') && sqlUpper.includes('!=')) {
+          const excludeId = params?.[0] as string
+          return Object.entries(store)
+            .filter(([id]) => id !== excludeId)
+            .map(([id, embedding]) => ({ item_id: id, embedding })) as T[]
         }
-        return []
+        // getEmbedding query: WHERE item_id = ?
+        if (sqlUpper.includes('WHERE')) {
+          const itemId = params?.[0] as string
+          if (store[itemId]) {
+            return [{ item_id: itemId, embedding: store[itemId] }] as T[]
+          }
+          return []
+        }
       }
 
       return []
@@ -132,6 +142,42 @@ describe('EmbeddingRepo', () => {
       expect(result).not.toBeNull()
       // Should have the updated value, not the original
       expect(result![0]).toBeCloseTo(0.9)
+    })
+  })
+
+  describe('knnSearch', () => {
+    it('returns empty array when item has no embedding', async () => {
+      const results = await repo.knnSearch('nonexistent-item')
+      expect(results).toEqual([])
+    })
+
+    it('returns similar items sorted by distance (ascending)', async () => {
+      // item-A: [1, 0] — pointing right
+      // item-B: [0, 1] — pointing up (max distance from item-A)
+      // item-C: [0.9, 0.1] — close to item-A
+      await repo.storeEmbedding('item-A', [1, 0])
+      await repo.storeEmbedding('item-B', [0, 1])
+      await repo.storeEmbedding('item-C', [0.9, 0.1])
+
+      const results = await repo.knnSearch('item-A', 5)
+
+      expect(results).toHaveLength(2) // item-B and item-C (not item-A itself)
+      // item-C should be closer to item-A than item-B
+      expect(results[0]!.itemId).toBe('item-C')
+      expect(results[1]!.itemId).toBe('item-B')
+      // Distances must be ascending (item-C < item-B)
+      expect(results[0]!.distance).toBeLessThan(results[1]!.distance)
+    })
+
+    it('respects the limit parameter', async () => {
+      await repo.storeEmbedding('item-origin', [1, 0, 0])
+      await repo.storeEmbedding('item-1', [0.9, 0.1, 0])
+      await repo.storeEmbedding('item-2', [0.8, 0.2, 0])
+      await repo.storeEmbedding('item-3', [0.7, 0.3, 0])
+
+      const results = await repo.knnSearch('item-origin', 2)
+
+      expect(results).toHaveLength(2)
     })
   })
 })
