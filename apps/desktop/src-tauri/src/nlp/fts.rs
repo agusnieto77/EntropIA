@@ -119,16 +119,23 @@ pub fn fts_search(
             )
             .map_err(|e| format!("Failed to prepare FTS5 search: {e}"))?;
 
-        stmt.query_map(params![sanitized, cid], |row| {
-            Ok(FtsRow {
-                item_id: row.get(0)?,
-                title: row.get(1)?,
-                rank: row.get(2)?,
+        let mapped = stmt
+            .query_map(params![sanitized.as_str(), cid], |row| {
+                Ok(FtsRow {
+                    item_id: row.get(0)?,
+                    title: row.get(1)?,
+                    rank: row.get(2)?,
+                })
             })
-        })
-        .map_err(|e| format!("FTS5 search failed: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect()
+            .map_err(|e| format!("FTS5 search failed: {e}"))?;
+
+        let mut collected = Vec::new();
+        for row in mapped {
+            if let Ok(row) = row {
+                collected.push(row);
+            }
+        }
+        collected
     } else {
         let mut stmt = conn
             .prepare(
@@ -141,16 +148,23 @@ pub fn fts_search(
             )
             .map_err(|e| format!("Failed to prepare FTS5 search: {e}"))?;
 
-        stmt.query_map(params![sanitized], |row| {
-            Ok(FtsRow {
-                item_id: row.get(0)?,
-                title: row.get(1)?,
-                rank: row.get(2)?,
+        let mapped = stmt
+            .query_map(params![sanitized.as_str()], |row| {
+                Ok(FtsRow {
+                    item_id: row.get(0)?,
+                    title: row.get(1)?,
+                    rank: row.get(2)?,
+                })
             })
-        })
-        .map_err(|e| format!("FTS5 search failed: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect()
+            .map_err(|e| format!("FTS5 search failed: {e}"))?;
+
+        let mut collected = Vec::new();
+        for row in mapped {
+            if let Ok(row) = row {
+                collected.push(row);
+            }
+        }
+        collected
     };
 
     Ok(rows)

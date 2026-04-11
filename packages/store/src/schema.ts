@@ -97,3 +97,17 @@ export const entities = sqliteTable('entities', {
   confidence: real('confidence').notNull().default(1.0),
   createdAt: integer('created_at').notNull(),
 })
+
+// ---------------------------------------------------------------------------
+// Triples — semantic triples (S|P|O) linked to an item
+// ---------------------------------------------------------------------------
+export const triples = sqliteTable('triples', {
+  id: text('id').primaryKey().notNull(),
+  itemId: text('item_id')
+    .notNull()
+    .references(() => items.id),
+  subject: text('subject').notNull(),
+  predicate: text('predicate').notNull(),
+  object: text('object').notNull(),
+  createdAt: integer('created_at').notNull(),
+})

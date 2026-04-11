@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { runMigrations } from './runner'
 import { createMockDbClient } from './__mocks__/db.mock'
 
-describe('runMigrations — migrations 0004 and 0005', () => {
+describe('runMigrations — migrations 0004, 0005 and 0006', () => {
   it('executes 0004_fts5 migration SQL (FTS5 virtual table creation)', async () => {
     const client = createMockDbClient()
     await runMigrations(client)
@@ -57,5 +57,20 @@ describe('runMigrations — migrations 0004 and 0005', () => {
       (sql) => sql.includes('INSERT INTO _migrations') && sql.includes('VALUES')
     )
     expect(wasInserted).toBe(true)
+  })
+
+  it('executes 0006_triples migration SQL (triples table + index)', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasTriplesTable = client._executedSql.some(
+      (sql) => sql.includes('CREATE TABLE IF NOT EXISTS triples') && sql.includes('item_id')
+    )
+    const hasTriplesIndex = client._executedSql.some((sql) =>
+      sql.includes('CREATE INDEX IF NOT EXISTS triples_item_id_idx')
+    )
+
+    expect(hasTriplesTable).toBe(true)
+    expect(hasTriplesIndex).toBe(true)
   })
 })

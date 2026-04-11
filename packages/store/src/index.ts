@@ -4,7 +4,7 @@
 export { createDbClient, createDrizzleClient } from './client'
 
 // Schema tables
-export { collections, items, assets, notes, jobs, extractions, entities } from './schema'
+export { collections, items, assets, notes, jobs, extractions, entities, triples } from './schema'
 
 // Migration runner
 export { runMigrations } from './runner'
@@ -19,6 +19,7 @@ export { ExtractionRepo } from './repos/extraction.repo'
 export { EntityRepo } from './repos/entity.repo'
 export { FtsRepo, sanitizeFts5Query } from './repos/fts.repo'
 export { EmbeddingRepo } from './repos/embedding.repo'
+export { TripleRepo } from './repos/triple.repo'
 
 // Store API
 export { initStore } from './repos/store'
@@ -33,4 +34,5 @@ export type { Note, NewNote } from './repos/note.repo'
 export type { Job, NewJob } from './repos/job.repo'
 export type { Extraction, NewExtraction } from './repos/extraction.repo'
 export type { Entity, NewEntity, EntityType } from './repos/entity.repo'
+export type { Triple, NewTriple } from './repos/triple.repo'
 export type { FtsResult } from './repos/fts.repo'

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for EntropIA desktop app","local":true,"windows":["main"],"permissions":["core:default","core:path:default","core:event:default","core:window:default","fs:allow-read-file","fs:allow-copy-file","fs:allow-mkdir","fs:allow-exists","fs:allow-write-file","dialog:allow-open","dialog:allow-save"]}}

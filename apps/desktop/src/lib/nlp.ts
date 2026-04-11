@@ -12,17 +12,19 @@ import { invoke } from '@tauri-apps/api/core'
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type NlpJobType = 'fts' | 'embed' | 'ner'
+export type NlpJobType = 'fts' | 'embed' | 'ner' | 'triples'
 export type NlpStatus = 'idle' | 'pending' | 'running' | 'done' | 'error'
 
 export interface ItemNlpState {
   fts: NlpStatus
   embed: NlpStatus
   ner: NlpStatus
+  triples: NlpStatus
   errors?: {
     fts?: string
     embed?: string
     ner?: string
+    triples?: string
   }
 }
 
@@ -62,7 +64,7 @@ interface ErrorPayload {
 // NlpStore
 // ─────────────────────────────────────────────────────────────────────────────
 
-const IDLE_STATE: ItemNlpState = { fts: 'idle', embed: 'idle', ner: 'idle' }
+const IDLE_STATE: ItemNlpState = { fts: 'idle', embed: 'idle', ner: 'idle', triples: 'idle' }
 
 export class NlpStore {
   private states = new Map<string, ItemNlpState>()
@@ -134,6 +136,11 @@ export async function embedItem(itemId: string): Promise<void> {
 /** Submit a NER extraction job for `itemId`. */
 export async function extractEntities(itemId: string): Promise<void> {
   await invoke('extract_entities', { itemId })
+}
+
+/** Submit a semantic triples extraction job for `itemId`. */
+export async function extractTriples(itemId: string): Promise<void> {
+  await invoke('extract_triples', { itemId })
 }
 
 /** Search items using FTS5. Returns results ordered by BM25 relevance. */

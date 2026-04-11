@@ -10,6 +10,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["embeddings"]
+embeddings = ["dep:fastembed", "dep:sqlite-vec"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
@@ -24,8 +28,8 @@ pdf-extract = "0.7"
 image = "0.25"
 imageproc = "0.25"
 tokio = { version = "1", features = ["full"] }
-fastembed = "5"
-sqlite-vec = "0.1.10-alpha.3"
+fastembed = { version = "5", optional = true }
+sqlite-vec = { version = "0.1.10-alpha.3", optional = true }
 regex = "1"
 once_cell = "1"
 

@@ -2,6 +2,7 @@ pub mod commands;
 pub mod embeddings;
 pub mod fts;
 pub mod ner;
+pub mod triples;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -36,6 +37,7 @@ pub enum NlpJob {
     IndexFts { item_id: String },
     ComputeEmbedding { item_id: String },
     ExtractEntities { item_id: String },
+    ExtractTriples { item_id: String },
 }
 
 /// Handle for submitting NLP jobs to the background worker.
@@ -75,10 +77,13 @@ impl NlpQueue {
                     let _ = c.execute_batch(
                         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
                     );
-                    // Load sqlite-vec extension for vec0 virtual table support.
-                    if let Err(e) = sqlite_vec::load(&c) {
-                        // Non-fatal: embeddings will be degraded, FTS5/NER continue.
-                        eprintln!("[nlp] sqlite-vec load failed: {e} — embedding jobs will be skipped");
+                    #[cfg(feature = "embeddings")]
+                    {
+                        // Load sqlite-vec extension for vec0 virtual table support.
+                        if let Err(e) = sqlite_vec::load(&c) {
+                            // Non-fatal: embeddings will be degraded, FTS5/NER continue.
+                            eprintln!("[nlp] sqlite-vec load failed: {e} — embedding jobs will be skipped");
+                        }
                     }
                     c
                 }
@@ -106,9 +111,7 @@ impl NlpQueue {
                     }
                     NlpJob::ComputeEmbedding { item_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            embeddings::compute_and_store(&conn, &item_id)
-                        });
+                        let result = tokio::task::block_in_place(|| embeddings::compute_and_store(&conn, &item_id));
                         match result {
                             Ok(_) => {
                                 emit_progress(&app_handle, &item_id, "embed", 100);
@@ -128,6 +131,19 @@ impl NlpQueue {
                                 emit_complete(&app_handle, &item_id, "ner");
                             }
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                        }
+                    }
+                    NlpJob::ExtractTriples { item_id } => {
+                        emit_progress(&app_handle, &item_id, "triples", 10);
+                        let result = tokio::task::block_in_place(|| {
+                            triples::extract_and_store(&conn, &item_id)
+                        });
+                        match result {
+                            Ok(_) => {
+                                emit_progress(&app_handle, &item_id, "triples", 100);
+                                emit_complete(&app_handle, &item_id, "triples");
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
                         }
                     }
                 }

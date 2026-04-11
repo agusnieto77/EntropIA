@@ -7,6 +7,11 @@
 use super::{NlpJob, NlpQueue};
 use tauri::State;
 
+fn enqueue(nlp_queue: &NlpQueue, job: NlpJob) -> Result<String, String> {
+    nlp_queue.submit(job)?;
+    Ok("queued".to_string())
+}
+
 /// Submit an FTS5 indexing job for `item_id`.
 ///
 /// The worker will fetch the item's title + extracted text and upsert into
@@ -16,8 +21,7 @@ pub async fn index_fts(
     item_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    nlp_queue.submit(NlpJob::IndexFts { item_id })?;
-    Ok("queued".to_string())
+    enqueue(&nlp_queue, NlpJob::IndexFts { item_id })
 }
 
 /// Submit an embedding computation job for `item_id`.
@@ -29,8 +33,7 @@ pub async fn embed_item(
     item_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    nlp_queue.submit(NlpJob::ComputeEmbedding { item_id })?;
-    Ok("queued".to_string())
+    enqueue(&nlp_queue, NlpJob::ComputeEmbedding { item_id })
 }
 
 /// Submit a NER extraction job for `item_id`.
@@ -42,8 +45,63 @@ pub async fn extract_entities(
     item_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    nlp_queue.submit(NlpJob::ExtractEntities { item_id })?;
-    Ok("queued".to_string())
+    enqueue(&nlp_queue, NlpJob::ExtractEntities { item_id })
+}
+
+/// Submit a semantic triples extraction job for `item_id`.
+#[tauri::command]
+pub async fn extract_triples(
+    item_id: String,
+    nlp_queue: State<'_, NlpQueue>,
+) -> Result<String, String> {
+    enqueue(&nlp_queue, NlpJob::ExtractTriples { item_id })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enqueue_accepts_extract_triples_job_when_queue_has_capacity() {
+        let (queue, _receiver) = NlpQueue::new();
+        let result = enqueue(
+            &queue,
+            NlpJob::ExtractTriples {
+                item_id: "item-1".to_string(),
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "queued");
+    }
+
+    #[test]
+    fn enqueue_propagates_queue_error_when_channel_is_full() {
+        let (queue, _receiver) = NlpQueue::new();
+
+        for i in 0..64 {
+            let ok = enqueue(
+                &queue,
+                NlpJob::ExtractTriples {
+                    item_id: format!("item-{i}"),
+                },
+            );
+            assert!(ok.is_ok());
+        }
+
+        let result = enqueue(
+            &queue,
+            NlpJob::ExtractTriples {
+                item_id: "overflow".to_string(),
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(
+            result.err().unwrap().contains("Failed to enqueue NLP job"),
+            "Expected queue error to be propagated"
+        );
+    }
 }
 
 /// Search `fts_items` using full-text search.

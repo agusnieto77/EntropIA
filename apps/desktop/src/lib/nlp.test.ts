@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { NlpStore, indexFts, embedItem, extractEntities, ftsSearch, similarItems } from './nlp'
+import {
+  NlpStore,
+  indexFts,
+  embedItem,
+  extractEntities,
+  extractTriples,
+  ftsSearch,
+  similarItems,
+} from './nlp'
 
 // Mocks are set up in test-setup.ts:
 //   @tauri-apps/api/core  → invoke vi.fn()
@@ -64,6 +72,12 @@ describe('NlpStore', () => {
     vi.mocked(invoke).mockResolvedValueOnce('queued')
     await extractEntities('item-3')
     expect(invoke).toHaveBeenCalledWith('extract_entities', { itemId: 'item-3' })
+  })
+
+  it('extractTriples calls invoke with correct command and itemId', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('queued')
+    await extractTriples('item-7')
+    expect(invoke).toHaveBeenCalledWith('extract_triples', { itemId: 'item-7' })
   })
 
   it('ftsSearch calls invoke with query and optional collectionId', async () => {
@@ -145,6 +159,11 @@ describe('NlpStore', () => {
     expect(state.ner).toBe('idle')
   })
 
+  it('_setJobStatus sets triples status to pending', () => {
+    store._setJobStatus('item-s5', 'triples', 'pending')
+    expect(store.getState('item-s5').triples).toBe('pending')
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // startListening — nlp:progress
   // ─────────────────────────────────────────────────────────────────────────
@@ -209,6 +228,24 @@ describe('NlpStore', () => {
     expect(state.embed).toBe('idle')
   })
 
+  it('nlp:progress for triples job sets triples status to running', async () => {
+    let progressCallback: ((event: { payload: unknown }) => void) | null = null
+
+    vi.mocked(listen).mockImplementation((eventName, callback) => {
+      if (eventName === 'nlp:progress') {
+        progressCallback = callback as (event: { payload: unknown }) => void
+      }
+      return Promise.resolve(vi.fn())
+    })
+
+    await store.startListening(listen)
+
+    progressCallback!({ payload: { item_id: 'item-triples', job: 'triples', pct: 40 } })
+
+    const state = store.getState('item-triples')
+    expect(state.triples).toBe('running')
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // startListening — nlp:complete
   // ─────────────────────────────────────────────────────────────────────────
@@ -265,6 +302,23 @@ describe('NlpStore', () => {
     completeCallback!({ payload: { item_id: 'item-3', job: 'ner' } })
 
     expect(store.getState('item-3').ner).toBe('done')
+  })
+
+  it('nlp:complete for triples job transitions triples to done', async () => {
+    let completeCallback: ((event: { payload: unknown }) => void) | null = null
+
+    vi.mocked(listen).mockImplementation((eventName, callback) => {
+      if (eventName === 'nlp:complete') {
+        completeCallback = callback as (event: { payload: unknown }) => void
+      }
+      return Promise.resolve(vi.fn())
+    })
+
+    await store.startListening(listen)
+
+    completeCallback!({ payload: { item_id: 'item-8', job: 'triples' } })
+
+    expect(store.getState('item-8').triples).toBe('done')
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -326,6 +380,25 @@ describe('NlpStore', () => {
     const state = store.getState('item-err3')
     expect(state.ner).toBe('error')
     expect(state.errors?.ner).toBe('NER engine crashed')
+  })
+
+  it('nlp:error for triples job transitions triples to error with message', async () => {
+    let errorCallback: ((event: { payload: unknown }) => void) | null = null
+
+    vi.mocked(listen).mockImplementation((eventName, callback) => {
+      if (eventName === 'nlp:error') {
+        errorCallback = callback as (event: { payload: unknown }) => void
+      }
+      return Promise.resolve(vi.fn())
+    })
+
+    await store.startListening(listen)
+
+    errorCallback!({ payload: { item_id: 'item-9', job: 'triples', error: 'triples failed' } })
+
+    const state = store.getState('item-9')
+    expect(state.triples).toBe('error')
+    expect(state.errors?.triples).toBe('triples failed')
   })
 
   // ─────────────────────────────────────────────────────────────────────────

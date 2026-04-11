@@ -65,21 +65,30 @@ pub fn compute_and_store(conn: &Connection, item_id: &str) -> Result<(), String>
 /// Returns `Err` if fastembed fails; callers should treat this as a non-fatal
 /// degradation.
 pub fn embed_text(text: &str) -> Result<Vec<f32>, String> {
-    use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+    #[cfg(not(feature = "embeddings"))]
+    {
+        let _ = text;
+        return Err("Embeddings feature is disabled at compile time".to_string());
+    }
 
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(false),
-    )
-    .map_err(|e| format!("Failed to load fastembed model: {e}"))?;
+    #[cfg(feature = "embeddings")]
+    {
+        use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
-    let embeddings = model
-        .embed(vec![text.to_string()], None)
-        .map_err(|e| format!("fastembed embedding failed: {e}"))?;
+        let model = TextEmbedding::try_new(
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(false),
+        )
+        .map_err(|e| format!("Failed to load fastembed model: {e}"))?;
 
-    embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| "fastembed returned empty embeddings".to_string())
+        let embeddings = model
+            .embed(vec![text.to_string()], None)
+            .map_err(|e| format!("fastembed embedding failed: {e}"))?;
+
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| "fastembed returned empty embeddings".to_string())
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

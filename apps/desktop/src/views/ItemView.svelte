@@ -7,6 +7,7 @@
     indexFts,
     embedItem,
     extractEntities,
+    extractTriples,
     similarItems as fetchSimilarItems,
   } from '$lib/nlp'
   import {
@@ -50,6 +51,7 @@
   let nlpTick = $state(0)
   let entities = $state<Entity[]>([])
   let similarItemIds = $state<string[]>([])
+  let triples = $state<Array<{ subject: string; predicate: string; object: string }>>([])
   let analysisOpen = $state(false)
 
   let metadataValue = $derived<Record<string, string>>(
@@ -135,6 +137,17 @@
     }
   }
 
+  async function handleExtractTriples() {
+    nlpStore._setJobStatus(itemId, 'triples', 'pending')
+    nlpTick++
+    try {
+      await extractTriples(itemId)
+    } catch (e) {
+      nlpStore._setJobStatus(itemId, 'triples', 'error', e instanceof Error ? e.message : 'Failed')
+      nlpTick++
+    }
+  }
+
   async function loadEntities() {
     try {
       const store = getStore()
@@ -150,6 +163,15 @@
       similarItemIds = results.map((r: { itemId: string }) => r.itemId)
     } catch {
       similarItemIds = []
+    }
+  }
+
+  async function loadTriples() {
+    try {
+      const store = getStore()
+      triples = await store.triples.findByItemId(itemId)
+    } catch {
+      triples = []
     }
   }
 
@@ -243,6 +265,9 @@
           // After NER completes, reload entities from DB
           if (job === 'ner' && status === 'done' && id === itemId) {
             loadEntities()
+          }
+          if (job === 'triples' && status === 'done' && id === itemId) {
+            loadTriples()
           }
         }
       })
@@ -391,6 +416,7 @@
               if (analysisOpen) {
                 loadEntities()
                 loadSimilarItems()
+                loadTriples()
               }
             }}
           >
@@ -427,11 +453,37 @@
                   Extract Entities
                   <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
                 </button>
+
+                <button
+                  class="nlp-btn"
+                  disabled={nlp.triples === 'pending' || nlp.triples === 'running'}
+                  onclick={handleExtractTriples}
+                >
+                  Extract Triples
+                  <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                </button>
               </div>
 
               <div class="entities-section">
                 <h4>Entities</h4>
                 <EntityViewer {entities} />
+              </div>
+
+              <div class="triples-section">
+                <h4>Semantic Triples (S|P|O)</h4>
+                {#if triples.length === 0}
+                  <p class="empty-text">No triples extracted yet for this item.</p>
+                {:else}
+                  <ul class="triples-list">
+                    {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
+                      <li class="triple-item">
+                        <span class="triple-cell">{triple.subject}</span>
+                        <span class="triple-cell">{triple.predicate}</span>
+                        <span class="triple-cell">{triple.object}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
               </div>
 
               {#if similarItemIds.length > 0}
@@ -757,6 +809,7 @@
   }
 
   .entities-section,
+  .triples-section,
   .similar-section {
     display: flex;
     flex-direction: column;
@@ -786,5 +839,32 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface-raised);
+  }
+
+  .triples-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .triple-item {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-raised);
+  }
+
+  .triple-cell {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

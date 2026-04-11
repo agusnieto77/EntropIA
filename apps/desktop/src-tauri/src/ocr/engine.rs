@@ -6,6 +6,7 @@ use image::GrayImage;
 use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
 use rten::Model;
 use std::path::PathBuf;
+use tauri::Manager;
 
 /// Wraps the `ocrs` engine with pre-loaded models.
 pub struct OcrEngine {

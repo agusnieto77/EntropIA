@@ -10,7 +10,6 @@
     "core:window:default",
     "fs:allow-read-file",
     "fs:allow-copy-file",
-    "fs:allow-create-dir",
     "fs:allow-mkdir",
     "fs:allow-exists",
     "fs:allow-write-file",
