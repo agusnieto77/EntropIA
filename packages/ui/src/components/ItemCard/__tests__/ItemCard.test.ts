@@ -1,0 +1,56 @@
+import { render, screen, fireEvent } from '@testing-library/svelte'
+import { describe, it, expect, vi } from 'vitest'
+import ItemCard from '../ItemCard.svelte'
+
+describe('ItemCard', () => {
+  const baseProps = {
+    id: 'item-1',
+    title: 'Test Document',
+    assetCount: 3,
+  }
+
+  it('renders the item title', () => {
+    render(ItemCard, { props: baseProps })
+    expect(screen.getByText('Test Document')).toBeInTheDocument()
+  })
+
+  it('renders the asset count chip', () => {
+    render(ItemCard, { props: baseProps })
+    expect(screen.getByText('3 assets')).toBeInTheDocument()
+  })
+
+  it('renders singular "asset" for count of 1', () => {
+    render(ItemCard, { props: { ...baseProps, assetCount: 1 } })
+    expect(screen.getByText('1 asset')).toBeInTheDocument()
+  })
+
+  it('renders thumbnail when thumbnailPath is provided', () => {
+    render(ItemCard, {
+      props: { ...baseProps, thumbnailPath: 'asset://localhost/path/to/thumb.jpg' },
+    })
+    const img = screen.getByRole('img')
+    expect(img).toBeInTheDocument()
+    expect(img).toHaveAttribute('src', 'asset://localhost/path/to/thumb.jpg')
+  })
+
+  it('renders placeholder icon when no thumbnail provided', () => {
+    render(ItemCard, { props: baseProps })
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByTestId('item-placeholder')).toBeInTheDocument()
+  })
+
+  it('renders metadata preview when provided', () => {
+    render(ItemCard, {
+      props: { ...baseProps, metadataPreview: 'Author: John Doe' },
+    })
+    expect(screen.getByText('Author: John Doe')).toBeInTheDocument()
+  })
+
+  it('calls onclick when clicked', async () => {
+    const onclick = vi.fn()
+    render(ItemCard, { props: { ...baseProps, onclick } })
+    const card = screen.getByRole('button')
+    await fireEvent.click(card)
+    expect(onclick).toHaveBeenCalledOnce()
+  })
+})

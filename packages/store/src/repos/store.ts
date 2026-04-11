@@ -1,0 +1,42 @@
+import { createDbClient, createDrizzleClient } from '../client'
+import { runMigrations } from '../runner'
+import { CollectionRepo } from './collection.repo'
+import { ItemRepo } from './item.repo'
+import { AssetRepo } from './asset.repo'
+import { NoteRepo } from './note.repo'
+import { JobRepo } from './job.repo'
+import { ExtractionRepo } from './extraction.repo'
+import { EntityRepo } from './entity.repo'
+import { FtsRepo } from './fts.repo'
+import { EmbeddingRepo } from './embedding.repo'
+
+export interface StoreApi {
+  collections: CollectionRepo
+  items: ItemRepo
+  assets: AssetRepo
+  notes: NoteRepo
+  jobs: JobRepo
+  extractions: ExtractionRepo
+  entities: EntityRepo
+  fts: FtsRepo
+  embeddings: EmbeddingRepo
+}
+
+export async function initStore(): Promise<StoreApi> {
+  const client = createDbClient()
+  await runMigrations(client)
+  const db = createDrizzleClient(client)
+  const embeddings = new EmbeddingRepo(client)
+  await embeddings.initialize()
+  return {
+    collections: new CollectionRepo(db),
+    items: new ItemRepo(db, client),
+    assets: new AssetRepo(db),
+    notes: new NoteRepo(db),
+    jobs: new JobRepo(db),
+    extractions: new ExtractionRepo(db),
+    entities: new EntityRepo(db),
+    fts: new FtsRepo(client),
+    embeddings,
+  }
+}
