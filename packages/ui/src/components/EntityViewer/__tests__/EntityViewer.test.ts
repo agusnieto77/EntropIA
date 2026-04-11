@@ -78,6 +78,58 @@ describe('EntityViewer', () => {
     expect(groups).toHaveLength(4)
   })
 
+  it('renders only PLACE entities in a place group', () => {
+    const entities: Entity[] = [
+      makeEntity({ id: 'p1', entityType: 'place', value: 'río de la Plata' }),
+      makeEntity({ id: 'p2', entityType: 'place', value: 'ciudad de Córdoba' }),
+    ]
+    render(EntityViewer, { props: { entities } })
+    expect(screen.getByText('río de la Plata')).toBeInTheDocument()
+    expect(screen.getByText('ciudad de Córdoba')).toBeInTheDocument()
+    const groups = screen.getAllByTestId('entity-group')
+    expect(groups).toHaveLength(1)
+  })
+
+  it('renders only DATE entities in a date group', () => {
+    const entities: Entity[] = [makeEntity({ id: 'd1', entityType: 'date', value: '25/05/1810' })]
+    render(EntityViewer, { props: { entities } })
+    expect(screen.getByText('25/05/1810')).toBeInTheDocument()
+    const groups = screen.getAllByTestId('entity-group')
+    expect(groups).toHaveLength(1)
+  })
+
+  it('renders only INSTITUTION entities in an institution group', () => {
+    const entities: Entity[] = [
+      makeEntity({ id: 'i1', entityType: 'institution', value: 'Real Audiencia' }),
+    ]
+    render(EntityViewer, { props: { entities } })
+    expect(screen.getByText('Real Audiencia')).toBeInTheDocument()
+    const groups = screen.getAllByTestId('entity-group')
+    expect(groups).toHaveLength(1)
+  })
+
+  it('shows confidence percentage on entity pill', () => {
+    const entity = makeEntity({
+      id: 'c1',
+      entityType: 'person',
+      value: 'Don Manuel',
+      confidence: 0.85,
+    })
+    render(EntityViewer, { props: { entities: [entity] } })
+    expect(screen.getByTestId('entity-confidence')).toHaveTextContent('85%')
+  })
+
+  it('shows 100% confidence when confidence is 1.0', () => {
+    const entity = makeEntity({
+      id: 'c2',
+      entityType: 'person',
+      value: 'Doña Juana',
+      confidence: 1.0,
+    })
+    render(EntityViewer, { props: { entities: [entity] } })
+    expect(screen.getByTestId('entity-confidence')).toHaveTextContent('100%')
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // Click dispatches highlight event
   // ─────────────────────────────────────────────────────────────────────────
@@ -92,5 +144,16 @@ describe('EntityViewer', () => {
 
     expect(onhighlight).toHaveBeenCalledOnce()
     expect(onhighlight).toHaveBeenCalledWith({ startOffset: 10, endOffset: 30 })
+  })
+
+  it('does not call onhighlight when entity has null offsets', async () => {
+    const onhighlight = vi.fn()
+    const entity = makeEntity({ startOffset: null, endOffset: null, value: 'Sin offset' })
+    render(EntityViewer, { props: { entities: [entity], onhighlight } })
+
+    const pill = screen.getByText('Sin offset')
+    await fireEvent.click(pill)
+
+    expect(onhighlight).not.toHaveBeenCalled()
   })
 })

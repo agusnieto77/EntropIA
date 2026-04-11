@@ -49,6 +49,11 @@
                 title={entity.value}
               >
                 {entity.value}
+                {#if entity.confidence != null}
+                  <span class="entity-viewer__confidence" data-testid="entity-confidence"
+                    >{Math.round(entity.confidence * 100)}%</span
+                  >
+                {/if}
               </button>
             {/each}
           </div>
