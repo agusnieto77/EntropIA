@@ -27,6 +27,7 @@ El sistema combina:
 - Embeddings + búsqueda semántica
 - RAG sobre corpus documental
 - Exportación a herramientas externas:
+  - Tropy
   - Recogito
   - Gephi
   - Voyant Tools
