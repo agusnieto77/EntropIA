@@ -16,11 +16,11 @@ Defines the `packages/ui` component library that provides CSS design tokens and 
 - WHEN a component uses `var(--color-primary)` or `var(--spacing-md)`
 - THEN the CSS variables resolve to the defined token values
 
-#### Scenario: Token files are organized by category
+#### Scenario: Token categories are organized and discoverable
 
 - GIVEN `packages/ui/src/tokens/`
-- WHEN the directory is inspected
-- THEN separate CSS files exist for colors, typography, and spacing (at minimum)
+- WHEN the token source is inspected
+- THEN color, spacing, typography, and radius token categories are clearly organized (single file with sections OR split files)
 
 ### Requirement: Base Components
 

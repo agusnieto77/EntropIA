@@ -25,7 +25,7 @@ The root `package.json` MUST declare workspace packages via `pnpm-workspace.yaml
 
 ### Requirement: Turborepo Pipeline
 
-`turbo.json` MUST define pipelines for `build`, `dev`, `lint`, `check-types`, and `test`. The `build` pipeline MUST depend on `^build` (topological). The `dev` pipeline MUST be `persistent: true` and uncached. The `test` pipeline MUST be defined with `dependsOn: ["^build"]` and cache outputs in `coverage/**`.
+`turbo.json` MUST define pipelines for `build`, `dev`, `lint`, `typecheck`, and `test`. The `build` pipeline MUST depend on `^build` (topological). The `dev` pipeline MUST be `persistent: true` and uncached. The `test` pipeline MUST be defined with `dependsOn: ["^build"]` and cache outputs in `coverage/**`.
 
 #### Scenario: Build respects dependency order
 
@@ -41,13 +41,13 @@ The root `package.json` MUST declare workspace packages via `pnpm-workspace.yaml
 
 #### Scenario: Lint and typecheck run without build dependency
 
-- GIVEN the `lint` and `check-types` pipelines have no `dependsOn` build requirement
-- WHEN `turbo run lint check-types` is executed
+- GIVEN the `lint` and `typecheck` pipelines have no `dependsOn` build requirement
+- WHEN `turbo run lint typecheck` is executed
 - THEN both tasks run in parallel across all packages
 
 ### Requirement: Root Scripts
 
-The root `package.json` MUST expose scripts: `dev`, `build`, `lint`, `check-types`, and `test` — each delegating to `turbo run <task>`.
+The root `package.json` MUST expose scripts: `dev`, `build`, `lint`, `typecheck`, and `test` — each delegating to `turbo run <task>`.
 
 #### Scenario: Root scripts delegate to Turborepo
 

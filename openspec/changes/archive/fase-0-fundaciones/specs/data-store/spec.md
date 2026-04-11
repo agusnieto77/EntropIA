@@ -71,18 +71,18 @@ The Tauri backend MUST expose `execute` and `select` commands via IPC, allowing 
 
 ### Requirement: Migration Runner
 
-The app MUST apply pending SQL migration files in sequential order on startup. Migrations MUST be generated at dev time by `drizzle-kit generate` and bundled with the application.
+The app MUST apply pending migrations in sequential order on startup. Migration definitions MAY be sourced from bundled SQL files OR an in-code migration registry (for Tauri-safe bundling), as long as they are versioned and deterministic.
 
 #### Scenario: Pending migrations applied on startup
 
-- GIVEN 3 migration SQL files exist and 1 has already been applied
+- GIVEN 3 versioned migrations exist and 1 has already been applied
 - WHEN the app starts
 - THEN the 2 unapplied migrations are executed in filename order
 - AND each is recorded in the migrations tracking table
 
 #### Scenario: No pending migrations is a no-op
 
-- GIVEN all migration files have already been applied
+- GIVEN all known migrations have already been applied
 - WHEN the app starts
 - THEN no SQL is executed and startup completes normally
 
