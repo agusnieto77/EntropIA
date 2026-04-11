@@ -60,9 +60,19 @@ interface ErrorPayload {
 
 const IDLE_STATE: AssetOcrState = { status: 'idle', progress: 0 }
 
+export interface OcrStoreOptions {
+  /** Called when an OCR job completes successfully with the assetId. */
+  onComplete?: (assetId: string) => void
+}
+
 export class OcrStore {
   private states = new Map<string, AssetOcrState>()
   private cleanupFns: Array<() => void> = []
+  private onComplete?: (assetId: string) => void
+
+  constructor(options?: OcrStoreOptions) {
+    this.onComplete = options?.onComplete
+  }
 
   /** Returns the current OCR state for an asset, or idle if unknown. */
   getState(assetId: string): AssetOcrState {
@@ -89,6 +99,8 @@ export class OcrStore {
         textLength: p.text_length,
         method: p.method,
       })
+      // Notify caller (e.g., to trigger FTS indexing after OCR completes)
+      this.onComplete?.(p.asset_id)
     })
 
     const unlistenError = await listen('ocr:error', (e) => {

@@ -228,4 +228,34 @@ describe('OcrStore', () => {
   it('stopListening is safe to call without startListening', () => {
     expect(() => store.stopListening()).not.toThrow()
   })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // onComplete callback — auto-trigger FTS indexing after OCR
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('calls onComplete callback with assetId when ocr:complete fires', async () => {
+    const onComplete = vi.fn()
+    const storeWithCallback = new OcrStore({ onComplete })
+
+    let completeCallback: ((event: { payload: unknown }) => void) | null = null
+
+    vi.mocked(listen).mockImplementation((eventName, callback) => {
+      if (eventName === 'ocr:complete') {
+        completeCallback = callback as (event: { payload: unknown }) => void
+      }
+      return Promise.resolve(vi.fn())
+    })
+
+    await storeWithCallback.startListening(listen)
+
+    completeCallback!({
+      payload: { asset_id: 'asset-ocr-done', method: 'ocr', text_length: 500 },
+    })
+
+    // The onComplete callback must be called with the assetId
+    expect(onComplete).toHaveBeenCalledWith('asset-ocr-done')
+    // State must still be updated correctly
+    const state = storeWithCallback.getState('asset-ocr-done')
+    expect(state.status).toBe('done')
+  })
 })

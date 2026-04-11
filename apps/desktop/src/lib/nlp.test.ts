@@ -27,6 +27,23 @@ describe('NlpStore', () => {
     expect(state.ner).toBe('idle')
   })
 
+  it('getState returns a fresh copy each call so mutations do not bleed', () => {
+    const s1 = store.getState('item-x')
+    const s2 = store.getState('item-x')
+    // Both return idle; they are separate objects (no reference leak)
+    expect(s1).not.toBe(s2)
+    expect(s1.fts).toBe('idle')
+    expect(s2.fts).toBe('idle')
+  })
+
+  it('getState returns independent state per itemId', () => {
+    store._setJobStatus('item-a', 'fts', 'done')
+    const stateA = store.getState('item-a')
+    const stateB = store.getState('item-b')
+    expect(stateA.fts).toBe('done')
+    expect(stateB.fts).toBe('idle')
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // invoke wrappers
   // ─────────────────────────────────────────────────────────────────────────
@@ -58,10 +75,74 @@ describe('NlpStore', () => {
     })
   })
 
+  it('ftsSearch calls invoke without collectionId when omitted', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([])
+    await ftsSearch('revolución de mayo')
+    expect(invoke).toHaveBeenCalledWith('fts_search', {
+      query: 'revolución de mayo',
+      collectionId: undefined,
+    })
+  })
+
+  it('ftsSearch returns empty array when invoke returns empty array', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([])
+    const results = await ftsSearch('xyz123')
+    expect(results).toEqual([])
+  })
+
+  it('ftsSearch returns the full array returned by invoke', async () => {
+    const mockResults = [
+      { itemId: 'item-a', title: 'Acta fundación', rank: -1.2 },
+      { itemId: 'item-b', title: 'Crónica colonial', rank: -0.8 },
+    ]
+    vi.mocked(invoke).mockResolvedValueOnce(mockResults)
+    const results = await ftsSearch('colonización')
+    expect(results).toHaveLength(2)
+    const [first, second] = results
+    expect(first?.itemId).toBe('item-a')
+    expect(second?.rank).toBe(-0.8)
+  })
+
   it('similarItems calls invoke with itemId and default limit', async () => {
     vi.mocked(invoke).mockResolvedValueOnce([])
     await similarItems('item-4')
     expect(invoke).toHaveBeenCalledWith('similar_items', { itemId: 'item-4', limit: 5 })
+  })
+
+  it('similarItems calls invoke with custom limit', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([])
+    await similarItems('item-5', 3)
+    expect(invoke).toHaveBeenCalledWith('similar_items', { itemId: 'item-5', limit: 3 })
+  })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // _setJobStatus — direct state manipulation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('_setJobStatus sets fts status to running for given itemId', () => {
+    store._setJobStatus('item-s1', 'fts', 'running')
+    expect(store.getState('item-s1').fts).toBe('running')
+  })
+
+  it('_setJobStatus sets embed status to done', () => {
+    store._setJobStatus('item-s2', 'embed', 'done')
+    expect(store.getState('item-s2').embed).toBe('done')
+  })
+
+  it('_setJobStatus sets error message on errors field', () => {
+    store._setJobStatus('item-s3', 'ner', 'error', 'NER engine failed')
+    const state = store.getState('item-s3')
+    expect(state.ner).toBe('error')
+    expect(state.errors?.ner).toBe('NER engine failed')
+  })
+
+  it('_setJobStatus preserves other job statuses when updating one', () => {
+    store._setJobStatus('item-s4', 'fts', 'done')
+    store._setJobStatus('item-s4', 'embed', 'running')
+    const state = store.getState('item-s4')
+    expect(state.fts).toBe('done')
+    expect(state.embed).toBe('running')
+    expect(state.ner).toBe('idle')
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -228,6 +309,25 @@ describe('NlpStore', () => {
     expect(state.errors?.embed).toBe('fastembed failed')
   })
 
+  it('nlp:error for ner job transitions ner to error with message', async () => {
+    let errorCallback: ((event: { payload: unknown }) => void) | null = null
+
+    vi.mocked(listen).mockImplementation((eventName, callback) => {
+      if (eventName === 'nlp:error') {
+        errorCallback = callback as (event: { payload: unknown }) => void
+      }
+      return Promise.resolve(vi.fn())
+    })
+
+    await store.startListening(listen)
+
+    errorCallback!({ payload: { item_id: 'item-err3', job: 'ner', error: 'NER engine crashed' } })
+
+    const state = store.getState('item-err3')
+    expect(state.ner).toBe('error')
+    expect(state.errors?.ner).toBe('NER engine crashed')
+  })
+
   // ─────────────────────────────────────────────────────────────────────────
   // stopListening
   // ─────────────────────────────────────────────────────────────────────────
@@ -255,5 +355,16 @@ describe('NlpStore', () => {
 
   it('stopListening is safe to call without startListening', () => {
     expect(() => store.stopListening()).not.toThrow()
+  })
+
+  it('stopListening clears the cleanup list so a second call is a no-op', async () => {
+    const cleanup = vi.fn()
+    vi.mocked(listen).mockImplementation(() => Promise.resolve(cleanup))
+
+    await store.startListening(listen)
+    store.stopListening()
+    store.stopListening() // second call — should not throw and not call cleanup again
+
+    expect(cleanup).toHaveBeenCalledTimes(3) // 3 listeners registered (progress, complete, error)
   })
 })

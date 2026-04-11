@@ -33,7 +33,15 @@
   let savingMetadata = $state(false)
 
   // OCR state — plain TS class, updated via Tauri events
-  const ocrStore = new OcrStore()
+  const ocrStore = new OcrStore({
+    onComplete: (assetId) => {
+      // After OCR extraction completes, auto-trigger FTS indexing for this item
+      void indexFts(itemId).catch(() => {
+        // Non-fatal: FTS indexing failure doesn't block the UI
+      })
+      void assetId // suppress unused warning (assetId belongs to an asset of itemId)
+    },
+  })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
   let ocrTick = $state(0)
 
