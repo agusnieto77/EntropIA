@@ -1,0 +1,100 @@
+import { render, screen, fireEvent } from '@testing-library/svelte'
+import { describe, it, expect, vi } from 'vitest'
+import MetadataEditor from '../MetadataEditor.svelte'
+
+describe('MetadataEditor', () => {
+  it('renders existing key-value fields', () => {
+    render(MetadataEditor, {
+      props: { value: { Author: 'John', Year: '2024' } },
+    })
+    const inputs = screen.getAllByRole('textbox')
+    // 2 pairs = 4 inputs (key + value each)
+    expect(inputs).toHaveLength(4)
+    expect(inputs[0]).toHaveValue('Author')
+    expect(inputs[1]).toHaveValue('John')
+    expect(inputs[2]).toHaveValue('Year')
+    expect(inputs[3]).toHaveValue('2024')
+  })
+
+  it('renders empty state with no fields', () => {
+    render(MetadataEditor, { props: {} })
+    const inputs = screen.queryAllByRole('textbox')
+    expect(inputs).toHaveLength(0)
+  })
+
+  it('add button creates a new empty row', async () => {
+    render(MetadataEditor, { props: {} })
+    const addBtn = screen.getByTestId('metadata-add')
+    await fireEvent.click(addBtn)
+
+    const inputs = screen.getAllByRole('textbox')
+    expect(inputs).toHaveLength(2) // key + value
+    expect(inputs[0]).toHaveValue('')
+    expect(inputs[1]).toHaveValue('')
+  })
+
+  it('delete button removes a row', async () => {
+    const onchange = vi.fn()
+    render(MetadataEditor, {
+      props: {
+        value: { Author: 'John', Year: '2024' },
+        onchange,
+      },
+    })
+
+    const deleteBtns = screen.getAllByTestId('metadata-delete')
+    expect(deleteBtns).toHaveLength(2)
+
+    await fireEvent.click(deleteBtns[0]!)
+
+    const inputs = screen.getAllByRole('textbox')
+    expect(inputs).toHaveLength(2) // Only Year remains
+    expect(inputs[0]).toHaveValue('Year')
+    expect(inputs[1]).toHaveValue('2024')
+  })
+
+  it('emits onchange when a value is edited', async () => {
+    const onchange = vi.fn()
+    render(MetadataEditor, {
+      props: {
+        value: { Author: 'John' },
+        onchange,
+      },
+    })
+
+    const inputs = screen.getAllByRole('textbox')
+    await fireEvent.input(inputs[1]!, { target: { value: 'Jane' } })
+
+    expect(onchange).toHaveBeenCalledWith({ Author: 'Jane' })
+  })
+
+  it('emits onchange when a key is edited', async () => {
+    const onchange = vi.fn()
+    render(MetadataEditor, {
+      props: {
+        value: { Author: 'John' },
+        onchange,
+      },
+    })
+
+    const inputs = screen.getAllByRole('textbox')
+    await fireEvent.input(inputs[0]!, { target: { value: 'Writer' } })
+
+    expect(onchange).toHaveBeenCalledWith({ Writer: 'John' })
+  })
+
+  it('emits onchange when delete is clicked', async () => {
+    const onchange = vi.fn()
+    render(MetadataEditor, {
+      props: {
+        value: { Author: 'John', Year: '2024' },
+        onchange,
+      },
+    })
+
+    const deleteBtns = screen.getAllByTestId('metadata-delete')
+    await fireEvent.click(deleteBtns[0]!)
+
+    expect(onchange).toHaveBeenCalledWith({ Year: '2024' })
+  })
+})

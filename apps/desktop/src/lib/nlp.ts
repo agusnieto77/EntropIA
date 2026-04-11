@@ -1,0 +1,147 @@
+/**
+ * NLP frontend client for EntropIA desktop app.
+ * Plain TypeScript (not .svelte.ts) for full testability in Vitest.
+ *
+ * Communicates with the Rust backend via Tauri invoke + event listeners.
+ * Mirrors the OcrStore architecture.
+ */
+
+import { invoke } from '@tauri-apps/api/core'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type NlpJobType = 'fts' | 'embed' | 'ner'
+export type NlpStatus = 'idle' | 'pending' | 'running' | 'done' | 'error'
+
+export interface ItemNlpState {
+  fts: NlpStatus
+  embed: NlpStatus
+  ner: NlpStatus
+  errors?: {
+    fts?: string
+    embed?: string
+    ner?: string
+  }
+}
+
+export interface FtsResult {
+  itemId: string
+  title: string
+  rank: number
+}
+
+export interface SimilarItem {
+  itemId: string
+  distance: number
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payload shapes emitted by the Rust backend
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ProgressPayload {
+  item_id: string
+  job: string
+  pct: number
+}
+
+interface CompletePayload {
+  item_id: string
+  job: string
+}
+
+interface ErrorPayload {
+  item_id: string
+  job: string
+  error: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NlpStore
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IDLE_STATE: ItemNlpState = { fts: 'idle', embed: 'idle', ner: 'idle' }
+
+export class NlpStore {
+  private states = new Map<string, ItemNlpState>()
+  private cleanupFns: Array<() => void> = []
+
+  /** Returns the current NLP state for an item, or idle if unknown. */
+  getState(itemId: string): ItemNlpState {
+    return this.states.get(itemId) ?? { ...IDLE_STATE }
+  }
+
+  /**
+   * Registers Tauri event listeners for nlp:progress, nlp:complete, nlp:error.
+   * The `listen` function is injected (from @tauri-apps/api/event) for testability.
+   */
+  async startListening(
+    listen: (event: string, callback: (e: { payload: unknown }) => void) => Promise<() => void>
+  ): Promise<void> {
+    const unlistenProgress = await listen('nlp:progress', (e) => {
+      const p = e.payload as ProgressPayload
+      this._setJobStatus(p.item_id, p.job as NlpJobType, 'running')
+    })
+
+    const unlistenComplete = await listen('nlp:complete', (e) => {
+      const p = e.payload as CompletePayload
+      this._setJobStatus(p.item_id, p.job as NlpJobType, 'done')
+    })
+
+    const unlistenError = await listen('nlp:error', (e) => {
+      const p = e.payload as ErrorPayload
+      this._setJobStatus(p.item_id, p.job as NlpJobType, 'error', p.error)
+    })
+
+    this.cleanupFns = [unlistenProgress, unlistenComplete, unlistenError]
+  }
+
+  /** Calls all cleanup functions returned by listen(), removing event listeners. */
+  stopListening(): void {
+    for (const fn of this.cleanupFns) {
+      fn()
+    }
+    this.cleanupFns = []
+  }
+
+  /** Updates a single job's status in the state map for the given itemId. */
+  _setJobStatus(itemId: string, job: NlpJobType, status: NlpStatus, error?: string): void {
+    const current = this.states.get(itemId) ?? { ...IDLE_STATE }
+    const updated: ItemNlpState = { ...current, [job]: status }
+    if (error) {
+      updated.errors = { ...current.errors, [job]: error }
+    }
+    this.states.set(itemId, updated)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoke wrappers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Submit an FTS5 indexing job for `itemId`. */
+export async function indexFts(itemId: string): Promise<void> {
+  await invoke('index_fts', { itemId })
+}
+
+/** Submit an embedding computation job for `itemId`. */
+export async function embedItem(itemId: string): Promise<void> {
+  await invoke('embed_item', { itemId })
+}
+
+/** Submit a NER extraction job for `itemId`. */
+export async function extractEntities(itemId: string): Promise<void> {
+  await invoke('extract_entities', { itemId })
+}
+
+/** Search items using FTS5. Returns results ordered by BM25 relevance. */
+export async function ftsSearch(query: string, collectionId?: string): Promise<FtsResult[]> {
+  return await invoke('fts_search', { query, collectionId })
+}
+
+/** Find items similar to `itemId` via kNN vector search. */
+export async function similarItems(itemId: string, limit: number = 5): Promise<SimilarItem[]> {
+  return await invoke('similar_items', { itemId, limit })
+}

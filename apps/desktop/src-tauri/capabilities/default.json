@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for EntropIA desktop app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:path:default",
+    "core:event:default",
+    "core:window:default",
+    "fs:allow-read-file",
+    "fs:allow-copy-file",
+    "fs:allow-create-dir",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    "fs:allow-write-file",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}
