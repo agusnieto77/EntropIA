@@ -44,5 +44,5 @@
 - [x] 5.1 Run `pnpm test` from workspace root — verify 0 test failures; total test count MUST exceed 144
 - [x] 5.2 Run `pnpm typecheck` — verify 0 TypeScript errors across all packages
 - [x] 5.3 Run `pnpm lint` — verify 0 lint errors
-- [ ] 5.4 Verify `cargo test` passes for `apps/desktop/src-tauri` — NER unit tests (3 fixtures) + FTS in-memory tests all green
-- [ ] 5.5 Manual smoke test: open item with extraction → click "Full-Text Index" → badge transitions done; click "Extract Entities" → EntityViewer populates; search bar returns FTS5 ranked results
+- [ ] 5.4 Verify `cargo test` passes for `apps/desktop/src-tauri` — NER unit tests (3 fixtures) + FTS in-memory tests all green (deferred — requires Rust toolchain)
+- [ ] 5.5 Manual smoke test: open item with extraction → click "Full-Text Index" → badge transitions done; click "Extract Entities" → EntityViewer populates; search bar returns FTS5 ranked results (deferred — requires running app)
