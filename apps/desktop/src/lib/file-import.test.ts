@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { pickAndImportFiles, getAssetUrl, SUPPORTED_FORMATS, classifyFileType } from './file-import'
+import {
+  pickAndImportFiles,
+  getAssetUrl,
+  SUPPORTED_FORMATS,
+  classifyFileType,
+  importFilesFromPaths,
+} from './file-import'
 
 // Tauri APIs are already mocked globally in test-setup.ts
 
@@ -101,5 +107,48 @@ describe('pickAndImportFiles', () => {
     expect(result[0]!.destPath).toContain('item-1')
     expect(mkdir).toHaveBeenCalled()
     expect(copyFile).toHaveBeenCalled()
+  })
+})
+
+describe('importFilesFromPaths', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('filters unsupported files and reports them', async () => {
+    const { copyFile, mkdir } = await import('@tauri-apps/plugin-fs')
+    const { appDataDir, join } = await import('@tauri-apps/api/path')
+
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(copyFile).mockResolvedValue(undefined)
+    vi.mocked(appDataDir).mockResolvedValue('/mock/app-data')
+    vi.mocked(join).mockImplementation((...parts: string[]) => Promise.resolve(parts.join('/')))
+
+    const result = await importFilesFromPaths(
+      ['C:/docs/scan.pdf', 'C:/docs/readme.docx'],
+      'c1',
+      'i1'
+    )
+
+    expect(result.imported).toHaveLength(1)
+    expect(result.imported[0]?.originalName).toBe('scan.pdf')
+    expect(result.rejected).toEqual(['readme.docx'])
+  })
+
+  it('skips duplicate source paths in the same import batch', async () => {
+    const { copyFile, mkdir } = await import('@tauri-apps/plugin-fs')
+    const { appDataDir, join } = await import('@tauri-apps/api/path')
+
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(copyFile).mockResolvedValue(undefined)
+    vi.mocked(appDataDir).mockResolvedValue('/mock/app-data')
+    vi.mocked(join).mockImplementation((...parts: string[]) => Promise.resolve(parts.join('/')))
+
+    const duplicatePath = 'C:/docs/acta.pdf'
+    const result = await importFilesFromPaths([duplicatePath, duplicatePath], 'c1', 'i1')
+
+    expect(result.imported).toHaveLength(1)
+    expect(result.skippedDuplicatePaths).toBe(1)
+    expect(copyFile).toHaveBeenCalledTimes(1)
   })
 })

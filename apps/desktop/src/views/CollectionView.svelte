@@ -1,9 +1,11 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
-  import { pickAndImportFiles } from '$lib/file-import'
+  import { pickAndImportFiles, importFilesFromPaths, type ImportedFile } from '$lib/file-import'
+  import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
+  import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview'
   import type { Item } from '@entropia/store'
 
   let { collectionId }: { collectionId: string } = $props()
@@ -13,6 +15,10 @@
   let loading = $state(true)
   let error = $state<string | null>(null)
   let importing = $state(false)
+  let exporting = $state(false)
+  let importNotice = $state<string | null>(null)
+  let dragActive = $state(false)
+  let unlistenDragDrop: (() => void) | null = null
 
   let filtered = $derived(
     searchQuery ? items : items // search is handled by repo call below
@@ -43,53 +49,59 @@
     await loadItems()
   }
 
+  async function finalizeImportedItem(itemId: string, imported: ImportedFile[]) {
+    const store = getStore()
+
+    if (imported.length === 0) {
+      return
+    }
+
+    await store.items.update(itemId, {
+      title: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
+    })
+
+    for (const file of imported) {
+      await store.assets.create({
+        itemId,
+        path: file.destPath,
+        type: file.type,
+        size: file.size,
+      })
+    }
+
+    await loadItems()
+
+    navigation.navigate({
+      name: 'item',
+      collectionId,
+      collectionName:
+        navigation.current.name === 'collection'
+          ? (navigation.current as { collectionName: string }).collectionName
+          : '',
+      itemId,
+      itemTitle: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
+    })
+  }
+
   async function handleImport() {
     try {
       importing = true
       error = null
+      importNotice = null
       const store = getStore()
-      // Create a new item first, then import files as assets
       const item = await store.items.create({
         title: 'Untitled Document',
         collectionId,
         metadata: null,
       })
-
       const imported = await pickAndImportFiles(collectionId, item.id)
 
       if (imported.length === 0) {
-        // User cancelled — delete the item
         await store.items.delete(item.id)
-      } else {
-        // Update title from first file name
-        await store.items.update(item.id, {
-          title: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
-        })
-
-        // Create asset records
-        for (const file of imported) {
-          await store.assets.create({
-            itemId: item.id,
-            path: file.destPath,
-            type: file.type,
-            size: file.size,
-          })
-        }
-
-        await loadItems()
-
-        // Navigate to the new item
-        navigation.navigate({
-          name: 'item',
-          collectionId,
-          collectionName:
-            navigation.current.name === 'collection'
-              ? (navigation.current as { collectionName: string }).collectionName
-              : '',
-          itemId: item.id,
-          itemTitle: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
-        })
+        return
       }
+
+      await finalizeImportedItem(item.id, imported)
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to import files'
     } finally {
@@ -97,21 +109,117 @@
     }
   }
 
+  async function handleImportFromDroppedPaths(paths: string[]) {
+    try {
+      importing = true
+      error = null
+      importNotice = null
+      const store = getStore()
+      const item = await store.items.create({
+        title: 'Untitled Document',
+        collectionId,
+        metadata: null,
+      })
+
+      const result = await importFilesFromPaths(paths, collectionId, item.id)
+
+      if (result.imported.length === 0) {
+        await store.items.delete(item.id)
+        if (result.rejected.length > 0) {
+          error = `Unsupported format: ${result.rejected.join(', ')}`
+        }
+        return
+      }
+
+      await finalizeImportedItem(item.id, result.imported)
+
+      const noticeParts: string[] = []
+      if (result.rejected.length > 0) {
+        noticeParts.push(`unsupported skipped: ${result.rejected.join(', ')}`)
+      }
+      if (result.skippedDuplicatePaths > 0) {
+        noticeParts.push(`duplicate paths skipped: ${result.skippedDuplicatePaths}`)
+      }
+      importNotice = noticeParts.length > 0 ? `Import completed (${noticeParts.join(' · ')})` : null
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to import dropped files'
+    } finally {
+      importing = false
+      dragActive = false
+    }
+  }
+
+  async function handleExportJson() {
+    try {
+      exporting = true
+      error = null
+      const store = getStore()
+      await exportCollectionById(store, collectionId)
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to export collection'
+    } finally {
+      exporting = false
+    }
+  }
+
   onMount(() => {
     loadItems()
+
+    getCurrentWebview()
+      .onDragDropEvent((event: { payload: DragDropEvent }) => {
+        if (event.payload.type === 'enter') {
+          dragActive = true
+          return
+        }
+
+        if (event.payload.type === 'over') {
+          dragActive = true
+          return
+        }
+
+        if (event.payload.type === 'leave') {
+          dragActive = false
+          return
+        }
+
+        if (event.payload.type !== 'drop') {
+          return
+        }
+
+        dragActive = false
+        void handleImportFromDroppedPaths(event.payload.paths)
+      })
+      .then((unlisten: () => void) => {
+        unlistenDragDrop = unlisten
+      })
+  })
+
+  onDestroy(() => {
+    unlistenDragDrop?.()
   })
 </script>
 
-<div class="collection-view">
+<div class="collection-view" class:drag-active={dragActive}>
   <div class="toolbar">
     <SearchBar placeholder="Search items..." onsearch={handleSearch} onclear={handleClearSearch} />
     <Button variant="primary" onclick={handleImport} disabled={importing}>
       {importing ? 'Importing...' : '+ Import Document'}
     </Button>
+    <Button variant="secondary" onclick={handleExportJson} disabled={exporting}>
+      {exporting ? 'Exporting...' : 'Export JSON'}
+    </Button>
   </div>
 
   {#if error}
     <p class="error">{error}</p>
+  {/if}
+
+  {#if importNotice}
+    <p class="notice">{importNotice}</p>
+  {/if}
+
+  {#if dragActive}
+    <div class="drop-hint">Drop files to import into this collection</div>
   {/if}
 
   {#if loading}
@@ -175,5 +283,22 @@
   }
   .error {
     color: var(--color-danger);
+  }
+  .notice {
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+  }
+  .drop-hint {
+    padding: var(--space-3);
+    border: 1px dashed var(--color-primary);
+    border-radius: var(--radius-md);
+    color: var(--color-text-secondary);
+    text-align: center;
+    background: var(--color-primary-subtle);
+  }
+  .collection-view.drag-active {
+    outline: 1px dashed var(--color-primary);
+    outline-offset: 6px;
+    border-radius: var(--radius-md);
   }
 </style>

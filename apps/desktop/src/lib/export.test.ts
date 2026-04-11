@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { exportCollectionToJson } from './export'
+import { exportCollectionToJson, buildCollectionExportData, exportCollectionById } from './export'
 
 describe('exportCollectionToJson', () => {
   beforeEach(() => {
@@ -46,5 +46,129 @@ describe('exportCollectionToJson', () => {
     expect(JSON.parse(writtenStr)).toEqual(data)
     // Pretty-printed = has newlines
     expect(writtenStr).toContain('\n')
+  })
+})
+
+describe('buildCollectionExportData', () => {
+  it('builds versioned payload with relative asset paths', () => {
+    const collection = {
+      id: 'c1',
+      name: 'Archivo Municipal',
+      description: 'docs',
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'Acta 1', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      {
+        i1: [
+          {
+            id: 'a1',
+            itemId: 'i1',
+            path: '/mock/app-data/assets/c1/i1/file.pdf',
+            type: 'pdf',
+            size: 123,
+            createdAt: 5,
+          },
+        ],
+      },
+      {
+        i1: [
+          {
+            id: 'n1',
+            itemId: 'i1',
+            content: 'nota',
+            createdAt: 6,
+            updatedAt: 7,
+          },
+        ],
+      }
+    )
+
+    expect(payload.version).toBe(1)
+    expect(Array.isArray(payload.items)).toBe(true)
+    expect(payload.items).toHaveLength(1)
+    expect(payload.items[0]?.assets[0]?.path).toBe('assets/c1/i1/file.pdf')
+    expect(payload.items[0]?.notes[0]?.content).toBe('nota')
+  })
+})
+
+describe('exportCollectionById', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns null when collection does not exist', async () => {
+    const store = {
+      collections: { findById: vi.fn().mockResolvedValue(null) },
+      items: { findByCollection: vi.fn() },
+      assets: { findByItem: vi.fn() },
+      notes: { findByItem: vi.fn() },
+    } as any
+
+    const result = await exportCollectionById(store, 'missing')
+    expect(result).toBeNull()
+  })
+
+  it('exports full collection payload with default filename', async () => {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(save).mockResolvedValue('/exports/Archivo Municipal.json')
+    vi.mocked(writeFile).mockResolvedValue(undefined)
+
+    const collection = {
+      id: 'c1',
+      name: 'Archivo Municipal',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const item = {
+      id: 'i1',
+      title: 'Acta',
+      collectionId: 'c1',
+      metadata: null,
+      createdAt: 3,
+      updatedAt: 4,
+    }
+
+    const store = {
+      collections: { findById: vi.fn().mockResolvedValue(collection) },
+      items: { findByCollection: vi.fn().mockResolvedValue([item]) },
+      assets: {
+        findByItem: vi.fn().mockResolvedValue([
+          {
+            id: 'a1',
+            itemId: 'i1',
+            path: '/mock/app-data/assets/c1/i1/acta.pdf',
+            type: 'pdf',
+            size: 10,
+            createdAt: 5,
+          },
+        ]),
+      },
+      notes: {
+        findByItem: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 'n1', itemId: 'i1', content: 'nota', createdAt: 6, updatedAt: 7 },
+          ]),
+      },
+    } as any
+
+    const path = await exportCollectionById(store, 'c1')
+
+    expect(path).toBe('/exports/Archivo Municipal.json')
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultPath: 'Archivo Municipal.json',
+      })
+    )
+    expect(writeFile).toHaveBeenCalledTimes(1)
   })
 })

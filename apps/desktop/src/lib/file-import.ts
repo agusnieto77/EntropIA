@@ -13,6 +13,12 @@ export interface ImportedFile {
   size: number
 }
 
+export interface ImportFromPathsResult {
+  imported: ImportedFile[]
+  rejected: string[]
+  skippedDuplicatePaths: number
+}
+
 /**
  * Classify a filename by its extension.
  * Returns 'image', 'pdf', or null if unsupported.
@@ -45,16 +51,39 @@ export async function pickAndImportFiles(
   if (!selected) return []
 
   const files = Array.isArray(selected) ? selected : [selected]
+
+  const result = await importFilesFromPaths(files, collectionId, itemId)
+  return result.imported
+}
+
+export async function importFilesFromPaths(
+  filePaths: string[],
+  collectionId: string,
+  itemId: string
+): Promise<ImportFromPathsResult> {
   const dataDir = await appDataDir()
   const destDir = await join(dataDir, 'assets', collectionId, itemId)
   await mkdir(destDir, { recursive: true })
 
   const imported: ImportedFile[] = []
+  const rejected: string[] = []
+  const seenSourcePaths = new Set<string>()
+  let skippedDuplicatePaths = 0
 
-  for (const filePath of files) {
+  for (const filePath of filePaths) {
+    const normalizedSource = filePath.toLowerCase()
+    if (seenSourcePaths.has(normalizedSource)) {
+      skippedDuplicatePaths++
+      continue
+    }
+    seenSourcePaths.add(normalizedSource)
+
     const name = filePath.split(/[/\\]/).pop() ?? 'unknown'
     const type = classifyFileType(name)
-    if (!type) continue
+    if (!type) {
+      rejected.push(name)
+      continue
+    }
 
     const destPath = await join(destDir, `${crypto.randomUUID()}_${name}`)
     await copyFile(filePath, destPath)
@@ -67,7 +96,11 @@ export async function pickAndImportFiles(
     })
   }
 
-  return imported
+  return {
+    imported,
+    rejected,
+    skippedDuplicatePaths,
+  }
 }
 
 /**

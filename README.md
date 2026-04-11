@@ -11,6 +11,7 @@ EntropIA es una aplicación desktop para el análisis de fuentes históricas dig
 A diferencia de herramientas tradicionales de gestión documental, EntropIA no se limita a almacenar o visualizar documentos: produce capas de interpretación sobre materiales inherentemente fragmentarios, incompletos o degradados.
 
 El sistema combina:
+
 - Gestión documental local (offline-first)
 - Procesamiento automático (OCR, NER, layout)
 - Análisis semántico (tripletes, embeddings, grafos)
@@ -20,12 +21,11 @@ El sistema combina:
 
 ## 🚀 Diferenciales clave
 
-- OCR avanzado vía APIs (olmOCR, Gemini)
-- Layout analysis (bloques, columnas, tablas)
-- Named Entity Recognition (personas, lugares, fechas)
-- Extracción de tripletes semánticos (S-P-O)
-- Embeddings + búsqueda semántica
-- RAG sobre corpus documental
+- OCR offline/local en desktop (implementado)
+- Named Entity Recognition (personas, lugares, fechas, instituciones) (implementado)
+- Embeddings + búsqueda semántica/FTS5 (implementado)
+- Extracción de tripletes semánticos (S-P-O) (planificado)
+- RAG sobre corpus documental (planificado)
 - Exportación a herramientas externas:
   - Tropy
   - Recogito
@@ -58,17 +58,17 @@ Desktop App (Tauri 2)
 
 ## ⚙️ Stack tecnológico
 
-| Capa            | Tecnología                | Justificación |
-|-----------------|--------------------------|--------------|
-| Desktop         | Tauri 2                  | Ligero, acceso nativo FS |
-| Frontend        | Svelte                   | Mejor perf en desktop, bundle mínimo |
-| DB local        | SQLite                   | Offline-first |
-| ORM             | Drizzle                  | Compatible con SQLite + D1 |
-| Vector search   | sqlite-vec               | Offline-first, sin dependencias externas |
-| Job queue       | In-process (SQLite)      | Simple, offline-first, sin overhead |
-| AI APIs         | DeepInfra / Gemini       | OCR + NLP |
-| Sync (default)  | PocketBase               | Self-hosting simple, migrable |
-| Sync (escala)   | Cloudflare (D1 + R2)     | Edge + SQLite-compatible |
+| Capa           | Tecnología                        | Justificación                                |
+| -------------- | --------------------------------- | -------------------------------------------- |
+| Desktop        | Tauri 2                           | Ligero, acceso nativo FS                     |
+| Frontend       | Svelte                            | Mejor perf en desktop, bundle mínimo         |
+| DB local       | SQLite                            | Offline-first                                |
+| ORM            | Drizzle                           | Compatible con SQLite + D1                   |
+| Vector search  | sqlite-vec                        | Offline-first, sin dependencias externas     |
+| Job queue      | In-process (SQLite)               | Simple, offline-first, sin overhead          |
+| AI runtime     | OCRS + fastembed + NLP rule-based | Offline-first, sin depender de APIs externas |
+| Sync (default) | PocketBase                        | Self-hosting simple, migrable                |
+| Sync (escala)  | Cloudflare (D1 + R2)              | Edge + SQLite-compatible                     |
 
 ---
 
@@ -116,18 +116,21 @@ jobs         (id TEXT PRIMARY KEY, type TEXT, status TEXT, asset_id TEXT, create
 
 ## 🔄 Cloud Sync
 
-### Opción 1 — PocketBase *(default)*
+### Opción 1 — PocketBase _(default)_
+
 - Self-hosted simple
 - Sincronización REST + realtime
 - Sin infraestructura adicional
 
-### Opción 2 — Cloudflare *(escala)*
+### Opción 2 — Cloudflare _(escala)_
+
 - D1 → metadata (SQLite serverless)
 - R2 → almacenamiento de archivos
 - Workers → API sync
 - Durable Objects → colaboración / conflictos
 
 ### Features clave
+
 - Offline-first (funciona sin red)
 - Sincronización incremental
 - Resolución de conflictos (last-write-wins → CRDTs)
@@ -143,77 +146,120 @@ entropia/
     desktop/          ← Tauri 2 shell
   packages/
     ui/               ← Design system (Svelte)
-    store/            ← SQLite + Drizzle + state
-    ai-pipeline/      ← AIProcessor interface + job queue + adapters
-    ner/              ← NER adapter
-    embeddings/       ← Embeddings + sqlite-vec search
-    sync/             ← Sync layer (PocketBase o Cloudflare)
-  services/
-    workers/          ← Cloudflare Workers (si se usa CF)
+    store/            ← SQLite + Drizzle + repos + migrations
+    config-ts/        ← tsconfig compartidos
+  openspec/           ← specs, cambios y archivos SDD
+
+  # Nota: OCR, NER, embeddings y colas de trabajo viven hoy en
+  # apps/desktop/src-tauri/ (backend Rust), no en packages separados.
 ```
+
+---
+
+## 📌 Estado actual
+
+> Última revisión manual del repo: **2026-04-11**
+
+- ✅ **Fase 0 completada** — fundaciones del monorepo, Tauri, SQLite/Drizzle, UI base, CI.
+- ✅ **Fase 1 completada** — importación documental, CRUD, viewer, metadata, notas, búsqueda y export JSON.
+- ⚠️ **Fase 2 parcialmente completada** — OCR + job queue + persistencia + progreso visibles; faltan overlay OCR y algunos diferidos técnicos.
+- ⚠️ **Fase 3 parcialmente completada** — NER + embeddings + FTS5 + viewer de entidades; faltan tripletes S-P-O y vista de relaciones.
+- ⏳ **Fase 4 pendiente** — sincronización.
+- ⏳ **Fase 5 pendiente** — knowledge graph / RAG / visualizaciones avanzadas.
+
+### Diferidos conocidos
+
+- Fase 2.5: fallback para PDFs escaneados + panel de texto completo OCR.
+- Fase 3/4: tripletes semánticos y vista de relaciones entre entidades.
+
+### Fuente de verdad del avance
+
+Este README resume el estado general, pero el detalle verificable vive en:
+
+- `openspec/changes/archive/fase-0-fundaciones/archive-report.md`
+- `openspec/changes/archive/fase-1-mvp-documental/archive-report.md`
+- `openspec/changes/archive/2026-04-11-fase-2-ocr-procesamiento/archive-report.md`
+- `openspec/changes/archive/2026-04-11-fase-3-nlp-embeddings-fts5/archive-report.md`
+
+### Implementado hoy (alto nivel)
+
+- Desktop app con Tauri 2 + Svelte 5
+- SQLite + Drizzle + migrations + repositorios
+- Importación documental, CRUD, viewer, metadata, notas y export JSON
+- OCR offline con cola de trabajos y persistencia local
+- FTS5, NER, embeddings y viewer de entidades
 
 ---
 
 ## 🧩 Roadmap de desarrollo
 
-### Fase 0 — Fundaciones
+### Fase 0 — Fundaciones ✅
+
 > **Goal**: infraestructura técnica que no bloquee ninguna fase posterior.
 
-- [ ] Monorepo configurado (PNPM workspaces + Turborepo)
-- [ ] Tauri 2 + Svelte con hot reload
-- [ ] SQLite + Drizzle: schema base + migrations
-- [ ] `packages/ui`: design system mínimo (tokens, componentes base)
-- [ ] CI básico (lint + typecheck)
+- [x] Monorepo configurado (PNPM workspaces + Turborepo)
+- [x] Tauri 2 + Svelte con hot reload
+- [x] SQLite + Drizzle: schema base + migrations
+- [x] `packages/ui`: design system mínimo (tokens, componentes base)
+- [x] CI básico (lint + typecheck)
 
 **Done when**: app desktop vacía corre, DB migra, CI verde.
 
 ---
 
-### Fase 1 — MVP Documental
+### Fase 1 — MVP Documental ✅
+
 > **Goal**: validar el flujo de trabajo documental básico sin IA.
 
-- [ ] Importación de imágenes y PDFs (drag & drop + file picker)
-- [ ] Gestión de colecciones (CRUD)
-- [ ] Visor de documentos (image/PDF)
-- [ ] Metadata editable
-- [ ] Notas por ítem
-- [ ] Búsqueda por texto en metadata
-- [ ] Exportación básica (JSON)
+- [x] Importación de imágenes y PDFs (drag & drop + file picker)
+- [x] Gestión de colecciones (CRUD)
+- [x] Visor de documentos (image/PDF)
+- [x] Metadata editable
+- [x] Notas por ítem
+- [x] Búsqueda por texto en metadata
+- [x] Exportación básica (JSON)
 
 **Done when**: un historiador puede gestionar una colección de 100 documentos sin IA.
 
 ---
 
-### Fase 2 — AI Pipeline Core
+### Fase 2 — AI Pipeline Core ⚠️ Parcial
+
 > **Goal**: infraestructura de IA que soporte todos los procesadores futuros.
 
-- [ ] Interfaz `AIProcessor` implementada
-- [ ] Job queue (pending / running / done / error)
-- [ ] OCR adapter (olmOCR o Gemini)
-- [ ] Procesamiento batch con progreso visible
-- [ ] Almacenamiento de resultados en `ocr_results`
+- [ ] Interfaz `AIProcessor` implementada como paquete independiente
+- [x] Job queue (pending / running / done / error)
+- [x] OCR adapter implementado (motor local/offline en Rust; el diseño evolucionó respecto al README original)
+- [x] Procesamiento con progreso visible por documento
+- [x] Almacenamiento de resultados OCR en base local
 - [ ] Overlay de texto sobre imagen
 - [ ] Layout analysis (bloques, columnas)
 
 **Done when**: se pueden OCR-ear 50 documentos en batch y ver el resultado superpuesto.
 
+> Estado real: OCR y cola existen, pero el overlay y el batch/UX más completo siguen pendientes.
+
 ---
 
-### Fase 3 — Semántica
+### Fase 3 — Semántica ⚠️ Parcial
+
 > **Goal**: extraer conocimiento estructurado del texto. Requiere Fase 2.
 
-- [ ] NER (personas, lugares, fechas, organizaciones)
+- [x] NER (personas, lugares, fechas, organizaciones)
 - [ ] Extracción de tripletes S-P-O
-- [ ] Viewer de entidades por documento
-- [ ] Embeddings por documento/chunk (sqlite-vec)
-- [ ] Búsqueda semántica por similitud vectorial
+- [x] Viewer de entidades por documento
+- [x] Embeddings por documento/chunk (sqlite-vec)
+- [x] Búsqueda semántica por similitud vectorial
 - [ ] Vista de relaciones entre entidades
 
 **Done when**: dado un corpus, se pueden encontrar documentos semánticamente relacionados y ver entidades extraídas.
 
+> Estado real: NER, FTS5 y embeddings ya están; falta cerrar tripletes y relaciones para dar la fase por completa.
+
 ---
 
 ### Fase 4 — Sync
+
 > **Goal**: multi-dispositivo sin pérdida de datos. Puede correr en paralelo con Fase 3.
 
 - [ ] Schema de sync (qué se sincroniza, qué queda local)
@@ -228,6 +274,7 @@ entropia/
 ---
 
 ### Fase 5 — Knowledge Graph + Avanzado
+
 > **Goal**: herramientas de análisis de alto nivel.
 
 - [ ] Grafo de relaciones (visualización interactiva)
@@ -242,4 +289,12 @@ entropia/
 
 ## 📌 Estado
 
-🚧 En planificación — Fase 0
+🚧 En desarrollo activo — fundaciones + MVP documental + OCR/NLP base ya entregados.
+
+### Próximo paso recomendado
+
+- Actualizar este README a medida que se cierren diferidos.
+- Elegir uno de estos frentes para el próximo change grande:
+  - **Fase 2.5**: fallback para PDFs escaneados + texto OCR completo
+  - **Semántica avanzada**: tripletes S-P-O + relaciones
+  - **Fase 4 sync**: sincronización multi-dispositivo
