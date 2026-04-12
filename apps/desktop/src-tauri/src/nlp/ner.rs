@@ -45,8 +45,12 @@ static PERSON_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 static PLACE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?:ciudad|villa|pueblo|río|sierra|provincia\s+de)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+")
-        .expect("PLACE_RE failed to compile")
+    // PLACE colonial forms:
+    // - prepositional: ciudad|villa|pueblo|provincia de <Topónimo...>
+    // - marker forms: río|sierra <Topónimo...>
+    // Toponym tokens accept Title Case and common lowercase connectors (de/del/la/las/los/y).
+    Regex::new(r"(?:(?:(?:ciudad|villa|pueblo|provincia)\s+de\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de|del|la|las|los|y)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+|\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)|(?:(?:río|sierra)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de|del|la|las|los|y)\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+|\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*))")
+    .expect("PLACE_RE failed to compile")
 });
 
 static DATE_WRITTEN_RE: Lazy<Regex> = Lazy::new(|| {
@@ -240,6 +244,16 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             !places.is_empty(),
             "Expected at least one PLACE in colonial fixture"
         );
+
+        let values: Vec<&str> = places.iter().map(|e| e.value.as_str()).collect();
+        assert!(
+            values.iter().any(|v| *v == "ciudad de Buenos Aires"),
+            "Expected 'ciudad de Buenos Aires' to be detected"
+        );
+        assert!(
+            values.iter().any(|v| *v == "villa de Potosí"),
+            "Expected 'villa de Potosí' to be detected"
+        );
     }
 
     #[test]
@@ -349,5 +363,31 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
                 "Entities not sorted by start_offset at index {i}"
             );
         }
+    }
+
+    #[test]
+    fn detects_colonial_prepositional_place_forms() {
+        let text = "En la ciudad de Buenos Aires y la villa de Potosí, con visitas de la provincia de Entre Ríos.";
+        let places: Vec<String> = extract_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Place)
+            .map(|e| e.value)
+            .collect();
+
+        assert!(places.iter().any(|v| v == "ciudad de Buenos Aires"));
+        assert!(places.iter().any(|v| v == "villa de Potosí"));
+        assert!(places.iter().any(|v| v == "provincia de Entre Ríos"));
+    }
+
+    #[test]
+    fn avoids_false_positive_for_non_toponym_phrase() {
+        let text = "El pueblo de los vecinos solicitó audiencia.";
+        let places: Vec<String> = extract_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Place)
+            .map(|e| e.value)
+            .collect();
+
+        assert!(places.is_empty(), "unexpected PLACE entities: {places:?}");
     }
 }
