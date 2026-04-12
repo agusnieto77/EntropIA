@@ -11,6 +11,8 @@ build/
 
 # Rust / Tauri
 target/
+apps/desktop/src-tauri/vendor/**/target/
+apps/desktop/src-tauri/vendor/**/Cargo.lock
 
 # Database
 *.db

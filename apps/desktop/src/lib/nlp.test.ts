@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   NlpStore,
   indexFts,
@@ -15,6 +18,12 @@ import {
 
 const { invoke } = await import('@tauri-apps/api/core')
 const { listen } = await import('@tauri-apps/api/event')
+const currentDir = dirname(fileURLToPath(import.meta.url))
+
+function readRepoFile(relativeFromLib: string): string {
+  const absolute = resolve(currentDir, relativeFromLib)
+  return readFileSync(absolute, 'utf8')
+}
 
 describe('NlpStore', () => {
   let store: NlpStore
@@ -439,5 +448,34 @@ describe('NlpStore', () => {
     store.stopListening() // second call — should not throw and not call cleanup again
 
     expect(cleanup).toHaveBeenCalledTimes(3) // 3 listeners registered (progress, complete, error)
+  })
+})
+
+describe('windows ORT linker contract governance', () => {
+  it('documents no new NLP capability introduced by this change', () => {
+    const readme = readRepoFile('../../../../README.md')
+
+    expect(readme).toContain(
+      'No new NLP capability introduced by this change: no new extraction model, ranking logic, or semantic feature is added.'
+    )
+  })
+
+  it('documents rollback decision evidence sources', () => {
+    const readme = readRepoFile('../../../../README.md')
+
+    expect(readme).toContain(
+      'Rollback trigger: si vuelve a fallar el contrato default de Windows por linker ORT, revertir el target-gating de `fastembed`/features en `apps/desktop/src-tauri/Cargo.toml` al estado previo.'
+    )
+    expect(readme).toContain(
+      'Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts/windows-feature-contract.ps1` (default/no-default) + pruebas de continuidad NLP no-embedding (`nlp::tests` y `nlp::commands::tests`).'
+    )
+  })
+
+  it('keeps rollback note colocated with Windows feature-gating config', () => {
+    const cargoToml = readRepoFile('../../src-tauri/Cargo.toml')
+
+    expect(cargoToml).toContain(
+      'Rollback: switch this back to crates.io fastembed once ORT/MSVC linker'
+    )
   })
 })

@@ -102,6 +102,34 @@ mod tests {
             "Expected queue error to be propagated"
         );
     }
+
+    #[test]
+    fn enqueue_keeps_non_embedding_jobs_stable() {
+        let (queue, _receiver) = NlpQueue::new();
+
+        let fts = enqueue(
+            &queue,
+            NlpJob::IndexFts {
+                item_id: "item-fts".to_string(),
+            },
+        );
+        let ner = enqueue(
+            &queue,
+            NlpJob::ExtractEntities {
+                item_id: "item-ner".to_string(),
+            },
+        );
+        let triples = enqueue(
+            &queue,
+            NlpJob::ExtractTriples {
+                item_id: "item-triples".to_string(),
+            },
+        );
+
+        assert_eq!(fts.unwrap(), "queued");
+        assert_eq!(ner.unwrap(), "queued");
+        assert_eq!(triples.unwrap(), "queued");
+    }
 }
 
 /// Search `fts_items` using full-text search.

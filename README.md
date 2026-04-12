@@ -189,6 +189,18 @@ Este README resume el estado general, pero el detalle verificable vive en:
 - OCR offline con cola de trabajos y persistencia local
 - FTS5, NER, embeddings y viewer de entidades
 
+### Desktop Rust feature contract
+
+- **Windows (default-features)**: compila/testea sin exigir linkeo ORT; embeddings degrada de forma no fatal.
+- **Windows (`--no-default-features`)**: baseline de seguridad para validar pipeline no-embedding.
+- **Windows (`--features embeddings`)**: chequeo diagnóstico no bloqueante para visibilidad del path opt-in.
+- **No-Windows (default-features)**: mantiene `fastembed` upstream + `sqlite-vec` upstream sin cambios funcionales.
+
+No new NLP capability introduced by this change: no new extraction model, ranking logic, or semantic feature is added.
+
+Rollback trigger: si vuelve a fallar el contrato default de Windows por linker ORT, revertir el target-gating de `fastembed`/features en `apps/desktop/src-tauri/Cargo.toml` al estado previo.
+Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts/windows-feature-contract.ps1` (default/no-default) + pruebas de continuidad NLP no-embedding (`nlp::tests` y `nlp::commands::tests`).
+
 ---
 
 ## 🧩 Roadmap de desarrollo

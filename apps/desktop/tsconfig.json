@@ -1,6 +1,7 @@
 {
   "extends": "@entropia/config-ts/svelte",
   "compilerOptions": {
+    "types": ["svelte", "vitest", "node"],
     "paths": { "$lib/*": ["./src/lib/*"] },
     "rootDir": "src",
     "outDir": "dist"
