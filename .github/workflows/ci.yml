@@ -10,6 +10,32 @@ env:
   PNPM_VERSION: 9.15.4
 
 jobs:
+  detect-rust-changes:
+    name: Detect Rust Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has_rs_changes: ${{ steps.filter.outputs.has_rs_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect .rs files touched
+        id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          else
+            FILES=$(git diff --name-only HEAD~1...HEAD)
+          fi
+
+          if echo "$FILES" | grep -E '\\.rs$' >/dev/null; then
+            echo "has_rs_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rs_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
   windows-rust-feature-contract:
     name: Windows Rust Feature Contract
     runs-on: windows-latest
@@ -22,6 +48,88 @@ jobs:
       - name: Validate default/no-default feature contract
         shell: pwsh
         run: ./apps/desktop/src-tauri/scripts/windows-feature-contract.ps1
+
+  rust-quality-report:
+    name: Rust Quality Report (report-first)
+    runs-on: windows-latest
+    needs: [detect-rust-changes]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install llvm-tools-preview component
+        shell: pwsh
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        shell: pwsh
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Rust quality report (non-blocking)
+        shell: pwsh
+        continue-on-error: true
+        run: pnpm rust:quality:report
+
+      - name: Build rust verify evidence
+        shell: pwsh
+        run: |
+          ./apps/desktop/src-tauri/scripts/rust-verify-gate.ps1
+
+      - name: Upload rust quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-quality-report
+          path: |
+            apps/desktop/src-tauri/coverage-rust/lcov.info
+            apps/desktop/src-tauri/coverage-rust/summary.md
+            apps/desktop/src-tauri/coverage-rust/fmt.log
+            apps/desktop/src-tauri/coverage-rust/clippy.log
+            apps/desktop/src-tauri/coverage-rust/coverage.log
+            apps/desktop/src-tauri/coverage-rust/rust-verify-evidence.md
+
+      - name: Publish rust quality summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "apps/desktop/src-tauri/coverage-rust/summary.md") {
+            Get-Content "apps/desktop/src-tauri/coverage-rust/summary.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+          if (Test-Path "apps/desktop/src-tauri/coverage-rust/rust-verify-evidence.md") {
+            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content "apps/desktop/src-tauri/coverage-rust/rust-verify-evidence.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Report infra/tooling invocation failures
+        if: always()
+        shell: pwsh
+        run: |
+          $summaryPath = "apps/desktop/src-tauri/coverage-rust/summary.md"
+          if (-not (Test-Path $summaryPath)) {
+            Write-Host "::warning::Rust quality summary missing (possible infra/tooling invocation failure)."
+            exit 0
+          }
+
+          $summary = Get-Content $summaryPath -Raw
+          if ($summary -match "infra-error") {
+            Write-Host "::warning::Rust quality reported infra-error. See artifact rust-quality-report."
+          }
 
   lint-typecheck:
     name: Lint & Typecheck
@@ -50,7 +158,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: [lint-typecheck, windows-rust-feature-contract]
+    needs: [lint-typecheck, windows-rust-feature-contract, rust-quality-report]
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +183,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint-typecheck, windows-rust-feature-contract]
+    needs: [lint-typecheck, windows-rust-feature-contract, rust-quality-report]
     steps:
       - uses: actions/checkout@v4
 

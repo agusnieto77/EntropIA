@@ -10,7 +10,8 @@
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "test:run": "turbo test -- --run",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "rust:quality:report": "powershell -NoProfile -File ./apps/desktop/src-tauri/scripts/rust-quality-contract.ps1"
   },
   "devDependencies": {
     "@eslint/js": "^9",
