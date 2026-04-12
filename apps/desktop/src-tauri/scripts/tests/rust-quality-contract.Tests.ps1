@@ -5,46 +5,81 @@ $ScriptRoot = Resolve-Path (Join-Path $TestRoot "..")
 $RustQualityContractPath = Resolve-Path (Join-Path $ScriptRoot "rust-quality-contract.ps1")
 $RustCoveragePath = Resolve-Path (Join-Path $ScriptRoot "rust-coverage.ps1")
 
+function Assert-True {
+  param(
+    [bool]$Condition,
+    [string]$Message
+  )
+
+  if (-not $Condition) {
+    throw $Message
+  }
+}
+
+function Assert-Equal {
+  param(
+    $Actual,
+    $Expected,
+    [string]$Message
+  )
+
+  if ($Actual -ne $Expected) {
+    throw "${Message}. Expected='$Expected' Actual='$Actual'"
+  }
+}
+
+function Assert-Match {
+  param(
+    [string]$Value,
+    [string]$Pattern,
+    [string]$Message
+  )
+
+  if ($Value -notmatch $Pattern) {
+    throw $Message
+  }
+}
+
 . $RustQualityContractPath
 . $RustCoveragePath
 
 Describe "test bootstrap" {
   It "loads rust quality contract functions" {
-    (Get-Command Classify-RustSignal -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
-    (Get-Command Get-RustCoverageArgs -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
-    (Get-Command Write-RustQualitySummary -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+    Assert-True -Condition ($null -ne (Get-Command Classify-RustSignal -ErrorAction SilentlyContinue)) -Message "Classify-RustSignal should be loaded"
+    Assert-True -Condition ($null -ne (Get-Command Get-RustCoverageArgs -ErrorAction SilentlyContinue)) -Message "Get-RustCoverageArgs should be loaded"
+    Assert-True -Condition ($null -ne (Get-Command Write-RustQualitySummary -ErrorAction SilentlyContinue)) -Message "Write-RustQualitySummary should be loaded"
   }
 }
 
 Describe "Classify-RustSignal" {
   It "returns pass when command succeeds" {
     $result = Classify-RustSignal -Tool "coverage" -ExitCode 0 -Output "ok"
-    $result | Should Be "pass"
+    Assert-Equal -Actual $result -Expected "pass" -Message "coverage success must classify as pass"
   }
 
   It "returns report-only for fmt debt findings" {
     $result = Classify-RustSignal -Tool "fmt" -ExitCode 1 -Output "Diff in src/main.rs"
-    $result | Should Be "report-only"
+    Assert-Equal -Actual $result -Expected "report-only" -Message "fmt debt must classify as report-only"
   }
 
   It "returns report-only for clippy debt findings" {
     $result = Classify-RustSignal -Tool "clippy" -ExitCode 101 -Output "warning: use of unwrap"
-    $result | Should Be "report-only"
+    Assert-Equal -Actual $result -Expected "report-only" -Message "clippy debt must classify as report-only"
   }
 
   It "returns infra-error for missing coverage tooling" {
     $result = Classify-RustSignal -Tool "coverage" -ExitCode 1 -Output "no such command: llvm-cov"
-    $result | Should Be "infra-error"
+    Assert-Equal -Actual $result -Expected "infra-error" -Message "missing coverage tooling must classify as infra-error"
   }
 
   It "returns infra-error for fmt invocation errors" {
     $result = Classify-RustSignal -Tool "fmt" -ExitCode 1 -Output "error: unexpected argument '--bogus' found"
-    $result | Should Be "infra-error"
+    Assert-Equal -Actual $result -Expected "infra-error" -Message "fmt invocation errors must classify as infra-error"
   }
 
   It "returns infra-error for clippy invocation errors" {
     $result = Classify-RustSignal -Tool "clippy" -ExitCode 1 -Output "error: Found argument '--bogus' which wasn't expected"
-    $result | Should Be "infra-error"
+    Assert-Equal -Actual $result -Expected "infra-error" -Message "clippy invocation errors must classify as infra-error"
   }
 }
 
@@ -53,10 +88,10 @@ Describe "Get-RustCoverageArgs" {
     $args = Get-RustCoverageArgs -ManifestPath "apps/desktop/src-tauri/Cargo.toml" -OutputDir "target/coverage-rust"
     $joined = $args -join " "
 
-    $joined | Should Match "llvm-cov"
-    $joined | Should Match "--manifest-path apps/desktop/src-tauri/Cargo.toml"
-    $joined | Should Match "--no-default-features"
-    $joined | Should Match "--lcov"
+    Assert-Match -Value $joined -Pattern "llvm-cov" -Message "coverage command must include llvm-cov"
+    Assert-Match -Value $joined -Pattern "--manifest-path apps/desktop/src-tauri/Cargo.toml" -Message "coverage command must include manifest path"
+    Assert-Match -Value $joined -Pattern "--no-default-features" -Message "coverage command must include no-default-features baseline"
+    Assert-Match -Value $joined -Pattern "--lcov" -Message "coverage command must request lcov output"
   }
 }
 
@@ -75,9 +110,9 @@ Describe "Write-RustQualitySummary" {
     Write-RustQualitySummary -SummaryPath $summaryPath -Results $result
     $content = Get-Content -Path $summaryPath -Raw
 
-    $content | Should Match "Rust Coverage Baseline"
-    $content | Should Match "coverage: pass"
-    $content | Should Match "fmt: report-only"
-    $content | Should Match "clippy: infra-error"
+    Assert-Match -Value $content -Pattern "Rust Coverage Baseline" -Message "summary must include coverage section"
+    Assert-Match -Value $content -Pattern "coverage: pass" -Message "summary must include coverage classification"
+    Assert-Match -Value $content -Pattern "fmt: report-only" -Message "summary must include fmt classification"
+    Assert-Match -Value $content -Pattern "clippy: infra-error" -Message "summary must include clippy classification"
   }
 }
