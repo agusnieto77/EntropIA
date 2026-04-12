@@ -1,49 +1,56 @@
 Set-StrictMode -Version Latest
 
-$TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$ScriptRoot = Resolve-Path (Join-Path $TestRoot "..")
-$RustQualityContractPath = Resolve-Path (Join-Path $ScriptRoot "rust-quality-contract.ps1")
-$RustCoveragePath = Resolve-Path (Join-Path $ScriptRoot "rust-coverage.ps1")
-
-function Assert-True {
-  param(
-    [bool]$Condition,
-    [string]$Message
-  )
-
-  if (-not $Condition) {
-    throw $Message
-  }
-}
-
-function Assert-Equal {
-  param(
-    $Actual,
-    $Expected,
-    [string]$Message
-  )
-
-  if ($Actual -ne $Expected) {
-    throw "${Message}. Expected='$Expected' Actual='$Actual'"
-  }
-}
-
-function Assert-Match {
-  param(
-    [string]$Value,
-    [string]$Pattern,
-    [string]$Message
-  )
-
-  if ($Value -notmatch $Pattern) {
-    throw $Message
-  }
-}
-
-. $RustQualityContractPath
-. $RustCoveragePath
-
 Describe "test bootstrap" {
+  BeforeAll {
+    function Assert-True {
+      param(
+        [bool]$Condition,
+        [string]$Message
+      )
+
+      if (-not $Condition) {
+        throw $Message
+      }
+    }
+
+    function Assert-Equal {
+      param(
+        $Actual,
+        $Expected,
+        [string]$Message
+      )
+
+      if ($Actual -ne $Expected) {
+        throw "${Message}. Expected='$Expected' Actual='$Actual'"
+      }
+    }
+
+    function Assert-Match {
+      param(
+        [string]$Value,
+        [string]$Pattern,
+        [string]$Message
+      )
+
+      if ($Value -notmatch $Pattern) {
+        throw $Message
+      }
+    }
+
+    $script:TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $script:ScriptRoot = (Resolve-Path (Join-Path $script:TestRoot "..")).Path
+    $script:RustQualityContractPath = (Resolve-Path (Join-Path $script:ScriptRoot "rust-quality-contract.ps1")).Path
+    $script:RustCoveragePath = (Resolve-Path (Join-Path $script:ScriptRoot "rust-coverage.ps1")).Path
+
+    . $script:RustQualityContractPath
+    . $script:RustCoveragePath
+  }
+
+  It "exposes script-scoped bootstrap paths" {
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($script:RustQualityContractPath)) -Message "RustQualityContractPath should be script-scoped and non-empty"
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($script:RustCoveragePath)) -Message "RustCoveragePath should be script-scoped and non-empty"
+  }
+
   It "loads rust quality contract functions" {
     Assert-True -Condition ($null -ne (Get-Command Classify-RustSignal -ErrorAction SilentlyContinue)) -Message "Classify-RustSignal should be loaded"
     Assert-True -Condition ($null -ne (Get-Command Get-RustCoverageArgs -ErrorAction SilentlyContinue)) -Message "Get-RustCoverageArgs should be loaded"

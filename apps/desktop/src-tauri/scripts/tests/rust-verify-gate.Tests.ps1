@@ -1,47 +1,53 @@
 Set-StrictMode -Version Latest
 
-$TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$ScriptRoot = Resolve-Path (Join-Path $TestRoot "..")
-$RustVerifyGatePath = Resolve-Path (Join-Path $ScriptRoot "rust-verify-gate.ps1")
-
-function Assert-True {
-  param(
-    [bool]$Condition,
-    [string]$Message
-  )
-
-  if (-not $Condition) {
-    throw $Message
-  }
-}
-
-function Assert-Equal {
-  param(
-    $Actual,
-    $Expected,
-    [string]$Message
-  )
-
-  if ($Actual -ne $Expected) {
-    throw "${Message}. Expected='$Expected' Actual='$Actual'"
-  }
-}
-
-function Assert-Match {
-  param(
-    [string]$Value,
-    [string]$Pattern,
-    [string]$Message
-  )
-
-  if ($Value -notmatch $Pattern) {
-    throw $Message
-  }
-}
-
-. $RustVerifyGatePath
-
 Describe "test bootstrap" {
+  BeforeAll {
+    function Assert-True {
+      param(
+        [bool]$Condition,
+        [string]$Message
+      )
+
+      if (-not $Condition) {
+        throw $Message
+      }
+    }
+
+    function Assert-Equal {
+      param(
+        $Actual,
+        $Expected,
+        [string]$Message
+      )
+
+      if ($Actual -ne $Expected) {
+        throw "${Message}. Expected='$Expected' Actual='$Actual'"
+      }
+    }
+
+    function Assert-Match {
+      param(
+        [string]$Value,
+        [string]$Pattern,
+        [string]$Message
+      )
+
+      if ($Value -notmatch $Pattern) {
+        throw $Message
+      }
+    }
+
+    $script:TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $script:ScriptRoot = (Resolve-Path (Join-Path $script:TestRoot "..")).Path
+    $script:RustVerifyGatePath = (Resolve-Path (Join-Path $script:ScriptRoot "rust-verify-gate.ps1")).Path
+
+    . $script:RustVerifyGatePath
+  }
+
+  It "exposes script-scoped verify bootstrap path" {
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace($script:RustVerifyGatePath)) -Message "RustVerifyGatePath should be script-scoped and non-empty"
+  }
+
   It "loads rust verify gate functions" {
     Assert-True -Condition ($null -ne (Get-Command Test-RequiresRustEvidence -ErrorAction SilentlyContinue)) -Message "Test-RequiresRustEvidence should be loaded"
     Assert-True -Condition ($null -ne (Get-Command Write-RustVerifyEvidence -ErrorAction SilentlyContinue)) -Message "Write-RustVerifyEvidence should be loaded"
