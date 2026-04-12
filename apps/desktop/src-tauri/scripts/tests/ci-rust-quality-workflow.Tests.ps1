@@ -14,4 +14,22 @@ Describe "rust-quality-report workflow" {
 
     $content | Should Match "Install cargo-llvm-cov"
   }
+
+  It "runs Rust quality Pester suites explicitly in CI" {
+    $content = Get-Content -Path $workflowPath -Raw
+
+    $content | Should Match "Run Rust quality Pester suites"
+    $content | Should Match "Invoke-Pester"
+    $content | Should Match "rust-quality-contract.Tests.ps1"
+    $content | Should Match "rust-verify-gate.Tests.ps1"
+    $content | Should Match "ci-rust-quality-workflow.Tests.ps1"
+  }
+
+  It "uploads baseline coverage artifacts lcov and summary" {
+    $content = Get-Content -Path $workflowPath -Raw
+
+    $content | Should Match "Upload rust quality artifacts"
+    $content | Should Match "coverage-rust/lcov.info"
+    $content | Should Match "coverage-rust/summary.md"
+  }
 }

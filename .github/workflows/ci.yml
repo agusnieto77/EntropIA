@@ -81,6 +81,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run Rust quality Pester suites
+        shell: powershell
+        run: |
+          Invoke-Pester -Script "apps/desktop/src-tauri/scripts/tests/rust-quality-contract.Tests.ps1"
+          Invoke-Pester -Script "apps/desktop/src-tauri/scripts/tests/rust-verify-gate.Tests.ps1"
+          Invoke-Pester -Script "apps/desktop/src-tauri/scripts/tests/ci-rust-quality-workflow.Tests.ps1"
+
       - name: Run Rust quality report (non-blocking)
         shell: pwsh
         continue-on-error: true

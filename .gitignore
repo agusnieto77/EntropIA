@@ -43,6 +43,7 @@ pnpm-debug.log*
 
 # Test coverage
 coverage/
+.atl/verify-artifacts/
 
 # Drizzle generated (keep in repo, but ignore local overrides)
 # packages/store/drizzle/ — committed intentionally
