@@ -1,8 +1,14 @@
 Set-StrictMode -Version Latest
 
-$workflowPath = Resolve-Path (Join-Path $PSScriptRoot "../../../../../.github/workflows/ci.yml")
+$TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$workflowPath = Resolve-Path (Join-Path $TestRoot "../../../../..") | Join-Path -ChildPath ".github/workflows/ci.yml"
 
 Describe "rust-quality-report workflow" {
+  It "resolves workflow path robustly" {
+    (Test-Path -Path $workflowPath) | Should Be $true
+    $workflowPath | Should Match "[\\/]\.github[\\/]workflows[\\/]ci\.yml$"
+  }
+
   It "installs rustfmt and clippy components" {
     $content = Get-Content -Path $workflowPath -Raw
 

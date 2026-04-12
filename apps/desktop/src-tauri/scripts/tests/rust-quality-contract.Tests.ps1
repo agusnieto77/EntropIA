@@ -1,8 +1,20 @@
 Set-StrictMode -Version Latest
 
-$ScriptRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $ScriptRoot "rust-quality-contract.ps1")
-. (Join-Path $ScriptRoot "rust-coverage.ps1")
+$TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ScriptRoot = Resolve-Path (Join-Path $TestRoot "..")
+$RustQualityContractPath = Resolve-Path (Join-Path $ScriptRoot "rust-quality-contract.ps1")
+$RustCoveragePath = Resolve-Path (Join-Path $ScriptRoot "rust-coverage.ps1")
+
+. $RustQualityContractPath
+. $RustCoveragePath
+
+Describe "test bootstrap" {
+  It "loads rust quality contract functions" {
+    (Get-Command Classify-RustSignal -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+    (Get-Command Get-RustCoverageArgs -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+    (Get-Command Write-RustQualitySummary -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+  }
+}
 
 Describe "Classify-RustSignal" {
   It "returns pass when command succeeds" {

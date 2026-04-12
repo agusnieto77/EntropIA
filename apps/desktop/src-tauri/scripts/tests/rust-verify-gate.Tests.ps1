@@ -1,7 +1,17 @@
 Set-StrictMode -Version Latest
 
-$ScriptRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $ScriptRoot "rust-verify-gate.ps1")
+$TestRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ScriptRoot = Resolve-Path (Join-Path $TestRoot "..")
+$RustVerifyGatePath = Resolve-Path (Join-Path $ScriptRoot "rust-verify-gate.ps1")
+
+. $RustVerifyGatePath
+
+Describe "test bootstrap" {
+  It "loads rust verify gate functions" {
+    (Get-Command Test-RequiresRustEvidence -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+    (Get-Command Write-RustVerifyEvidence -ErrorAction SilentlyContinue) | Should Not BeNullOrEmpty
+  }
+}
 
 Describe "Test-RequiresRustEvidence" {
   It "returns true when at least one .rs file changed" {
