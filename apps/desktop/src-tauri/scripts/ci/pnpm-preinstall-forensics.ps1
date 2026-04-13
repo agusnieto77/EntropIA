@@ -37,8 +37,20 @@ function Get-CommandOutput {
 }
 
 $repoRoot = (Resolve-Path -Path (Join-Path $PSScriptRoot "../../../../..")).Path
-$resolvedLockfilePath = (Resolve-Path -Path (Join-Path $repoRoot $LockfilePath)).Path
-$jobOutputDir = Join-Path $repoRoot "$OutputRoot/$JobName"
+
+$resolvedLockfilePath = if ([System.IO.Path]::IsPathRooted($LockfilePath)) {
+  (Resolve-Path -Path $LockfilePath).Path
+} else {
+  (Resolve-Path -Path (Join-Path $repoRoot $LockfilePath)).Path
+}
+
+$resolvedOutputRoot = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
+  $OutputRoot
+} else {
+  Join-Path $repoRoot $OutputRoot
+}
+
+$jobOutputDir = Join-Path $resolvedOutputRoot $JobName
 
 New-Item -Path $jobOutputDir -ItemType Directory -Force | Out-Null
 
@@ -49,6 +61,25 @@ $lineCount = (Get-Content -Path $resolvedLockfilePath).Count
 $firstBytesLength = [Math]::Min(32, $lockfileBytes.Length)
 $firstBytesHex = if ($firstBytesLength -gt 0) {
   ($lockfileBytes[0..($firstBytesLength - 1)] | ForEach-Object { $_.ToString("x2") }) -join ""
+} else {
+  ""
+}
+
+$rawProbeLength = [Math]::Min(64, $lockfileBytes.Length)
+$rawHeadBytes = if ($rawProbeLength -gt 0) {
+  [byte[]]($lockfileBytes[0..($rawProbeLength - 1)])
+} else {
+  [byte[]]@()
+}
+
+$rawHeadHex = if ($rawProbeLength -gt 0) {
+  ($rawHeadBytes | ForEach-Object { $_.ToString("x2") }) -join ""
+} else {
+  ""
+}
+
+$rawHeadPreview = if ($rawProbeLength -gt 0) {
+  [System.Text.Encoding]::UTF8.GetString($rawHeadBytes)
 } else {
   ""
 }
@@ -83,6 +114,10 @@ $evidence = [ordered]@{
     size_bytes = $lockfileBytes.Length
     line_count = $lineCount
     first_bytes_hex = $firstBytesHex
+    raw_head_probe_length = $rawProbeLength
+    raw_head_bin_file = "lockfile-head-64.bin"
+    raw_head_hex_file = "lockfile-head-64.hex.txt"
+    raw_head_preview_file = "lockfile-head-64.preview.txt"
     has_bom = $hasBom
     has_nul = $hasNul
     has_yaml_multidoc_separator = $hasYamlMultidocSeparator
@@ -93,6 +128,13 @@ $evidence = [ordered]@{
 
 $jsonPath = Join-Path $jobOutputDir "preinstall-evidence.json"
 $summaryPath = Join-Path $jobOutputDir "summary.md"
+$rawHeadBinPath = Join-Path $jobOutputDir "lockfile-head-64.bin"
+$rawHeadHexPath = Join-Path $jobOutputDir "lockfile-head-64.hex.txt"
+$rawHeadPreviewPath = Join-Path $jobOutputDir "lockfile-head-64.preview.txt"
+
+[System.IO.File]::WriteAllBytes($rawHeadBinPath, $rawHeadBytes)
+$rawHeadHex | Set-Content -Path $rawHeadHexPath -Encoding utf8
+$rawHeadPreview | Set-Content -Path $rawHeadPreviewPath -Encoding utf8
 
 $evidence | ConvertTo-Json -Depth 8 | Set-Content -Path $jsonPath -Encoding utf8
 
@@ -111,6 +153,10 @@ $summary = @(
   "- lockfile.size_bytes: $($evidence.lockfile.size_bytes)",
   "- lockfile.line_count: $($evidence.lockfile.line_count)",
   "- lockfile.first_bytes_hex: $($evidence.lockfile.first_bytes_hex)",
+  "- lockfile.raw_head_probe_length: $($evidence.lockfile.raw_head_probe_length)",
+  "- lockfile.raw_head_bin_file: $($evidence.lockfile.raw_head_bin_file)",
+  "- lockfile.raw_head_hex_file: $($evidence.lockfile.raw_head_hex_file)",
+  "- lockfile.raw_head_preview_file: $($evidence.lockfile.raw_head_preview_file)",
   "- lockfile.has_bom: $($evidence.lockfile.has_bom)",
   "- lockfile.has_nul: $($evidence.lockfile.has_nul)",
   "- lockfile.has_yaml_multidoc_separator: $($evidence.lockfile.has_yaml_multidoc_separator)",
