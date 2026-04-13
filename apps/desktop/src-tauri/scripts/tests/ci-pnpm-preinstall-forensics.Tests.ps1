@@ -275,8 +275,8 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "build install must print node version"
 
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must execute frozen lockfile install through npm exec pnpm@9.15.4"
-    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "test install must preserve frozen lockfile using pinned binary"
-    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "build install must preserve frozen lockfile using pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "test install must execute frozen lockfile install through npm exec pnpm@9.15.4"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "build install must execute frozen lockfile install through npm exec pnpm@9.15.4"
   }
 
   It "restores lockfile inside lint-typecheck install step before pnpm install" {
