@@ -214,4 +214,20 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "rust-quality-report install must emit same-step HEAD lockfile blob diagnostic"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must compare working lockfile to HEAD blob before pnpm install"
   }
+
+  It "runs generic lockfile YAML parse diagnostic before rust install with decisive logs" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $yamlParseIndex = $content.IndexOf("Run generic lockfile YAML parse (rust-quality-report)", $jobIndex)
+    $installIndex = $content.IndexOf("name: Install dependencies", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($yamlParseIndex -gt $jobIndex) -Message "rust-quality-report must include generic lockfile YAML parse step"
+    Assert-True -Condition ($installIndex -gt $yamlParseIndex) -Message "rust-quality-report lockfile YAML parse must run before install"
+
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?ConvertFrom-Yaml' -Message "rust-quality-report YAML parse step must use generic ConvertFrom-Yaml parser"
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=ok' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=ok on success"
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=error' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=error on parse failure"
+  }
 }

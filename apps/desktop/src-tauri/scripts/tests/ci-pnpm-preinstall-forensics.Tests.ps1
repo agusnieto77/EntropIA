@@ -289,4 +289,27 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "lint-typecheck install must emit same-step HEAD lockfile blob diagnostic"
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must compare working lockfile to HEAD blob before pnpm install"
   }
+
+  It "runs generic lockfile YAML parse diagnostic before install in targeted jobs" {
+    $lintJobIndex = $script:workflow.IndexOf("lint-typecheck:")
+    $lintYamlParseIndex = $script:workflow.IndexOf("Run generic lockfile YAML parse (lint-typecheck)", $lintJobIndex)
+    $lintInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $lintJobIndex)
+
+    $rustJobIndex = $script:workflow.IndexOf("rust-quality-report:")
+    $rustYamlParseIndex = $script:workflow.IndexOf("Run generic lockfile YAML parse (rust-quality-report)", $rustJobIndex)
+    $rustInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $rustJobIndex)
+
+    Assert-True -Condition ($lintJobIndex -ge 0) -Message "workflow must contain lint-typecheck job"
+    Assert-True -Condition ($lintYamlParseIndex -gt $lintJobIndex) -Message "lint-typecheck must include generic lockfile YAML parse step"
+    Assert-True -Condition ($lintInstallIndex -gt $lintYamlParseIndex) -Message "lint-typecheck lockfile YAML parse must run before install"
+
+    Assert-True -Condition ($rustJobIndex -ge 0) -Message "workflow must contain rust-quality-report job"
+    Assert-True -Condition ($rustYamlParseIndex -gt $rustJobIndex) -Message "rust-quality-report must include generic lockfile YAML parse step"
+    Assert-True -Condition ($rustInstallIndex -gt $rustYamlParseIndex) -Message "rust-quality-report lockfile YAML parse must run before install"
+
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(lint-typecheck\)[\s\S]*?lockfile_yaml_parse=ok' -Message "lint-typecheck YAML parse step must emit lockfile_yaml_parse=ok on success"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(lint-typecheck\)[\s\S]*?lockfile_yaml_parse=error' -Message "lint-typecheck YAML parse step must emit lockfile_yaml_parse=error on parse failure"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=ok' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=ok on success"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=error' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=error on parse failure"
+  }
 }

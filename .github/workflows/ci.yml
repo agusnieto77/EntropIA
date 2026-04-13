@@ -134,6 +134,20 @@ jobs:
             ".ci-evidence/pnpm-preinstall/rust-quality-report/preinstall-evidence.json"
           ) -OutputPath ".ci-evidence/pnpm-preinstall/rust-quality-report/classification.md"
 
+      - name: Run generic lockfile YAML parse (rust-quality-report)
+        shell: pwsh
+        run: |
+          try {
+            $null = Get-Content -Path "pnpm-lock.yaml" -Raw | ConvertFrom-Yaml
+            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parse=ok"
+          } catch {
+            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parse=error"
+            Write-Host "lockfile_yaml_parse_error=$($_.Exception.Message)"
+            throw
+          }
+
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -290,6 +304,20 @@ jobs:
           ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-classify.ps1 -EvidencePaths @(
             ".ci-evidence/pnpm-preinstall/lint-typecheck/preinstall-evidence.json"
           ) -OutputPath ".ci-evidence/pnpm-preinstall/lint-typecheck/classification.md"
+
+      - name: Run generic lockfile YAML parse (lint-typecheck)
+        shell: pwsh
+        run: |
+          try {
+            $null = Get-Content -Path "pnpm-lock.yaml" -Raw | ConvertFrom-Yaml
+            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parse=ok"
+          } catch {
+            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parse=error"
+            Write-Host "lockfile_yaml_parse_error=$($_.Exception.Message)"
+            throw
+          }
 
       - name: Install dependencies
         shell: pwsh
