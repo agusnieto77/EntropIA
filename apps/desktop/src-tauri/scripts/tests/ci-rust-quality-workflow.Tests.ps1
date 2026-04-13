@@ -85,6 +85,12 @@ Describe "rust-quality-report workflow" {
     Assert-True -Condition ($nodeSetupIndex -gt $postCheckoutForensicsIndex) -Message "post-checkout forensic step must run before actions/setup-node"
   }
 
+  It "pins rust-quality-report setup-node to Node 20 for pnpm lockfile experiment" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern "rust-quality-report:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20" -Message "rust-quality-report must pin actions/setup-node to Node 20 in this controlled experiment"
+  }
+
   It "uploads rust post-checkout forensics to a distinct evidence path" {
     $content = Get-Content -Path $script:workflowPath -Raw
 

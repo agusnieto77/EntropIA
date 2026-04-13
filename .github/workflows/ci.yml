@@ -91,7 +91,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 20
           package-manager-cache: false
 
       - name: Run pnpm post-setup-node forensics (rust-quality-report)
@@ -259,7 +259,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 20
           package-manager-cache: false
 
       - name: Run pnpm post-setup-node forensics (lint-typecheck)
@@ -340,7 +340,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 20
           package-manager-cache: false
 
       - name: Restore canonical lockfile (test)
@@ -389,7 +389,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 20
           package-manager-cache: false
 
       - name: Restore canonical lockfile (build)
