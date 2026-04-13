@@ -137,7 +137,7 @@ jobs:
       - name: Run generic lockfile YAML parse (rust-quality-report)
         shell: pwsh
         run: |
-          $parserCommand = 'npm exec --yes --package=js-yaml@4.1.0 -- node -e "const fs = require(''fs''); const yaml = require(''js-yaml''); yaml.load(fs.readFileSync(''pnpm-lock.yaml'', ''utf8''));"'
+          $parserCommand = 'npm exec --yes --package=js-yaml@4.1.0 -- js-yaml pnpm-lock.yaml'
           try {
             Invoke-Expression $parserCommand
             Write-Host "lockfile_yaml_parser=$parserCommand"
@@ -309,7 +309,7 @@ jobs:
       - name: Run generic lockfile YAML parse (lint-typecheck)
         shell: pwsh
         run: |
-          $parserCommand = 'npm exec --yes --package=js-yaml@4.1.0 -- node -e "const fs = require(''fs''); const yaml = require(''js-yaml''); yaml.load(fs.readFileSync(''pnpm-lock.yaml'', ''utf8''));"'
+          $parserCommand = 'npm exec --yes --package=js-yaml@4.1.0 -- js-yaml pnpm-lock.yaml'
           try {
             Invoke-Expression $parserCommand
             Write-Host "lockfile_yaml_parser=$parserCommand"
