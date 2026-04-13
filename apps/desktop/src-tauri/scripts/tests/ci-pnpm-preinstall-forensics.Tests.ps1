@@ -41,6 +41,26 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-True -Condition ($installIndex -gt $forensicsIndex) -Message "lint-typecheck forensic step must be before install"
   }
 
+  It "runs lint-typecheck post-checkout forensics before pnpm setup" {
+    $jobIndex = $script:workflow.IndexOf("lint-typecheck:")
+    $checkoutIndex = $script:workflow.IndexOf("- uses: actions/checkout@v6", $jobIndex)
+    $postCheckoutForensicsIndex = $script:workflow.IndexOf("Run pnpm post-checkout forensics (lint-typecheck)", $jobIndex)
+    $pnpmSetupIndex = $script:workflow.IndexOf("- uses: pnpm/action-setup@v6", $jobIndex)
+    $nodeSetupIndex = $script:workflow.IndexOf("- uses: actions/setup-node@v6", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must contain lint-typecheck job"
+    Assert-True -Condition ($checkoutIndex -gt $jobIndex) -Message "lint-typecheck job must include checkout step"
+    Assert-True -Condition ($postCheckoutForensicsIndex -gt $checkoutIndex) -Message "lint-typecheck post-checkout forensic step must run after checkout"
+    Assert-True -Condition ($pnpmSetupIndex -gt $postCheckoutForensicsIndex) -Message "lint-typecheck post-checkout forensic step must run before pnpm/action-setup"
+    Assert-True -Condition ($nodeSetupIndex -gt $postCheckoutForensicsIndex) -Message "lint-typecheck post-checkout forensic step must run before actions/setup-node"
+  }
+
+  It "uploads lint-typecheck post-checkout forensics artifact with distinct path" {
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(lint-typecheck\)" -Message "workflow must include lint-typecheck post-checkout forensics upload step"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(lint-typecheck\)[\s\S]*?if:\s*always\(\)" -Message "lint-typecheck post-checkout upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(lint-typecheck\)[\s\S]*?\.ci-evidence/pnpm-preinstall/lint-typecheck-post-checkout/" -Message "lint-typecheck post-checkout upload must publish distinct post-checkout evidence path"
+  }
+
   It "uploads lint-typecheck forensics artifact with always policy" {
     Assert-Match -Value $script:workflow -Pattern "Upload pnpm pre-install forensics \(lint-typecheck\)" -Message "workflow must include lint-typecheck forensics upload step"
     Assert-Match -Value $script:workflow -Pattern "Upload pnpm pre-install forensics \(lint-typecheck\)[\s\S]*?if:\s*always\(\)" -Message "lint-typecheck forensics upload must run with if: always()"

@@ -69,6 +69,30 @@ Describe "rust-quality-report workflow" {
     Assert-True -Condition ($forensicsIndex -lt $installIndex) -Message "forensic step must run before Install dependencies"
   }
 
+  It "runs post-checkout forensics before pnpm setup in rust-quality-report" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $checkoutIndex = $content.IndexOf("- uses: actions/checkout@v6", $jobIndex)
+    $postCheckoutForensicsIndex = $content.IndexOf("Run pnpm post-checkout forensics (rust-quality-report)", $jobIndex)
+    $pnpmSetupIndex = $content.IndexOf("- uses: pnpm/action-setup@v6", $jobIndex)
+    $nodeSetupIndex = $content.IndexOf("- uses: actions/setup-node@v6", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($checkoutIndex -gt $jobIndex) -Message "rust-quality-report must include checkout step"
+    Assert-True -Condition ($postCheckoutForensicsIndex -gt $checkoutIndex) -Message "post-checkout forensic step must run after checkout"
+    Assert-True -Condition ($pnpmSetupIndex -gt $postCheckoutForensicsIndex) -Message "post-checkout forensic step must run before pnpm/action-setup"
+    Assert-True -Condition ($nodeSetupIndex -gt $postCheckoutForensicsIndex) -Message "post-checkout forensic step must run before actions/setup-node"
+  }
+
+  It "uploads rust post-checkout forensics to a distinct evidence path" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern "Upload pnpm post-checkout forensics \(rust-quality-report\)" -Message "workflow must include rust post-checkout forensic upload"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-checkout forensics \(rust-quality-report\)[\s\S]*?if:\s*always\(\)" -Message "rust post-checkout upload must run with if: always()"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-checkout forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report-post-checkout/" -Message "rust post-checkout upload must publish distinct post-checkout evidence path"
+  }
+
   It "uploads rust-quality-report pre-install forensics artifact with always policy" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
