@@ -58,6 +58,25 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern "ci-rust-quality-workflow.Tests.ps1" -Message "workflow must run workflow contract suite"
   }
 
+  It "runs pnpm pre-install forensics before installing dependencies" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $forensicsIndex = $content.IndexOf("Run pnpm pre-install forensics (rust-quality-report)")
+    $installIndex = $content.IndexOf("name: Install dependencies")
+
+    Assert-True -Condition ($forensicsIndex -ge 0) -Message "workflow must include rust-quality-report pre-install forensic step"
+    Assert-True -Condition ($installIndex -ge 0) -Message "workflow must include Install dependencies step"
+    Assert-True -Condition ($forensicsIndex -lt $installIndex) -Message "forensic step must run before Install dependencies"
+  }
+
+  It "uploads rust-quality-report pre-install forensics artifact with always policy" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern "Upload pnpm pre-install forensics \(rust-quality-report\)" -Message "workflow must include rust-quality-report forensics upload"
+    Assert-Match -Value $content -Pattern "Upload pnpm pre-install forensics \(rust-quality-report\)[\s\S]*?if:\s*always\(\)" -Message "rust-quality-report forensics upload must run with if: always()"
+    Assert-Match -Value $content -Pattern "Upload pnpm pre-install forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report/" -Message "rust-quality-report forensics upload must include rust-quality-report evidence folder"
+  }
+
   It "uploads baseline coverage artifacts lcov and summary" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
