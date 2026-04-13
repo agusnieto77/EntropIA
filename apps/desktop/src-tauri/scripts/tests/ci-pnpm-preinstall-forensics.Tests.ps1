@@ -118,4 +118,11 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern "Upload pnpm pre-install forensics \(build\)[\s\S]*?if:\s*always\(\)" -Message "build forensics upload must run with if: always()"
     Assert-Match -Value $script:workflow -Pattern "Upload pnpm pre-install forensics \(build\)[\s\S]*?\.ci-evidence/pnpm-preinstall/build/" -Message "build forensics upload must publish build evidence folder"
   }
+
+  It "uses pwsh shell in Linux pre-install forensic/classification steps" {
+    Assert-Match -Value $script:workflow -Pattern "Run pnpm pre-install forensics \(lint-typecheck\)[\s\S]*?shell:\s*pwsh" -Message "lint-typecheck forensics step must use pwsh on Linux"
+    Assert-Match -Value $script:workflow -Pattern "Run pnpm pre-install classification \(lint-typecheck\)[\s\S]*?shell:\s*pwsh" -Message "lint-typecheck classification step must use pwsh on Linux"
+    Assert-Match -Value $script:workflow -Pattern "Run pnpm pre-install forensics \(test\)[\s\S]*?shell:\s*pwsh" -Message "test forensics step must use pwsh on Linux"
+    Assert-Match -Value $script:workflow -Pattern "Run pnpm pre-install forensics \(build\)[\s\S]*?shell:\s*pwsh" -Message "build forensics step must use pwsh on Linux"
+  }
 }
