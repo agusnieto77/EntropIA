@@ -15,7 +15,7 @@ El sistema combina:
 - Gestión documental local (offline-first)
 - Procesamiento automático (OCR, NER, layout)
 - Análisis semántico (tripletes, embeddings, grafos)
-- Sincronización en la nube (self-hosted o edge)
+- Sincronización en la nube (self-hosted o edge) **planificada**
 
 ---
 
@@ -24,7 +24,7 @@ El sistema combina:
 - OCR offline/local en desktop (implementado)
 - Named Entity Recognition (personas, lugares, fechas, instituciones) (implementado)
 - Embeddings + búsqueda semántica/FTS5 (implementado)
-- Extracción de tripletes semánticos (S-P-O) (planificado)
+- Extracción de tripletes semánticos (S-P-O) (implementado, motor rule-based MVP)
 - RAG sobre corpus documental (planificado)
 - Exportación a herramientas externas:
   - Tropy
@@ -49,7 +49,7 @@ Desktop App (Tauri 2)
 │   ├── Embeddings (sqlite-vec)
 │   └── Semantic Extraction
 │
-└── Sync Layer
+└── Sync Layer (roadmap)
     ├── PocketBase (self-hosted, default)
     └── Cloudflare (D1 + R2 + Workers, escala)
 ```
@@ -67,8 +67,7 @@ Desktop App (Tauri 2)
 | Vector search  | sqlite-vec                        | Offline-first, sin dependencias externas     |
 | Job queue      | In-process (SQLite)               | Simple, offline-first, sin overhead          |
 | AI runtime     | OCRS + fastembed + NLP rule-based | Offline-first, sin depender de APIs externas |
-| Sync (default) | PocketBase                        | Self-hosting simple, migrable                |
-| Sync (escala)  | Cloudflare (D1 + R2)              | Edge + SQLite-compatible                     |
+| Sync (roadmap) | PocketBase / Cloudflare (D1 + R2) | Objetivo de Fase 4 (aún no implementado)     |
 
 ---
 
@@ -103,10 +102,11 @@ assets       (id TEXT PRIMARY KEY, item_id TEXT, path TEXT, type TEXT)
 notes        (id TEXT PRIMARY KEY, item_id TEXT, content TEXT)
 
 -- AI outputs
-ocr_results  (id TEXT PRIMARY KEY, asset_id TEXT, text TEXT, layout JSON)
-entities     (id TEXT PRIMARY KEY, name TEXT, type TEXT)
-relations    (id TEXT PRIMARY KEY, subject_id TEXT, predicate TEXT, object_id TEXT)
-embeddings   (id TEXT PRIMARY KEY, ref_id TEXT, vector BLOB)
+extractions  (id TEXT PRIMARY KEY, asset_id TEXT, text_content TEXT, method TEXT, confidence REAL)
+entities     (id TEXT PRIMARY KEY, item_id TEXT, entity_type TEXT, value TEXT, offsets, confidence)
+triples      (id TEXT PRIMARY KEY, item_id TEXT, subject TEXT, predicate TEXT, object TEXT)
+fts_items    (FTS5 virtual table: item_id, title, metadata, extracted_text)
+vec_items    (sqlite-vec virtual table runtime, cuando extensión está disponible)
 
 -- Pipeline
 jobs         (id TEXT PRIMARY KEY, type TEXT, status TEXT, asset_id TEXT, created_at DATETIME, result JSON, error TEXT)
@@ -114,27 +114,29 @@ jobs         (id TEXT PRIMARY KEY, type TEXT, status TEXT, asset_id TEXT, create
 
 ---
 
-## 🔄 Cloud Sync
+## 🔄 Cloud Sync (roadmap — aún no implementado)
 
-### Opción 1 — PocketBase _(default)_
+### Opción 1 — PocketBase _(objetivo evaluado)_
 
 - Self-hosted simple
 - Sincronización REST + realtime
 - Sin infraestructura adicional
+- **Estado**: no hay capa de sync activa en el código actual
 
-### Opción 2 — Cloudflare _(escala)_
+### Opción 2 — Cloudflare _(objetivo de escala)_
 
 - D1 → metadata (SQLite serverless)
 - R2 → almacenamiento de archivos
 - Workers → API sync
 - Durable Objects → colaboración / conflictos
+- **Estado**: opción arquitectónica futura, no implementada en este repo
 
 ### Features clave
 
 - Offline-first (funciona sin red)
-- Sincronización incremental
-- Resolución de conflictos (last-write-wins → CRDTs)
-- Versionado de documentos
+- Sincronización incremental (**planificada**)
+- Resolución de conflictos (last-write-wins → CRDTs) (**planificada**)
+- Versionado de documentos (**planificado**)
 
 ---
 
@@ -158,19 +160,19 @@ entropia/
 
 ## 📌 Estado actual
 
-> Última revisión manual del repo: **2026-04-11**
+> Última revisión manual del repo: **2026-04-13**
 
 - ✅ **Fase 0 completada** — fundaciones del monorepo, Tauri, SQLite/Drizzle, UI base, CI.
 - ✅ **Fase 1 completada** — importación documental, CRUD, viewer, metadata, notas, búsqueda y export JSON.
 - ⚠️ **Fase 2 parcialmente completada** — OCR + job queue + persistencia + progreso visibles; faltan overlay OCR y algunos diferidos técnicos.
-- ⚠️ **Fase 3 parcialmente completada** — NER + embeddings + FTS5 + viewer de entidades; faltan tripletes S-P-O y vista de relaciones.
+- ⚠️ **Fase 3 parcialmente completada** — NER + embeddings + FTS5 + tripletes S-P-O + viewer de entidades; falta vista de relaciones y madurez del extractor semántico.
 - ⏳ **Fase 4 pendiente** — sincronización.
 - ⏳ **Fase 5 pendiente** — knowledge graph / RAG / visualizaciones avanzadas.
 
 ### Diferidos conocidos
 
 - Fase 2.5: fallback para PDFs escaneados + panel de texto completo OCR.
-- Fase 3/4: tripletes semánticos y vista de relaciones entre entidades.
+- Fase 3/4: vista de relaciones entre entidades y evolución del extractor de tripletes más allá del baseline rule-based.
 
 ### Fuente de verdad del avance
 
@@ -187,7 +189,9 @@ Este README resume el estado general, pero el detalle verificable vive en:
 - SQLite + Drizzle + migrations + repositorios
 - Importación documental, CRUD, viewer, metadata, notas y export JSON
 - OCR offline con cola de trabajos y persistencia local
-- FTS5, NER, embeddings y viewer de entidades
+- FTS5, NER, embeddings, extracción de tripletes (S-P-O) y viewer de entidades
+- Panel de tripletes en ItemView con estados de ejecución (`pending/running/done/error`)
+- CI en GitHub Actions con jobs de `lint`, `typecheck`, `test`, `build` (paquetes TS/Svelte) y contrato Rust en Windows
 
 ### Desktop Rust feature contract
 
@@ -213,7 +217,7 @@ Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts
 - [x] Tauri 2 + Svelte con hot reload
 - [x] SQLite + Drizzle: schema base + migrations
 - [x] `packages/ui`: design system mínimo (tokens, componentes base)
-- [x] CI básico (lint + typecheck)
+- [x] CI de calidad (lint + typecheck + test + build TS + verificación de contrato Rust en Windows)
 
 **Done when**: app desktop vacía corre, DB migra, CI verde.
 
@@ -258,7 +262,7 @@ Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts
 > **Goal**: extraer conocimiento estructurado del texto. Requiere Fase 2.
 
 - [x] NER (personas, lugares, fechas, organizaciones)
-- [ ] Extracción de tripletes S-P-O
+- [x] Extracción de tripletes S-P-O (baseline rule-based)
 - [x] Viewer de entidades por documento
 - [x] Embeddings por documento/chunk (sqlite-vec)
 - [x] Búsqueda semántica por similitud vectorial
@@ -266,7 +270,7 @@ Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts
 
 **Done when**: dado un corpus, se pueden encontrar documentos semánticamente relacionados y ver entidades extraídas.
 
-> Estado real: NER, FTS5 y embeddings ya están; falta cerrar tripletes y relaciones para dar la fase por completa.
+> Estado real: NER, FTS5, embeddings y tripletes ya están; falta cerrar relaciones y robustecer extracción semántica para dar la fase por completa.
 
 ---
 
