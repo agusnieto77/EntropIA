@@ -31,12 +31,33 @@ $ErrorActionPreference = 'Stop'
 function Get-CommandOutput {
   param([Parameter(Mandatory = $true)][string]$Command)
 
-  $result = Invoke-Expression $Command
-  if ($null -eq $result) {
-    return ""
-  }
+  try {
+    $result = Invoke-Expression $Command
+    if ($null -eq $result) {
+      return ""
+    }
 
-  return (($result | Out-String).Trim())
+    return (($result | Out-String).Trim())
+  }
+  catch {
+    return "unavailable"
+  }
+}
+
+function Get-CommandPathOrUnavailable {
+  param([Parameter(Mandatory = $true)][string]$Name)
+
+  try {
+    $command = Get-Command $Name -ErrorAction Stop
+    if ($null -eq $command -or [string]::IsNullOrWhiteSpace($command.Source)) {
+      return "unavailable"
+    }
+
+    return $command.Source
+  }
+  catch {
+    return "unavailable"
+  }
 }
 
 function Get-HexFromBytes {
@@ -199,7 +220,7 @@ $evidence = [ordered]@{
   runtime = [ordered]@{
     node_version = (Get-CommandOutput -Command "node -v")
     pnpm_version = (Get-CommandOutput -Command "pnpm -v")
-    pnpm_exec_path = (Get-Command pnpm).Source
+    pnpm_exec_path = (Get-CommandPathOrUnavailable -Name "pnpm")
   }
   tooling = [ordered]@{
     store_dir = (Get-CommandOutput -Command "pnpm config get store-dir")

@@ -85,4 +85,55 @@ Describe "pnpm pre-install forensics script raw probe" {
     Assert-True -Condition ($evidence.git_blob.raw_head_probe_length -gt 0) -Message "git_blob.raw_head_probe_length must be greater than zero"
     Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.lockfile_comparison.status) -eq $false) -Message "lockfile comparison status must be present"
   }
+
+  It "degrades pnpm-dependent runtime/tooling fields when pnpm is unavailable" {
+    $fixtureRoot = Join-Path -Path $env:TEMP -ChildPath ("pnpm-preinstall-raw-" + [guid]::NewGuid().ToString("N"))
+    New-Item -Path $fixtureRoot -ItemType Directory -Force | Out-Null
+
+    $outputRoot = Join-Path -Path $fixtureRoot -ChildPath ".ci-evidence/pnpm-preinstall"
+    $originalPath = $env:PATH
+
+    try {
+      $pathEntries = @($originalPath -split ";" | Where-Object { [string]::IsNullOrWhiteSpace($_) -eq $false })
+      $filteredEntries = @(
+        foreach ($entry in $pathEntries) {
+          $hasPnpmBinary = (
+            (Test-Path -Path (Join-Path -Path $entry -ChildPath "pnpm.cmd")) -or
+            (Test-Path -Path (Join-Path -Path $entry -ChildPath "pnpm.exe")) -or
+            (Test-Path -Path (Join-Path -Path $entry -ChildPath "pnpm.ps1")) -or
+            (Test-Path -Path (Join-Path -Path $entry -ChildPath "pnpm"))
+          )
+
+          if (-not $hasPnpmBinary) {
+            $entry
+          }
+        }
+      )
+
+      $env:PATH = ($filteredEntries -join ";")
+
+      & $script:ForensicsPath -JobName "pnpm-missing" -LockfilePath $script:LockfilePath -OutputRoot $outputRoot
+    }
+    finally {
+      $env:PATH = $originalPath
+    }
+
+    $jobDir = Join-Path -Path $outputRoot -ChildPath "pnpm-missing"
+    $jsonPath = Join-Path -Path $jobDir -ChildPath "preinstall-evidence.json"
+
+    Assert-True -Condition (Test-Path -Path $jsonPath) -Message "script must still create preinstall-evidence.json when pnpm is unavailable"
+
+    $evidence = Get-Content -Path $jsonPath -Raw | ConvertFrom-Json
+
+    Assert-True -Condition ($evidence.runtime.pnpm_version -eq "unavailable") -Message "pnpm_version must degrade to unavailable when pnpm is missing"
+    Assert-True -Condition ($evidence.runtime.pnpm_exec_path -eq "unavailable") -Message "pnpm_exec_path must degrade to unavailable when pnpm is missing"
+    Assert-True -Condition ($evidence.tooling.store_dir -eq "unavailable") -Message "store_dir must degrade to unavailable when pnpm is missing"
+    Assert-True -Condition ($evidence.tooling.virtual_store_dir -eq "unavailable") -Message "virtual_store_dir must degrade to unavailable when pnpm is missing"
+
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.lockfile.sha256) -eq $false) -Message "lockfile.sha256 must still be present"
+    Assert-True -Condition ($evidence.lockfile.raw_head_probe_length -gt 0) -Message "lockfile raw head probe must still be emitted"
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.git_blob.sha256) -eq $false) -Message "git_blob.sha256 must still be present"
+    Assert-True -Condition ($evidence.git_blob.raw_head_probe_length -gt 0) -Message "git_blob raw head probe must still be emitted"
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.lockfile_comparison.status) -eq $false) -Message "lockfile comparison status must still be present"
+  }
 }
