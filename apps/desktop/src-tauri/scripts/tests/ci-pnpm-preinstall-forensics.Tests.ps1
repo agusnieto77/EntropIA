@@ -274,20 +274,20 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "test install must print node version"
     Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "build install must print node version"
 
-    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must preserve frozen lockfile using pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must execute frozen lockfile install through npm exec pnpm@9.15.4"
     Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "test install must preserve frozen lockfile using pinned binary"
     Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "build install must preserve frozen lockfile using pinned binary"
   }
 
   It "restores lockfile inside lint-typecheck install step before pnpm install" {
-    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install step must restore canonical lockfile immediately before pnpm install"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "lint-typecheck install step must restore canonical lockfile immediately before npm exec pnpm install"
   }
 
   It "emits same-step lockfile diagnostics inside lint-typecheck install" {
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=' -Message "lint-typecheck install must emit same-step lockfile sha256 diagnostic"
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=' -Message "lint-typecheck install must emit same-step YAML doc first-line diagnostic"
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "lint-typecheck install must emit same-step HEAD lockfile blob diagnostic"
-    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must compare working lockfile to HEAD blob before pnpm install"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must compare working lockfile to HEAD blob before npm exec pnpm install"
   }
 
   It "runs generic lockfile YAML parse diagnostic before install in targeted jobs" {

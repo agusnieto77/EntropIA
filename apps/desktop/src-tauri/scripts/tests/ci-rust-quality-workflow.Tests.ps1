@@ -197,13 +197,13 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?Write-Host\s+"pnpm_bin=' -Message "rust-quality-report install must print pnpm binary path"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "rust-quality-report install must print pnpm version from pinned binary"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "rust-quality-report install must print node version"
-    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must preserve frozen lockfile using pinned binary"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must execute frozen lockfile install through npm exec pnpm@9.15.4"
   }
 
   It "restores lockfile inside rust-quality-report install step before pnpm install" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
-    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install step must restore canonical lockfile immediately before pnpm install"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "rust-quality-report install step must restore canonical lockfile immediately before npm exec pnpm install"
   }
 
   It "emits same-step lockfile diagnostics inside rust-quality-report install" {
@@ -212,7 +212,7 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=' -Message "rust-quality-report install must emit same-step lockfile sha256 diagnostic"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=' -Message "rust-quality-report install must emit same-step YAML doc first-line diagnostic"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "rust-quality-report install must emit same-step HEAD lockfile blob diagnostic"
-    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must compare working lockfile to HEAD blob before pnpm install"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must compare working lockfile to HEAD blob before npm exec pnpm install"
   }
 
   It "runs generic lockfile YAML parse diagnostic before rust install with decisive logs" {
@@ -226,7 +226,8 @@ Describe "rust-quality-report workflow" {
     Assert-True -Condition ($yamlParseIndex -gt $jobIndex) -Message "rust-quality-report must include generic lockfile YAML parse step"
     Assert-True -Condition ($installIndex -gt $yamlParseIndex) -Message "rust-quality-report lockfile YAML parse must run before install"
 
-    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?ConvertFrom-Yaml' -Message "rust-quality-report YAML parse step must use generic ConvertFrom-Yaml parser"
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?\$parserCommand\s*=\s*"npm exec --yes --package=js-yaml@4\.1\.0 -- node -e' -Message "rust-quality-report YAML parse step must define portable Node parser via npm exec js-yaml@4.1.0"
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parser=\$parserCommand' -Message "rust-quality-report YAML parse step must emit parser identity using lockfile_yaml_parser"
     Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=ok' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=ok on success"
     Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=error' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=error on parse failure"
   }

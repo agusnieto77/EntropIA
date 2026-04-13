@@ -137,12 +137,13 @@ jobs:
       - name: Run generic lockfile YAML parse (rust-quality-report)
         shell: pwsh
         run: |
+          $parserCommand = "npm exec --yes --package=js-yaml@4.1.0 -- node -e \"const fs = require('fs'); const yaml = require('js-yaml'); yaml.load(fs.readFileSync('pnpm-lock.yaml', 'utf8'));\""
           try {
-            $null = Get-Content -Path "pnpm-lock.yaml" -Raw | ConvertFrom-Yaml
-            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Invoke-Expression $parserCommand
+            Write-Host "lockfile_yaml_parser=$parserCommand"
             Write-Host "lockfile_yaml_parse=ok"
           } catch {
-            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parser=$parserCommand"
             Write-Host "lockfile_yaml_parse=error"
             Write-Host "lockfile_yaml_parse_error=$($_.Exception.Message)"
             throw
@@ -168,7 +169,7 @@ jobs:
           Write-Host "lockfile_diag.working_blob=$workingBlob"
           Write-Host "lockfile_diag.head_blob=$headBlob"
           Write-Host "lockfile_diag.matches_head_blob=$matchesHeadBlob"
-          & $pnpmExe install --frozen-lockfile
+          npm exec --package=pnpm@9.15.4 -- pnpm install --frozen-lockfile
 
       - name: Upload pnpm pre-install forensics (rust-quality-report)
         if: always()
@@ -308,12 +309,13 @@ jobs:
       - name: Run generic lockfile YAML parse (lint-typecheck)
         shell: pwsh
         run: |
+          $parserCommand = "npm exec --yes --package=js-yaml@4.1.0 -- node -e \"const fs = require('fs'); const yaml = require('js-yaml'); yaml.load(fs.readFileSync('pnpm-lock.yaml', 'utf8'));\""
           try {
-            $null = Get-Content -Path "pnpm-lock.yaml" -Raw | ConvertFrom-Yaml
-            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Invoke-Expression $parserCommand
+            Write-Host "lockfile_yaml_parser=$parserCommand"
             Write-Host "lockfile_yaml_parse=ok"
           } catch {
-            Write-Host "lockfile_yaml_parser=ConvertFrom-Yaml"
+            Write-Host "lockfile_yaml_parser=$parserCommand"
             Write-Host "lockfile_yaml_parse=error"
             Write-Host "lockfile_yaml_parse_error=$($_.Exception.Message)"
             throw
@@ -339,7 +341,7 @@ jobs:
           Write-Host "lockfile_diag.working_blob=$workingBlob"
           Write-Host "lockfile_diag.head_blob=$headBlob"
           Write-Host "lockfile_diag.matches_head_blob=$matchesHeadBlob"
-          & $pnpmExe install --frozen-lockfile
+          npm exec --package=pnpm@9.15.4 -- pnpm install --frozen-lockfile
 
       - name: Upload pnpm pre-install forensics (lint-typecheck)
         if: always()
