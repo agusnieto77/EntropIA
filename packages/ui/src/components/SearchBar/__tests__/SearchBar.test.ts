@@ -58,6 +58,31 @@ describe('SearchBar', () => {
     expect(onsearch).toHaveBeenCalledWith('test')
   })
 
+  it('keeps local typed value before debounce emits onsearch', async () => {
+    const onsearch = vi.fn()
+    render(SearchBar, { props: { value: 'seed', onsearch, debounceMs: 300 } })
+    const input = screen.getByRole('searchbox') as HTMLInputElement
+
+    await fireEvent.input(input, { target: { value: 'seed local' } })
+
+    expect(input.value).toBe('seed local')
+    expect(onsearch).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(300)
+    expect(onsearch).toHaveBeenCalledWith('seed local')
+  })
+
+  it('re-syncs input when parent updates external value', async () => {
+    const view = render(SearchBar, { props: { value: 'initial' } })
+    const input = screen.getByRole('searchbox') as HTMLInputElement
+
+    await fireEvent.input(input, { target: { value: 'local typing' } })
+    expect(input.value).toBe('local typing')
+
+    await view.rerender({ value: '' })
+    expect(input.value).toBe('')
+  })
+
   it('shows clear button when input has value', async () => {
     render(SearchBar, { props: { value: 'something' } })
     expect(screen.getByTestId('search-clear')).toBeInTheDocument()

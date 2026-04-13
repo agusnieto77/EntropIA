@@ -1,6 +1,12 @@
 import { render, screen, fireEvent } from '@testing-library/svelte'
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import CollectionCard from '../CollectionCard.svelte'
+
+function readCollectionCardSource(): string {
+  return readFileSync(resolve(import.meta.dirname, '../CollectionCard.svelte'), 'utf-8')
+}
 
 describe('CollectionCard', () => {
   const baseProps = {
@@ -54,5 +60,11 @@ describe('CollectionCard', () => {
   it('renders singular "item" for count of 1', () => {
     render(CollectionCard, { props: { ...baseProps, itemCount: 1 } })
     expect(screen.getByText('1 item')).toBeInTheDocument()
+  })
+
+  it('declares standard line-clamp along with webkit fallback', () => {
+    const source = readCollectionCardSource()
+    expect(source).toContain('-webkit-line-clamp: 2;')
+    expect(source).toMatch(/(^|\n)\s*line-clamp:\s*2;/m)
   })
 })

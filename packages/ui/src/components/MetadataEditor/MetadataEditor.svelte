@@ -8,18 +8,49 @@
     value: string
   }
 
-  let rows = $state<MetadataRow[]>(
-    value ? Object.entries(value).map(([key, val]) => ({ key, value: val })) : []
-  )
+  function valueToRows(nextValue: Record<string, string> | undefined): MetadataRow[] {
+    return nextValue ? Object.entries(nextValue).map(([key, val]) => ({ key, value: val })) : []
+  }
 
-  function serializeRows(): Record<string, string> {
+  function rowsToValue(nextRows: MetadataRow[]): Record<string, string> {
     const result: Record<string, string> = {}
-    for (const row of rows) {
+    for (const row of nextRows) {
       if (row.key || row.value) {
         result[row.key] = row.value
       }
     }
     return result
+  }
+
+  function signatureFromValue(nextValue: Record<string, string> | undefined): string {
+    if (!nextValue) {
+      return ''
+    }
+    const orderedEntries = Object.entries(nextValue).sort(([a], [b]) => a.localeCompare(b))
+    return JSON.stringify(orderedEntries)
+  }
+
+  let rows = $state<MetadataRow[]>([])
+  let lastExternalSignature = $state<string | undefined>(undefined)
+
+  $effect(() => {
+    const incomingSignature = signatureFromValue(value)
+    if (lastExternalSignature === undefined) {
+      lastExternalSignature = incomingSignature
+      rows = valueToRows(value)
+      return
+    }
+
+    if (incomingSignature === lastExternalSignature) {
+      return
+    }
+
+    lastExternalSignature = incomingSignature
+    rows = valueToRows(value)
+  })
+
+  function serializeRows(): Record<string, string> {
+    return rowsToValue(rows)
   }
 
   function handleKeyInput(index: number, e: Event) {

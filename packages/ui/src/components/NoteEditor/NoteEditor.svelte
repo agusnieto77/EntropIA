@@ -3,8 +3,26 @@
 
   let { content = '', placeholder = '', onsave, oncancel }: NoteEditorProps = $props()
 
-  let internalContent = $state(content)
-  const originalContent = content
+  let internalContent = $state('')
+  let originalContent = $state('')
+  let lastExternalContent = $state<string | undefined>(undefined)
+
+  $effect(() => {
+    if (lastExternalContent === undefined) {
+      lastExternalContent = content
+      originalContent = content
+      internalContent = content
+      return
+    }
+
+    if (content === lastExternalContent) {
+      return
+    }
+
+    lastExternalContent = content
+    originalContent = content
+    internalContent = content
+  })
 
   const isEmpty = $derived(internalContent.trim().length === 0)
   const isUnchanged = $derived(internalContent === originalContent)

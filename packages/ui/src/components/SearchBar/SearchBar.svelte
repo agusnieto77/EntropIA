@@ -9,16 +9,23 @@
     onclear,
   }: SearchBarProps = $props()
 
-  let internalValue = $state(value)
+  let internalValue = $state('')
+  let lastExternalValue = $state<string | undefined>(undefined)
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearDebounceTimer() {
+    if (!debounceTimer) {
+      return
+    }
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
 
   function handleInput(e: Event) {
     const target = e.target as HTMLInputElement
     internalValue = target.value
 
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-    }
+    clearDebounceTimer()
 
     debounceTimer = setTimeout(() => {
       onsearch?.(internalValue)
@@ -27,12 +34,24 @@
 
   function handleClear() {
     internalValue = ''
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
-    }
+    clearDebounceTimer()
     onclear?.()
   }
+
+  $effect(() => {
+    if (lastExternalValue === undefined) {
+      lastExternalValue = value
+      internalValue = value
+      return
+    }
+
+    if (value === lastExternalValue) {
+      return
+    }
+    lastExternalValue = value
+    internalValue = value
+    clearDebounceTimer()
+  })
 
   const showClear = $derived(internalValue.length > 0)
 </script>

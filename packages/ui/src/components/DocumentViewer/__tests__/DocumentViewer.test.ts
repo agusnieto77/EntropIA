@@ -94,5 +94,47 @@ describe('DocumentViewer', () => {
       })
       expect(screen.getByTestId('pdf-prev')).toBeDisabled()
     })
+
+    it('shows PDF loading state when transitioning from image to pdf', async () => {
+      const view = render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+        },
+      })
+
+      expect(screen.queryByTestId('pdf-loading')).not.toBeInTheDocument()
+
+      await view.rerender({
+        path: '/path/to/doc.pdf',
+        type: 'pdf',
+        assetUrl: 'asset://localhost/path/to/doc.pdf',
+      })
+
+      expect(screen.getByTestId('pdf-loading')).toBeInTheDocument()
+    })
+
+    it('hides PDF-only UI when transitioning from pdf to image', async () => {
+      const view = render(DocumentViewer, {
+        props: {
+          path: '/path/to/doc.pdf',
+          type: 'pdf',
+          assetUrl: 'asset://localhost/path/to/doc.pdf',
+        },
+      })
+
+      expect(screen.getByTestId('pdf-controls')).toBeInTheDocument()
+
+      await view.rerender({
+        path: '/path/to/image.jpg',
+        type: 'image',
+        assetUrl: 'asset://localhost/path/to/image.jpg',
+      })
+
+      expect(screen.getByRole('img')).toHaveAttribute('src', 'asset://localhost/path/to/image.jpg')
+      expect(screen.queryByTestId('pdf-controls')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('pdf-loading')).not.toBeInTheDocument()
+    })
   })
 })

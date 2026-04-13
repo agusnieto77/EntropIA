@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
   import type { DocumentViewerProps } from './DocumentViewer.types'
 
   let { path: _path, type, assetUrl }: DocumentViewerProps = $props()
@@ -8,7 +7,7 @@
   let currentPage = $state(1)
   let totalPages = $state(0)
   let zoom = $state(1.0)
-  let loading = $state(type === 'pdf')
+  let loading = $state(false)
   let error = $state<string | null>(null)
 
   let canvasEl: HTMLCanvasElement | undefined = $state()
@@ -19,10 +18,23 @@
   const canZoomIn = $derived(zoom < 3.0)
   const canZoomOut = $derived(zoom > 0.5)
 
+  function resetViewerState() {
+    loading = false
+    error = null
+    currentPage = 1
+    totalPages = 0
+    zoom = 1.0
+    pdfDoc = null
+  }
+
+  function activatePdfMode() {
+    loading = true
+    error = null
+  }
+
   async function loadPdf() {
     try {
-      loading = true
-      error = null
+      activatePdfMode()
       const pdfjs = await import('pdfjs-dist')
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(
         'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -82,10 +94,14 @@
     }
   }
 
-  onMount(() => {
-    if (type === 'pdf') {
-      loadPdf()
+  $effect(() => {
+    if (type !== 'pdf') {
+      resetViewerState()
+      return
     }
+
+    activatePdfMode()
+    void loadPdf()
   })
 </script>
 

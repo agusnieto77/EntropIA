@@ -38,6 +38,32 @@ describe('NoteEditor', () => {
     expect(saveBtn).not.toBeDisabled()
   })
 
+  it('disables save again when edited content returns to baseline', async () => {
+    render(NoteEditor, { props: { content: 'Original note' } })
+    const textarea = screen.getByRole('textbox')
+    const saveBtn = screen.getByTestId('note-save')
+
+    await fireEvent.input(textarea, { target: { value: 'Original note v2' } })
+    expect(saveBtn).not.toBeDisabled()
+
+    await fireEvent.input(textarea, { target: { value: 'Original note' } })
+    expect(saveBtn).toBeDisabled()
+  })
+
+  it('updates baseline when parent provides new content', async () => {
+    const view = render(NoteEditor, { props: { content: 'first baseline' } })
+    const textarea = screen.getByRole('textbox')
+    const saveBtn = screen.getByTestId('note-save')
+
+    await fireEvent.input(textarea, { target: { value: 'locally edited' } })
+    expect(saveBtn).not.toBeDisabled()
+
+    await view.rerender({ content: 'second baseline' })
+
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('second baseline')
+    expect(screen.getByTestId('note-save')).toBeDisabled()
+  })
+
   it('save button is enabled when content goes from empty to non-empty', async () => {
     render(NoteEditor, { props: {} })
     const textarea = screen.getByRole('textbox')

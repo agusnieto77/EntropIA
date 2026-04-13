@@ -16,6 +16,45 @@ describe('MetadataEditor', () => {
     expect(inputs[3]).toHaveValue('2024')
   })
 
+  it('hydrates initial rows from incoming value prop', () => {
+    render(MetadataEditor, {
+      props: { value: { Title: 'Documento', Source: 'Notebook' } },
+    })
+
+    const inputs = screen.getAllByRole('textbox')
+    expect(inputs).toHaveLength(4)
+    expect(inputs[0]).toHaveValue('Title')
+    expect(inputs[1]).toHaveValue('Documento')
+    expect(inputs[2]).toHaveValue('Source')
+    expect(inputs[3]).toHaveValue('Notebook')
+  })
+
+  it('preserves in-progress local edits across unrelated rerender', async () => {
+    const view = render(MetadataEditor, {
+      props: { value: { Author: 'John' } },
+    })
+
+    let inputs = screen.getAllByRole('textbox')
+    await fireEvent.input(inputs[1]!, { target: { value: 'Jane local edit' } })
+
+    await view.rerender({ value: { Author: 'John' }, onchange: vi.fn() })
+    inputs = screen.getAllByRole('textbox')
+    expect(inputs[1]).toHaveValue('Jane local edit')
+  })
+
+  it('re-syncs rows when parent sends a new metadata object', async () => {
+    const view = render(MetadataEditor, {
+      props: { value: { Author: 'John' } },
+    })
+
+    await view.rerender({ value: { Reviewer: 'Ana' } })
+
+    const inputs = screen.getAllByRole('textbox')
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]).toHaveValue('Reviewer')
+    expect(inputs[1]).toHaveValue('Ana')
+  })
+
   it('renders empty state with no fields', () => {
     render(MetadataEditor, { props: {} })
     const inputs = screen.queryAllByRole('textbox')

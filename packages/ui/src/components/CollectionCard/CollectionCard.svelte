@@ -95,6 +95,7 @@
     margin: 0;
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
+    line-clamp: 2;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
