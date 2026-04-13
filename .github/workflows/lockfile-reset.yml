@@ -93,4 +93,4 @@ jobs:
           echo "checkpoint.after_setup_node.matches_head_blob=$matches_head_blob"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm exec --package=pnpm@9.15.4 -- pnpm install --frozen-lockfile

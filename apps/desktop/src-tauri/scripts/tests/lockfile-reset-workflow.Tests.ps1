@@ -86,6 +86,6 @@ Describe "lockfile-reset diagnostic workflow contract" {
     Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.head_blob=" -Message "node checkpoint must log HEAD lockfile blob"
     Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.matches_head_blob=" -Message "node checkpoint must log working-vs-HEAD lockfile blob comparison"
 
-    Assert-Match -Value $workflow -Pattern "name:\s*Install dependencies[\s\S]*?pnpm\s+install\s+--frozen-lockfile" -Message "workflow must probe pnpm install --frozen-lockfile"
+    Assert-Match -Value $workflow -Pattern "name:\s*Install dependencies[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile" -Message "workflow must probe install via npm exec with explicit pnpm@9.15.4 pin"
   }
 }
