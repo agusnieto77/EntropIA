@@ -85,10 +85,10 @@ Describe "rust-quality-report workflow" {
     Assert-True -Condition ($nodeSetupIndex -gt $postCheckoutForensicsIndex) -Message "post-checkout forensic step must run before actions/setup-node"
   }
 
-  It "pins rust-quality-report setup-node to Node 20 for pnpm lockfile experiment" {
+  It "pins rust-quality-report setup-node to Node 22 for pnpm/action-setup compatibility" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
-    Assert-Match -Value $content -Pattern "rust-quality-report:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20" -Message "rust-quality-report must pin actions/setup-node to Node 20 in this controlled experiment"
+    Assert-Match -Value $content -Pattern "rust-quality-report:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*22" -Message "rust-quality-report must pin actions/setup-node to Node 22 to keep pnpm/action-setup on a compatible runtime"
   }
 
   It "uploads rust post-checkout forensics to a distinct evidence path" {
@@ -226,7 +226,7 @@ Describe "rust-quality-report workflow" {
     Assert-True -Condition ($yamlParseIndex -gt $jobIndex) -Message "rust-quality-report must include generic lockfile YAML parse step"
     Assert-True -Condition ($installIndex -gt $yamlParseIndex) -Message "rust-quality-report lockfile YAML parse must run before install"
 
-    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?\$parserCommand\s*=\s*"npm exec --yes --package=js-yaml@4\.1\.0 -- node -e' -Message "rust-quality-report YAML parse step must define portable Node parser via npm exec js-yaml@4.1.0"
+    Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?\$parserCommand\s*=\s*''npm exec --yes --package=js-yaml@4\.1\.0 -- node -e' -Message "rust-quality-report YAML parse step must define portable Node parser via single-quoted npm exec js-yaml@4.1.0 command"
     Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parser=\$parserCommand' -Message "rust-quality-report YAML parse step must emit parser identity using lockfile_yaml_parser"
     Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=ok' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=ok on success"
     Assert-Match -Value $content -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=error' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=error on parse failure"

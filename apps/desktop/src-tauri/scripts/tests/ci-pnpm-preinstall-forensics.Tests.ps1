@@ -199,8 +199,8 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern "Run pnpm pre-install forensics \(build\)[\s\S]*?shell:\s*pwsh" -Message "build forensics step must use pwsh on Linux"
   }
 
-  It "pins Node 20 and disables setup-node pnpm caching in all install jobs" {
-    Assert-Match -Value $script:workflow -Pattern "rust-quality-report:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20[\s\S]*?package-manager-cache:\s*false" -Message "rust-quality-report setup-node must pin Node 20 and explicitly disable package-manager auto-cache"
+  It "pins expected Node versions and disables setup-node pnpm caching in install jobs" {
+    Assert-Match -Value $script:workflow -Pattern "rust-quality-report:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*22[\s\S]*?package-manager-cache:\s*false" -Message "rust-quality-report setup-node must pin Node 22 and explicitly disable package-manager auto-cache"
     Assert-Match -Value $script:workflow -Pattern "lint-typecheck:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20[\s\S]*?package-manager-cache:\s*false" -Message "lint-typecheck setup-node must pin Node 20 and explicitly disable package-manager auto-cache"
     Assert-Match -Value $script:workflow -Pattern "test:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20[\s\S]*?package-manager-cache:\s*false" -Message "test setup-node must pin Node 20 and explicitly disable package-manager auto-cache"
     Assert-Match -Value $script:workflow -Pattern "build:[\s\S]*?- uses: actions/setup-node@v6[\s\S]*?node-version:\s*20[\s\S]*?package-manager-cache:\s*false" -Message "build setup-node must pin Node 20 and explicitly disable package-manager auto-cache"
@@ -307,6 +307,8 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-True -Condition ($rustYamlParseIndex -gt $rustJobIndex) -Message "rust-quality-report must include generic lockfile YAML parse step"
     Assert-True -Condition ($rustInstallIndex -gt $rustYamlParseIndex) -Message "rust-quality-report lockfile YAML parse must run before install"
 
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(lint-typecheck\)[\s\S]*?\$parserCommand\s*=\s*''npm exec --yes --package=js-yaml@4\.1\.0 -- node -e' -Message "lint-typecheck YAML parse step must define parser command with PowerShell-safe single-quoted representation"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?\$parserCommand\s*=\s*''npm exec --yes --package=js-yaml@4\.1\.0 -- node -e' -Message "rust-quality-report YAML parse step must define parser command with PowerShell-safe single-quoted representation"
     Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(lint-typecheck\)[\s\S]*?lockfile_yaml_parse=ok' -Message "lint-typecheck YAML parse step must emit lockfile_yaml_parse=ok on success"
     Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(lint-typecheck\)[\s\S]*?lockfile_yaml_parse=error' -Message "lint-typecheck YAML parse step must emit lockfile_yaml_parse=error on parse failure"
     Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=ok' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=ok on success"
