@@ -42,11 +42,8 @@ Describe "pnpm pre-install forensics script raw probe" {
     $fixtureRoot = Join-Path -Path $env:TEMP -ChildPath ("pnpm-preinstall-raw-" + [guid]::NewGuid().ToString("N"))
     New-Item -Path $fixtureRoot -ItemType Directory -Force | Out-Null
 
-    $customLockfilePath = Join-Path -Path $fixtureRoot -ChildPath "probe-lock.yaml"
-    [System.IO.File]::WriteAllBytes($customLockfilePath, [byte[]](0x2d, 0x2d, 0x2d, 0x0a, 0x23, 0x20, 0x70, 0x72, 0x6f, 0x62, 0x65))
-
     $outputRoot = Join-Path -Path $fixtureRoot -ChildPath ".ci-evidence/pnpm-preinstall"
-    & $script:ForensicsPath -JobName "raw-probe-custom" -LockfilePath $customLockfilePath -OutputRoot $outputRoot
+    & $script:ForensicsPath -JobName "raw-probe-custom" -LockfilePath $script:LockfilePath -OutputRoot $outputRoot
 
     $jobDir = Join-Path -Path $outputRoot -ChildPath "raw-probe-custom"
     $rawHeadBinPath = Join-Path -Path $jobDir -ChildPath "lockfile-head-64.bin"
@@ -58,5 +55,34 @@ Describe "pnpm pre-install forensics script raw probe" {
 
     Assert-True -Condition ($hexFromBin.Length -gt 0) -Message "binary head probe must contain bytes"
     Assert-True -Condition ($hexFromBin -eq $hexFromFile) -Message "hex probe must match binary head probe bytes"
+  }
+
+  It "captures git blob vs working tree lockfile comparison evidence" {
+    $fixtureRoot = Join-Path -Path $env:TEMP -ChildPath ("pnpm-preinstall-raw-" + [guid]::NewGuid().ToString("N"))
+    New-Item -Path $fixtureRoot -ItemType Directory -Force | Out-Null
+
+    $outputRoot = Join-Path -Path $fixtureRoot -ChildPath ".ci-evidence/pnpm-preinstall"
+    & $script:ForensicsPath -JobName "blob-vs-working" -LockfilePath $script:LockfilePath -OutputRoot $outputRoot
+
+    $jobDir = Join-Path -Path $outputRoot -ChildPath "blob-vs-working"
+    $jsonPath = Join-Path -Path $jobDir -ChildPath "preinstall-evidence.json"
+    $workingBinPath = Join-Path -Path $jobDir -ChildPath "lockfile-head-64.bin"
+    $blobBinPath = Join-Path -Path $jobDir -ChildPath "lockfile-head-64.git-blob.bin"
+    $blobHexPath = Join-Path -Path $jobDir -ChildPath "lockfile-head-64.git-blob.hex.txt"
+    $blobPreviewPath = Join-Path -Path $jobDir -ChildPath "lockfile-head-64.git-blob.preview.txt"
+
+    Assert-True -Condition (Test-Path -Path $jsonPath) -Message "script must create preinstall-evidence.json"
+    Assert-True -Condition (Test-Path -Path $workingBinPath) -Message "script must create working-tree head probe"
+    Assert-True -Condition (Test-Path -Path $blobBinPath) -Message "script must create git-blob head probe"
+    Assert-True -Condition (Test-Path -Path $blobHexPath) -Message "script must create git-blob hex head probe"
+    Assert-True -Condition (Test-Path -Path $blobPreviewPath) -Message "script must create git-blob preview head probe"
+
+    $evidence = Get-Content -Path $jsonPath -Raw | ConvertFrom-Json
+
+    Assert-True -Condition ($null -ne $evidence.git_blob) -Message "evidence must include git_blob section"
+    Assert-True -Condition ($null -ne $evidence.lockfile_comparison) -Message "evidence must include lockfile_comparison section"
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.git_blob.sha256) -eq $false) -Message "git_blob.sha256 must be present"
+    Assert-True -Condition ($evidence.git_blob.raw_head_probe_length -gt 0) -Message "git_blob.raw_head_probe_length must be greater than zero"
+    Assert-True -Condition ([string]::IsNullOrWhiteSpace($evidence.lockfile_comparison.status) -eq $false) -Message "lockfile comparison status must be present"
   }
 }

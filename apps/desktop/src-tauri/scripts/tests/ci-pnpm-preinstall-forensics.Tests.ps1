@@ -71,6 +71,9 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern "has_bom" -Message "forensics contract must include BOM detection"
     Assert-Match -Value $script:workflow -Pattern "has_nul" -Message "forensics contract must include NUL detection"
     Assert-Match -Value $script:workflow -Pattern "has_yaml_multidoc_separator" -Message "forensics contract must include YAML multi-doc detection"
+    Assert-Match -Value $script:workflow -Pattern "git_blob_sha256" -Message "forensics contract must include git blob sha256"
+    Assert-Match -Value $script:workflow -Pattern "git_blob_first_bytes_hex" -Message "forensics contract must include git blob first-bytes sample"
+    Assert-Match -Value $script:workflow -Pattern "lockfile_comparison_status" -Message "forensics contract must include lockfile comparison status"
   }
 
   It "runs optional pre-install classification before install in targeted jobs" {

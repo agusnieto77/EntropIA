@@ -81,7 +81,7 @@ jobs:
       - name: Run pnpm pre-install forensics (rust-quality-report)
         shell: powershell
         run: |
-          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator")
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
           ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "rust-quality-report" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
 
       - name: Run pnpm pre-install classification (rust-quality-report)
@@ -176,7 +176,7 @@ jobs:
       - name: Run pnpm pre-install forensics (lint-typecheck)
         shell: pwsh
         run: |
-          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator")
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
           ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "lint-typecheck" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
 
       - name: Run pnpm pre-install classification (lint-typecheck)
@@ -221,7 +221,7 @@ jobs:
       - name: Run pnpm pre-install forensics (test)
         shell: pwsh
         run: |
-          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator")
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
           ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "test" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
 
       - name: Upload pnpm pre-install forensics (test)
@@ -259,7 +259,7 @@ jobs:
       - name: Run pnpm pre-install forensics (build)
         shell: pwsh
         run: |
-          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator")
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
           ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "build" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
 
       - name: Upload pnpm pre-install forensics (build)
