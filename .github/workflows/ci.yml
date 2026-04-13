@@ -134,13 +134,6 @@ jobs:
             ".ci-evidence/pnpm-preinstall/rust-quality-report/preinstall-evidence.json"
           ) -OutputPath ".ci-evidence/pnpm-preinstall/rust-quality-report/classification.md"
 
-      - name: Upload pnpm pre-install forensics (rust-quality-report)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: pnpm-preinstall-forensics-rust-quality-report-${{ github.run_id }}
-          path: .ci-evidence/pnpm-preinstall/rust-quality-report/
-
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -149,7 +142,15 @@ jobs:
           Write-Host "pnpm_bin=$pnpmExe"
           & $pnpmExe -v
           node -v
+          git checkout -- pnpm-lock.yaml
           & $pnpmExe install --frozen-lockfile
+
+      - name: Upload pnpm pre-install forensics (rust-quality-report)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-preinstall-forensics-rust-quality-report-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/rust-quality-report/
 
       - name: Run Rust quality Pester suites
         shell: powershell
@@ -279,13 +280,6 @@ jobs:
             ".ci-evidence/pnpm-preinstall/lint-typecheck/preinstall-evidence.json"
           ) -OutputPath ".ci-evidence/pnpm-preinstall/lint-typecheck/classification.md"
 
-      - name: Upload pnpm pre-install forensics (lint-typecheck)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: pnpm-preinstall-forensics-lint-typecheck-${{ github.run_id }}
-          path: .ci-evidence/pnpm-preinstall/lint-typecheck/
-
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -294,7 +288,15 @@ jobs:
           Write-Host "pnpm_bin=$pnpmExe"
           & $pnpmExe -v
           node -v
+          git checkout -- pnpm-lock.yaml
           & $pnpmExe install --frozen-lockfile
+
+      - name: Upload pnpm pre-install forensics (lint-typecheck)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-preinstall-forensics-lint-typecheck-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/lint-typecheck/
 
       - name: Lint
         run: pnpm lint

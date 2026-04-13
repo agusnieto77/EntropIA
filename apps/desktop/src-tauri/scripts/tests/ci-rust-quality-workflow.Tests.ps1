@@ -163,6 +163,18 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern "Upload pnpm pre-install forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report/" -Message "rust-quality-report forensics upload must include rust-quality-report evidence folder"
   }
 
+  It "uploads rust-quality-report pre-install forensics after install" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $installIndex = $content.IndexOf("name: Install dependencies", $jobIndex)
+    $uploadIndex = $content.IndexOf("Upload pnpm pre-install forensics (rust-quality-report)", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($installIndex -gt $jobIndex) -Message "rust-quality-report job must include Install dependencies"
+    Assert-True -Condition ($uploadIndex -gt $installIndex) -Message "rust-quality-report pre-install forensics upload must run after install"
+  }
+
   It "uploads baseline coverage artifacts lcov and summary" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
@@ -180,5 +192,11 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "rust-quality-report install must print pnpm version from pinned binary"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "rust-quality-report install must print node version"
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must preserve frozen lockfile using pinned binary"
+  }
+
+  It "restores lockfile inside rust-quality-report install step before pnpm install" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install step must restore canonical lockfile immediately before pnpm install"
   }
 }

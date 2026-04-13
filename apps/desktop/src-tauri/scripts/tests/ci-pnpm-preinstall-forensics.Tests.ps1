@@ -104,6 +104,16 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern "Upload pnpm pre-install forensics \(lint-typecheck\)[\s\S]*?\.ci-evidence/pnpm-preinstall/lint-typecheck/" -Message "lint-typecheck forensics upload must publish lint-typecheck evidence folder"
   }
 
+  It "uploads lint-typecheck pre-install forensics after install" {
+    $jobIndex = $script:workflow.IndexOf("lint-typecheck:")
+    $installIndex = $script:workflow.IndexOf("name: Install dependencies", $jobIndex)
+    $uploadIndex = $script:workflow.IndexOf("Upload pnpm pre-install forensics (lint-typecheck)", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must contain lint-typecheck job"
+    Assert-True -Condition ($installIndex -gt $jobIndex) -Message "lint-typecheck job must include Install dependencies"
+    Assert-True -Condition ($uploadIndex -gt $installIndex) -Message "lint-typecheck pre-install forensics upload must run after install"
+  }
+
   It "keeps frozen lockfile install command and forbids bypass flags" {
     Assert-Match -Value $script:workflow -Pattern "lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "lint-typecheck install must keep frozen lockfile semantics"
     Assert-Match -Value $script:workflow -Pattern "rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "rust-quality-report install must keep frozen lockfile semantics"
@@ -263,5 +273,9 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must preserve frozen lockfile using pinned binary"
     Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "test install must preserve frozen lockfile using pinned binary"
     Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "build install must preserve frozen lockfile using pinned binary"
+  }
+
+  It "restores lockfile inside lint-typecheck install step before pnpm install" {
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install step must restore canonical lockfile immediately before pnpm install"
   }
 }
