@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { exportCollectionToJson, buildCollectionExportData, exportCollectionById } from './export'
 
+type ExportStoreMock = {
+  collections: { findById: ReturnType<typeof vi.fn> }
+  items: { findByCollection: ReturnType<typeof vi.fn> }
+  assets: { findByItem: ReturnType<typeof vi.fn> }
+  notes: { findByItem: ReturnType<typeof vi.fn> }
+}
+
+type ExportStoreInput = Parameters<typeof exportCollectionById>[0]
+
+function asExportStore(store: ExportStoreMock): ExportStoreInput {
+  return store as unknown as ExportStoreInput
+}
+
 describe('exportCollectionToJson', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -104,14 +117,14 @@ describe('exportCollectionById', () => {
   })
 
   it('returns null when collection does not exist', async () => {
-    const store = {
+    const store: ExportStoreMock = {
       collections: { findById: vi.fn().mockResolvedValue(null) },
       items: { findByCollection: vi.fn() },
       assets: { findByItem: vi.fn() },
       notes: { findByItem: vi.fn() },
-    } as any
+    }
 
-    const result = await exportCollectionById(store, 'missing')
+    const result = await exportCollectionById(asExportStore(store), 'missing')
     expect(result).toBeNull()
   })
 
@@ -137,7 +150,7 @@ describe('exportCollectionById', () => {
       updatedAt: 4,
     }
 
-    const store = {
+    const store: ExportStoreMock = {
       collections: { findById: vi.fn().mockResolvedValue(collection) },
       items: { findByCollection: vi.fn().mockResolvedValue([item]) },
       assets: {
@@ -159,9 +172,9 @@ describe('exportCollectionById', () => {
             { id: 'n1', itemId: 'i1', content: 'nota', createdAt: 6, updatedAt: 7 },
           ]),
       },
-    } as any
+    }
 
-    const path = await exportCollectionById(store, 'c1')
+    const path = await exportCollectionById(asExportStore(store), 'c1')
 
     expect(path).toBe('/exports/Archivo Municipal.json')
     expect(save).toHaveBeenCalledWith(

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setupKeyboardShortcuts } from './keyboard'
-import { NavigationStore } from './navigation'
 
 // We mock the navigation module so we can spy on .back()
 vi.mock('./navigation', () => {

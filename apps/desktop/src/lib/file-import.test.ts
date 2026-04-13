@@ -7,6 +7,8 @@ import {
   importFilesFromPaths,
 } from './file-import'
 
+type OpenSelection = string[] | string | null
+
 // Tauri APIs are already mocked globally in test-setup.ts
 
 describe('classifyFileType', () => {
@@ -90,7 +92,7 @@ describe('pickAndImportFiles', () => {
     const { copyFile, mkdir } = await import('@tauri-apps/plugin-fs')
     const { appDataDir, join } = await import('@tauri-apps/api/path')
 
-    vi.mocked(open).mockResolvedValue(['C:/photos/sunset.png'] as any)
+    vi.mocked(open).mockResolvedValue(['C:/photos/sunset.png'] as OpenSelection)
     vi.mocked(mkdir).mockResolvedValue(undefined)
     vi.mocked(copyFile).mockResolvedValue(undefined)
     vi.mocked(appDataDir).mockResolvedValue('/mock/app-data')
