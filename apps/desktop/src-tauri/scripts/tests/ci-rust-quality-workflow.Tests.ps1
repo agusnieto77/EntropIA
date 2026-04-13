@@ -170,4 +170,15 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern "coverage-rust/lcov.info" -Message "workflow artifacts must include lcov.info"
     Assert-Match -Value $content -Pattern "coverage-rust/summary.md" -Message "workflow artifacts must include summary.md"
   }
+
+  It "pins pnpm/action-setup id and uses explicit pnpm bin path in rust-quality-report install" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?- uses: pnpm/action-setup@v6[\s\S]*?id:\s*pnpm_setup' -Message "rust-quality-report pnpm/action-setup must define id: pnpm_setup"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?steps\.pnpm_setup\.outputs\.bin_dest' -Message "rust-quality-report install must use steps.pnpm_setup.outputs.bin_dest"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?Write-Host\s+"pnpm_bin=' -Message "rust-quality-report install must print pnpm binary path"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "rust-quality-report install must print pnpm version from pinned binary"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "rust-quality-report install must print node version"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must preserve frozen lockfile using pinned binary"
+  }
 }

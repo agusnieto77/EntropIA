@@ -105,10 +105,10 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
   }
 
   It "keeps frozen lockfile install command and forbids bypass flags" {
-    Assert-Match -Value $script:workflow -Pattern "lint-typecheck:[\s\S]*?pnpm install --frozen-lockfile" -Message "lint-typecheck must keep pnpm install --frozen-lockfile"
-    Assert-Match -Value $script:workflow -Pattern "rust-quality-report:[\s\S]*?pnpm install --frozen-lockfile" -Message "rust-quality-report must keep pnpm install --frozen-lockfile"
-    Assert-Match -Value $script:workflow -Pattern "test:[\s\S]*?pnpm install --frozen-lockfile" -Message "test must keep pnpm install --frozen-lockfile"
-    Assert-Match -Value $script:workflow -Pattern "build:[\s\S]*?pnpm install --frozen-lockfile" -Message "build must keep pnpm install --frozen-lockfile"
+    Assert-Match -Value $script:workflow -Pattern "lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "lint-typecheck install must keep frozen lockfile semantics"
+    Assert-Match -Value $script:workflow -Pattern "rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "rust-quality-report install must keep frozen lockfile semantics"
+    Assert-Match -Value $script:workflow -Pattern "test:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "test install must keep frozen lockfile semantics"
+    Assert-Match -Value $script:workflow -Pattern "build:[\s\S]*?name:\s*Install dependencies[\s\S]*?install\s+--frozen-lockfile" -Message "build install must keep frozen lockfile semantics"
 
     Assert-True -Condition (-not ($script:workflow -match "--no-frozen-lockfile")) -Message "workflow must not include --no-frozen-lockfile"
     Assert-True -Condition (-not ($script:workflow -match "--fix-lockfile")) -Message "workflow must not include --fix-lockfile"
@@ -237,5 +237,31 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
 
     Assert-Match -Value $script:workflow -Pattern "Restore canonical lockfile \(test\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "test lockfile restore must use deterministic git checkout from committed state"
     Assert-Match -Value $script:workflow -Pattern "Restore canonical lockfile \(build\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "build lockfile restore must use deterministic git checkout from committed state"
+  }
+
+  It "pins pnpm/action-setup id and uses explicit pnpm bin path in install for lint, test and build" {
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?- uses: pnpm/action-setup@v6[\s\S]*?id:\s*pnpm_setup' -Message "lint-typecheck pnpm/action-setup must define id: pnpm_setup"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?- uses: pnpm/action-setup@v6[\s\S]*?id:\s*pnpm_setup' -Message "test pnpm/action-setup must define id: pnpm_setup"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?- uses: pnpm/action-setup@v6[\s\S]*?id:\s*pnpm_setup' -Message "build pnpm/action-setup must define id: pnpm_setup"
+
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?steps\.pnpm_setup\.outputs\.bin_dest' -Message "lint-typecheck install must use steps.pnpm_setup.outputs.bin_dest"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?steps\.pnpm_setup\.outputs\.bin_dest' -Message "test install must use steps.pnpm_setup.outputs.bin_dest"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?steps\.pnpm_setup\.outputs\.bin_dest' -Message "build install must use steps.pnpm_setup.outputs.bin_dest"
+
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?Write-Host\s+"pnpm_bin=' -Message "lint-typecheck install must print pnpm binary path"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?Write-Host\s+"pnpm_bin=' -Message "test install must print pnpm binary path"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?Write-Host\s+"pnpm_bin=' -Message "build install must print pnpm binary path"
+
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "lint-typecheck install must print pnpm version from pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "test install must print pnpm version from pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+-v' -Message "build install must print pnpm version from pinned binary"
+
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "lint-typecheck install must print node version"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "test install must print node version"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?node\s+-v' -Message "build install must print node version"
+
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must preserve frozen lockfile using pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "test install must preserve frozen lockfile using pinned binary"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "build install must preserve frozen lockfile using pinned binary"
   }
 }
