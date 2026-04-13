@@ -91,7 +91,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Run pnpm post-setup-node forensics (rust-quality-report)
         shell: powershell
@@ -236,7 +236,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Run pnpm post-setup-node forensics (lint-typecheck)
         shell: pwsh
@@ -294,7 +294,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Run pnpm pre-install forensics (test)
         shell: pwsh
@@ -332,7 +332,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Run pnpm pre-install forensics (build)
         shell: pwsh
