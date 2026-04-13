@@ -199,4 +199,13 @@ Describe "rust-quality-report workflow" {
 
     Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install step must restore canonical lockfile immediately before pnpm install"
   }
+
+  It "emits same-step lockfile diagnostics inside rust-quality-report install" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=' -Message "rust-quality-report install must emit same-step lockfile sha256 diagnostic"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=' -Message "rust-quality-report install must emit same-step YAML doc first-line diagnostic"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "rust-quality-report install must emit same-step HEAD lockfile blob diagnostic"
+    Assert-Match -Value $content -Pattern 'rust-quality-report:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "rust-quality-report install must compare working lockfile to HEAD blob before pnpm install"
+  }
 }

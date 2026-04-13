@@ -143,6 +143,17 @@ jobs:
           & $pnpmExe -v
           node -v
           git checkout -- pnpm-lock.yaml
+          $lockfileSha256 = (Get-FileHash -Algorithm SHA256 -Path "pnpm-lock.yaml").Hash.ToLowerInvariant()
+          $firstLine = (Get-Content -Path "pnpm-lock.yaml" -TotalCount 1)
+          $firstLineIsYamlDoc = [string]::Equals($firstLine, "---", [System.StringComparison]::Ordinal)
+          $workingBlob = (git hash-object pnpm-lock.yaml).Trim()
+          $headBlob = (git rev-parse HEAD:pnpm-lock.yaml).Trim()
+          $matchesHeadBlob = [string]::Equals($workingBlob, $headBlob, [System.StringComparison]::Ordinal)
+          Write-Host "lockfile_diag.sha256=$lockfileSha256"
+          Write-Host "lockfile_diag.first_line_is_yaml_doc=$firstLineIsYamlDoc"
+          Write-Host "lockfile_diag.working_blob=$workingBlob"
+          Write-Host "lockfile_diag.head_blob=$headBlob"
+          Write-Host "lockfile_diag.matches_head_blob=$matchesHeadBlob"
           & $pnpmExe install --frozen-lockfile
 
       - name: Upload pnpm pre-install forensics (rust-quality-report)
@@ -289,6 +300,17 @@ jobs:
           & $pnpmExe -v
           node -v
           git checkout -- pnpm-lock.yaml
+          $lockfileSha256 = (Get-FileHash -Algorithm SHA256 -Path "pnpm-lock.yaml").Hash.ToLowerInvariant()
+          $firstLine = (Get-Content -Path "pnpm-lock.yaml" -TotalCount 1)
+          $firstLineIsYamlDoc = [string]::Equals($firstLine, "---", [System.StringComparison]::Ordinal)
+          $workingBlob = (git hash-object pnpm-lock.yaml).Trim()
+          $headBlob = (git rev-parse HEAD:pnpm-lock.yaml).Trim()
+          $matchesHeadBlob = [string]::Equals($workingBlob, $headBlob, [System.StringComparison]::Ordinal)
+          Write-Host "lockfile_diag.sha256=$lockfileSha256"
+          Write-Host "lockfile_diag.first_line_is_yaml_doc=$firstLineIsYamlDoc"
+          Write-Host "lockfile_diag.working_blob=$workingBlob"
+          Write-Host "lockfile_diag.head_blob=$headBlob"
+          Write-Host "lockfile_diag.matches_head_blob=$matchesHeadBlob"
           & $pnpmExe install --frozen-lockfile
 
       - name: Upload pnpm pre-install forensics (lint-typecheck)

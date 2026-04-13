@@ -278,4 +278,11 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
   It "restores lockfile inside lint-typecheck install step before pnpm install" {
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install step must restore canonical lockfile immediately before pnpm install"
   }
+
+  It "emits same-step lockfile diagnostics inside lint-typecheck install" {
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=' -Message "lint-typecheck install must emit same-step lockfile sha256 diagnostic"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=' -Message "lint-typecheck install must emit same-step YAML doc first-line diagnostic"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.head_blob=' -Message "lint-typecheck install must emit same-step HEAD lockfile blob diagnostic"
+    Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?&\s*\$pnpmExe\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must compare working lockfile to HEAD blob before pnpm install"
+  }
 }
