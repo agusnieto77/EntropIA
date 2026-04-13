@@ -42,7 +42,7 @@ Describe "pnpm pre-install classification" {
 {
   "runtime": {
     "node_version": "v22.0.0",
-    "pnpm_version": "9.15.9",
+    "pnpm_version": "9.15.4",
     "pnpm_exec_path": "/usr/bin/pnpm"
   },
   "tooling": {
@@ -62,7 +62,7 @@ Describe "pnpm pre-install classification" {
 {
   "runtime": {
     "node_version": "v20.18.0",
-    "pnpm_version": "9.15.9",
+    "pnpm_version": "9.15.4",
     "pnpm_exec_path": "C:/pnpm/pnpm.cmd"
   },
   "tooling": {
@@ -97,7 +97,7 @@ Describe "pnpm pre-install classification" {
 {
   "runtime": {
     "node_version": "v22.0.0",
-    "pnpm_version": "9.15.9",
+    "pnpm_version": "9.15.4",
     "pnpm_exec_path": "/usr/bin/pnpm"
   },
   "tooling": {
@@ -117,7 +117,7 @@ Describe "pnpm pre-install classification" {
 {
   "runtime": {
     "node_version": "v22.0.0",
-    "pnpm_version": "9.15.9",
+    "pnpm_version": "9.15.4",
     "pnpm_exec_path": "/usr/bin/pnpm"
   },
   "tooling": {

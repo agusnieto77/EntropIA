@@ -142,6 +142,10 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern "lockfile_comparison_status" -Message "forensics contract must include lockfile comparison status"
   }
 
+  It "pins CI pnpm version to 9.15.4 for lockfile experiment" {
+    Assert-Match -Value $script:workflow -Pattern "env:\s*[\s\S]*?PNPM_VERSION:\s*9\.15\.4" -Message "workflow must pin PNPM_VERSION to 9.15.4 for the CI lockfile experiment"
+  }
+
   It "runs optional pre-install classification before install in targeted jobs" {
     $lintForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (lint-typecheck)")
     $lintClassificationIndex = $script:workflow.IndexOf("Run pnpm pre-install classification (lint-typecheck)")
