@@ -137,6 +137,24 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern "Upload pnpm post-setup-node forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report-post-setup-node/" -Message "rust post-setup-node upload must publish distinct evidence path"
   }
 
+  It "restores canonical lockfile between post-setup-node forensics and pre-install forensics in rust-quality-report" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $postNodeForensicsIndex = $content.IndexOf("Run pnpm post-setup-node forensics (rust-quality-report)", $jobIndex)
+    $restoreIndex = $content.IndexOf("Restore canonical lockfile (rust-quality-report)", $jobIndex)
+    $preInstallForensicsIndex = $content.IndexOf("Run pnpm pre-install forensics (rust-quality-report)", $jobIndex)
+    $installIndex = $content.IndexOf("name: Install dependencies", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($postNodeForensicsIndex -gt $jobIndex) -Message "rust-quality-report must include post-setup-node forensics"
+    Assert-True -Condition ($restoreIndex -gt $postNodeForensicsIndex) -Message "rust-quality-report lockfile restore must run after post-setup-node forensics"
+    Assert-True -Condition ($preInstallForensicsIndex -gt $restoreIndex) -Message "rust-quality-report lockfile restore must run before pre-install forensics"
+    Assert-True -Condition ($installIndex -gt $preInstallForensicsIndex) -Message "rust-quality-report install must run after pre-install forensics"
+
+    Assert-Match -Value $content -Pattern "Restore canonical lockfile \(rust-quality-report\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "rust-quality-report lockfile restore must use deterministic git checkout from committed state"
+  }
+
   It "uploads rust-quality-report pre-install forensics artifact with always policy" {
     $content = Get-Content -Path $script:workflowPath -Raw
 

@@ -193,4 +193,49 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
 
     Assert-True -Condition (-not ($script:workflow -match "cache:\s*pnpm")) -Message "workflow must not configure setup-node with cache: pnpm"
   }
+
+  It "restores canonical lockfile between post-setup-node and pre-install forensics in lint-typecheck" {
+    $jobIndex = $script:workflow.IndexOf("lint-typecheck:")
+    $postNodeForensicsIndex = $script:workflow.IndexOf("Run pnpm post-setup-node forensics (lint-typecheck)", $jobIndex)
+    $restoreIndex = $script:workflow.IndexOf("Restore canonical lockfile (lint-typecheck)", $jobIndex)
+    $preInstallForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (lint-typecheck)", $jobIndex)
+    $installIndex = $script:workflow.IndexOf("name: Install dependencies", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must contain lint-typecheck job"
+    Assert-True -Condition ($postNodeForensicsIndex -gt $jobIndex) -Message "lint-typecheck must include post-setup-node forensics"
+    Assert-True -Condition ($restoreIndex -gt $postNodeForensicsIndex) -Message "lint-typecheck lockfile restore must run after post-setup-node forensics"
+    Assert-True -Condition ($preInstallForensicsIndex -gt $restoreIndex) -Message "lint-typecheck lockfile restore must run before pre-install forensics"
+    Assert-True -Condition ($installIndex -gt $preInstallForensicsIndex) -Message "lint-typecheck install must run after pre-install forensics"
+
+    Assert-Match -Value $script:workflow -Pattern "Restore canonical lockfile \(lint-typecheck\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "lint-typecheck lockfile restore must use deterministic git checkout from committed state"
+  }
+
+  It "restores canonical lockfile after setup-node and before pre-install forensics in test and build" {
+    $testJobIndex = $script:workflow.IndexOf("test:")
+    $testSetupNodeIndex = $script:workflow.IndexOf("- uses: actions/setup-node@v6", $testJobIndex)
+    $testRestoreIndex = $script:workflow.IndexOf("Restore canonical lockfile (test)", $testJobIndex)
+    $testForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (test)", $testJobIndex)
+    $testInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $testJobIndex)
+
+    Assert-True -Condition ($testJobIndex -ge 0) -Message "workflow must contain test job"
+    Assert-True -Condition ($testSetupNodeIndex -gt $testJobIndex) -Message "test job must include actions/setup-node"
+    Assert-True -Condition ($testRestoreIndex -gt $testSetupNodeIndex) -Message "test lockfile restore must run after setup-node"
+    Assert-True -Condition ($testForensicsIndex -gt $testRestoreIndex) -Message "test lockfile restore must run before pre-install forensics"
+    Assert-True -Condition ($testInstallIndex -gt $testForensicsIndex) -Message "test install must run after pre-install forensics"
+
+    $buildJobIndex = $script:workflow.IndexOf("build:")
+    $buildSetupNodeIndex = $script:workflow.IndexOf("- uses: actions/setup-node@v6", $buildJobIndex)
+    $buildRestoreIndex = $script:workflow.IndexOf("Restore canonical lockfile (build)", $buildJobIndex)
+    $buildForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (build)", $buildJobIndex)
+    $buildInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $buildJobIndex)
+
+    Assert-True -Condition ($buildJobIndex -ge 0) -Message "workflow must contain build job"
+    Assert-True -Condition ($buildSetupNodeIndex -gt $buildJobIndex) -Message "build job must include actions/setup-node"
+    Assert-True -Condition ($buildRestoreIndex -gt $buildSetupNodeIndex) -Message "build lockfile restore must run after setup-node"
+    Assert-True -Condition ($buildForensicsIndex -gt $buildRestoreIndex) -Message "build lockfile restore must run before pre-install forensics"
+    Assert-True -Condition ($buildInstallIndex -gt $buildForensicsIndex) -Message "build install must run after pre-install forensics"
+
+    Assert-Match -Value $script:workflow -Pattern "Restore canonical lockfile \(test\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "test lockfile restore must use deterministic git checkout from committed state"
+    Assert-Match -Value $script:workflow -Pattern "Restore canonical lockfile \(build\)[\s\S]*?run:\s*git checkout -- pnpm-lock\.yaml" -Message "build lockfile restore must use deterministic git checkout from committed state"
+  }
 }
