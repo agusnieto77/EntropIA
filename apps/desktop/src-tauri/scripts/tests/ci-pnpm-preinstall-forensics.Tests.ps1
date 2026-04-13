@@ -290,6 +290,14 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'lint-typecheck:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "lint-typecheck install must compare working lockfile to HEAD blob before npm exec pnpm install"
   }
 
+  It "enforces test/build install-step lockfile parity with lint-typecheck" {
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?\$pnpmBinDir\s*=\s*"\$\{\{\s*steps\.pnpm_setup\.outputs\.bin_dest\s*\}\}"[\s\S]*?\$pnpmExe\s*=\s*Join-Path\s+\$pnpmBinDir\s+"pnpm"' -Message "test install must keep the same pnpm_setup/bin_dest -> Join-Path pnpm shape as lint-typecheck"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?\$pnpmBinDir\s*=\s*"\$\{\{\s*steps\.pnpm_setup\.outputs\.bin_dest\s*\}\}"[\s\S]*?\$pnpmExe\s*=\s*Join-Path\s+\$pnpmBinDir\s+"pnpm"' -Message "build install must keep the same pnpm_setup/bin_dest -> Join-Path pnpm shape as lint-typecheck"
+
+    Assert-Match -Value $script:workflow -Pattern 'test:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=[\s\S]*?lockfile_diag\.working_blob=[\s\S]*?lockfile_diag\.head_blob=[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "test install must restore lockfile in-step and emit full same-step lockfile diagnostics before npm exec pnpm install"
+    Assert-Match -Value $script:workflow -Pattern 'build:[\s\S]*?name:\s*Install dependencies[\s\S]*?git checkout -- pnpm-lock\.yaml[\s\S]*?lockfile_diag\.sha256=[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=[\s\S]*?lockfile_diag\.working_blob=[\s\S]*?lockfile_diag\.head_blob=[\s\S]*?lockfile_diag\.matches_head_blob=[\s\S]*?npm\s+exec\s+--package=pnpm@9\.15\.4\s+--\s+pnpm\s+install\s+--frozen-lockfile' -Message "build install must restore lockfile in-step and emit full same-step lockfile diagnostics before npm exec pnpm install"
+  }
+
   It "runs generic lockfile YAML parse diagnostic before install in targeted jobs" {
     $lintJobIndex = $script:workflow.IndexOf("lint-typecheck:")
     $lintYamlParseIndex = $script:workflow.IndexOf("Run generic lockfile YAML parse (lint-typecheck)", $lintJobIndex)
