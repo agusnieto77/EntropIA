@@ -73,7 +73,7 @@ impl OcrQueue {
     /// 2. Drains jobs serially from the receiver.
     /// 3. Emits `ocr:progress`, `ocr:complete`, or `ocr:error` events per job.
     pub fn start_worker(mut receiver: mpsc::Receiver<OcrJob>, app_handle: AppHandle) {
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             // Load models once — if this fails, every job will get an error event.
             let engine_result = {
                 let handle = app_handle.clone();

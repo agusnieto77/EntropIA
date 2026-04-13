@@ -83,7 +83,7 @@ impl NlpQueue {
         mut receiver: mpsc::Receiver<NlpJob>,
         app_handle: AppHandle,
     ) {
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             // Open a dedicated SQLite connection for the NLP worker.
             let conn = match rusqlite::Connection::open(&db_path) {
                 Ok(c) => {
