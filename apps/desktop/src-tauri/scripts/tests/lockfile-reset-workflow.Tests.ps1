@@ -61,17 +61,31 @@ Describe "lockfile-reset diagnostic workflow contract" {
     Assert-Match -Value $workflow -Pattern "lockfile-reset-probe:[\s\S]*?name:\s*Setup Node[\s\S]*?uses:\s*actions/setup-node@v6[\s\S]*?node-version:\s*20" -Message "workflow must pin Node 20"
   }
 
-  It "emits required diagnostics and frozen-lockfile install command" {
+  It "defines checkpoint diagnostics after checkout, pnpm setup and node setup" {
     $workflow = Get-Content -Path $script:workflowPath -Raw
 
-    Assert-Match -Value $workflow -Pattern "name:\s*Lockfile diagnostics" -Message "workflow must include minimal inline lockfile diagnostics step"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?node\s+-v" -Message "diagnostics must log node version"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?pnpm\s+-v" -Message "diagnostics must log pnpm version"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?lockfile_diag\.sha256=" -Message "diagnostics must log lockfile sha256"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?lockfile_diag\.first_line_is_yaml_doc=" -Message "diagnostics must log first-line YAML doc marker check"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?lockfile_diag\.working_blob=" -Message "diagnostics must log working tree lockfile blob"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?lockfile_diag\.head_blob=" -Message "diagnostics must log HEAD lockfile blob"
-    Assert-Match -Value $workflow -Pattern "Lockfile diagnostics[\s\S]*?lockfile_diag\.matches_head_blob=" -Message "diagnostics must log working-vs-HEAD lockfile blob comparison"
+    Assert-Match -Value $workflow -Pattern "name:\s*Checkpoint after Checkout" -Message "workflow must include checkpoint diagnostics step right after checkout"
+    Assert-Match -Value $workflow -Pattern "name:\s*Checkpoint after Setup pnpm" -Message "workflow must include checkpoint diagnostics step right after pnpm setup"
+    Assert-Match -Value $workflow -Pattern "name:\s*Checkpoint after Setup Node" -Message "workflow must include checkpoint diagnostics step right after Node setup"
+
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Checkout[\s\S]*?checkpoint\.after_checkout\.sha256=" -Message "checkout checkpoint must log lockfile sha256"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Checkout[\s\S]*?checkpoint\.after_checkout\.first_line_is_yaml_doc=" -Message "checkout checkpoint must log first-line YAML doc marker check"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Checkout[\s\S]*?checkpoint\.after_checkout\.working_blob=" -Message "checkout checkpoint must log working tree lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Checkout[\s\S]*?checkpoint\.after_checkout\.head_blob=" -Message "checkout checkpoint must log HEAD lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Checkout[\s\S]*?checkpoint\.after_checkout\.matches_head_blob=" -Message "checkout checkpoint must log working-vs-HEAD lockfile blob comparison"
+
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup pnpm[\s\S]*?checkpoint\.after_setup_pnpm\.sha256=" -Message "pnpm checkpoint must log lockfile sha256"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup pnpm[\s\S]*?checkpoint\.after_setup_pnpm\.first_line_is_yaml_doc=" -Message "pnpm checkpoint must log first-line YAML doc marker check"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup pnpm[\s\S]*?checkpoint\.after_setup_pnpm\.working_blob=" -Message "pnpm checkpoint must log working tree lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup pnpm[\s\S]*?checkpoint\.after_setup_pnpm\.head_blob=" -Message "pnpm checkpoint must log HEAD lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup pnpm[\s\S]*?checkpoint\.after_setup_pnpm\.matches_head_blob=" -Message "pnpm checkpoint must log working-vs-HEAD lockfile blob comparison"
+
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.sha256=" -Message "node checkpoint must log lockfile sha256"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.first_line_is_yaml_doc=" -Message "node checkpoint must log first-line YAML doc marker check"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.working_blob=" -Message "node checkpoint must log working tree lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.head_blob=" -Message "node checkpoint must log HEAD lockfile blob"
+    Assert-Match -Value $workflow -Pattern "Checkpoint after Setup Node[\s\S]*?checkpoint\.after_setup_node\.matches_head_blob=" -Message "node checkpoint must log working-vs-HEAD lockfile blob comparison"
+
     Assert-Match -Value $workflow -Pattern "name:\s*Install dependencies[\s\S]*?pnpm\s+install\s+--frozen-lockfile" -Message "workflow must probe pnpm install --frozen-lockfile"
   }
 }
