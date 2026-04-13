@@ -75,10 +75,36 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      - name: Run pnpm post-pnpm-setup forensics (rust-quality-report)
+        shell: powershell
+        run: |
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
+          ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "rust-quality-report-post-pnpm-setup" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
+
+      - name: Upload pnpm post-pnpm-setup forensics (rust-quality-report)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-post-pnpm-setup-forensics-rust-quality-report-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/rust-quality-report-post-pnpm-setup/
+
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Run pnpm post-setup-node forensics (rust-quality-report)
+        shell: powershell
+        run: |
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
+          ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "rust-quality-report-post-setup-node" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
+
+      - name: Upload pnpm post-setup-node forensics (rust-quality-report)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-post-setup-node-forensics-rust-quality-report-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/rust-quality-report-post-setup-node/
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -194,10 +220,36 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      - name: Run pnpm post-pnpm-setup forensics (lint-typecheck)
+        shell: pwsh
+        run: |
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
+          ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "lint-typecheck-post-pnpm-setup" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
+
+      - name: Upload pnpm post-pnpm-setup forensics (lint-typecheck)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-post-pnpm-setup-forensics-lint-typecheck-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/lint-typecheck-post-pnpm-setup/
+
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Run pnpm post-setup-node forensics (lint-typecheck)
+        shell: pwsh
+        run: |
+          $requiredKeys = @("node_version", "pnpm_version", "pnpm_exec_path", "store_dir", "virtual_store_dir", "sha256", "size_bytes", "line_count", "first_bytes_hex", "has_bom", "has_nul", "has_yaml_multidoc_separator", "git_blob_sha256", "git_blob_first_bytes_hex", "lockfile_comparison_status")
+          ./apps/desktop/src-tauri/scripts/ci/pnpm-preinstall-forensics.ps1 -JobName "lint-typecheck-post-setup-node" -LockfilePath "pnpm-lock.yaml" -RequiredKeys $requiredKeys
+
+      - name: Upload pnpm post-setup-node forensics (lint-typecheck)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pnpm-post-setup-node-forensics-lint-typecheck-${{ github.run_id }}
+          path: .ci-evidence/pnpm-preinstall/lint-typecheck-post-setup-node/
 
       - name: Run pnpm pre-install forensics (lint-typecheck)
         shell: pwsh

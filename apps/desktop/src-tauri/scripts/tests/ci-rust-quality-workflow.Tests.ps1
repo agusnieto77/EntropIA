@@ -93,6 +93,50 @@ Describe "rust-quality-report workflow" {
     Assert-Match -Value $content -Pattern "Upload pnpm post-checkout forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report-post-checkout/" -Message "rust post-checkout upload must publish distinct post-checkout evidence path"
   }
 
+  It "runs rust post-pnpm-setup forensics between pnpm and setup-node" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $pnpmSetupIndex = $content.IndexOf("- uses: pnpm/action-setup@v6", $jobIndex)
+    $postPnpmForensicsIndex = $content.IndexOf("Run pnpm post-pnpm-setup forensics (rust-quality-report)", $jobIndex)
+    $nodeSetupIndex = $content.IndexOf("- uses: actions/setup-node@v6", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($pnpmSetupIndex -gt $jobIndex) -Message "rust-quality-report must include pnpm/action-setup"
+    Assert-True -Condition ($postPnpmForensicsIndex -gt $pnpmSetupIndex) -Message "post-pnpm-setup forensic step must run after pnpm/action-setup"
+    Assert-True -Condition ($nodeSetupIndex -gt $postPnpmForensicsIndex) -Message "post-pnpm-setup forensic step must run before actions/setup-node"
+  }
+
+  It "uploads rust post-pnpm-setup forensics to a distinct evidence path" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern "Upload pnpm post-pnpm-setup forensics \(rust-quality-report\)" -Message "workflow must include rust post-pnpm-setup forensic upload"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-pnpm-setup forensics \(rust-quality-report\)[\s\S]*?if:\s*always\(\)" -Message "rust post-pnpm-setup upload must run with if: always()"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-pnpm-setup forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report-post-pnpm-setup/" -Message "rust post-pnpm-setup upload must publish distinct evidence path"
+  }
+
+  It "runs rust post-setup-node forensics between setup-node and pre-install" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    $jobIndex = $content.IndexOf("rust-quality-report:")
+    $nodeSetupIndex = $content.IndexOf("- uses: actions/setup-node@v6", $jobIndex)
+    $postNodeForensicsIndex = $content.IndexOf("Run pnpm post-setup-node forensics (rust-quality-report)", $jobIndex)
+    $preInstallForensicsIndex = $content.IndexOf("Run pnpm pre-install forensics (rust-quality-report)", $jobIndex)
+
+    Assert-True -Condition ($jobIndex -ge 0) -Message "workflow must include rust-quality-report job"
+    Assert-True -Condition ($nodeSetupIndex -gt $jobIndex) -Message "rust-quality-report must include actions/setup-node"
+    Assert-True -Condition ($postNodeForensicsIndex -gt $nodeSetupIndex) -Message "post-setup-node forensic step must run after actions/setup-node"
+    Assert-True -Condition ($preInstallForensicsIndex -gt $postNodeForensicsIndex) -Message "post-setup-node forensic step must run before pre-install forensics"
+  }
+
+  It "uploads rust post-setup-node forensics to a distinct evidence path" {
+    $content = Get-Content -Path $script:workflowPath -Raw
+
+    Assert-Match -Value $content -Pattern "Upload pnpm post-setup-node forensics \(rust-quality-report\)" -Message "workflow must include rust post-setup-node forensic upload"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-setup-node forensics \(rust-quality-report\)[\s\S]*?if:\s*always\(\)" -Message "rust post-setup-node upload must run with if: always()"
+    Assert-Match -Value $content -Pattern "Upload pnpm post-setup-node forensics \(rust-quality-report\)[\s\S]*?\.ci-evidence/pnpm-preinstall/rust-quality-report-post-setup-node/" -Message "rust post-setup-node upload must publish distinct evidence path"
+  }
+
   It "uploads rust-quality-report pre-install forensics artifact with always policy" {
     $content = Get-Content -Path $script:workflowPath -Raw
 
