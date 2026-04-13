@@ -318,4 +318,89 @@ Describe "ci pnpm pre-install forensics workflow contracts" {
     Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse=error' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse=error on parse failure"
     Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(rust-quality-report\)[\s\S]*?lockfile_yaml_parse_error=\$\(' -Message "rust-quality-report YAML parse step must emit lockfile_yaml_parse_error with the exception message"
   }
+
+  It "aligns test and build pre-install sequence with post-checkout/post-pnpm/post-node forensics, classification, and YAML parse" {
+    $testJobIndex = $script:workflow.IndexOf("test:")
+    $testCheckoutIndex = $script:workflow.IndexOf("- uses: actions/checkout@v6", $testJobIndex)
+    $testPostCheckoutForensicsIndex = $script:workflow.IndexOf("Run pnpm post-checkout forensics (test)", $testJobIndex)
+    $testPostCheckoutUploadIndex = $script:workflow.IndexOf("Upload pnpm post-checkout forensics (test)", $testJobIndex)
+    $testPnpmSetupIndex = $script:workflow.IndexOf("- uses: pnpm/action-setup@v6", $testJobIndex)
+    $testPostPnpmForensicsIndex = $script:workflow.IndexOf("Run pnpm post-pnpm-setup forensics (test)", $testJobIndex)
+    $testPostPnpmUploadIndex = $script:workflow.IndexOf("Upload pnpm post-pnpm-setup forensics (test)", $testJobIndex)
+    $testSetupNodeIndex = $script:workflow.IndexOf("- uses: actions/setup-node@v6", $testJobIndex)
+    $testPostNodeForensicsIndex = $script:workflow.IndexOf("Run pnpm post-setup-node forensics (test)", $testJobIndex)
+    $testPostNodeUploadIndex = $script:workflow.IndexOf("Upload pnpm post-setup-node forensics (test)", $testJobIndex)
+    $testRestoreIndex = $script:workflow.IndexOf("Restore canonical lockfile (test)", $testJobIndex)
+    $testPreInstallForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (test)", $testJobIndex)
+    $testClassificationIndex = $script:workflow.IndexOf("Run pnpm pre-install classification (test)", $testJobIndex)
+    $testYamlParseIndex = $script:workflow.IndexOf("Run generic lockfile YAML parse (test)", $testJobIndex)
+    $testInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $testJobIndex)
+
+    Assert-True -Condition ($testJobIndex -ge 0) -Message "workflow must contain test job"
+    Assert-True -Condition ($testCheckoutIndex -gt $testJobIndex) -Message "test job must include checkout"
+    Assert-True -Condition ($testPostCheckoutForensicsIndex -gt $testCheckoutIndex) -Message "test post-checkout forensics must run after checkout"
+    Assert-True -Condition ($testPostCheckoutUploadIndex -gt $testPostCheckoutForensicsIndex) -Message "test post-checkout upload must run after post-checkout forensics"
+    Assert-True -Condition ($testPnpmSetupIndex -gt $testPostCheckoutUploadIndex) -Message "test pnpm setup must run after post-checkout forensics and upload"
+    Assert-True -Condition ($testPostPnpmForensicsIndex -gt $testPnpmSetupIndex) -Message "test post-pnpm-setup forensics must run after pnpm setup"
+    Assert-True -Condition ($testPostPnpmUploadIndex -gt $testPostPnpmForensicsIndex) -Message "test post-pnpm upload must run after post-pnpm forensics"
+    Assert-True -Condition ($testSetupNodeIndex -gt $testPostPnpmUploadIndex) -Message "test setup-node must run after post-pnpm forensics and upload"
+    Assert-True -Condition ($testPostNodeForensicsIndex -gt $testSetupNodeIndex) -Message "test post-setup-node forensics must run after setup-node"
+    Assert-True -Condition ($testPostNodeUploadIndex -gt $testPostNodeForensicsIndex) -Message "test post-setup-node upload must run after post-setup-node forensics"
+    Assert-True -Condition ($testRestoreIndex -gt $testPostNodeUploadIndex) -Message "test lockfile restore must run after post-setup-node forensics/upload"
+    Assert-True -Condition ($testPreInstallForensicsIndex -gt $testRestoreIndex) -Message "test pre-install forensics must run after lockfile restore"
+    Assert-True -Condition ($testClassificationIndex -gt $testPreInstallForensicsIndex) -Message "test classification must run after pre-install forensics"
+    Assert-True -Condition ($testYamlParseIndex -gt $testClassificationIndex) -Message "test generic YAML parse must run after classification"
+    Assert-True -Condition ($testInstallIndex -gt $testYamlParseIndex) -Message "test install must run after YAML parse"
+
+    $buildJobIndex = $script:workflow.IndexOf("build:")
+    $buildCheckoutIndex = $script:workflow.IndexOf("- uses: actions/checkout@v6", $buildJobIndex)
+    $buildPostCheckoutForensicsIndex = $script:workflow.IndexOf("Run pnpm post-checkout forensics (build)", $buildJobIndex)
+    $buildPostCheckoutUploadIndex = $script:workflow.IndexOf("Upload pnpm post-checkout forensics (build)", $buildJobIndex)
+    $buildPnpmSetupIndex = $script:workflow.IndexOf("- uses: pnpm/action-setup@v6", $buildJobIndex)
+    $buildPostPnpmForensicsIndex = $script:workflow.IndexOf("Run pnpm post-pnpm-setup forensics (build)", $buildJobIndex)
+    $buildPostPnpmUploadIndex = $script:workflow.IndexOf("Upload pnpm post-pnpm-setup forensics (build)", $buildJobIndex)
+    $buildSetupNodeIndex = $script:workflow.IndexOf("- uses: actions/setup-node@v6", $buildJobIndex)
+    $buildPostNodeForensicsIndex = $script:workflow.IndexOf("Run pnpm post-setup-node forensics (build)", $buildJobIndex)
+    $buildPostNodeUploadIndex = $script:workflow.IndexOf("Upload pnpm post-setup-node forensics (build)", $buildJobIndex)
+    $buildRestoreIndex = $script:workflow.IndexOf("Restore canonical lockfile (build)", $buildJobIndex)
+    $buildPreInstallForensicsIndex = $script:workflow.IndexOf("Run pnpm pre-install forensics (build)", $buildJobIndex)
+    $buildClassificationIndex = $script:workflow.IndexOf("Run pnpm pre-install classification (build)", $buildJobIndex)
+    $buildYamlParseIndex = $script:workflow.IndexOf("Run generic lockfile YAML parse (build)", $buildJobIndex)
+    $buildInstallIndex = $script:workflow.IndexOf("name: Install dependencies", $buildJobIndex)
+
+    Assert-True -Condition ($buildJobIndex -ge 0) -Message "workflow must contain build job"
+    Assert-True -Condition ($buildCheckoutIndex -gt $buildJobIndex) -Message "build job must include checkout"
+    Assert-True -Condition ($buildPostCheckoutForensicsIndex -gt $buildCheckoutIndex) -Message "build post-checkout forensics must run after checkout"
+    Assert-True -Condition ($buildPostCheckoutUploadIndex -gt $buildPostCheckoutForensicsIndex) -Message "build post-checkout upload must run after post-checkout forensics"
+    Assert-True -Condition ($buildPnpmSetupIndex -gt $buildPostCheckoutUploadIndex) -Message "build pnpm setup must run after post-checkout forensics and upload"
+    Assert-True -Condition ($buildPostPnpmForensicsIndex -gt $buildPnpmSetupIndex) -Message "build post-pnpm-setup forensics must run after pnpm setup"
+    Assert-True -Condition ($buildPostPnpmUploadIndex -gt $buildPostPnpmForensicsIndex) -Message "build post-pnpm upload must run after post-pnpm forensics"
+    Assert-True -Condition ($buildSetupNodeIndex -gt $buildPostPnpmUploadIndex) -Message "build setup-node must run after post-pnpm forensics and upload"
+    Assert-True -Condition ($buildPostNodeForensicsIndex -gt $buildSetupNodeIndex) -Message "build post-setup-node forensics must run after setup-node"
+    Assert-True -Condition ($buildPostNodeUploadIndex -gt $buildPostNodeForensicsIndex) -Message "build post-setup-node upload must run after post-setup-node forensics"
+    Assert-True -Condition ($buildRestoreIndex -gt $buildPostNodeUploadIndex) -Message "build lockfile restore must run after post-setup-node forensics/upload"
+    Assert-True -Condition ($buildPreInstallForensicsIndex -gt $buildRestoreIndex) -Message "build pre-install forensics must run after lockfile restore"
+    Assert-True -Condition ($buildClassificationIndex -gt $buildPreInstallForensicsIndex) -Message "build classification must run after pre-install forensics"
+    Assert-True -Condition ($buildYamlParseIndex -gt $buildClassificationIndex) -Message "build generic YAML parse must run after classification"
+    Assert-True -Condition ($buildInstallIndex -gt $buildYamlParseIndex) -Message "build install must run after YAML parse"
+
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(test\)[\s\S]*?if:\s*always\(\)" -Message "test post-checkout upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-pnpm-setup forensics \(test\)[\s\S]*?if:\s*always\(\)" -Message "test post-pnpm upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-setup-node forensics \(test\)[\s\S]*?if:\s*always\(\)" -Message "test post-setup-node upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(build\)[\s\S]*?if:\s*always\(\)" -Message "build post-checkout upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-pnpm-setup forensics \(build\)[\s\S]*?if:\s*always\(\)" -Message "build post-pnpm upload must run with if: always()"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-setup-node forensics \(build\)[\s\S]*?if:\s*always\(\)" -Message "build post-setup-node upload must run with if: always()"
+
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(test\)[\s\S]*?\.ci-evidence/pnpm-preinstall/test-post-checkout/" -Message "test post-checkout upload must publish distinct post-checkout evidence path"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-pnpm-setup forensics \(test\)[\s\S]*?\.ci-evidence/pnpm-preinstall/test-post-pnpm-setup/" -Message "test post-pnpm upload must publish distinct post-pnpm evidence path"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-setup-node forensics \(test\)[\s\S]*?\.ci-evidence/pnpm-preinstall/test-post-setup-node/" -Message "test post-setup-node upload must publish distinct post-setup-node evidence path"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-checkout forensics \(build\)[\s\S]*?\.ci-evidence/pnpm-preinstall/build-post-checkout/" -Message "build post-checkout upload must publish distinct post-checkout evidence path"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-pnpm-setup forensics \(build\)[\s\S]*?\.ci-evidence/pnpm-preinstall/build-post-pnpm-setup/" -Message "build post-pnpm upload must publish distinct post-pnpm evidence path"
+    Assert-Match -Value $script:workflow -Pattern "Upload pnpm post-setup-node forensics \(build\)[\s\S]*?\.ci-evidence/pnpm-preinstall/build-post-setup-node/" -Message "build post-setup-node upload must publish distinct post-setup-node evidence path"
+
+    Assert-Match -Value $script:workflow -Pattern 'Run pnpm pre-install classification \(test\)[\s\S]*?\.ci-evidence/pnpm-preinstall/test/preinstall-evidence\.json' -Message "test classification must consume test preinstall evidence"
+    Assert-Match -Value $script:workflow -Pattern 'Run pnpm pre-install classification \(build\)[\s\S]*?\.ci-evidence/pnpm-preinstall/build/preinstall-evidence\.json' -Message "build classification must consume build preinstall evidence"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(test\)[\s\S]*?\$parserCommand\s*=\s*''npm exec --yes --package=js-yaml@4\.1\.0 -- js-yaml pnpm-lock\.yaml''' -Message "test YAML parse step must define js-yaml parser command"
+    Assert-Match -Value $script:workflow -Pattern 'Run generic lockfile YAML parse \(build\)[\s\S]*?\$parserCommand\s*=\s*''npm exec --yes --package=js-yaml@4\.1\.0 -- js-yaml pnpm-lock\.yaml''' -Message "build YAML parse step must define js-yaml parser command"
+  }
 }
