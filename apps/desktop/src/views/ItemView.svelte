@@ -48,14 +48,6 @@
       return extraction?.textContent ?? ''
     },
   })
-      void assetId // suppress unused warning (assetId belongs to an asset of itemId)
-    },
-    fetchText: async (assetId: string) => {
-      const store = getStore()
-      const extraction = await store.extractions.findByAsset(assetId)
-      return extraction?.textContent ?? ''
-    },
-  })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
   let ocrTick = $state(0)
 
