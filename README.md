@@ -80,15 +80,6 @@ pnpm --filter @entropia/desktop tauri build
 - 🔄 Capabilities engine.
 - ⏳ Sync multi-dispositivo (Fase 4 próximo), KG/RAG (Fase 5).
 
-## 🤝 Contribución Académica
-
-Ideal para colaboradores DH/historia:
-
-1. [Issue](https://github.com/agusnieto77/EntropIA/issues/new) con contexto investigación.
-2. Branch `feat/domain-ner-historia-argentina`.
-3. Commits convencionales + tests.
-4. PRs bienvenidas: NER custom, exports Zotero, etc.
-
 ---
 
 **Powered by local compute. Fuentes sensibles → conocimiento abierto. Para humanidades que escalan.**
