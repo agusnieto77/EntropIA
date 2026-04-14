@@ -113,10 +113,10 @@ impl OcrQueue {
 
                 match result {
                     Ok((method, text_content)) => {
-                        let text_len = text_content.clone();
                         let aid = asset_id.clone();
                         let method_clone = method.clone();
                         let db_path_clone = db_path.clone();
+                        let text_for_save = text_content.clone();
 
                         // Persist extraction to SQLite — open a fresh connection inside
                         // spawn_blocking because rusqlite::Connection is not Send.
@@ -125,7 +125,7 @@ impl OcrQueue {
                                 .map_err(|e| format!("Failed to open save connection: {e}"))?;
                             conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                                 .map_err(|e| format!("Failed to configure pragmas: {e}"))?;
-                            save_extraction(&conn, &aid, &text_content, &method_clone)
+                            save_extraction(&conn, &aid, &text_for_save, &method_clone)
                         })
                         .await
                         .map_err(|e| format!("Save task panicked: {e}"))
@@ -141,7 +141,18 @@ impl OcrQueue {
                             OcrCompletePayload {
                                 asset_id,
                                 method,
-                                text_length: text_len.len(),
+                                text_length: text_content.len(),
+                                text_content,
+                            },
+                        );
+                    }
+
+                        let _ = app_handle.emit(
+                            "ocr:complete",
+                            OcrCompletePayload {
+                                asset_id,
+                                method,
+                                text_length: text_content.len(),
                                 text_content,
                             },
                         );
