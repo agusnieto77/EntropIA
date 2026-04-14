@@ -53,6 +53,8 @@ git clone https://github.com/agusnieto77/EntropIA.git
 cd EntropIA
 pnpm install  # Fixea store mismatch si hay warnings
 
+$env:PATH += ";$env:USERPROFILE\.cargo\bin"
+
 # Dev (hot reload)
 pnpm run tauri dev
 
