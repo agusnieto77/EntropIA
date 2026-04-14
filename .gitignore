@@ -4,6 +4,9 @@ node_modules/
 # Errores
 .errores/
 
+# Flujo
+FLUJO.md
+
 # Build outputs
 dist/
 build/

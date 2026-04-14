@@ -1,66 +1,108 @@
-# EntropIA 🌌
+# EntropIA 🧠
 
-**Domá tu caos digital con IA local: organiza fotos, docs, notas y media en colecciones inteligentes.**
+## Herramienta Académica para Análisis Computacional en Humanidades Digitales
 
-EntropIA es una **app de escritorio** (Tauri: Rust + Svelte) para gestionar tu **entropía personal**:
+**EntropIA** es una aplicación de escritorio open-source diseñada para investigadores en **ciencias sociales y humanidades**, con énfasis en **historia digital** y prácticas de archivo computacional. Orientada al trabajo con **fuentes primarias digitalizadas** (imágenes, PDFs escaneados, documentos fragmentarios), EntropIA media la **construcción de corpus, interpretación automatizada y producción de conocimiento estructurado**.
 
-- **NLP Semántico**: Búsquedas naturales, extracción de triples (sujeto-predicado-objeto).
-- **OCR Inteligente**: Texto de imágenes/PDFs.
-- **Colecciones Dinámicas**: Assets/Items agrupados por reglas/capabilidades.
-- **100% Offline**: SQLite con FTS5, sin nubes.
-- **Extensible**: Capabilities en JSON para workflows custom.
+En el contexto de la investigación cualitativa a escala, donde las fuentes son inherentemente incompletas o degradadas, EntropIA genera **capas interpretativas** locales y offline:
 
-## ✨ Features
+- **Del caos al corpus estructurado**: Importación, organización y metadata enriquecida.
+- **Mediación computacional de la lectura**: OCR + NER para acceso textual.
+- **Análisis semántico exploratorio**: Triples S-P-O, embeddings, búsqueda híbrida.
+- **Hacia el conocimiento accionable**: Pipeline hacia grafos, RAG y exports DH.
 
-- 🔍 **Búsqueda Avanzada**: FTS + semántica para queries como \"fotos de la playa con amigos\".
-- 📸 **OCR Automático**: Extrae texto y metadata de visuals.
-- 🗂️ **Repositorios Tipados**: Assets, Collections, Items con tests.
-- ⚡ **Rápido & Ligero**: Rust backend, Svelte UI reactiva.
-- 🔧 **Capabilities**: Define acciones dinámicas (ej: taggear, mover, procesar).
+**Posicionamiento único**:
 
-## 🛠️ Tech Stack
+- **Offline-first & Privado**: SQLite local, zero telemetry — ideal para archivos sensibles.
+- **Escalable a corpus grandes**: Job queues, FTS5 + vectores.
+- **Integrado con ecosistema DH**: Exports compatibles con Tropy, Recogito, Gephi, Voyant Tools.
+- **Extensible por investigadores**: Capabilities JSON para workflows custom (ej: NER domain-specific).
 
-| Capa         | Tech                                    |
-| ------------ | --------------------------------------- |
-| **Frontend** | Svelte 5 + Tauri                        |
-| **Backend**  | Rust + SQLite (FTS5 NLP)                |
-| **Estado**   | Custom Store (TS repos + tests)         |
-| **OCR/NLP**  | Rust crates + custom parsers            |
-| **UI**       | Svelte components (Views, TopBar, etc.) |
+## Contexto de Investigación & Problema Resuelto
 
-## 🚀 Quick Start
+Las humanidades digitales (DH) transforman la investigación mediante cómputo, pero herramientas existentes se limitan:
+
+- **Gestión** (Zotero/Omeka): Metadata manual, sin IA raw sources.
+- **OCR/Transcripción** (Transkribus): Cloud-dependiente, costoso para no-anglés.
+- **Análisis** (Voyant/Mallet): Requiere pre-procesado externo.
+
+**EntropIA cierra el loop**: De fuente raw → corpus anotado → insights semánticos, **todo local**. Facilita:
+
+- **Construcción de corpus reproducibles**.
+- **Análisis hermenéutico asistido** (entidades/relaciones automáticas).
+- **Colaboración edge** (sync roadmap).
+
+Ver [FLUJO.md](FLUJO.md) para roadmap alineado con prácticas DH.
+
+## ✨ Capacidades Clave (framed for research)
+
+| Pipeline            | Funcionalidad                            | Output para Investigación                                |
+| ------------------- | ---------------------------------------- | -------------------------------------------------------- |
+| **OCR**             | Texto de imágenes/PDFs degradados        | Transcripciones base para corpus                         |
+| **NER**             | Entidades (personas/lugares/fechas/orgs) | Índice onomástico automático                             |
+| **Semántica**       | Triples S-P-O rule-based                 | Base para knowledge graphs                               |
+| **Embeddings/FTS5** | Búsqueda híbrida semántica               | Queries contextuales (\"conflictos 1930s Buenos Aires\") |
+| **Jobs Queue**      | Procesamiento batch con progreso         | Escalabilidad a 1000s docs                               |
+| **Viewers**         | Entidades/triples por doc                | Exploración cualitativa asistida                         |
+
+## 🛠️ Stack Técnico
+
+| Capa         | Tecnología                   | Razón Académica                              |
+| ------------ | ---------------------------- | -------------------------------------------- |
+| **Desktop**  | Tauri 2 (Rust/WebView)       | Nativo FS, ligero para laptops investigación |
+| **Frontend** | Svelte 5                     | Reactivo, bajo bundle para corpus grandes    |
+| **DB**       | SQLite + Drizzle             | Portable, FTS5/vec offline                   |
+| **AI Local** | Rust crates (OCRS/fastembed) | Sin APIs, reproducible                       |
+| **Estado**   | TS Repos (Drizzle) + Tests   | Typed safety para datos sensibles            |
+
+**Tests**: 26+ TS (67/67 green UI/repos), Rust coverage sólido.
+
+## 🚀 Instalación & Uso Rápido
 
 ```bash
-# Clona e instala
 git clone https://github.com/agusnieto77/EntropIA.git
 cd EntropIA
-npm install
+pnpm install  # Fixea store mismatch si hay warnings
 
-# Dev mode
-npm run tauri dev
+# Dev (hot reload)
+pnpm run tauri dev
 
-# Build
-npm run tauri build
+# Build release
+pnpm run tauri build
 ```
 
-## 📊 Status
+**Primeros pasos investigación**:
 
-**Alpha v0.1** – Fase 3/5 ([FLUJO.md](FLUJO.md) para roadmap detallado).
+1. Importa corpus (drag/drop carpetas docs).
+2. Ejecuta OCR/NER batch.
+3. Explora triples/entidades en views.
+4. Query semántica → refine corpus.
 
-- ✅ Backend repos + tests
-- ✅ UI Views + Navigation
-- ✅ NLP FTS + OCR basics
-- 🔄 Capabilities engine
-- ⏳ Import masivo + Sync
+## 📊 Estado del Proyecto
 
-## 🤝 Contribuye
+**Alpha estable (Fases 0-3 completas)** — MVP funcional para corpus ~1000 docs.
 
-1. Forkea y crea issue ([template](https://github.com/agusnieto77/EntropIA/issues/new)).
-2. Branch: `feat/tu-feature`
-3. Commit convencional, PR con tests.
+- ✅ Backend repos (assets/collections/items/jobs/entities/etc.) + tests.
+- ✅ UI Views (Collections/Item/Entity), Navigation/TopBar.
+- ✅ Pipeline completo OCR/NLP/FTS.
+- 🔄 Capabilities engine.
+- ⏳ Sync multi-dispositivo (Fase 4 próximo), KG/RAG (Fase 5).
 
-**¡Gracias por chequear!** Star ⭐ si te copa el vibe. Questions? @agusnieto77.
+Detalle en [FLUJO.md](FLUJO.md).
+
+## 🤝 Contribución Académica
+
+Ideal para colaboradores DH/historia:
+
+1. [Issue](https://github.com/agusnieto77/EntropIA/issues/new) con contexto investigación.
+2. Branch `feat/domain-ner-historia-argentina`.
+3. Commits convencionales + tests.
+4. PRs bienvenidas: NER custom, exports Zotero, etc.
+
+**Cita**: Nieto, A. (2026). EntropIA: Local AI Pipeline for Digital History Sources. GitHub: agusnieto77/EntropIA.
 
 ---
 
-_Powered by local AI, zero telemetry. Tu data, tu máquina._
+**Powered by local compute. Fuentes sensibles → conocimiento abierto. Para humanidades que escalan.**
+
+⭐ Si usás en papers/projects, citá!
