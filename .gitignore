@@ -58,3 +58,6 @@ auditorias/
 
 # Misc
 *.tsbuildinfo
+
+# OCR models (downloaded by download-ocr-models.ps1)
+*.rten

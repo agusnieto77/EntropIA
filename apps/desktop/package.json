@@ -8,7 +8,8 @@
     "tauri": "tauri",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "download-ocr-models": "powershell -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/download-ocr-models.ps1"
   },
   "dependencies": {
     "@entropia/store": "workspace:*",
