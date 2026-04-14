@@ -8,6 +8,11 @@
     "core:path:default",
     "core:event:default",
     "core:window:default",
+    "core:asset:default",
+    {
+      "identifier": "core:asset:allow-asset",
+      "allow": [{ "path": "$APPDATA/**/*" }]
+    },
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "$APPDATA/**/*" }]
