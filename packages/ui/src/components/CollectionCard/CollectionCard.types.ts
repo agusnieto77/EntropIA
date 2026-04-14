@@ -5,4 +5,6 @@ export interface CollectionCardProps {
   itemCount: number
   updatedAt: number // unix ms timestamp
   onclick?: () => void
+  onedit?: () => void
+  ondelete?: () => void
 }
