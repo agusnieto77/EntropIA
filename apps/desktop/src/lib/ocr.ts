@@ -31,6 +31,7 @@ export interface AssetOcrState {
   error?: string
   textLength?: number
   method?: string
+  textContent?: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,9 +70,11 @@ export class OcrStore {
   private states = new Map<string, AssetOcrState>()
   private cleanupFns: Array<() => void> = []
   private onComplete?: (assetId: string) => void
+  private fetchText?: (assetId: string) => Promise<string>
 
-  constructor(options?: OcrStoreOptions) {
+  constructor(options?: OcrStoreOptions & { fetchText?: (assetId: string) => Promise<string> }) {
     this.onComplete = options?.onComplete
+    this.fetchText = options?.fetchText
   }
 
   /** Returns the current OCR state for an asset, or idle if unknown. */
@@ -91,13 +94,22 @@ export class OcrStore {
       this._updateState(p.asset_id, { status: 'running', progress: p.pct })
     })
 
-    const unlistenComplete = await listen('ocr:complete', (e) => {
+    const unlistenComplete = await listen('ocr:complete', async (e) => {
       const p = e.payload as CompletePayload
+      let textContent: string | undefined
+      if (this.fetchText) {
+        try {
+          textContent = await this.fetchText(p.asset_id)
+        } catch {
+          // Non-fatal: text content fetch failure doesn't block the UI
+        }
+      }
       this._updateState(p.asset_id, {
         status: 'done',
         progress: 100,
         textLength: p.text_length,
         method: p.method,
+        textContent,
       })
       // Notify caller (e.g., to trigger FTS indexing after OCR completes)
       this.onComplete?.(p.asset_id)

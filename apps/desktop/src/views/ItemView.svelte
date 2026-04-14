@@ -42,6 +42,19 @@
       })
       void assetId // suppress unused warning (assetId belongs to an asset of itemId)
     },
+    fetchText: async (assetId: string) => {
+      const store = getStore()
+      const extraction = await store.extractions.findByAsset(assetId)
+      return extraction?.textContent ?? ''
+    },
+  })
+      void assetId // suppress unused warning (assetId belongs to an asset of itemId)
+    },
+    fetchText: async (assetId: string) => {
+      const store = getStore()
+      const extraction = await store.extractions.findByAsset(assetId)
+      return extraction?.textContent ?? ''
+    },
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
   let ocrTick = $state(0)
@@ -395,10 +408,10 @@
                         via {ocr.method ?? 'unknown'} · {ocr.textLength ?? 0} chars
                       </span>
                     </summary>
-                    <p class="ocr-result-body">
-                      Text extracted successfully ({ocr.textLength ?? 0} characters via {ocr.method ??
-                        'unknown'}).
-                    </p>
+                    <pre class="ocr-result-body">
+                      {#if ocr.textContent}{ocr.textContent}{:else}Text extracted successfully ({ocr.textLength ??
+                          0} characters via {ocr.method ?? 'unknown'}).{/if}
+                    </pre>
                   </details>
                 {/if}
               </div>
