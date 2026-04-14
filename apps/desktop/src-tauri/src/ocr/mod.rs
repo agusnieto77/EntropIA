@@ -146,17 +146,6 @@ impl OcrQueue {
                             },
                         );
                     }
-
-                        let _ = app_handle.emit(
-                            "ocr:complete",
-                            OcrCompletePayload {
-                                asset_id,
-                                method,
-                                text_length: text_len.len(),
-                                text_content,
-                            },
-                        );
-                    }
                     Err(err) => {
                         let _ = app_handle.emit(
                             "ocr:error",
