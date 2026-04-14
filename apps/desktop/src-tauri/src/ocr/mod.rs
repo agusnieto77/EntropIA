@@ -80,18 +80,6 @@ impl OcrQueue {
         app_handle: AppHandle,
     ) {
         tauri::async_runtime::spawn(async move {
-            // Open a dedicated SQLite connection for the OCR worker.
-            let conn = match rusqlite::Connection::open(&db_path) {
-                Ok(c) => {
-                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-                    c
-                }
-                Err(e) => {
-                    eprintln!("[ocr] Failed to open worker DB connection: {e}");
-                    return;
-                }
-            };
-
             // Load models once — if this fails, every job will get an error event.
             let engine_result = {
                 let handle = app_handle.clone();
@@ -125,21 +113,23 @@ impl OcrQueue {
 
                 match result {
                     Ok((method, text_content)) => {
-                        let text_len = text_content.len();
+                        let text_len = text_content.clone();
+                        let aid = asset_id.clone();
+                        let method_clone = method.clone();
+                        let db_path_clone = db_path.clone();
 
-                        // Persist extraction to SQLite
-                        let save_result = {
-                            let conn = &conn;
-                            let aid = asset_id.clone();
-                            let method_clone = method.clone();
-                            let text_clone = text_content.clone();
-                            tokio::task::spawn_blocking(move || {
-                                save_extraction(conn, &aid, &text_clone, &method_clone)
-                            })
-                            .await
-                            .map_err(|e| format!("Save task panicked: {e}"))
-                            .and_then(|r| r)
-                        };
+                        // Persist extraction to SQLite — open a fresh connection inside
+                        // spawn_blocking because rusqlite::Connection is not Send.
+                        let save_result = tokio::task::spawn_blocking(move || {
+                            let conn = rusqlite::Connection::open(&db_path_clone)
+                                .map_err(|e| format!("Failed to open save connection: {e}"))?;
+                            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                                .map_err(|e| format!("Failed to configure pragmas: {e}"))?;
+                            save_extraction(&conn, &aid, &text_content, &method_clone)
+                        })
+                        .await
+                        .map_err(|e| format!("Save task panicked: {e}"))
+                        .and_then(|r| r);
 
                         if let Err(e) = save_result {
                             eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
@@ -151,7 +141,18 @@ impl OcrQueue {
                             OcrCompletePayload {
                                 asset_id,
                                 method,
-                                text_length: text_len,
+                                text_length: text_len.len(),
+                                text_content,
+                            },
+                        );
+                    }
+
+                        let _ = app_handle.emit(
+                            "ocr:complete",
+                            OcrCompletePayload {
+                                asset_id,
+                                method,
+                                text_length: text_len.len(),
                                 text_content,
                             },
                         );
