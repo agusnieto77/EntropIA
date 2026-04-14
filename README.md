@@ -56,10 +56,10 @@ pnpm install  # Fixea store mismatch si hay warnings
 $env:PATH += ";$env:USERPROFILE\.cargo\bin"
 
 # Dev (hot reload)
-pnpm run tauri dev
+pnpm --filter @entropia/desktop tauri dev
 
 # Build release
-pnpm run tauri build
+pnpm --filter @entropia/desktop tauri build
 ```
 
 **Primeros pasos investigación**:
