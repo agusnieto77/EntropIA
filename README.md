@@ -45,7 +45,6 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 | **AI Local** | Rust crates (OCRS/fastembed) | Sin APIs, reproducible                       |
 | **Estado**   | TS Repos (Drizzle) + Tests   | Typed safety para datos sensibles            |
 
-**Tests**: 26+ TS (67/67 green UI/repos), Rust coverage sólido.
 
 ## 🚀 Instalación & Uso Rápido
 
