@@ -15,7 +15,7 @@ default = ["embeddings"]
 embeddings = ["dep:fastembed-upstream", "dep:fastembed-shim", "dep:sqlite-vec-upstream", "dep:sqlite-vec-shim"]
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
