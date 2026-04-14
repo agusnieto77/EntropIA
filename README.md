@@ -20,7 +20,7 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 - **Integrado con ecosistema DH**: Exports compatibles con Tropy, Recogito, Gephi, Voyant Tools.
 - **Extensible por investigadores**: Capabilities JSON para workflows custom (ej: NER domain-specific).
 
-## Contexto de Investigación & Problema Resuelto
+## Contexto de investigación
 
 - **Construcción de corpus reproducibles**.
 - **Análisis hermenéutico asistido** (entidades/relaciones automáticas).
