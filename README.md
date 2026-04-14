@@ -28,7 +28,7 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 
 ## ✨ Capacidades Clave (framed for research)
 
-| Pipeline            | Funcionalidad                            | Output para Investigación                              |
+| Pipeline            | Funcionalidad                            | Output                                                 |
 | ------------------- | ---------------------------------------- | ------------------------------------------------------ |
 | **OCR**             | Texto de imágenes/PDFs degradados        | Transcripciones base para corpus                       |
 | **NER**             | Entidades (personas/lugares/fechas/orgs) | Índice onomástico automático                           |
@@ -39,7 +39,7 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 
 ## 🛠️ Stack Técnico
 
-| Capa         | Tecnología                   | Razón Académica                              |
+| Capa         | Tecnología                   | Razón                                        |
 | ------------ | ---------------------------- | -------------------------------------------- |
 | **Desktop**  | Tauri 2 (Rust/WebView)       | Nativo FS, ligero para laptops investigación |
 | **Frontend** | Svelte 5                     | Reactivo, bajo bundle para corpus grandes    |
@@ -82,4 +82,4 @@ pnpm --filter @entropia/desktop tauri build
 
 ---
 
-**Powered by local compute. Fuentes sensibles → conocimiento abierto. Para humanidades que escalan.**
+**Powered by local compute.**
