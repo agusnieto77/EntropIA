@@ -44,7 +44,7 @@ pub fn run() {
             // OCR queue: create channel, manage the sender half, spawn worker with receiver
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
             app.manage(ocr_queue);
-            OcrQueue::start_worker(ocr_receiver, app.handle().clone());
+            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection so sqlite-vec can be loaded

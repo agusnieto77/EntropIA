@@ -123,13 +123,19 @@ describe('OcrStore', () => {
     await store.startListening(listen)
 
     completeCallback!({
-      payload: { asset_id: 'asset-3', method: 'ocr', text_length: 1234 },
+      payload: {
+        asset_id: 'asset-3',
+        method: 'ocr',
+        text_length: 1234,
+        text_content: 'hello world',
+      },
     })
 
     const state = store.getState('asset-3')
     expect(state.status).toBe('done')
     expect(state.textLength).toBe(1234)
     expect(state.method).toBe('ocr')
+    expect(state.textContent).toBe('hello world')
   })
 
   it('startListening on ocr:complete with native method', async () => {
@@ -145,13 +151,19 @@ describe('OcrStore', () => {
     await store.startListening(listen)
 
     completeCallback!({
-      payload: { asset_id: 'asset-native', method: 'native', text_length: 500 },
+      payload: {
+        asset_id: 'asset-native',
+        method: 'native',
+        text_length: 500,
+        text_content: 'native text',
+      },
     })
 
     const state = store.getState('asset-native')
     expect(state.status).toBe('done')
     expect(state.method).toBe('native')
     expect(state.progress).toBe(100)
+    expect(state.textContent).toBe('native text')
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -249,7 +261,12 @@ describe('OcrStore', () => {
     await storeWithCallback.startListening(listen)
 
     completeCallback!({
-      payload: { asset_id: 'asset-ocr-done', method: 'ocr', text_length: 500 },
+      payload: {
+        asset_id: 'asset-ocr-done',
+        method: 'ocr',
+        text_length: 500,
+        text_content: 'extracted text',
+      },
     })
 
     // The onComplete callback must be called with the assetId

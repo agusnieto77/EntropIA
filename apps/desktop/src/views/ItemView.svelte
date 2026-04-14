@@ -42,11 +42,6 @@
       })
       void assetId // suppress unused warning (assetId belongs to an asset of itemId)
     },
-    fetchText: async (assetId: string) => {
-      const store = getStore()
-      const extraction = await store.extractions.findByAsset(assetId)
-      return extraction?.textContent ?? ''
-    },
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
   let ocrTick = $state(0)
@@ -95,6 +90,24 @@
         error: e instanceof Error ? e.message : 'Extraction failed',
       })
       ocrTick++
+    }
+  }
+
+  /** Load existing extraction text for all assets on mount (persistence between sessions). */
+  async function loadExistingExtractions() {
+    const store = getStore()
+    for (const asset of assets) {
+      const extraction = await store.extractions.findByAsset(asset.id)
+      if (extraction) {
+        ocrStore._updateState(asset.id, {
+          status: 'done',
+          progress: 100,
+          textLength: extraction.textContent.length,
+          method: extraction.method,
+          textContent: extraction.textContent,
+        })
+        ocrTick++
+      }
     }
   }
 
@@ -231,6 +244,8 @@
       item = loadedItem
       assets = loadedAssets
       notes = loadedNotes
+      // Load existing extraction text for persistence between sessions
+      await loadExistingExtractions()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load item'
     } finally {

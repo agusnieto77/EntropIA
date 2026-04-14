@@ -24,6 +24,7 @@ pub struct OcrCompletePayload {
     pub asset_id: String,
     pub method: String,
     pub text_length: usize,
+    pub text_content: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -69,11 +70,28 @@ impl OcrQueue {
     /// Spawn the background worker loop on the Tokio runtime.
     ///
     /// The worker:
-    /// 1. Loads `OcrEngine` once at startup.
-    /// 2. Drains jobs serially from the receiver.
-    /// 3. Emits `ocr:progress`, `ocr:complete`, or `ocr:error` events per job.
-    pub fn start_worker(mut receiver: mpsc::Receiver<OcrJob>, app_handle: AppHandle) {
+    /// 1. Opens its own SQLite connection for persisting extractions.
+    /// 2. Loads `OcrEngine` once at startup.
+    /// 3. Drains jobs serially from the receiver.
+    /// 4. Saves extracted text to DB, then emits events per job.
+    pub fn start_worker(
+        db_path: std::path::PathBuf,
+        mut receiver: mpsc::Receiver<OcrJob>,
+        app_handle: AppHandle,
+    ) {
         tauri::async_runtime::spawn(async move {
+            // Open a dedicated SQLite connection for the OCR worker.
+            let conn = match rusqlite::Connection::open(&db_path) {
+                Ok(c) => {
+                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                    c
+                }
+                Err(e) => {
+                    eprintln!("[ocr] Failed to open worker DB connection: {e}");
+                    return;
+                }
+            };
+
             // Load models once — if this fails, every job will get an error event.
             let engine_result = {
                 let handle = app_handle.clone();
@@ -106,13 +124,35 @@ impl OcrQueue {
                 let result = process_job(&engine, &job, &app_handle).await;
 
                 match result {
-                    Ok((method, text_len)) => {
+                    Ok((method, text_content)) => {
+                        let text_len = text_content.len();
+
+                        // Persist extraction to SQLite
+                        let save_result = {
+                            let conn = &conn;
+                            let aid = asset_id.clone();
+                            let method_clone = method.clone();
+                            let text_clone = text_content.clone();
+                            tokio::task::spawn_blocking(move || {
+                                save_extraction(conn, &aid, &text_clone, &method_clone)
+                            })
+                            .await
+                            .map_err(|e| format!("Save task panicked: {e}"))
+                            .and_then(|r| r)
+                        };
+
+                        if let Err(e) = save_result {
+                            eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
+                            // Still emit complete — text is in memory even if DB save failed
+                        }
+
                         let _ = app_handle.emit(
                             "ocr:complete",
                             OcrCompletePayload {
                                 asset_id,
                                 method,
                                 text_length: text_len,
+                                text_content,
                             },
                         );
                     }
@@ -131,14 +171,49 @@ impl OcrQueue {
     }
 }
 
+// ── Persistence ─────────────────────────────────────────────────────────────
+
+/// Upsert an extraction row for the given asset_id.
+///
+/// Deletes any existing extractions for the asset, then inserts a new row.
+/// This matches the frontend `ExtractionRepo.upsert` semantics.
+fn save_extraction(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    text_content: &str,
+    method: &str,
+) -> Result<(), String> {
+    // Delete existing extractions for this asset
+    conn.execute(
+        "DELETE FROM extractions WHERE asset_id = ?1",
+        [asset_id],
+    )
+    .map_err(|e| format!("Failed to delete existing extractions: {e}"))?;
+
+    // Insert new extraction
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    conn.execute(
+        "INSERT INTO extractions(id, asset_id, text_content, method, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, asset_id, text_content, method, None::<f64>, now],
+    )
+    .map_err(|e| format!("Failed to insert extraction: {e}"))?;
+
+    Ok(())
+}
+
 // ── Job Processing ──────────────────────────────────────────────────────────
 
-/// Process a single OCR job. Returns `(method, text_length)` on success.
+/// Process a single OCR job. Returns `(method, text_content)` on success.
 async fn process_job(
     engine: &OcrEngine,
     job: &OcrJob,
     app_handle: &AppHandle,
-) -> Result<(String, usize), String> {
+) -> Result<(String, String), String> {
     let asset_id = job.asset_id.clone();
 
     // Stage 1 — reading file (25 %)
@@ -160,7 +235,7 @@ async fn process_pdf(
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
-) -> Result<(String, usize), String> {
+) -> Result<(String, String), String> {
     // Stage 2 — extracting native text (50 %)
     emit_progress(app_handle, asset_id, 50, "extracting_native");
 
@@ -172,7 +247,7 @@ async fn process_pdf(
     match native_text {
         Ok(text) if is_quality_text(&text) => {
             emit_progress(app_handle, asset_id, 100, "done");
-            Ok(("native".to_string(), text.len()))
+            Ok(("native".to_string(), text))
         }
         _ => {
             // Fallback — render first page as image and OCR it.
@@ -191,7 +266,7 @@ async fn process_image(
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
-) -> Result<(String, usize), String> {
+) -> Result<(String, String), String> {
     // Stage 2 — preprocessing (50 %)
     emit_progress(app_handle, asset_id, 50, "preprocessing");
 
@@ -207,29 +282,12 @@ async fn process_image(
     // Stage 3 — OCR inference (75 %)
     emit_progress(app_handle, asset_id, 75, "ocr_inference");
 
-    // engine is not Send — we need to handle this carefully.
-    // Since the worker itself runs on a single task, we can call run_ocr in a
-    // spawn_blocking from here. However, OcrEngine contains the ocrs engine which
-    // may not be Send. We work around this by noting that the worker task itself
-    // is single-threaded and sequential — we use the engine reference directly.
-    // If OcrEngine is !Send, the caller must ensure this runs on a LocalSet or
-    // the engine is wrapped in an appropriate way. For now, we call synchronously
-    // via spawn_blocking with an unsafe workaround or restructure.
-    //
-    // Practical approach: since the worker owns the engine and processes one job
-    // at a time, we pass the GrayImage to a blocking closure. The engine reference
-    // issue is resolved by the caller restructuring to own the engine on the
-    // blocking thread. See start_worker for the actual spawn_blocking pattern.
-    //
-    // For this module-level helper, we accept the engine by reference and note
-    // that in practice the caller (start_worker) already runs on a blocking-capable
-    // context.
     let text = engine
         .run_ocr(gray_image)
         .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     emit_progress(app_handle, asset_id, 100, "done");
-    Ok(("ocr".to_string(), text.len()))
+    Ok(("ocr".to_string(), text))
 }
 
 /// Emit an `ocr:progress` event to the frontend.
