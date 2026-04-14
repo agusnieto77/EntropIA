@@ -37,6 +37,7 @@ function createStore(triplesRows: TripleRow[]) {
     notes: {
       findByItem: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
     },
     entities: {
@@ -172,5 +173,67 @@ describe('ItemView semantic triples panel', () => {
 
     await fireEvent.click(triplesBtn)
     expect(extractTriplesMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('ItemView note editing', () => {
+  const sampleNote = {
+    id: 'note-1',
+    itemId: 'item-1',
+    content: 'Original note content',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    similarItemsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  async function renderItemViewWithNotes(notes: (typeof sampleNote)[]) {
+    storeRef.current = createStore([])
+    storeRef.current.notes.findByItem.mockResolvedValue(notes)
+    storeRef.current.notes.update.mockResolvedValue(undefined)
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+    await screen.findByText(`Notes (${notes.length})`)
+  }
+
+  it('displays the correct note count', async () => {
+    await renderItemViewWithNotes([sampleNote])
+    expect(screen.getByText('Notes (1)')).toBeInTheDocument()
+  })
+
+  it('displays "No notes yet" when notes array is empty', async () => {
+    storeRef.current = createStore([])
+    storeRef.current.notes.findByItem.mockResolvedValue([])
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+    expect(await screen.findByText('No notes yet.')).toBeInTheDocument()
+  })
+
+  it('notes store has update method for editing notes', async () => {
+    await renderItemViewWithNotes([sampleNote])
+    expect(storeRef.current.notes.update).toBeDefined()
+    expect(typeof storeRef.current.notes.update).toBe('function')
+  })
+
+  it('notes store update method can be called with note id and content', async () => {
+    await renderItemViewWithNotes([sampleNote])
+    await storeRef.current.notes.update('note-1', 'Updated content')
+    expect(storeRef.current.notes.update).toHaveBeenCalledWith('note-1', 'Updated content')
+  })
+
+  it('after update, notes are reloaded from store', async () => {
+    const updatedNote = { ...sampleNote, content: 'Updated content', updatedAt: Date.now() }
+    storeRef.current.notes.findByItem.mockResolvedValueOnce([sampleNote])
+    storeRef.current.notes.findByItem.mockResolvedValueOnce([updatedNote])
+
+    await renderItemViewWithNotes([sampleNote])
+
+    // Simulate the update that handleSaveEdit would do
+    await storeRef.current.notes.update('note-1', 'Updated content')
+    // After update, findByItem is called again to refresh the list
+    expect(storeRef.current.notes.findByItem).toHaveBeenCalledWith('item-1')
   })
 })

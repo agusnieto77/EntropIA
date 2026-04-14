@@ -231,6 +231,34 @@
     }
   }
 
+  // Note editing state
+  let editingNoteId = $state<string | null>(null)
+  let editContent = $state('')
+
+  function handleEditNote(note: Note) {
+    editingNoteId = note.id
+    editContent = note.content
+  }
+
+  async function handleSaveEdit(noteId: string) {
+    if (!editContent.trim()) return
+    try {
+      error = null
+      const store = getStore()
+      await store.notes.update(noteId, editContent)
+      notes = await store.notes.findByItem(itemId)
+      editingNoteId = null
+      editContent = ''
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to update note'
+    }
+  }
+
+  function handleCancelEdit() {
+    editingNoteId = null
+    editContent = ''
+  }
+
   async function loadData() {
     try {
       loading = true
@@ -364,11 +392,38 @@
           <div class="notes-list">
             {#each notes as note (note.id)}
               <Card>
-                <p class="note-content">{note.content}</p>
-                <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
-                <Button variant="ghost" size="sm" onclick={() => handleDeleteNote(note.id)}>
-                  Delete
-                </Button>
+                {#if editingNoteId === note.id}
+                  <div class="note-edit">
+                    <textarea
+                      class="note-edit__textarea"
+                      rows="3"
+                      value={editContent}
+                      oninput={(e) => (editContent = (e.target as HTMLTextAreaElement).value)}
+                    ></textarea>
+                    <div class="note-edit__actions">
+                      <Button variant="ghost" size="sm" onclick={handleCancelEdit}>Cancel</Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={!editContent.trim() || editContent === note.content}
+                        onclick={() => handleSaveEdit(note.id)}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                {:else}
+                  <p class="note-content">{note.content}</p>
+                  <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
+                  <div class="note-actions">
+                    <Button variant="ghost" size="sm" onclick={() => handleEditNote(note)}>
+                      Edit
+                    </Button>
+                    <Button variant="ghost" size="sm" onclick={() => handleDeleteNote(note.id)}>
+                      Delete
+                    </Button>
+                  </div>
+                {/if}
               </Card>
             {/each}
           </div>
@@ -605,6 +660,40 @@
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     margin-top: var(--space-1);
+  }
+  .note-actions {
+    display: flex;
+    gap: var(--space-1);
+    margin-top: var(--space-2);
+  }
+  .note-edit {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .note-edit__textarea {
+    width: 100%;
+    min-height: 72px;
+    padding: var(--space-2);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-md);
+    color: var(--color-text-primary);
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-md);
+    outline: none;
+    resize: vertical;
+    box-sizing: border-box;
+    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
+  }
+  .note-edit__textarea:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.3);
+  }
+  .note-edit__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
   }
   .empty-text {
     color: var(--color-text-secondary);
