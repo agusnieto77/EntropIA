@@ -1,6 +1,6 @@
 # EntropIA 🧠
 
-## Herramienta Académica para Análisis Computacional en Humanidades Digitales
+## Herramienta para análisis computacional en Humanidades Digitales
 
 **EntropIA** es una aplicación de escritorio open-source diseñada para investigadores en **ciencias sociales y humanidades**, con énfasis en **historia digital** y prácticas de archivo computacional. Orientada al trabajo con **fuentes primarias digitalizadas** (imágenes, PDFs escaneados, documentos fragmentarios), EntropIA media la **construcción de corpus, interpretación automatizada y producción de conocimiento estructurado**.
 
