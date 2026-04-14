@@ -57,6 +57,36 @@ pub fn db_select(
     Ok(rows)
 }
 
+/// Returns rows as arrays in column order — required by Drizzle sqlite-proxy
+/// to guarantee correct column mapping (Object.values() order is not guaranteed).
+#[tauri::command]
+pub fn db_select_rows(
+    db: State<'_, AppDbState>,
+    sql: String,
+    params: Vec<serde_json::Value>,
+) -> Result<Vec<Vec<serde_json::Value>>, String> {
+    let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
+    let params_ref: Vec<Box<dyn rusqlite::ToSql>> = params.iter().map(json_to_sql_param).collect();
+    let params_as_refs: Vec<&dyn rusqlite::ToSql> = params_ref.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let col_count = stmt.column_count();
+
+    let rows = stmt
+        .query_map(params_as_refs.as_slice(), |row| {
+            let mut values = Vec::with_capacity(col_count);
+            for i in 0..col_count {
+                let val: Value = row.get(i)?;
+                values.push(rusqlite_value_to_json(val));
+            }
+            Ok(values)
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows)
+}
+
 fn json_to_sql_param(val: &serde_json::Value) -> Box<dyn rusqlite::ToSql> {
     match val {
         serde_json::Value::Null => Box::new(rusqlite::types::Null),

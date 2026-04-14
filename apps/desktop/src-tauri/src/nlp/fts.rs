@@ -95,6 +95,7 @@ pub fn fts_index_item(
 /// Results are ordered by BM25 rank (most relevant first).
 ///
 /// If `collection_id` is provided, results are filtered via a JOIN to `items`.
+#[allow(dead_code)]
 pub fn fts_search(
     conn: &Connection,
     query: &str,
@@ -179,6 +180,7 @@ pub fn sanitize_fts5_query(raw: &str) -> String {
         .join(" ")
 }
 
+#[allow(dead_code)]
 fn map_fts_rows<P: rusqlite::Params>(
     stmt: &mut rusqlite::Statement<'_>,
     params: P,

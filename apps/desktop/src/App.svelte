@@ -12,13 +12,16 @@
   let error = $state<string | null>(null)
 
   onMount(() => {
+    console.log('[App] onMount starting')
     const cleanupKeyboard = setupKeyboardShortcuts()
 
     initDb()
       .then(() => {
+        console.log('[App] initDb complete')
         ready = true
       })
       .catch((e) => {
+        console.log('[App] initDb ERROR:', e)
         error = e instanceof Error ? e.message : 'Failed to initialize database'
       })
 
@@ -32,12 +35,15 @@
   <div class="error"><p>{error}</p></div>
 {:else}
   <AppShell>
-    {#if navigation.current.name === 'collections'}
+    {#if $navigation.current.name === 'collections'}
       <CollectionsView />
-    {:else if navigation.current.name === 'collection'}
-      <CollectionView collectionId={navigation.current.id} />
-    {:else if navigation.current.name === 'item'}
-      <ItemView itemId={navigation.current.itemId} collectionId={navigation.current.collectionId} />
+    {:else if $navigation.current.name === 'collection'}
+      <CollectionView collectionId={$navigation.current.id} />
+    {:else if $navigation.current.name === 'item'}
+      <ItemView
+        itemId={$navigation.current.itemId}
+        collectionId={$navigation.current.collectionId}
+      />
     {/if}
   </AppShell>
 {/if}

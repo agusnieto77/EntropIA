@@ -83,55 +83,125 @@
     })
   }
 
+  function getErrorDetails(e: unknown): string {
+    return e instanceof Error ? e.message : String(e)
+  }
+
+  function formatImportStageError(baseMessage: string, stage: string, e: unknown): string {
+    return `${baseMessage} (${stage}): ${getErrorDetails(e)}`
+  }
+
   async function handleImport() {
+    importing = true
+    error = null
+    importNotice = null
+    const store = getStore()
+
+    let itemId: string
     try {
-      importing = true
-      error = null
-      importNotice = null
-      const store = getStore()
+      console.log('[import] creating item, collectionId:', collectionId)
       const item = await store.items.create({
         title: 'Untitled Document',
         collectionId,
         metadata: null,
       })
-      const imported = await pickAndImportFiles(collectionId, item.id)
-
-      if (imported.length === 0) {
-        await store.items.delete(item.id)
-        return
-      }
-
-      await finalizeImportedItem(item.id, imported)
+      itemId = item.id
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to import files'
+      console.log('[import] ERROR creating item, collectionId:', collectionId, e)
+      error = formatImportStageError('Failed to import files', 'creating item', e)
+      importing = false
+      return
+    }
+
+    let imported: ImportedFile[]
+    try {
+      imported = await pickAndImportFiles(collectionId, itemId)
+    } catch (e) {
+      error = formatImportStageError(
+        'Failed to import files',
+        'selecting/copying/importing files',
+        e
+      )
+      importing = false
+      return
+    }
+
+    if (imported.length === 0) {
+      try {
+        await store.items.delete(itemId)
+      } catch (e) {
+        error = formatImportStageError('Failed to import files', 'cleaning up empty import item', e)
+      } finally {
+        importing = false
+      }
+      return
+    }
+
+    try {
+      await finalizeImportedItem(itemId, imported)
+    } catch (e) {
+      error = formatImportStageError('Failed to import files', 'finalizing imported item', e)
     } finally {
       importing = false
     }
   }
 
   async function handleImportFromDroppedPaths(paths: string[]) {
+    importing = true
+    error = null
+    importNotice = null
+    const store = getStore()
+
+    let itemId: string
     try {
-      importing = true
-      error = null
-      importNotice = null
-      const store = getStore()
       const item = await store.items.create({
         title: 'Untitled Document',
         collectionId,
         metadata: null,
       })
+      itemId = item.id
+    } catch (e) {
+      error = formatImportStageError('Failed to import dropped files', 'creating item', e)
+      importing = false
+      dragActive = false
+      return
+    }
 
-      const result = await importFilesFromPaths(paths, collectionId, item.id)
+    let result: Awaited<ReturnType<typeof importFilesFromPaths>>
+    try {
+      result = await importFilesFromPaths(paths, collectionId, itemId)
+    } catch (e) {
+      error = formatImportStageError(
+        'Failed to import dropped files',
+        'selecting/copying/importing files',
+        e
+      )
+      importing = false
+      dragActive = false
+      return
+    }
 
-      if (result.imported.length === 0) {
-        await store.items.delete(item.id)
+    if (result.imported.length === 0) {
+      try {
+        await store.items.delete(itemId)
         if (result.rejected.length > 0) {
           error = `Unsupported format: ${result.rejected.join(', ')}`
         }
-        return
+      } catch (e) {
+        error = formatImportStageError(
+          'Failed to import dropped files',
+          'cleaning up empty import item',
+          e
+        )
+      } finally {
+        importing = false
+        dragActive = false
       }
+      return
+    }
 
-      await finalizeImportedItem(item.id, result.imported)
+    try {
+      await finalizeImportedItem(itemId, result.imported)
 
       const noticeParts: string[] = []
       if (result.rejected.length > 0) {
@@ -142,7 +212,11 @@
       }
       importNotice = noticeParts.length > 0 ? `Import completed (${noticeParts.join(' · ')})` : null
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to import dropped files'
+      error = formatImportStageError(
+        'Failed to import dropped files',
+        'finalizing imported item',
+        e
+      )
     } finally {
       importing = false
       dragActive = false

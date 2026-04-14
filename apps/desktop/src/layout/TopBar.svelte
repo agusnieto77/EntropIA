@@ -4,13 +4,13 @@
 </script>
 
 <header class="topbar">
-  {#if navigation.canGoBack}
+  {#if $navigation.canGoBack}
     <Button variant="ghost" size="sm" onclick={() => navigation.back()}>← Back</Button>
   {/if}
   <nav class="breadcrumb">
-    {#each navigation.breadcrumb as crumb, i}
+    {#each $navigation.breadcrumb as crumb, i}
       {#if i > 0}<span class="sep">/</span>{/if}
-      <span class="crumb" class:last={i === navigation.breadcrumb.length - 1}>{crumb}</span>
+      <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
     {/each}
   </nav>
 </header>

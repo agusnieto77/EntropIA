@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AssetRepo } from './asset.repo'
 import type { DrizzleClient } from '../types'
+import type { DbClient } from '../types'
 
 // Helper: create a chainable mock that resolves with the given value
 function createChainMock(resolveValue: unknown = []) {
@@ -54,19 +55,8 @@ describe('AssetRepo', () => {
   })
 
   describe('create', () => {
-    it('returns an asset with generated id and timestamp', async () => {
-      const now = Date.now()
-      const mockAsset = {
-        id: 'asset-1',
-        itemId: 'item-1',
-        path: '/data/files/paper.pdf',
-        type: 'pdf',
-        size: 1024,
-        createdAt: now,
-      }
-
-      const returningMock = vi.fn().mockResolvedValue([mockAsset])
-      const valuesMock = vi.fn().mockReturnValue({ returning: returningMock })
+    it('returns a locally-constructed asset and inserts it without returning()', async () => {
+      const valuesMock = vi.fn().mockResolvedValue(undefined)
       db.mocks.insert.chain['values'] = valuesMock
 
       const result = await repo.create({
@@ -76,25 +66,18 @@ describe('AssetRepo', () => {
         size: 1024,
       })
 
-      expect(result).toEqual(mockAsset)
-      expect(result.id).toBe('asset-1')
+      expect(valuesMock).toHaveBeenCalledOnce()
+      expect(valuesMock.mock.calls[0]?.[0]).toEqual(result)
+      expect(typeof result.id).toBe('string')
+      expect(result.itemId).toBe('item-1')
       expect(result.path).toBe('/data/files/paper.pdf')
       expect(result.type).toBe('pdf')
       expect(result.size).toBe(1024)
+      expect(typeof result.createdAt).toBe('number')
     })
 
     it('creates asset without size (optional field)', async () => {
-      const mockAsset = {
-        id: 'asset-2',
-        itemId: 'item-1',
-        path: '/data/files/photo.jpg',
-        type: 'image',
-        size: null,
-        createdAt: 100,
-      }
-
-      const returningMock = vi.fn().mockResolvedValue([mockAsset])
-      const valuesMock = vi.fn().mockReturnValue({ returning: returningMock })
+      const valuesMock = vi.fn().mockResolvedValue(undefined)
       db.mocks.insert.chain['values'] = valuesMock
 
       const result = await repo.create({
@@ -103,8 +86,51 @@ describe('AssetRepo', () => {
         type: 'image',
       })
 
-      expect(result).toEqual(mockAsset)
+      expect(valuesMock).toHaveBeenCalledOnce()
+      expect(valuesMock.mock.calls[0]?.[0]).toEqual(result)
       expect(result.size).toBeNull()
+    })
+
+    it('uses raw client INSERT when provided', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 1 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        select: vi.fn().mockResolvedValue([{ id: 'item-raw-1' }]),
+      } as unknown as DbClient
+      const repo2 = new AssetRepo(db.db, rawClient)
+
+      const result = await repo2.create({
+        itemId: 'item-raw-1',
+        path: '/raw/path/file.pdf',
+        type: 'pdf',
+        size: 42,
+      })
+
+      expect(rawExecuteMock).toHaveBeenCalledOnce()
+      expect(rawExecuteMock).toHaveBeenCalledWith(
+        'INSERT INTO assets (id, item_id, path, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [result.id, result.itemId, result.path, result.type, result.size, result.createdAt]
+      )
+      expect(db.db.insert).not.toHaveBeenCalled()
+    })
+
+    it('throws when parent item does not exist (raw client)', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 1 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repo2 = new AssetRepo(db.db, rawClient)
+
+      await expect(
+        repo2.create({
+          itemId: 'non-existent-item',
+          path: '/raw/path/file.pdf',
+          type: 'pdf',
+        })
+      ).rejects.toThrow('item "non-existent-item" does not exist')
+
+      expect(rawExecuteMock).not.toHaveBeenCalled()
     })
   })
 

@@ -66,18 +66,7 @@ describe('CollectionRepo', () => {
 
   describe('create', () => {
     it('returns a collection with generated id and timestamps', async () => {
-      const now = Date.now()
-      const mockCollection = {
-        id: 'test-id',
-        name: 'Research Papers',
-        description: 'My papers',
-        createdAt: now,
-        updatedAt: now,
-      }
-
-      // Mock: insert().values().returning() → [mockCollection]
-      const returningMock = vi.fn().mockResolvedValue([mockCollection])
-      const valuesMock = vi.fn().mockReturnValue({ returning: returningMock })
+      const valuesMock = vi.fn().mockResolvedValue(undefined)
       db.mocks.insert.chain['values'] = valuesMock
 
       const result = await repo.create({
@@ -85,23 +74,26 @@ describe('CollectionRepo', () => {
         description: 'My papers',
       })
 
-      expect(result).toEqual(mockCollection)
-      expect(result.id).toBe('test-id')
       expect(result.name).toBe('Research Papers')
-      expect(result.createdAt).toBe(now)
-      expect(result.updatedAt).toBe(now)
+      expect(result.description).toBe('My papers')
+      expect(result.id).toBeTruthy()
+      expect(typeof result.id).toBe('string')
+      expect(result.createdAt).toBeTypeOf('number')
+      expect(result.updatedAt).toBeTypeOf('number')
+      expect(result.updatedAt).toBe(result.createdAt)
+
+      expect(valuesMock).toHaveBeenCalledTimes(1)
+      const insertedCollection = valuesMock.mock.calls[0]![0]
+      expect(insertedCollection).toEqual(result)
     })
 
     it('generates unique ids for different collections', async () => {
       const ids: string[] = []
-      const valuesMock = vi.fn().mockImplementation(() => ({
-        returning: vi.fn().mockImplementation(async () => {
-          // Extract the id from the call to values()
-          const data = valuesMock.mock.calls[valuesMock.mock.calls.length - 1]![0]
-          ids.push(data.id)
-          return [data]
-        }),
-      }))
+      const valuesMock = vi.fn().mockImplementation(async () => {
+        // Extract the id from the call to values()
+        const data = valuesMock.mock.calls[valuesMock.mock.calls.length - 1]![0]
+        ids.push(data.id)
+      })
       db.mocks.insert.chain['values'] = valuesMock
 
       await repo.create({ name: 'Collection A' })

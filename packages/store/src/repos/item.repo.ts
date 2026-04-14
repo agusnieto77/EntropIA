@@ -8,27 +8,55 @@ export type NewItem = typeof items.$inferInsert
 
 export class ItemRepo {
   private ftsRepo: FtsRepo | null
+  private rawClient?: DbClient
 
   constructor(
     private db: DrizzleClient,
     rawClient?: DbClient
   ) {
+    this.rawClient = rawClient
     this.ftsRepo = rawClient ? new FtsRepo(rawClient) : null
   }
 
   async create(data: Omit<NewItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<Item> {
     const now = Date.now()
-    const rows = await this.db
-      .insert(items)
-      .values({
-        id: crypto.randomUUID(),
-        ...data,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
+    const createdItem: Item = {
+      id: crypto.randomUUID(),
+      title: data.title,
+      collectionId: data.collectionId,
+      metadata: data.metadata ?? null,
+      createdAt: now,
+      updatedAt: now,
+    }
 
-    return rows[0]!
+    if (this.rawClient) {
+      // Validate that the parent collection exists before inserting (FK constraint)
+      const collectionExists = await this.rawClient.select(
+        'SELECT id FROM collections WHERE id = ?',
+        [createdItem.collectionId]
+      )
+      if (collectionExists.length === 0) {
+        throw new Error(
+          `Cannot create item: collection "${createdItem.collectionId}" does not exist`
+        )
+      }
+
+      await this.rawClient.execute(
+        'INSERT INTO items (id, title, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          createdItem.id,
+          createdItem.title,
+          createdItem.collectionId,
+          createdItem.metadata,
+          createdItem.createdAt,
+          createdItem.updatedAt,
+        ]
+      )
+    } else {
+      await this.db.insert(items).values(createdItem)
+    }
+
+    return createdItem
   }
 
   async findByCollection(collectionId: string): Promise<Item[]> {

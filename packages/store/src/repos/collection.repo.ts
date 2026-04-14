@@ -1,26 +1,42 @@
 import { eq, desc, sql } from 'drizzle-orm'
-import type { DrizzleClient } from '../types'
+import type { DrizzleClient, DbClient } from '../types'
 import { collections, items } from '../schema'
 
 export type Collection = typeof collections.$inferSelect
 export type NewCollection = typeof collections.$inferInsert
 
 export class CollectionRepo {
-  constructor(private db: DrizzleClient) {}
+  constructor(
+    private db: DrizzleClient,
+    private rawClient?: DbClient
+  ) {}
 
   async create(data: Omit<NewCollection, 'id' | 'createdAt' | 'updatedAt'>): Promise<Collection> {
     const now = Date.now()
-    const rows = await this.db
-      .insert(collections)
-      .values({
-        id: crypto.randomUUID(),
-        ...data,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
+    const createdCollection: Collection = {
+      id: crypto.randomUUID(),
+      name: data.name,
+      description: data.description ?? null,
+      createdAt: now,
+      updatedAt: now,
+    }
 
-    return rows[0]!
+    if (this.rawClient) {
+      await this.rawClient.execute(
+        'INSERT INTO collections (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+        [
+          createdCollection.id,
+          createdCollection.name,
+          createdCollection.description,
+          createdCollection.createdAt,
+          createdCollection.updatedAt,
+        ]
+      )
+    } else {
+      await this.db.insert(collections).values(createdCollection)
+    }
+
+    return createdCollection
   }
 
   async findAll(): Promise<Collection[]> {

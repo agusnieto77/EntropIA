@@ -58,19 +58,8 @@ describe('ItemRepo', () => {
   })
 
   describe('create', () => {
-    it('returns an item with generated id, timestamps and correct fields', async () => {
-      const now = Date.now()
-      const mockItem = {
-        id: 'item-1',
-        title: 'Test Document',
-        collectionId: 'col-1',
-        metadata: null,
-        createdAt: now,
-        updatedAt: now,
-      }
-
-      const returningMock = vi.fn().mockResolvedValue([mockItem])
-      const valuesMock = vi.fn().mockReturnValue({ returning: returningMock })
+    it('returns a locally-constructed item and inserts it without returning()', async () => {
+      const valuesMock = vi.fn().mockResolvedValue(undefined)
       db.mocks.insert.chain['values'] = valuesMock
 
       const result = await repo.create({
@@ -78,25 +67,19 @@ describe('ItemRepo', () => {
         collectionId: 'col-1',
       })
 
-      expect(result).toEqual(mockItem)
-      expect(result.id).toBe('item-1')
+      expect(valuesMock).toHaveBeenCalledOnce()
+      expect(valuesMock.mock.calls[0]?.[0]).toEqual(result)
+      expect(typeof result.id).toBe('string')
       expect(result.title).toBe('Test Document')
       expect(result.collectionId).toBe('col-1')
+      expect(result.metadata).toBeNull()
+      expect(typeof result.createdAt).toBe('number')
+      expect(typeof result.updatedAt).toBe('number')
     })
 
     it('includes metadata when provided', async () => {
       const meta = JSON.stringify({ author: 'Jane' })
-      const mockItem = {
-        id: 'item-2',
-        title: 'With Metadata',
-        collectionId: 'col-1',
-        metadata: meta,
-        createdAt: 100,
-        updatedAt: 100,
-      }
-
-      const returningMock = vi.fn().mockResolvedValue([mockItem])
-      const valuesMock = vi.fn().mockReturnValue({ returning: returningMock })
+      const valuesMock = vi.fn().mockResolvedValue(undefined)
       db.mocks.insert.chain['values'] = valuesMock
 
       const result = await repo.create({
@@ -105,7 +88,57 @@ describe('ItemRepo', () => {
         metadata: meta,
       })
 
+      expect(valuesMock).toHaveBeenCalledOnce()
+      expect(valuesMock.mock.calls[0]?.[0]).toEqual(result)
       expect(result.metadata).toBe(meta)
+    })
+
+    it('uses raw client INSERT when provided', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 1 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        select: vi.fn().mockResolvedValue([{ id: 'col-raw' }]),
+      } as unknown as DbClient
+      const repo2 = new ItemRepo(db.db, rawClient)
+
+      const result = await repo2.create({
+        title: 'Raw Insert',
+        collectionId: 'col-raw',
+        metadata: null,
+      })
+
+      expect(rawExecuteMock).toHaveBeenCalledOnce()
+      expect(rawExecuteMock).toHaveBeenCalledWith(
+        'INSERT INTO items (id, title, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          result.id,
+          result.title,
+          result.collectionId,
+          result.metadata,
+          result.createdAt,
+          result.updatedAt,
+        ]
+      )
+      expect(db.db.insert).not.toHaveBeenCalled()
+    })
+
+    it('throws when collection does not exist (raw client)', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 1 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repo2 = new ItemRepo(db.db, rawClient)
+
+      await expect(
+        repo2.create({
+          title: 'Orphan Item',
+          collectionId: 'non-existent-col',
+          metadata: null,
+        })
+      ).rejects.toThrow('collection "non-existent-col" does not exist')
+
+      expect(rawExecuteMock).not.toHaveBeenCalled()
     })
   })
 

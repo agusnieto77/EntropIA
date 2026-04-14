@@ -7,7 +7,7 @@ use engine::OcrEngine;
 use pdf::{extract_pdf_text, is_quality_text};
 use preprocessor::preprocess_image;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
 // ── Event payloads ──────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ async fn process_job(
 
 /// PDF pipeline: try native text first, fall back to image OCR.
 async fn process_pdf(
-    engine: &OcrEngine,
+    _engine: &OcrEngine,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,

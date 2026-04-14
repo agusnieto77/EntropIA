@@ -18,15 +18,19 @@ pub fn run() {
                 .app_data_dir()
                 .expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+            eprintln!("[setup] app_dir: {:?}", app_dir);
 
             let db_path = app_dir.join("entropia.sqlite");
+            eprintln!("[setup] db_path: {:?}", db_path);
 
             // UI connection — used by Tauri IPC commands
             let ui_conn =
                 rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database (ui)");
+            eprintln!("[setup] DB opened");
             ui_conn
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (ui)");
+            eprintln!("[setup] PRAGMA foreign_keys=ON");
 
             // OCR worker connection
             let worker_conn =
@@ -54,6 +58,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             db::commands::db_execute,
             db::commands::db_select,
+            db::commands::db_select_rows,
             ocr::commands::extract_text,
             nlp::commands::index_fts,
             nlp::commands::embed_item,

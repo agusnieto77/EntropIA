@@ -8,10 +8,16 @@ import type { DbClient } from './types'
  */
 export const createDbClient = (): DbClient => ({
   async execute(sql, params = []) {
-    return invoke<{ rowsAffected: number }>('db_execute', { sql, params })
+    console.log('[db] execute:', sql.slice(0, 50), '...')
+    const result = await invoke<{ rowsAffected: number }>('db_execute', { sql, params })
+    console.log('[db] execute done, rowsAffected:', result.rowsAffected)
+    return result
   },
   async select<T = Record<string, unknown>>(sql: string, params: unknown[] = []) {
-    return invoke<T[]>('db_select', { sql, params })
+    console.log('[db] select:', sql.slice(0, 50), '...')
+    const result = await invoke<T[]>('db_select', { sql, params })
+    console.log('[db] select done, rows:', result.length)
+    return result
   },
 })
 
@@ -20,8 +26,8 @@ export const createDbClient = (): DbClient => ({
  * Delegates all SQL execution to the provided DbClient (Tauri IPC).
  *
  * - `run` method: used for INSERT/UPDATE/DELETE — executes via client.execute
- * - `all`/`get`/`values` methods: used for SELECT — executes via client.select
- *   and maps rows to value arrays (Drizzle expects `{ rows: unknown[][] }`)
+ * - `all`/`get`/`values` methods: used for SELECT — executes via db_select_rows
+ *   which returns rows as arrays in correct column order (Drizzle expects `{ rows: unknown[][] }`)
  */
 export const createDrizzleClient = (client: DbClient) =>
   drizzle(async (sql, params, method) => {
@@ -29,6 +35,7 @@ export const createDrizzleClient = (client: DbClient) =>
       await client.execute(sql, params as unknown[])
       return { rows: [] }
     }
-    const rows = await client.select<Record<string, unknown>>(sql, params as unknown[])
-    return { rows: rows.map((row) => Object.values(row)) }
+    // Use db_select_rows for correct column ordering
+    const rows = await invoke<unknown[][]>('db_select_rows', { sql, params })
+    return { rows }
   })

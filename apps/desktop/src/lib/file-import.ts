@@ -38,22 +38,27 @@ export async function pickAndImportFiles(
   collectionId: string,
   itemId: string
 ): Promise<ImportedFile[]> {
-  const selected = await open({
-    multiple: true,
-    filters: [
-      {
-        name: 'Documents',
-        extensions: SUPPORTED_FORMATS,
-      },
-    ],
-  })
+  try {
+    const selected = await open({
+      multiple: true,
+      filters: [
+        {
+          name: 'Documents',
+          extensions: SUPPORTED_FORMATS,
+        },
+      ],
+    })
 
-  if (!selected) return []
+    if (!selected) return []
 
-  const files = Array.isArray(selected) ? selected : [selected]
+    const files = Array.isArray(selected) ? selected : [selected]
 
-  const result = await importFilesFromPaths(files, collectionId, itemId)
-  return result.imported
+    const result = await importFilesFromPaths(files, collectionId, itemId)
+    return result.imported
+  } catch (e) {
+    console.error('[file-import] pickAndImportFiles error:', e)
+    throw new Error(`Failed to open file dialog: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 export async function importFilesFromPaths(

@@ -44,15 +44,17 @@
     if (!newName.trim()) return
     try {
       const store = getStore()
-      await store.collections.create({
+      const collection = await store.collections.create({
         name: newName.trim(),
         description: newDescription.trim() || null,
       })
+      console.log('[Collections] created collection:', collection.id, collection.name)
       newName = ''
       newDescription = ''
       showCreate = false
       await loadCollections()
     } catch (e) {
+      console.log('[Collections] ERROR creating collection:', e)
       error = e instanceof Error ? e.message : 'Failed to create collection'
     }
   }
