@@ -20,19 +20,9 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 
 ## Contexto de Investigación & Problema Resuelto
 
-Las humanidades digitales (DH) transforman la investigación mediante cómputo, pero herramientas existentes se limitan:
-
-- **Gestión** (Zotero/Omeka): Metadata manual, sin IA raw sources.
-- **OCR/Transcripción** (Transkribus): Cloud-dependiente, costoso para no-anglés.
-- **Análisis** (Voyant/Mallet): Requiere pre-procesado externo.
-
-**EntropIA cierra el loop**: De fuente raw → corpus anotado → insights semánticos, **todo local**. Facilita:
-
 - **Construcción de corpus reproducibles**.
 - **Análisis hermenéutico asistido** (entidades/relaciones automáticas).
 - **Colaboración edge** (sync roadmap).
-
-Ver [FLUJO.md](FLUJO.md) para roadmap alineado con prácticas DH.
 
 ## ✨ Capacidades Clave (framed for research)
 
@@ -87,8 +77,6 @@ pnpm run tauri build
 - ✅ Pipeline completo OCR/NLP/FTS.
 - 🔄 Capabilities engine.
 - ⏳ Sync multi-dispositivo (Fase 4 próximo), KG/RAG (Fase 5).
-
-Detalle en [FLUJO.md](FLUJO.md).
 
 ## 🤝 Contribución Académica
 
