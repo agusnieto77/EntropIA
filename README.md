@@ -87,10 +87,6 @@ Ideal para colaboradores DH/historia:
 3. Commits convencionales + tests.
 4. PRs bienvenidas: NER custom, exports Zotero, etc.
 
-**Cita**: Nieto, A. (2026). EntropIA: Local AI Pipeline for Digital History Sources. GitHub: agusnieto77/EntropIA.
-
 ---
 
 **Powered by local compute. Fuentes sensibles → conocimiento abierto. Para humanidades que escalan.**
-
-⭐ Si usás en papers/projects, citá!
