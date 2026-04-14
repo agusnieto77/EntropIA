@@ -13,6 +13,11 @@
   let loading = $state(true)
   let error = $state<string | null>(null)
   let itemCounts = $state<Record<string, number>>({})
+  let editingId = $state<string | null>(null)
+  let editName = $state('')
+  let editDescription = $state('')
+  let deletingId = $state<string | null>(null)
+  let deletingName = $state('')
 
   let filtered = $derived(
     searchQuery
@@ -59,13 +64,60 @@
     }
   }
 
-  async function handleDelete(id: string) {
+  function handleEdit(collection: Collection) {
+    editingId = collection.id
+    editName = collection.name
+    editDescription = collection.description ?? ''
+  }
+
+  function handleCancelEdit() {
+    editingId = null
+    editName = ''
+    editDescription = ''
+  }
+
+  async function handleSaveEdit() {
+    if (!editingId || !editName.trim()) return
     try {
       const store = getStore()
-      await store.collections.delete(id)
+      await store.collections.update(editingId, {
+        name: editName.trim(),
+        description: editDescription.trim() || null,
+      })
+      editingId = null
+      editName = ''
+      editDescription = ''
       await loadCollections()
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to delete collection'
+      error = e instanceof Error ? e.message : 'Error al actualizar la colección'
+    }
+  }
+
+  function handleDeleteRequest(id: string, name: string) {
+    deletingId = id
+    deletingName = name
+  }
+
+  function handleCancelDelete() {
+    deletingId = null
+    deletingName = ''
+  }
+
+  async function handleConfirmDelete() {
+    if (!deletingId) return
+    console.log('[Collections] deleting collection:', deletingId, deletingName)
+    try {
+      const store = getStore()
+      await store.collections.delete(deletingId)
+      console.log('[Collections] deleted successfully')
+      deletingId = null
+      deletingName = ''
+      await loadCollections()
+    } catch (e) {
+      console.error('[Collections] ERROR deleting collection:', e)
+      error = e instanceof Error ? e.message : String(e)
+      deletingId = null
+      deletingName = ''
     }
   }
 
@@ -119,20 +171,55 @@
   {:else}
     <div class="grid">
       {#each filtered as collection (collection.id)}
-        <CollectionCard
-          id={collection.id}
-          name={collection.name}
-          description={collection.description ?? undefined}
-          itemCount={itemCounts[collection.id] ?? 0}
-          updatedAt={new Date(collection.updatedAt).getTime()}
-          onclick={() =>
-            navigation.navigate({
-              name: 'collection',
-              id: collection.id,
-              collectionName: collection.name,
-            })}
-        />
+        {#if editingId === collection.id}
+          <Card>
+            <form
+              class="edit-form"
+              onsubmit={(e) => {
+                e.preventDefault()
+                handleSaveEdit()
+              }}
+            >
+              <Input type="text" placeholder="Nombre" bind:value={editName} />
+              <Input type="text" placeholder="Descripción (opcional)" bind:value={editDescription} />
+              <div class="edit-form__actions">
+                <Button variant="primary" type="submit" disabled={!editName.trim()}>Guardar</Button>
+                <Button variant="ghost" onclick={handleCancelEdit}>Cancelar</Button>
+              </div>
+            </form>
+          </Card>
+        {:else}
+          <CollectionCard
+            id={collection.id}
+            name={collection.name}
+            description={collection.description ?? undefined}
+            itemCount={itemCounts[collection.id] ?? 0}
+            updatedAt={new Date(collection.updatedAt).getTime()}
+            onclick={() =>
+              navigation.navigate({
+                name: 'collection',
+                id: collection.id,
+                collectionName: collection.name,
+              })}
+            onedit={() => handleEdit(collection)}
+            ondelete={() => handleDeleteRequest(collection.id, collection.name)}
+          />
+        {/if}
       {/each}
+    </div>
+  {/if}
+
+  {#if deletingId}
+    <div class="confirm-overlay">
+      <Card>
+        <div class="confirm-dialog">
+          <p class="confirm-dialog__message">¿Estás seguro que querés eliminar la colección <strong>'{deletingName}'</strong>? Se eliminarán todos sus items y datos asociados.</p>
+          <div class="confirm-dialog__actions">
+            <Button variant="primary" onclick={handleConfirmDelete}>Eliminar</Button>
+            <Button variant="ghost" onclick={handleCancelDelete}>Cancelar</Button>
+          </div>
+        </div>
+      </Card>
     </div>
   {/if}
 </div>
@@ -167,6 +254,43 @@
   .status {
     color: var(--color-text-secondary);
     text-align: center;
+  }
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+  .edit-form__actions {
+    display: flex;
+    gap: var(--space-2);
+  }
+  .confirm-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 100;
+  }
+  .confirm-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-4);
+  }
+  .confirm-dialog__message {
+    margin: 0;
+    font-size: var(--font-size-base, 1rem);
+    color: var(--color-text-primary);
+  }
+  .confirm-dialog__actions {
+    display: flex;
+    gap: var(--space-2);
   }
   .error {
     color: var(--color-danger);

@@ -1,6 +1,6 @@
-import { eq, desc, sql } from 'drizzle-orm'
+import { eq, desc, sql, inArray } from 'drizzle-orm'
 import type { DrizzleClient, DbClient } from '../types'
-import { collections, items } from '../schema'
+import { collections, items, assets, notes, jobs, extractions, entities, triples } from '../schema'
 
 export type Collection = typeof collections.$inferSelect
 export type NewCollection = typeof collections.$inferInsert
@@ -63,6 +63,35 @@ export class CollectionRepo {
   }
 
   async delete(id: string): Promise<void> {
+    // Get item IDs in this collection
+    const itemRows = await this.db
+      .select({ id: items.id })
+      .from(items)
+      .where(eq(items.collectionId, id))
+    const itemIds = itemRows.map((r) => r.id)
+
+    if (itemIds.length > 0) {
+      // Get asset IDs for these items
+      const assetRows = await this.db
+        .select({ id: assets.id })
+        .from(assets)
+        .where(inArray(assets.itemId, itemIds))
+      const assetIds = assetRows.map((r) => r.id)
+
+      // Delete leaves first: jobs & extractions depend on assets
+      if (assetIds.length > 0) {
+        await this.db.delete(jobs).where(inArray(jobs.assetId, assetIds))
+        await this.db.delete(extractions).where(inArray(extractions.assetId, assetIds))
+      }
+
+      // Delete item-level dependents
+      await this.db.delete(entities).where(inArray(entities.itemId, itemIds))
+      await this.db.delete(triples).where(inArray(triples.itemId, itemIds))
+      await this.db.delete(notes).where(inArray(notes.itemId, itemIds))
+      await this.db.delete(assets).where(inArray(assets.itemId, itemIds))
+      await this.db.delete(items).where(inArray(items.id, itemIds))
+    }
+
     await this.db.delete(collections).where(eq(collections.id, id))
   }
 

@@ -62,6 +62,40 @@ describe('CollectionCard', () => {
     expect(screen.getByText('1 item')).toBeInTheDocument()
   })
 
+  it('shows edit button when onedit is provided', () => {
+    render(CollectionCard, { props: { ...baseProps, onedit: vi.fn() } })
+    expect(screen.getByTestId('edit-button')).toBeInTheDocument()
+  })
+
+  it('shows delete button when ondelete is provided', () => {
+    render(CollectionCard, { props: { ...baseProps, ondelete: vi.fn() } })
+    expect(screen.getByTestId('delete-button')).toBeInTheDocument()
+  })
+
+  it('does not show edit/delete buttons when callbacks are not provided', () => {
+    render(CollectionCard, { props: baseProps })
+    expect(screen.queryByTestId('edit-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('delete-button')).not.toBeInTheDocument()
+  })
+
+  it('calls onedit without triggering card onclick', async () => {
+    const onclick = vi.fn()
+    const onedit = vi.fn()
+    render(CollectionCard, { props: { ...baseProps, onclick, onedit } })
+    await fireEvent.click(screen.getByTestId('edit-button'))
+    expect(onedit).toHaveBeenCalledOnce()
+    expect(onclick).not.toHaveBeenCalled()
+  })
+
+  it('calls ondelete without triggering card onclick', async () => {
+    const onclick = vi.fn()
+    const ondelete = vi.fn()
+    render(CollectionCard, { props: { ...baseProps, onclick, ondelete } })
+    await fireEvent.click(screen.getByTestId('delete-button'))
+    expect(ondelete).toHaveBeenCalledOnce()
+    expect(onclick).not.toHaveBeenCalled()
+  })
+
   it('declares standard line-clamp along with webkit fallback', () => {
     const source = readCollectionCardSource()
     expect(source).toContain('-webkit-line-clamp: 2;')
