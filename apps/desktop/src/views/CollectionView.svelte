@@ -2,11 +2,12 @@
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
   import { pickAndImportFiles, importFilesFromPaths, type ImportedFile } from '$lib/file-import'
+  import { getAssetUrl } from '$lib/file-import'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview'
-  import type { Item } from '@entropia/store'
+  import type { Item, Asset } from '@entropia/store'
 
   let { collectionId }: { collectionId: string } = $props()
 
@@ -20,6 +21,37 @@
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
 
+  // Cache itemId → { assetCount, thumbnailUrl } for ItemCard rendering
+  let itemAssetMeta = $state<Map<string, { assetCount: number; thumbnailUrl: string | null }>>(
+    new Map()
+  )
+
+  function getItemAssetMeta(itemId: string): { assetCount: number; thumbnailUrl: string | null } {
+    return itemAssetMeta.get(itemId) ?? { assetCount: 0, thumbnailUrl: null }
+  }
+
+  async function loadItemAssets(itemIds: string[]) {
+    if (itemIds.length === 0) return
+    const store = getStore()
+    const newMeta = new Map(itemAssetMeta)
+    for (const itemId of itemIds) {
+      try {
+        const assets: Asset[] = await store.assets.findByItem(itemId)
+        const imageAsset = assets.find((a) => a.type === 'image')
+        // Use first asset as thumbnail if no image asset found (PDFs get preview too)
+        const thumbAsset = imageAsset ?? assets[0]
+        newMeta.set(itemId, {
+          assetCount: assets.length,
+          thumbnailUrl: thumbAsset ? getAssetUrl(thumbAsset.path) : null,
+        })
+      } catch (e) {
+        console.error('[CollectionView] Failed to load assets for item', itemId, e)
+        // Non-fatal: item card shows placeholder
+      }
+    }
+    itemAssetMeta = newMeta
+  }
+
   let filtered = $derived(
     searchQuery ? items : items // search is handled by repo call below
   )
@@ -32,6 +64,8 @@
       items = searchQuery
         ? await store.items.searchByText(collectionId, searchQuery)
         : await store.items.findByCollection(collectionId)
+      // Load asset metadata (count + thumbnail) for each item
+      await loadItemAssets(items.map((i) => i.id))
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load items'
     } finally {
@@ -309,10 +343,12 @@
   {:else}
     <div class="grid">
       {#each items as item (item.id)}
+        {@const meta = getItemAssetMeta(item.id)}
         <ItemCard
           id={item.id}
           title={item.title}
-          assetCount={0}
+          assetCount={meta.assetCount}
+          thumbnailPath={meta.thumbnailUrl ?? undefined}
           onclick={() =>
             navigation.navigate({
               name: 'item',

@@ -5,7 +5,7 @@
 use image::GrayImage;
 use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
 use rten::Model;
-use std::path::PathBuf;
+use tauri::path::BaseDirectory;
 use tauri::Manager;
 
 /// Wraps the `ocrs` engine with pre-loaded models.
@@ -14,23 +14,27 @@ pub struct OcrEngine {
 }
 
 impl OcrEngine {
-    /// Load detection and recognition models from the app resource directory.
+    /// Load detection and recognition models from the app's bundled resources.
     ///
-    /// Expects the following files inside `<resource_dir>/resources/`:
+    /// Expects the following files in the bundled resources directory:
     /// - `text-detection.rten`  — detection model
     /// - `text-recognition.rten` — recognition model
+    ///
+    /// Uses `resolve(..., BaseDirectory::Resource)` which works correctly
+    /// both in `tauri dev` and in a bundled/installer build.
     ///
     /// # Errors
     /// Returns `Err(String)` if model files are missing or fail to load.
     pub fn load_models(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let resource_dir = app_handle
+        let detection_path = app_handle
             .path()
-            .resource_dir()
-            .map_err(|e| format!("Failed to resolve resource dir: {e}"))?;
+            .resolve("text-detection.rten", BaseDirectory::Resource)
+            .map_err(|e| format!("Failed to resolve detection model path: {e}"))?;
 
-        let detection_path: PathBuf = resource_dir.join("resources").join("text-detection.rten");
-        let recognition_path: PathBuf =
-            resource_dir.join("resources").join("text-recognition.rten");
+        let recognition_path = app_handle
+            .path()
+            .resolve("text-recognition.rten", BaseDirectory::Resource)
+            .map_err(|e| format!("Failed to resolve recognition model path: {e}"))?;
 
         let detection_model = Model::load_file(&detection_path).map_err(|e| {
             format!(
