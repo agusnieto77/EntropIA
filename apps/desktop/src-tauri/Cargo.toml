@@ -31,7 +31,6 @@ tokio = { version = "1", features = ["full"] }
 regex = "1"
 once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
-uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(windows))'.dependencies]
 fastembed-upstream = { package = "fastembed", version = "5", optional = true }
