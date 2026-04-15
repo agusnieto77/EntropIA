@@ -1,0 +1,70 @@
+﻿{
+    "schema_version":  "1",
+    "job":  {
+                "name":  "rust-quality-report-post-pnpm-setup",
+                "runner_os":  "Windows",
+                "runner_arch":  "X64",
+                "run_id":  "24331151269"
+            },
+    "runtime":  {
+                    "node_version":  "v22.22.2",
+                    "pnpm_version":  "9.15.9",
+                    "pnpm_exec_path":  "C:\\Users\\runneradmin\\setup-pnpm\\node_modules\\.bin\\pnpm.ps1"
+                },
+    "tooling":  {
+                    "store_dir":  "undefined",
+                    "virtual_store_dir":  "undefined"
+                },
+    "lockfile":  {
+                     "path":  "pnpm-lock.yaml",
+                     "sha256":  "e1652ec91d98a5bad91efc5594710aef75e2ecf0e18d0bcc935f6246a6d62be6",
+                     "size_bytes":  106887,
+                     "line_count":  3279,
+                     "first_bytes_hex":  "6c6f636b66696c6556657273696f6e3a2027392e30270a0a73657474696e6773",
+                     "raw_head_probe_length":  64,
+                     "raw_head_bin_file":  "lockfile-head-64.bin",
+                     "raw_head_hex_file":  "lockfile-head-64.hex.txt",
+                     "raw_head_preview_file":  "lockfile-head-64.preview.txt",
+                     "has_bom":  false,
+                     "has_nul":  false,
+                     "has_yaml_multidoc_separator":  false
+                 },
+    "git_blob":  {
+                     "path":  "HEAD:pnpm-lock.yaml",
+                     "sha256":  "e1652ec91d98a5bad91efc5594710aef75e2ecf0e18d0bcc935f6246a6d62be6",
+                     "size_bytes":  106887,
+                     "line_count":  3280,
+                     "first_bytes_hex":  "6c6f636b66696c6556657273696f6e3a2027392e30270a0a73657474696e6773",
+                     "raw_head_probe_length":  64,
+                     "raw_head_bin_file":  "lockfile-head-64.git-blob.bin",
+                     "raw_head_hex_file":  "lockfile-head-64.git-blob.hex.txt",
+                     "raw_head_preview_file":  "lockfile-head-64.git-blob.preview.txt",
+                     "has_bom":  false,
+                     "has_nul":  false,
+                     "has_yaml_multidoc_separator":  false
+                 },
+    "lockfile_comparison":  {
+                                "status":  "equal",
+                                "sha256_equal":  true,
+                                "size_equal":  true,
+                                "raw_head_hex_equal":  true
+                            },
+    "classification_hint":  "inconclusive",
+    "required_keys":  [
+                          "node_version",
+                          "pnpm_version",
+                          "pnpm_exec_path",
+                          "store_dir",
+                          "virtual_store_dir",
+                          "sha256",
+                          "size_bytes",
+                          "line_count",
+                          "first_bytes_hex",
+                          "has_bom",
+                          "has_nul",
+                          "has_yaml_multidoc_separator",
+                          "git_blob_sha256",
+                          "git_blob_first_bytes_hex",
+                          "lockfile_comparison_status"
+                      ]
+}
