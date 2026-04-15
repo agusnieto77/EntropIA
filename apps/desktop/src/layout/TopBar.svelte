@@ -130,7 +130,7 @@
         bind:this={searchInputEl}
         class="global-search__input"
         type="search"
-        placeholder="Buscar en todo el proyecto..."
+        placeholder="Buscar por nombre de archivo..."
         value={searchQuery}
         oninput={handleInput}
         onkeydown={handleKeydown}
