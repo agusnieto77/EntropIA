@@ -25,13 +25,21 @@ qwen/
 # Flujo
 FLUJO.md
 
+# Merge conflict leftovers
+*.orig
+*.REJECT
+
 # Build outputs
 dist/
 build/
 .svelte-kit/
+.cache/
 
 # Turbo cache
 .turbo/
+
+# Source maps
+*.map
 
 # Rust / Tauri
 target/
@@ -48,6 +56,10 @@ apps/desktop/src-tauri/vendor/**/Cargo.lock
 # Environment files
 .env
 .env.*
+!.env.example
+
+# pnpm
+.pnpm-store/
 
 # IDE
 .vscode/
@@ -65,8 +77,10 @@ Thumbs.db
 npm-debug.log*
 pnpm-debug.log*
 
-# Test coverage / CI
+# Test coverage / CI / Forensics
 coverage/
+*.lcov
+lcov.info
 .ci-evidence/
 __test-fixtures__/
 .atl/verify-artifacts/
