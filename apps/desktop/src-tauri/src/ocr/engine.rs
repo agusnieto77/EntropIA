@@ -5,12 +5,55 @@
 use image::GrayImage;
 use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
 use rten::Model;
-use tauri::path::BaseDirectory;
+use std::path::PathBuf;
+
 use tauri::Manager;
 
 /// Wraps the `ocrs` engine with pre-loaded models.
 pub struct OcrEngine {
     engine: OcrsEngine,
+}
+
+fn resolve_model_path(app_handle: &tauri::AppHandle, file_name: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        candidates.push(resource_dir.join(file_name));
+        candidates.push(resource_dir.join("resources").join(file_name));
+    }
+
+    if let Ok(exe_path) = app_handle.path().executable() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join(file_name));
+            candidates.push(exe_dir.join("resources").join(file_name));
+        }
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn missing_model_error(app_handle: &tauri::AppHandle, file_name: &str) -> String {
+    let mut searched: Vec<PathBuf> = Vec::new();
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        searched.push(resource_dir.join(file_name));
+        searched.push(resource_dir.join("resources").join(file_name));
+    }
+
+    if let Ok(exe_path) = app_handle.path().executable() {
+        if let Some(exe_dir) = exe_path.parent() {
+            searched.push(exe_dir.join(file_name));
+            searched.push(exe_dir.join("resources").join(file_name));
+        }
+    }
+
+    let searched_paths = searched
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    format!("Model file '{file_name}' was not found. Searched: {searched_paths}")
 }
 
 impl OcrEngine {
@@ -20,21 +63,17 @@ impl OcrEngine {
     /// - `text-detection.rten`  — detection model
     /// - `text-recognition.rten` — recognition model
     ///
-    /// Uses `resolve(..., BaseDirectory::Resource)` which works correctly
-    /// both in `tauri dev` and in a bundled/installer build.
+    /// Resolves model paths dynamically at runtime from the bundled resources
+    /// directory, with conservative fallbacks for installer layouts.
     ///
     /// # Errors
     /// Returns `Err(String)` if model files are missing or fail to load.
     pub fn load_models(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let detection_path = app_handle
-            .path()
-            .resolve("text-detection.rten", BaseDirectory::Resource)
-            .map_err(|e| format!("Failed to resolve detection model path: {e}"))?;
+        let detection_path = resolve_model_path(app_handle, "text-detection.rten")
+            .ok_or_else(|| missing_model_error(app_handle, "text-detection.rten"))?;
 
-        let recognition_path = app_handle
-            .path()
-            .resolve("text-recognition.rten", BaseDirectory::Resource)
-            .map_err(|e| format!("Failed to resolve recognition model path: {e}"))?;
+        let recognition_path = resolve_model_path(app_handle, "text-recognition.rten")
+            .ok_or_else(|| missing_model_error(app_handle, "text-recognition.rten"))?;
 
         let detection_model = Model::load_file(&detection_path).map_err(|e| {
             format!(
