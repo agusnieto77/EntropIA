@@ -235,9 +235,40 @@ describe('CollectionView asset deletion', () => {
     })
   })
 
-  it('shows error when deletion fails', async () => {
+  it('still removes card even when DB cleanup fails — resilient deletion', async () => {
     const { deleteAssetFile } = await import('$lib/file-import')
-    vi.mocked(deleteAssetFile).mockRejectedValueOnce(new Error('Permission denied'))
+    // Simulate DB failure
+    storeRef.current.items.deleteWithCascade = vi.fn().mockRejectedValueOnce(new Error('DB locked'))
+
+    await renderAndWaitForItems()
+
+    expect(screen.getByText('Acta')).toBeInTheDocument()
+
+    const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
+    await fireEvent.click(deleteBtn)
+
+    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    await fireEvent.click(confirmBtn)
+
+    await waitFor(() => {
+      // File was still attempted
+      expect(deleteAssetFile).toHaveBeenCalledWith(sampleAsset.path)
+      // DB failed but...
+    })
+
+    // Card is STILL removed — UI update is not blocked by DB error
+    await waitFor(() => {
+      expect(screen.queryByText('Acta')).not.toBeInTheDocument()
+    })
+
+    // Modal closes even on DB failure
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+  })
+
+  it('does NOT call findById — uses cached path for file deletion', async () => {
+    const { deleteAssetFile } = await import('$lib/file-import')
 
     await renderAndWaitForItems()
 
@@ -248,10 +279,9 @@ describe('CollectionView asset deletion', () => {
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
-      expect(screen.getByText('Permission denied')).toBeInTheDocument()
+      expect(deleteAssetFile).toHaveBeenCalled()
+      // findById should NOT be called — path comes from cache
+      expect(storeRef.current.assets.findById).not.toHaveBeenCalled()
     })
-
-    // Modal should still be open with error
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })

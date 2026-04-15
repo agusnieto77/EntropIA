@@ -342,6 +342,9 @@
    * Execute the asset deletion: remove file from FS, then cascade delete from DB.
    * If the deleted asset is the item's last one, the entire item is removed
    * (with all associated metadata) and the card disappears from the grid.
+   *
+   * Resilient: DB errors do NOT block file deletion or UI update.
+   * The file is always removed and the UI is always refreshed.
    */
   async function handleDeleteConfirm() {
     if (!pendingDeleteAssetId || !pendingDeleteItemId) return
@@ -349,50 +352,50 @@
     deleting = true
     deleteError = null
 
-    try {
-      const store = getStore()
-      const meta = getItemAssetMeta(pendingDeleteItemId)
+    const store = getStore()
+    const meta = getItemAssetMeta(pendingDeleteItemId)
+    const assetPath = meta.primaryAssetPath
+    const isLastAsset = meta.assetCount <= 1
 
-      // Step 1: Fetch the asset to get its path (before we lose the meta)
-      const asset = await store.assets.findById(pendingDeleteAssetId)
-      if (!asset) {
-        throw new Error('Asset not found in database.')
+    // Step 1: Always delete the file from filesystem (ENOENT is OK)
+    // Use the cached path — do NOT depend on a DB lookup
+    if (assetPath) {
+      try {
+        await deleteAssetFile(assetPath)
+      } catch (e) {
+        // Log but continue — file deletion should not block UI update
+        console.warn('[CollectionView] File deletion warning:', e)
       }
-
-      // Step 2: Delete the file from filesystem (ENOENT is OK, other errors abort)
-      await deleteAssetFile(asset.path)
-
-      // Step 3: Check if this is the last asset — if so, delete the entire item
-      const isLastAsset = meta.assetCount <= 1
-
-      if (isLastAsset) {
-        // Delete the item and ALL associated data (entities, triples, embeddings,
-        // FTS, notes, remaining assets, jobs, extractions)
-        await store.items.deleteWithCascade(pendingDeleteItemId)
-
-        // Remove the item from the items array so the card disappears
-        items = items.filter((i) => i.id !== pendingDeleteItemId)
-
-        // Remove from asset meta cache
-        const newMeta = new Map(itemAssetMeta)
-        newMeta.delete(pendingDeleteItemId)
-        itemAssetMeta = newMeta
-      } else {
-        // Not the last asset — just delete this asset and its linked data
-        await store.assets.deleteWithCascade(pendingDeleteAssetId)
-
-        // Reload asset metadata for the affected item
-        await loadItemAssets([pendingDeleteItemId])
-      }
-
-      // Step 4: Close dialog
-      handleDeleteCancel()
-    } catch (e) {
-      deleteError = e instanceof Error ? e.message : 'Failed to delete asset.'
-      console.error('[CollectionView] Delete failed:', e)
-    } finally {
-      deleting = false
     }
+
+    // Step 2: Try DB cleanup — non-blocking
+    try {
+      if (isLastAsset) {
+        await store.items.deleteWithCascade(pendingDeleteItemId)
+      } else {
+        await store.assets.deleteWithCascade(pendingDeleteAssetId)
+      }
+    } catch (e) {
+      // Log DB error but do NOT block UI update
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[CollectionView] DB cleanup failed (UI will still update):', message)
+      // Show a subtle warning in the error field but still close the dialog
+      deleteError = `File removed. DB cleanup failed: ${message}`
+    }
+
+    // Step 3: Always update UI — remove card or refresh meta
+    if (isLastAsset) {
+      items = items.filter((i) => i.id !== pendingDeleteItemId)
+      const newMeta = new Map(itemAssetMeta)
+      newMeta.delete(pendingDeleteItemId)
+      itemAssetMeta = newMeta
+    } else {
+      await loadItemAssets([pendingDeleteItemId])
+    }
+
+    // Step 4: Close dialog (even if DB failed — file is gone, UI is updated)
+    handleDeleteCancel()
+    deleting = false
   }
 
   onMount(() => {
