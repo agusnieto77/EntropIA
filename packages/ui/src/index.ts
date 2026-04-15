@@ -19,7 +19,12 @@ export { ItemCard } from './components/ItemCard/index'
 export type { ItemCardProps } from './components/ItemCard/index'
 
 export { DocumentViewer } from './components/DocumentViewer/index'
-export type { DocumentViewerProps } from './components/DocumentViewer/index'
+export type {
+  DocumentViewerProps,
+  ViewerAnnotation,
+  AnnotationKind,
+  AnnotationTool,
+} from './components/DocumentViewer/index'
 
 export { SearchBar } from './components/SearchBar/index'
 export type { SearchBarProps } from './components/SearchBar/index'

@@ -12,8 +12,51 @@ const { nlpEventHandlers, extractTriplesMock, similarItemsMock, extractTextMock 
 )
 
 type TripleRow = { subject: string; predicate: string; object: string }
+type AnnotationRow = {
+  id: string
+  assetId: string
+  page: number
+  kind: 'rectangle' | 'underline'
+  color: string
+  x: number
+  y: number
+  width: number
+  height: number
+  createdAt: number
+  updatedAt: number
+}
 
-function createStore(triplesRows: TripleRow[]) {
+type StoreOptions = {
+  triplesRows?: TripleRow[]
+  assetsRows?: Array<{
+    id: string
+    itemId: string
+    path: string
+    type: 'image' | 'pdf'
+    createdAt: number
+  }>
+  annotationsByAsset?: Record<string, AnnotationRow[]>
+  replaceAnnotationsImpl?: (
+    assetId: string,
+    page: number,
+    annotations: AnnotationRow[]
+  ) => Promise<unknown>
+}
+
+function createStore({
+  triplesRows = [],
+  assetsRows = [
+    {
+      id: 'asset-1',
+      itemId: 'item-1',
+      path: 'docs/acta.pdf',
+      type: 'pdf' as const,
+      createdAt: Date.now(),
+    },
+  ],
+  annotationsByAsset = {},
+  replaceAnnotationsImpl = async () => undefined,
+}: StoreOptions = {}) {
   return {
     items: {
       findById: vi.fn().mockResolvedValue({
@@ -24,21 +67,22 @@ function createStore(triplesRows: TripleRow[]) {
       update: vi.fn().mockResolvedValue(undefined),
     },
     assets: {
-      findByItem: vi.fn().mockResolvedValue([
-        {
-          id: 'asset-1',
-          itemId: 'item-1',
-          path: 'docs/acta.pdf',
-          type: 'pdf',
-          createdAt: Date.now(),
-        },
-      ]),
+      findByItem: vi.fn().mockResolvedValue(assetsRows),
     },
     notes: {
       findByItem: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
+    },
+    annotations: {
+      findByAsset: vi
+        .fn()
+        .mockImplementation(async (assetId: string) => annotationsByAsset[assetId] ?? []),
+      replaceForAssetPage: vi.fn().mockImplementation(replaceAnnotationsImpl),
+    },
+    extractions: {
+      findByAsset: vi.fn().mockResolvedValue(null),
     },
     entities: {
       findByItemId: vi.fn().mockResolvedValue([]),
@@ -50,7 +94,7 @@ function createStore(triplesRows: TripleRow[]) {
 }
 
 const storeRef: { current: ReturnType<typeof createStore> } = {
-  current: createStore([]),
+  current: createStore(),
 }
 
 vi.mock('$lib/db', () => ({
@@ -88,14 +132,18 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }))
 
-vi.mock('@entropia/ui', () => ({
-  DocumentViewer: () => null,
-  MetadataEditor: () => null,
-  NoteEditor: () => null,
-  Button: () => null,
-  Card: () => null,
-  EntityViewer: () => null,
-}))
+vi.mock('@entropia/ui', async () => {
+  const MockDocumentViewer = (await import('./__mocks__/MockDocumentViewer.svelte')).default
+
+  return {
+    DocumentViewer: MockDocumentViewer,
+    MetadataEditor: () => null,
+    NoteEditor: () => null,
+    Button: () => null,
+    Card: () => null,
+    EntityViewer: () => null,
+  }
+})
 
 describe('ItemView semantic triples panel', () => {
   beforeEach(() => {
@@ -106,7 +154,7 @@ describe('ItemView semantic triples panel', () => {
   })
 
   async function renderItemViewWith(triplesRows: TripleRow[]) {
-    storeRef.current = createStore(triplesRows)
+    storeRef.current = createStore({ triplesRows })
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
 
     const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
@@ -193,7 +241,7 @@ describe('ItemView note editing', () => {
   })
 
   async function renderItemViewWithNotes(notes: (typeof sampleNote)[]) {
-    storeRef.current = createStore([])
+    storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue(notes)
     storeRef.current.notes.update.mockResolvedValue(undefined)
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
@@ -206,7 +254,7 @@ describe('ItemView note editing', () => {
   })
 
   it('displays "No notes yet" when notes array is empty', async () => {
-    storeRef.current = createStore([])
+    storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue([])
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
     expect(await screen.findByText('No notes yet.')).toBeInTheDocument()
@@ -235,5 +283,180 @@ describe('ItemView note editing', () => {
     await storeRef.current.notes.update('note-1', 'Updated content')
     // After update, findByItem is called again to refresh the list
     expect(storeRef.current.notes.findByItem).toHaveBeenCalledWith('item-1')
+  })
+})
+
+describe('ItemView image annotations', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    nlpEventHandlers.clear()
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    similarItemsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('loads annotations per asset and rehydrates when switching assets', async () => {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+        {
+          id: 'asset-image-2',
+          itemId: 'item-1',
+          path: 'docs/photo-b.jpg',
+          type: 'image',
+          createdAt: 2,
+        },
+      ],
+      annotationsByAsset: {
+        'asset-image-1': [
+          {
+            id: 'ann-1',
+            assetId: 'asset-image-1',
+            page: 1,
+            kind: 'rectangle',
+            color: 'var(--color-accent)',
+            x: 0.1,
+            y: 0.1,
+            width: 0.2,
+            height: 0.2,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        'asset-image-2': [
+          {
+            id: 'ann-2',
+            assetId: 'asset-image-2',
+            page: 1,
+            kind: 'underline',
+            color: 'var(--color-warning)',
+            x: 0.2,
+            y: 0.7,
+            width: 0.3,
+            height: 0.05,
+            createdAt: 2,
+            updatedAt: 2,
+          },
+          {
+            id: 'ann-3',
+            assetId: 'asset-image-2',
+            page: 1,
+            kind: 'rectangle',
+            color: 'var(--color-danger)',
+            x: 0.5,
+            y: 0.2,
+            width: 0.15,
+            height: 0.25,
+            createdAt: 3,
+            updatedAt: 3,
+          },
+        ],
+      },
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('1')
+    })
+    expect(storeRef.current.annotations.findByAsset).toHaveBeenCalledWith('asset-image-1', 1)
+
+    await fireEvent.click(screen.getByRole('button', { name: /photo-b\.jpg/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('2')
+    })
+    expect(storeRef.current.annotations.findByAsset).toHaveBeenCalledWith('asset-image-2', 1)
+  })
+
+  it('keeps optimistic annotation state and persists with debounce', async () => {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await fireEvent.click(screen.getByRole('button', { name: /add annotation/i }))
+
+    expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('1')
+    expect(storeRef.current.annotations.replaceForAssetPage).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(499)
+    expect(storeRef.current.annotations.replaceForAssetPage).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(storeRef.current.annotations.replaceForAssetPage).toHaveBeenCalledTimes(1)
+    expect(storeRef.current.annotations.replaceForAssetPage).toHaveBeenCalledWith(
+      'asset-image-1',
+      1,
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'rectangle', color: 'var(--color-accent)' }),
+      ])
+    )
+  })
+
+  it('shows a non-blocking error when annotation save fails', async () => {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+      replaceAnnotationsImpl: async () => {
+        throw new Error('disk busy')
+      },
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await fireEvent.click(screen.getByRole('button', { name: /add annotation/i }))
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('1')
+    expect(
+      await screen.findByText('Failed to save annotations. Changes remain local until retry.')
+    ).toBeInTheDocument()
+  })
+
+  it('keeps pdf assets view-only by skipping annotation loads', async () => {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-pdf-1',
+          itemId: 'item-1',
+          path: 'docs/acta.pdf',
+          type: 'pdf',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('viewer-type')).toHaveTextContent('pdf')
+    })
+    expect(storeRef.current.annotations.findByAsset).not.toHaveBeenCalled()
   })
 })

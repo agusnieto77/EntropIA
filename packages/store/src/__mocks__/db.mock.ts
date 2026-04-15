@@ -30,5 +30,9 @@ export function createMockDbClient(initialData: Record<string, MockRow[]> = {}):
       }
       return []
     },
+
+    async executeBatch(_sql: string): Promise<void> {
+      // No-op for unit tests
+    },
   }
 }

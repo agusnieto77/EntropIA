@@ -60,6 +60,10 @@ function createMockDbClient() {
 
       return []
     },
+
+    async executeBatch(_sql: string): Promise<void> {
+      // No-op for unit tests
+    },
   } satisfies DbClient & { store: Record<string, string>; _executedSql: string[] }
 }
 

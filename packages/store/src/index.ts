@@ -4,7 +4,17 @@
 export { createDbClient, createDrizzleClient } from './client'
 
 // Schema tables
-export { collections, items, assets, notes, jobs, extractions, entities, triples } from './schema'
+export {
+  collections,
+  items,
+  assets,
+  notes,
+  jobs,
+  extractions,
+  entities,
+  triples,
+  annotations,
+} from './schema'
 
 // Migration runner
 export { runMigrations } from './runner'
@@ -14,6 +24,7 @@ export { CollectionRepo } from './repos/collection.repo'
 export { ItemRepo } from './repos/item.repo'
 export { AssetRepo } from './repos/asset.repo'
 export { NoteRepo } from './repos/note.repo'
+export { AnnotationRepo } from './repos/annotation.repo'
 export { JobRepo } from './repos/job.repo'
 export { ExtractionRepo } from './repos/extraction.repo'
 export { EntityRepo } from './repos/entity.repo'
@@ -31,6 +42,12 @@ export type { Collection, NewCollection } from './repos/collection.repo'
 export type { Item, NewItem } from './repos/item.repo'
 export type { Asset, NewAsset } from './repos/asset.repo'
 export type { Note, NewNote } from './repos/note.repo'
+export type {
+  Annotation,
+  AnnotationKind,
+  AnnotationInput,
+  NewAnnotation,
+} from './repos/annotation.repo'
 export type { Job, NewJob } from './repos/job.repo'
 export type { Extraction, NewExtraction } from './repos/extraction.repo'
 export type { Entity, NewEntity, EntityType } from './repos/entity.repo'

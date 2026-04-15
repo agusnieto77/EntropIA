@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core'
 
 // ---------------------------------------------------------------------------
 // Collections — top-level grouping of items
@@ -111,3 +111,29 @@ export const triples = sqliteTable('triples', {
   object: text('object').notNull(),
   createdAt: integer('created_at').notNull(),
 })
+
+// ---------------------------------------------------------------------------
+// Annotations — visual overlays linked to an asset/page
+// ---------------------------------------------------------------------------
+export const annotations = sqliteTable(
+  'annotations',
+  {
+    id: text('id').primaryKey().notNull(),
+    assetId: text('asset_id')
+      .notNull()
+      .references(() => assets.id, { onDelete: 'cascade' }),
+    page: integer('page').notNull().default(1),
+    kind: text('kind').notNull(), // 'rectangle' | 'underline'
+    color: text('color').notNull(),
+    x: real('x').notNull(),
+    y: real('y').notNull(),
+    width: real('width').notNull(),
+    height: real('height').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => ({
+    assetIdIdx: index('annotations_asset_id_idx').on(table.assetId),
+    assetPageIdx: index('annotations_asset_page_idx').on(table.assetId, table.page),
+  })
+)

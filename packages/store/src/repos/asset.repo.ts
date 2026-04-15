@@ -87,6 +87,7 @@ export class AssetRepo {
       await this.rawClient.executeBatch(`
         DELETE FROM jobs WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM extractions WHERE asset_id = '${id.replace(/'/g, "''")}';
+        DELETE FROM annotations WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM assets WHERE id = '${id.replace(/'/g, "''")}';
       `)
     } catch (e) {

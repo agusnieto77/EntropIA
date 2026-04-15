@@ -21,8 +21,18 @@
   import { onMount, onDestroy } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
-  import type { Item, Asset, Note } from '@entropia/store'
-  import type { Entity } from '@entropia/ui'
+  import type {
+    Item,
+    Asset,
+    Note,
+    Annotation as StoreAnnotation,
+    AnnotationKind as StoreAnnotationKind,
+  } from '@entropia/store'
+  import type {
+    Entity,
+    ViewerAnnotation,
+    AnnotationKind as ViewerAnnotationKind,
+  } from '@entropia/ui'
 
   let { itemId, collectionId }: { itemId: string; collectionId: string } = $props()
 
@@ -33,6 +43,16 @@
   let error = $state<string | null>(null)
   let selectedAssetIndex = $state(0)
   let savingMetadata = $state(false)
+  let annotations = $state<ViewerAnnotation[]>([])
+  let selectedAnnotationId = $state<string | null>(null)
+  let annotationTool = $state<'select' | 'rectangle' | 'underline'>('select')
+  let annotationColor = $state('var(--color-accent)')
+  let annotationSaveError = $state<string | null>(null)
+  let annotationSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let pendingAnnotationSave: {
+    assetId: string
+    annotations: ViewerAnnotation[]
+  } | null = null
 
   // OCR state — plain TS class, updated via Tauri events
   const ocrStore = new OcrStore({
@@ -89,6 +109,110 @@
   let viewerSrc = $derived(selectedAsset ? getAssetUrl(selectedAsset.path) : '')
 
   let viewerType = $derived<'image' | 'pdf'>(selectedAsset?.type === 'pdf' ? 'pdf' : 'image')
+
+  function clampNormalized(value: number) {
+    return Math.max(0, Math.min(1, value))
+  }
+
+  function normalizeAnnotationsForAsset(
+    asset: Asset,
+    nextAnnotations: ViewerAnnotation[]
+  ): ViewerAnnotation[] {
+    return nextAnnotations.map((annotation) => {
+      const now = Date.now()
+      return {
+        ...annotation,
+        id: annotation.id || crypto.randomUUID(),
+        assetId: asset.id,
+        page: 1,
+        color: annotation.color,
+        x: clampNormalized(annotation.x),
+        y: clampNormalized(annotation.y),
+        width: clampNormalized(annotation.width),
+        height: clampNormalized(annotation.height),
+        createdAt: annotation.createdAt || now,
+        updatedAt: now,
+      }
+    })
+  }
+
+  async function persistAnnotations(assetId: string, nextAnnotations: ViewerAnnotation[]) {
+    try {
+      const inputs = nextAnnotations.map((a) => ({
+        kind: a.kind as StoreAnnotationKind,
+        color: a.color,
+        x: a.x,
+        y: a.y,
+        width: a.width,
+        height: a.height,
+      }))
+      await getStore().annotations.replaceForAssetPage(assetId, 1, inputs)
+      annotationSaveError = null
+    } catch {
+      annotationSaveError = 'Failed to save annotations. Changes remain local until retry.'
+    }
+  }
+
+  function clearAnnotationSaveTimer() {
+    if (annotationSaveTimer) {
+      clearTimeout(annotationSaveTimer)
+      annotationSaveTimer = null
+    }
+  }
+
+  async function flushPendingAnnotationSave() {
+    clearAnnotationSaveTimer()
+
+    if (!pendingAnnotationSave) {
+      return
+    }
+
+    const saveJob = pendingAnnotationSave
+    pendingAnnotationSave = null
+    await persistAnnotations(saveJob.assetId, saveJob.annotations)
+  }
+
+  function scheduleAnnotationPersist(assetId: string, nextAnnotations: ViewerAnnotation[]) {
+    clearAnnotationSaveTimer()
+    pendingAnnotationSave = {
+      assetId,
+      annotations: nextAnnotations,
+    }
+
+    annotationSaveTimer = setTimeout(async () => {
+      const saveJob = pendingAnnotationSave
+      pendingAnnotationSave = null
+      annotationSaveTimer = null
+
+      if (!saveJob) {
+        return
+      }
+
+      await persistAnnotations(saveJob.assetId, saveJob.annotations)
+    }, 500)
+  }
+
+  function handleAnnotationsChange(nextAnnotations: ViewerAnnotation[]) {
+    if (!selectedAsset || selectedAsset.type !== 'image') {
+      return
+    }
+
+    annotations = normalizeAnnotationsForAsset(selectedAsset, nextAnnotations)
+    annotationSaveError = null
+    scheduleAnnotationPersist(selectedAsset.id, annotations)
+  }
+
+  function handleSelectedAnnotationIdChange(annotationId: string | null) {
+    selectedAnnotationId = annotationId
+  }
+
+  function handleAnnotationToolChange(tool: 'select' | 'rectangle' | 'underline') {
+    annotationTool = tool
+  }
+
+  function handleAnnotationColorChange(color: string) {
+    annotationColor = color
+  }
 
   function parseMetadataRecord(json: string): Record<string, string> {
     try {
@@ -307,6 +431,48 @@
     }
   }
 
+  $effect(() => {
+    const asset = selectedAsset
+    const currentAssetId = asset?.id ?? null
+
+    selectedAnnotationId = null
+    annotationTool = 'select'
+
+    if (pendingAnnotationSave && pendingAnnotationSave.assetId !== currentAssetId) {
+      void flushPendingAnnotationSave()
+    }
+
+    if (!asset || asset.type !== 'image') {
+      annotations = []
+      annotationSaveError = null
+      return
+    }
+
+    let cancelled = false
+
+    void (async () => {
+      try {
+        annotationSaveError = null
+        const loadedAnnotations = await getStore().annotations.findByAsset(asset.id, 1)
+        if (!cancelled && selectedAsset?.id === asset.id) {
+          annotations = loadedAnnotations.map((a) => ({
+            ...a,
+            kind: a.kind as ViewerAnnotationKind,
+          }))
+        }
+      } catch {
+        if (!cancelled) {
+          annotations = []
+          annotationSaveError = 'Failed to load annotations for this asset.'
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  })
+
   onMount(() => {
     loadData()
     ocrStore
@@ -359,6 +525,7 @@
       clearTimeout(timer)
     }
     ocrPersistTimers.clear()
+    clearAnnotationSaveTimer()
   })
 </script>
 
@@ -370,7 +537,23 @@
   <div class="item-view">
     <div class="left-panel">
       {#if selectedAsset}
-        <DocumentViewer path={selectedAsset.path} assetUrl={viewerSrc} type={viewerType} />
+        <DocumentViewer
+          path={selectedAsset.path}
+          assetUrl={viewerSrc}
+          type={viewerType}
+          {annotations}
+          {selectedAnnotationId}
+          {annotationTool}
+          {annotationColor}
+          onAnnotationsChange={handleAnnotationsChange}
+          onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
+          onAnnotationToolChange={handleAnnotationToolChange}
+          onAnnotationColorChange={handleAnnotationColorChange}
+        />
+
+        {#if annotationSaveError}
+          <p class="error">{annotationSaveError}</p>
+        {/if}
       {:else}
         <div class="empty-viewer">
           <p>No assets attached to this item.</p>

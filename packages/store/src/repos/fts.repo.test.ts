@@ -103,6 +103,10 @@ function createMockDbClient(): DbClient & {
       executedSql.push(sql)
       return selectResults as T[]
     },
+
+    async executeBatch(_sql: string): Promise<void> {
+      // No-op for unit tests
+    },
   }
 }
 

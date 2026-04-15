@@ -4,6 +4,7 @@ import { CollectionRepo } from './collection.repo'
 import { ItemRepo } from './item.repo'
 import { AssetRepo } from './asset.repo'
 import { NoteRepo } from './note.repo'
+import { AnnotationRepo } from './annotation.repo'
 import { JobRepo } from './job.repo'
 import { ExtractionRepo } from './extraction.repo'
 import { EntityRepo } from './entity.repo'
@@ -16,6 +17,7 @@ export interface StoreApi {
   items: ItemRepo
   assets: AssetRepo
   notes: NoteRepo
+  annotations: AnnotationRepo
   jobs: JobRepo
   extractions: ExtractionRepo
   entities: EntityRepo
@@ -40,6 +42,7 @@ export async function initStore(): Promise<StoreApi> {
     items: new ItemRepo(db, client),
     assets: new AssetRepo(db, client),
     notes: new NoteRepo(db),
+    annotations: new AnnotationRepo(db),
     jobs: new JobRepo(db),
     extractions: new ExtractionRepo(db),
     entities: new EntityRepo(db),

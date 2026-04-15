@@ -234,7 +234,7 @@ describe('AssetRepo', () => {
         execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
         executeBatch: vi.fn().mockResolvedValue(undefined),
         select: vi.fn().mockResolvedValue([asset]),
-      } as unknown as DbClient
+      } as unknown as DbClient & { executeBatch: ReturnType<typeof vi.fn> }
       const repoWithRaw = new AssetRepo(db.db, rawClient)
 
       const result = await repoWithRaw.deleteWithCascade('asset-1')
@@ -244,6 +244,7 @@ describe('AssetRepo', () => {
       const batchSql = rawClient.executeBatch.mock.calls[0]?.[0] as string
       expect(batchSql).toContain('DELETE FROM jobs')
       expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM annotations')
       expect(batchSql).toContain('DELETE FROM assets')
       expect(batchSql).toContain('asset-1')
     })
