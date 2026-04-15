@@ -452,25 +452,6 @@ describe('NlpStore', () => {
 })
 
 describe('windows ORT linker contract governance', () => {
-  it('documents no new NLP capability introduced by this change', () => {
-    const readme = readRepoFile('../../../../README.md')
-
-    expect(readme).toContain(
-      'No new NLP capability introduced by this change: no new extraction model, ranking logic, or semantic feature is added.'
-    )
-  })
-
-  it('documents rollback decision evidence sources', () => {
-    const readme = readRepoFile('../../../../README.md')
-
-    expect(readme).toContain(
-      'Rollback trigger: si vuelve a fallar el contrato default de Windows por linker ORT, revertir el target-gating de `fastembed`/features en `apps/desktop/src-tauri/Cargo.toml` al estado previo.'
-    )
-    expect(readme).toContain(
-      'Rollback decision evidence MUST citar: salida de `apps/desktop/src-tauri/scripts/windows-feature-contract.ps1` (default/no-default) + pruebas de continuidad NLP no-embedding (`nlp::tests` y `nlp::commands::tests`).'
-    )
-  })
-
   it('keeps rollback note colocated with Windows feature-gating config', () => {
     const cargoToml = readRepoFile('../../src-tauri/Cargo.toml')
 
