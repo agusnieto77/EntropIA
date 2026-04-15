@@ -1,6 +1,6 @@
-import { eq, desc, sql, inArray } from 'drizzle-orm'
+import { eq, desc, sql } from 'drizzle-orm'
 import type { DrizzleClient, DbClient } from '../types'
-import { collections, items, assets, notes, jobs, extractions, entities, triples } from '../schema'
+import { collections, items } from '../schema'
 
 export type Collection = typeof collections.$inferSelect
 export type NewCollection = typeof collections.$inferInsert
@@ -43,6 +43,25 @@ export class CollectionRepo {
     return this.db.select().from(collections).orderBy(desc(collections.updatedAt))
   }
 
+  /**
+   * Returns only collections that have at least 1 item.
+   * Collections with 0 items are filtered out at the query level.
+   */
+  async findAllNonEmpty(): Promise<Collection[]> {
+    if (this.rawClient) {
+      const rows = await this.rawClient.select<Collection>(
+        `SELECT c.* FROM collections c INNER JOIN items i ON i.collection_id = c.id GROUP BY c.id ORDER BY c.updated_at DESC`
+      )
+      return rows
+    }
+    // Fallback: use Drizzle with a subquery
+    return this.db
+      .select()
+      .from(collections)
+      .where(sql`id IN (SELECT DISTINCT collection_id FROM items)`)
+      .orderBy(desc(collections.updatedAt))
+  }
+
   async findById(id: string): Promise<Collection | null> {
     const rows = await this.db.select().from(collections).where(eq(collections.id, id))
 
@@ -62,37 +81,103 @@ export class CollectionRepo {
     return rows[0]!
   }
 
+  /**
+   * Delete a collection and ALL its associated data.
+   *
+   * Two-phase approach:
+   * Phase 1 (atomic): Core tables that ALWAYS exist — wrapped in BEGIN/COMMIT.
+   *   If any statement fails, the whole transaction rolls back.
+   * Phase 2 (best-effort): Optional tables that may not exist (fts_items, vec_items,
+   *   embeddings_fallback). These are cleaned up after Phase 1 succeeds.
+   *   Failures here are silently ignored — they're index/cache data.
+   *
+   * @throws Error if rawClient is not available
+   * @throws Error if the core transaction fails
+   */
   async delete(id: string): Promise<void> {
-    // Get item IDs in this collection
-    const itemRows = await this.db
-      .select({ id: items.id })
-      .from(items)
-      .where(eq(items.collectionId, id))
-    const itemIds = itemRows.map((r) => r.id)
-
-    if (itemIds.length > 0) {
-      // Get asset IDs for these items
-      const assetRows = await this.db
-        .select({ id: assets.id })
-        .from(assets)
-        .where(inArray(assets.itemId, itemIds))
-      const assetIds = assetRows.map((r) => r.id)
-
-      // Delete leaves first: jobs & extractions depend on assets
-      if (assetIds.length > 0) {
-        await this.db.delete(jobs).where(inArray(jobs.assetId, assetIds))
-        await this.db.delete(extractions).where(inArray(extractions.assetId, assetIds))
-      }
-
-      // Delete item-level dependents
-      await this.db.delete(entities).where(inArray(entities.itemId, itemIds))
-      await this.db.delete(triples).where(inArray(triples.itemId, itemIds))
-      await this.db.delete(notes).where(inArray(notes.itemId, itemIds))
-      await this.db.delete(assets).where(inArray(assets.itemId, itemIds))
-      await this.db.delete(items).where(inArray(items.id, itemIds))
+    if (!this.rawClient) {
+      throw new Error('delete requires a rawClient for transactional execution')
     }
 
-    await this.db.delete(collections).where(eq(collections.id, id))
+    const esc = id.replace(/'/g, "''")
+
+    // Step 0: Get item IDs before deleting (needed for optional table cleanup)
+    const itemRows = await this.rawClient.select(
+      `SELECT id FROM items WHERE collection_id = '${esc}'`,
+      []
+    )
+    const itemIds = itemRows.map((r: Record<string, unknown>) => r.id as string)
+    const itemIdsList = itemIds.map((i) => `'${(i as string).replace(/'/g, "''")}'`).join(',')
+
+    // Phase 1: Atomic transaction for core tables (always exist)
+    try {
+      await this.rawClient.executeBatch(`
+        BEGIN;
+        DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
+        DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
+        DELETE FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
+        DELETE FROM entities WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
+        DELETE FROM triples WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
+        DELETE FROM notes WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
+        DELETE FROM items WHERE collection_id = '${esc}';
+        DELETE FROM collections WHERE id = '${esc}';
+        COMMIT;
+      `)
+    } catch (e) {
+      throw new Error(
+        `Failed to delete collection ${id}: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+
+    // Phase 2: Best-effort cleanup for optional tables (items already deleted, use cached IDs)
+    if (itemIdsList.length > 0) {
+      // FTS search index
+      try {
+        await this.rawClient.execute(`DELETE FROM fts_items WHERE item_id IN (${itemIdsList})`)
+      } catch {
+        /* table may not exist — non-fatal */
+      }
+
+      // Embedding vectors (vec0 or fallback)
+      try {
+        await this.rawClient.execute(`DELETE FROM vec_items WHERE item_id IN (${itemIdsList})`)
+      } catch {
+        /* table may not exist — non-fatal */
+      }
+
+      try {
+        await this.rawClient.execute(
+          `DELETE FROM embeddings_fallback WHERE item_id IN (${itemIdsList})`
+        )
+      } catch {
+        /* table may not exist — non-fatal */
+      }
+    }
+  }
+
+  /**
+   * Delete a collection only if it has 0 items. Used for auto-cleanup when
+   * the last item of a collection is removed.
+   */
+  async deleteIfEmpty(id: string): Promise<boolean> {
+    if (!this.rawClient) {
+      throw new Error('deleteIfEmpty requires a rawClient for transactional execution')
+    }
+
+    const esc = id.replace(/'/g, "''")
+
+    try {
+      await this.rawClient.executeBatch(`
+        DELETE FROM collections WHERE id = '${esc}' AND id NOT IN (SELECT DISTINCT collection_id FROM items);
+      `)
+      // Check if the collection was actually deleted
+      const rows = await this.rawClient.select(`SELECT id FROM collections WHERE id = '${esc}'`, [])
+      return rows.length === 0
+    } catch (e) {
+      throw new Error(
+        `Failed to delete empty collection ${id}: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
   }
 
   async countItems(id: string): Promise<number> {

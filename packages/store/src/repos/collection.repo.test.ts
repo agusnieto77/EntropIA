@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CollectionRepo } from './collection.repo'
-import type { DrizzleClient } from '../types'
+import type { DrizzleClient, DbClient } from '../types'
 
 /**
  * CollectionRepo tests.
@@ -53,6 +53,14 @@ function createMockDrizzle() {
       delete: deleteMock,
     },
   }
+}
+
+function createMockRawClient() {
+  return {
+    execute: vi.fn().mockResolvedValue({ rowsAffected: 0 }),
+    executeBatch: vi.fn().mockResolvedValue(undefined),
+    select: vi.fn().mockResolvedValue([]),
+  } as unknown as DbClient
 }
 
 describe('CollectionRepo', () => {
@@ -131,6 +139,34 @@ describe('CollectionRepo', () => {
     })
   })
 
+  describe('findAllNonEmpty', () => {
+    it('uses rawClient when available', async () => {
+      const rawClient = createMockRawClient()
+      const collections = [
+        { id: '1', name: 'Has Items', description: null, createdAt: 100, updatedAt: 200 },
+      ]
+      ;(rawClient.select as ReturnType<typeof vi.fn>).mockResolvedValue(collections)
+
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+      const result = await repoWithRaw.findAllNonEmpty()
+
+      expect(result).toEqual(collections)
+      expect(rawClient.select).toHaveBeenCalledWith(expect.stringContaining('INNER JOIN items'))
+    })
+
+    it('falls back to Drizzle when rawClient is not available', async () => {
+      const collections = [
+        { id: '1', name: 'Has Items', description: null, createdAt: 100, updatedAt: 200 },
+      ]
+      const selectResult = createChainMock(collections)
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const result = await repo.findAllNonEmpty()
+
+      expect(result).toEqual(collections)
+    })
+  })
+
   describe('findById', () => {
     it('returns null when collection not found', async () => {
       const selectResult = createChainMock([])
@@ -173,9 +209,110 @@ describe('CollectionRepo', () => {
   })
 
   describe('delete', () => {
-    it('completes without error', async () => {
-      // delete().where() resolves
-      await expect(repo.delete('del-1')).resolves.toBeUndefined()
+    it('throws when rawClient is not available', async () => {
+      await expect(repo.delete('col-1')).rejects.toThrow(
+        'delete requires a rawClient for transactional execution'
+      )
+    })
+
+    it('executes batch delete for core tables within a transaction', async () => {
+      const rawClient = createMockRawClient()
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      await repoWithRaw.delete('col-1')
+
+      expect(rawClient.executeBatch).toHaveBeenCalledTimes(1)
+      const batchSql = (rawClient.executeBatch as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+      // Core tables (always exist) — in atomic transaction
+      expect(batchSql).toContain('BEGIN')
+      expect(batchSql).toContain('DELETE FROM jobs')
+      expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM assets')
+      expect(batchSql).toContain('DELETE FROM entities')
+      expect(batchSql).toContain('DELETE FROM triples')
+      expect(batchSql).toContain('DELETE FROM notes')
+      expect(batchSql).toContain('DELETE FROM items')
+      expect(batchSql).toContain('DELETE FROM collections')
+      expect(batchSql).toContain('COMMIT')
+      // Optional tables should NOT be in the batch
+      expect(batchSql).not.toContain('DELETE FROM vec_items')
+      expect(batchSql).not.toContain('DELETE FROM embeddings_fallback')
+      expect(batchSql).not.toContain('DELETE FROM fts_index')
+      expect(batchSql).not.toContain('DELETE FROM fts_items')
+    })
+
+    it('cleans up optional tables after core transaction succeeds', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 0 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        executeBatch: vi.fn().mockResolvedValue(undefined),
+        select: vi.fn().mockResolvedValue([{ id: 'item-1' }]),
+      } as unknown as DbClient
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      await repoWithRaw.delete('col-1')
+
+      // Optional tables are cleaned up with individual execute calls
+      const executeCalls = rawExecuteMock.mock.calls.map((c) => c[0] as string)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM fts_items'))).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_items'))).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM embeddings_fallback'))).toBe(true)
+    })
+
+    it('escapes single quotes in collection ID to prevent SQL injection', async () => {
+      const rawClient = createMockRawClient()
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      await repoWithRaw.delete("col'; DROP TABLE collections;--")
+
+      const batchSql = (rawClient.executeBatch as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+      expect(batchSql).toContain("col''; DROP TABLE collections;--")
+      expect(batchSql).not.toContain("col'; DROP TABLE collections;--")
+    })
+
+    it('wraps errors with context message', async () => {
+      const rawClient = createMockRawClient()
+      ;(rawClient.executeBatch as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('constraint violation')
+      )
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      await expect(repoWithRaw.delete('col-1')).rejects.toThrow(
+        'Failed to delete collection col-1: constraint violation'
+      )
+    })
+  })
+
+  describe('deleteIfEmpty', () => {
+    it('throws when rawClient is not available', async () => {
+      await expect(repo.deleteIfEmpty('col-1')).rejects.toThrow(
+        'deleteIfEmpty requires a rawClient for transactional execution'
+      )
+    })
+
+    it('returns true when collection is deleted (had 0 items)', async () => {
+      const rawClient = createMockRawClient()
+      // After delete, the collection no longer exists
+      ;(rawClient.select as ReturnType<typeof vi.fn>).mockResolvedValue([])
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      const result = await repoWithRaw.deleteIfEmpty('col-1')
+
+      expect(result).toBe(true)
+      expect(rawClient.executeBatch).toHaveBeenCalledWith(
+        expect.stringContaining('DELETE FROM collections')
+      )
+    })
+
+    it('returns false when collection still exists (had items)', async () => {
+      const rawClient = createMockRawClient()
+      // After delete attempt, the collection still exists (had items)
+      ;(rawClient.select as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'col-1' }])
+      const repoWithRaw = new CollectionRepo(db.db, rawClient)
+
+      const result = await repoWithRaw.deleteIfEmpty('col-1')
+
+      expect(result).toBe(false)
     })
   })
 

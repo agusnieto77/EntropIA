@@ -111,35 +111,53 @@ export class ItemRepo {
       throw new Error('deleteWithCascade requires a rawClient for transactional execution')
     }
 
-    // Escape the ID for safe SQL interpolation
     const esc = id.replace(/'/g, "''")
 
+    // Get the parent collection ID before deleting the item (needed for auto-cleanup)
+    const parentRows = await this.rawClient.select(
+      `SELECT collection_id FROM items WHERE id = '${esc}'`,
+      []
+    )
+    const collectionId = parentRows[0]?.collection_id as string | undefined
+    const escCollectionId = collectionId !== undefined ? collectionId.replace(/'/g, "''") : ''
+
+    // Phase 1: Atomic transaction for core tables (always exist)
     try {
       await this.rawClient.executeBatch(`
-        -- 1. Delete jobs linked to this item's assets
+        BEGIN;
         DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
-        -- 2. Delete extractions linked to this item's assets
         DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
-        -- 3. Delete assets linked to this item
         DELETE FROM assets WHERE item_id = '${esc}';
-        -- 4. Delete entities linked to this item
         DELETE FROM entities WHERE item_id = '${esc}';
-        -- 5. Delete triples linked to this item
         DELETE FROM triples WHERE item_id = '${esc}';
-        -- 6. Delete embedding for this item
-        DELETE FROM vec_items WHERE item_id = '${esc}';
-        DELETE FROM embeddings_fallback WHERE item_id = '${esc}';
-        -- 7. Delete FTS entries for this item
-        DELETE FROM fts_index WHERE item_id = '${esc}';
-        -- 8. Delete notes linked to this item
         DELETE FROM notes WHERE item_id = '${esc}';
-        -- 9. Delete the item itself
         DELETE FROM items WHERE id = '${esc}';
+        DELETE FROM collections WHERE id = '${escCollectionId}' AND id NOT IN (SELECT DISTINCT collection_id FROM items);
+        COMMIT;
       `)
     } catch (e) {
       throw new Error(
         `Failed to delete item cascade for ${id}: ${e instanceof Error ? e.message : String(e)}`
       )
+    }
+
+    // Phase 2: Best-effort cleanup for optional tables
+    try {
+      await this.rawClient.execute(`DELETE FROM fts_items WHERE item_id = '${esc}'`)
+    } catch {
+      /* table may not exist — non-fatal */
+    }
+
+    try {
+      await this.rawClient.execute(`DELETE FROM vec_items WHERE item_id = '${esc}'`)
+    } catch {
+      /* table may not exist — non-fatal */
+    }
+
+    try {
+      await this.rawClient.execute(`DELETE FROM embeddings_fallback WHERE item_id = '${esc}'`)
+    } catch {
+      /* table may not exist — non-fatal */
     }
   }
 

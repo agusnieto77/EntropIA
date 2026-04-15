@@ -30,6 +30,7 @@
       loading = true
       error = null
       const store = getStore()
+      // Load ALL collections (including newly created ones with 0 items)
       collections = await store.collections.findAll()
 
       // Load item counts
@@ -181,7 +182,11 @@
               }}
             >
               <Input type="text" placeholder="Nombre" bind:value={editName} />
-              <Input type="text" placeholder="Descripción (opcional)" bind:value={editDescription} />
+              <Input
+                type="text"
+                placeholder="Descripción (opcional)"
+                bind:value={editDescription}
+              />
               <div class="edit-form__actions">
                 <Button variant="primary" type="submit" disabled={!editName.trim()}>Guardar</Button>
                 <Button variant="ghost" onclick={handleCancelEdit}>Cancelar</Button>
@@ -213,7 +218,10 @@
     <div class="confirm-overlay">
       <Card>
         <div class="confirm-dialog">
-          <p class="confirm-dialog__message">¿Estás seguro que querés eliminar la colección <strong>'{deletingName}'</strong>? Se eliminarán todos sus items y datos asociados.</p>
+          <p class="confirm-dialog__message">
+            ¿Estás seguro que querés eliminar la colección <strong>'{deletingName}'</strong>? Se
+            eliminarán todos sus items y datos asociados.
+          </p>
           <div class="confirm-dialog__actions">
             <Button variant="primary" onclick={handleConfirmDelete}>Eliminar</Button>
             <Button variant="ghost" onclick={handleCancelDelete}>Cancelar</Button>

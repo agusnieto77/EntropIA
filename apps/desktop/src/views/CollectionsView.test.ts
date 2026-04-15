@@ -7,6 +7,7 @@ const { storeRef, navigationRef } = vi.hoisted(() => ({
     current: {
       collections: {
         findAll: vi.fn(),
+        findAllNonEmpty: vi.fn(),
         countItems: vi.fn(),
         create: vi.fn(),
         delete: vi.fn(),
@@ -30,6 +31,7 @@ function createStore(collections: CollectionRow[], count = 0) {
   return {
     collections: {
       findAll: vi.fn().mockResolvedValue(collections),
+      findAllNonEmpty: vi.fn().mockResolvedValue(collections),
       countItems: vi.fn().mockResolvedValue(count),
       create: vi.fn(),
       delete: vi.fn(),

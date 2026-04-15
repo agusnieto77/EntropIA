@@ -260,7 +260,7 @@ describe('ItemRepo', () => {
       )
     })
 
-    it('executes batch delete for all item-related tables', async () => {
+    it('executes batch delete for core tables within a transaction', async () => {
       const rawExecuteBatchMock = vi.fn().mockResolvedValue(undefined)
       const rawClient = {
         execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
@@ -273,17 +273,41 @@ describe('ItemRepo', () => {
 
       expect(rawExecuteBatchMock).toHaveBeenCalledOnce()
       const batchSql = rawExecuteBatchMock.mock.calls[0]?.[0] as string
+      // Core tables (always exist) — in atomic transaction
+      expect(batchSql).toContain('BEGIN')
       expect(batchSql).toContain('DELETE FROM jobs')
       expect(batchSql).toContain('DELETE FROM extractions')
       expect(batchSql).toContain('DELETE FROM assets')
       expect(batchSql).toContain('DELETE FROM entities')
       expect(batchSql).toContain('DELETE FROM triples')
-      expect(batchSql).toContain('DELETE FROM vec_items')
-      expect(batchSql).toContain('DELETE FROM embeddings_fallback')
-      expect(batchSql).toContain('DELETE FROM fts_index')
       expect(batchSql).toContain('DELETE FROM notes')
       expect(batchSql).toContain('DELETE FROM items')
+      expect(batchSql).toContain('DELETE FROM collections')
+      expect(batchSql).toContain('COMMIT')
       expect(batchSql).toContain('item-1')
+      // Optional tables should NOT be in the batch
+      expect(batchSql).not.toContain('DELETE FROM vec_items')
+      expect(batchSql).not.toContain('DELETE FROM embeddings_fallback')
+      expect(batchSql).not.toContain('DELETE FROM fts_index')
+      expect(batchSql).not.toContain('DELETE FROM fts_items')
+    })
+
+    it('cleans up optional tables after core transaction succeeds', async () => {
+      const rawExecuteMock = vi.fn().mockResolvedValue({ rowsAffected: 0 })
+      const rawClient = {
+        execute: rawExecuteMock,
+        executeBatch: vi.fn().mockResolvedValue(undefined),
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repoWithRaw = new ItemRepo(db.db, rawClient)
+
+      await repoWithRaw.deleteWithCascade('item-1')
+
+      // Optional tables are cleaned up with individual execute calls
+      const executeCalls = rawExecuteMock.mock.calls.map((c) => c[0] as string)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM fts_items'))).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_items'))).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM embeddings_fallback'))).toBe(true)
     })
 
     it('rethrows error when batch execution fails', async () => {
