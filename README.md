@@ -47,23 +47,64 @@ En el contexto de la investigación cualitativa a escala, donde las fuentes son 
 | **AI Local** | Rust crates (OCRS/fastembed) | Sin APIs, reproducible                       |
 | **Estado**   | TS Repos (Drizzle) + Tests   | Typed safety para datos sensibles            |
 
-## 🚀 Instalación & Uso Rápido
+## 🚀 Instalación
+
+### Descarga directa (recomendado)
+
+Descargá el instalador para tu sistema desde [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
+
+| Sistema operativo                     | Instalador                         | Instrucciones                                                                                                                                          |
+| ------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Windows** 10/11 (x64)               | `EntropIA_x64_en-US.msi` o `.exe`  | Descargá y ejecutá. El instalador guía el proceso.                                                                                                     |
+| **macOS** Apple Silicon (M1/M2/M3/M4) | `EntropIA_aarch64.dmg`             | Abrí el `.dmg`, arrastrá EntropIA a Aplicaciones. En la primera apertura: clic derecho → Abrir (necesario porque no está firmado con Apple Developer). |
+| **macOS** Intel                       | `EntropIA_x64.dmg`                 | Mismo proceso que Apple Silicon.                                                                                                                       |
+| **Linux** (Ubuntu/Debian)             | `EntropIA_amd64.deb` o `.AppImage` | **.deb**: `sudo dpkg -i entropia_*.deb` · **.AppImage**: `chmod +x EntropIA_*.AppImage && ./EntropIA_*.AppImage`                                       |
+
+> ⚠️ macOS: al abrir por primera vez vas a ver un warning de "desarrollador no identificado". Clic derecho → Abrir → Abrir de todos modos.
+
+### Instalación desde código fuente (desarrollo)
+
+<details>
+<summary><strong>Prerrequisitos</strong></summary>
+
+Todos los sistemas necesitan:
+
+- [Node.js](https://nodejs.org/) 22+
+- [pnpm](https://pnpm.io/) 9.x (`npm install -g pnpm@9`)
+- [Rust](https://rustup.rs/) toolchain 1.88+
+
+Dependencias adicionales por sistema:
+
+**Linux** (Ubuntu/Debian):
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+```
+
+**Windows**: WebView2 ya viene incluido en Windows 10 (1903+) y Windows 11.
+
+**macOS**: Xcode Command Line Tools (`xcode-select --install`). WebKit es nativo del sistema.
+
+</details>
+
+<details>
+<summary><strong>Clonar, instalar y ejecutar</strong></summary>
 
 ```bash
 git clone https://github.com/agusnieto77/EntropIA.git
 cd EntropIA
-pnpm install  # Fixea store mismatch si hay warnings
-
-$env:PATH += ";$env:USERPROFILE\.cargo\bin"
+pnpm install
 
 # Dev (hot reload)
 pnpm --filter @entropia/desktop tauri dev
 
-# Build release
+# Build release (genera instalador en src-tauri/target/release/bundle/)
 pnpm --filter @entropia/desktop tauri build
 ```
 
-**Primeros pasos investigación**:
+</details>
+
+### Primeros pasos investigación
 
 1. Importa corpus (drag/drop carpetas docs).
 2. Ejecuta OCR/NER batch.
