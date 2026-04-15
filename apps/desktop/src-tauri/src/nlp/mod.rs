@@ -10,15 +10,7 @@ use tokio::sync::mpsc;
 
 #[cfg(feature = "embeddings")]
 fn load_sqlite_vec(conn: &rusqlite::Connection) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        sqlite_vec_shim::load(conn)
-    }
-
-    #[cfg(not(windows))]
-    {
-        sqlite_vec_upstream::load(conn)
-    }
+    sqlite_vec_shim::load(conn)
 }
 
 // ── Event payloads ───────────────────────────────────────────────────────────
