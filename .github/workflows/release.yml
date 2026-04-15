@@ -18,17 +18,13 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: ''
-            no_default_features: false
+            build_args: ''
           - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            no_default_features: false
+            build_args: '--target aarch64-apple-darwin'
           - platform: macos-latest
-            args: '--target x86_64-apple-darwin --no-default-features'
-            no_default_features: true
+            build_args: '--target x86_64-apple-darwin -- --no-default-features'
           - platform: ubuntu-22.04
-            args: '--no-default-features'
-            no_default_features: true
+            build_args: '-- --no-default-features'
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -62,7 +58,7 @@ jobs:
       - name: Install Rust target (macOS cross-compilation)
         if: matrix.platform == 'macos-latest'
         run: |
-          rustup target add ${{ contains(matrix.args, 'aarch64') && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+          rustup target add ${{ contains(matrix.build_args, 'aarch64') && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
 
       - name: Restore canonical lockfile
         run: git checkout -- pnpm-lock.yaml
@@ -85,4 +81,4 @@ jobs:
           releaseBody: 'See the assets below to download the installer for your platform.'
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.build_args }}
