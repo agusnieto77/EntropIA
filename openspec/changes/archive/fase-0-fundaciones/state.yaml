@@ -1,7 +1,0 @@
-change: fase-0-fundaciones
-status: archived
-archived_at: 2026-04-11
-verdict: pass
-critical_issues: 0
-warnings_fixed: 2 # W-004 tauri-plugin-sql removed, W-005 capabilities added
-remaining_warnings: 6 # low severity, deferred to Fase 1
