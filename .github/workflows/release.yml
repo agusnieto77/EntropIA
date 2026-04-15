@@ -19,12 +19,16 @@ jobs:
         include:
           - platform: windows-latest
             args: ''
+            no_default_features: false
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
+            no_default_features: false
           - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin --no-default-features'
+            no_default_features: true
           - platform: ubuntu-22.04
-            args: ''
+            args: '--no-default-features'
+            no_default_features: true
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
