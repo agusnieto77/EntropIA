@@ -252,6 +252,70 @@ describe('ItemRepo', () => {
     })
   })
 
+  describe('deleteWithCascade', () => {
+    it('throws when rawClient is not provided', async () => {
+      const repoNoRaw = new ItemRepo(db.db)
+      await expect(repoNoRaw.deleteWithCascade('item-1')).rejects.toThrow(
+        'deleteWithCascade requires a rawClient'
+      )
+    })
+
+    it('executes batch delete for all item-related tables', async () => {
+      const rawExecuteBatchMock = vi.fn().mockResolvedValue(undefined)
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: rawExecuteBatchMock,
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repoWithRaw = new ItemRepo(db.db, rawClient)
+
+      await repoWithRaw.deleteWithCascade('item-1')
+
+      expect(rawExecuteBatchMock).toHaveBeenCalledOnce()
+      const batchSql = rawExecuteBatchMock.mock.calls[0]?.[0] as string
+      expect(batchSql).toContain('DELETE FROM jobs')
+      expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM assets')
+      expect(batchSql).toContain('DELETE FROM entities')
+      expect(batchSql).toContain('DELETE FROM triples')
+      expect(batchSql).toContain('DELETE FROM vec_items')
+      expect(batchSql).toContain('DELETE FROM embeddings_fallback')
+      expect(batchSql).toContain('DELETE FROM fts_index')
+      expect(batchSql).toContain('DELETE FROM notes')
+      expect(batchSql).toContain('DELETE FROM items')
+      expect(batchSql).toContain('item-1')
+    })
+
+    it('rethrows error when batch execution fails', async () => {
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: vi.fn().mockRejectedValue(new Error('constraint violation')),
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repoWithRaw = new ItemRepo(db.db, rawClient)
+
+      await expect(repoWithRaw.deleteWithCascade('item-1')).rejects.toThrow(
+        'Failed to delete item cascade for item-1: constraint violation'
+      )
+    })
+
+    it('escapes single quotes in item ID to prevent SQL injection', async () => {
+      const rawExecuteBatchMock = vi.fn().mockResolvedValue(undefined)
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: rawExecuteBatchMock,
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repoWithRaw = new ItemRepo(db.db, rawClient)
+
+      await repoWithRaw.deleteWithCascade("item'; DROP TABLE items;--")
+
+      const batchSql = rawExecuteBatchMock.mock.calls[0]?.[0] as string
+      expect(batchSql).toContain("item''; DROP TABLE items;--")
+      expect(batchSql).not.toContain("item'; DROP TABLE items;--")
+    })
+  })
+
   describe('searchByText', () => {
     it('returns empty when no matches found', async () => {
       const selectResult = createChainMock([])

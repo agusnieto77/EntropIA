@@ -88,6 +88,62 @@ export class ItemRepo {
   }
 
   /**
+   * Delete an item and ALL its associated data in a single atomic transaction.
+   * This is used when the last asset of an item is removed — the item becomes
+   * an orphan and should be fully cleaned up.
+   *
+   * Cleanup order (dependencies first):
+   * 1. Jobs (FK → assets)
+   * 2. Extractions (FK → assets)
+   * 3. Assets (FK → items)
+   * 4. Entities (FK → items)
+   * 5. Triples (FK → items)
+   * 6. Embeddings (item_id in vec_items or embeddings_fallback)
+   * 7. FTS entries (item_id in fts_index)
+   * 8. Notes (FK → items)
+   * 9. Item itself
+   *
+   * @throws Error if rawClient is not available
+   * @throws Error if the transaction fails
+   */
+  async deleteWithCascade(id: string): Promise<void> {
+    if (!this.rawClient) {
+      throw new Error('deleteWithCascade requires a rawClient for transactional execution')
+    }
+
+    // Escape the ID for safe SQL interpolation
+    const esc = id.replace(/'/g, "''")
+
+    try {
+      await this.rawClient.executeBatch(`
+        -- 1. Delete jobs linked to this item's assets
+        DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
+        -- 2. Delete extractions linked to this item's assets
+        DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
+        -- 3. Delete assets linked to this item
+        DELETE FROM assets WHERE item_id = '${esc}';
+        -- 4. Delete entities linked to this item
+        DELETE FROM entities WHERE item_id = '${esc}';
+        -- 5. Delete triples linked to this item
+        DELETE FROM triples WHERE item_id = '${esc}';
+        -- 6. Delete embedding for this item
+        DELETE FROM vec_items WHERE item_id = '${esc}';
+        DELETE FROM embeddings_fallback WHERE item_id = '${esc}';
+        -- 7. Delete FTS entries for this item
+        DELETE FROM fts_index WHERE item_id = '${esc}';
+        -- 8. Delete notes linked to this item
+        DELETE FROM notes WHERE item_id = '${esc}';
+        -- 9. Delete the item itself
+        DELETE FROM items WHERE id = '${esc}';
+      `)
+    } catch (e) {
+      throw new Error(
+        `Failed to delete item cascade for ${id}: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+  }
+
+  /**
    * Search items by text.
    * - If a rawClient was provided (FTS5 available), tries FTS5 first.
    *   If FTS5 returns results, fetches those items from Drizzle and returns them.

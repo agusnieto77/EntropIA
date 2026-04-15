@@ -49,6 +49,7 @@ function createStore(items: ItemRow[], assets: AssetRow[] = []) {
       create: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+      deleteWithCascade: vi.fn().mockResolvedValue(undefined),
     },
     assets: {
       create: vi.fn(),
@@ -203,10 +204,13 @@ describe('CollectionView asset deletion', () => {
     })
   })
 
-  it('executes deletion and reloads metadata when confirmed', async () => {
+  it('deletes entire item when last asset is removed — card disappears from grid', async () => {
     const { deleteAssetFile } = await import('$lib/file-import')
 
     await renderAndWaitForItems()
+
+    // Verify the card is visible
+    expect(screen.getByText('Acta')).toBeInTheDocument()
 
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
@@ -216,7 +220,13 @@ describe('CollectionView asset deletion', () => {
 
     await waitFor(() => {
       expect(deleteAssetFile).toHaveBeenCalledWith(sampleAsset.path)
-      expect(storeRef.current.assets.deleteWithCascade).toHaveBeenCalledWith('asset-1')
+      // Last asset → entire item is deleted, not just the asset
+      expect(storeRef.current.items.deleteWithCascade).toHaveBeenCalledWith('item-1')
+    })
+
+    // Card should be removed from the grid (no ghost card)
+    await waitFor(() => {
+      expect(screen.queryByText('Acta')).not.toBeInTheDocument()
     })
 
     // Modal should close after successful deletion

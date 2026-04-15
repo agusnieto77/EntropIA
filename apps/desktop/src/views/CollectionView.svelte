@@ -340,6 +340,8 @@
 
   /**
    * Execute the asset deletion: remove file from FS, then cascade delete from DB.
+   * If the deleted asset is the item's last one, the entire item is removed
+   * (with all associated metadata) and the card disappears from the grid.
    */
   async function handleDeleteConfirm() {
     if (!pendingDeleteAssetId || !pendingDeleteItemId) return
@@ -349,6 +351,7 @@
 
     try {
       const store = getStore()
+      const meta = getItemAssetMeta(pendingDeleteItemId)
 
       // Step 1: Fetch the asset to get its path (before we lose the meta)
       const asset = await store.assets.findById(pendingDeleteAssetId)
@@ -359,13 +362,30 @@
       // Step 2: Delete the file from filesystem (ENOENT is OK, other errors abort)
       await deleteAssetFile(asset.path)
 
-      // Step 3: Cascade delete from database (jobs, extractions, asset)
-      await store.assets.deleteWithCascade(pendingDeleteAssetId)
+      // Step 3: Check if this is the last asset — if so, delete the entire item
+      const isLastAsset = meta.assetCount <= 1
 
-      // Step 4: Reload asset metadata for the affected item
-      await loadItemAssets([pendingDeleteItemId])
+      if (isLastAsset) {
+        // Delete the item and ALL associated data (entities, triples, embeddings,
+        // FTS, notes, remaining assets, jobs, extractions)
+        await store.items.deleteWithCascade(pendingDeleteItemId)
 
-      // Step 5: Close dialog
+        // Remove the item from the items array so the card disappears
+        items = items.filter((i) => i.id !== pendingDeleteItemId)
+
+        // Remove from asset meta cache
+        const newMeta = new Map(itemAssetMeta)
+        newMeta.delete(pendingDeleteItemId)
+        itemAssetMeta = newMeta
+      } else {
+        // Not the last asset — just delete this asset and its linked data
+        await store.assets.deleteWithCascade(pendingDeleteAssetId)
+
+        // Reload asset metadata for the affected item
+        await loadItemAssets([pendingDeleteItemId])
+      }
+
+      // Step 4: Close dialog
       handleDeleteCancel()
     } catch (e) {
       deleteError = e instanceof Error ? e.message : 'Failed to delete asset.'
