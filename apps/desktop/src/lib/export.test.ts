@@ -6,6 +6,8 @@ type ExportStoreMock = {
   items: { findByCollection: ReturnType<typeof vi.fn> }
   assets: { findByItem: ReturnType<typeof vi.fn> }
   notes: { findByItem: ReturnType<typeof vi.fn> }
+  extractions: { findByAsset: ReturnType<typeof vi.fn> }
+  annotations: { findByAsset: ReturnType<typeof vi.fn> }
 }
 
 type ExportStoreInput = Parameters<typeof exportCollectionById>[0]
@@ -100,14 +102,255 @@ describe('buildCollectionExportData', () => {
             updatedAt: 7,
           },
         ],
+      },
+      // extractionsByAssetId
+      {
+        a1: {
+          id: 'e1',
+          assetId: 'a1',
+          textContent: 'Texto extraído por OCR',
+          method: 'ocr',
+          confidence: 0.95,
+          createdAt: 8,
+        },
+      },
+      // annotationsByAssetId
+      {
+        a1: [
+          {
+            id: 'ann1',
+            assetId: 'a1',
+            page: 1,
+            kind: 'rectangle',
+            color: '#ff0000',
+            x: 0.1,
+            y: 0.2,
+            width: 0.3,
+            height: 0.4,
+            createdAt: 9,
+            updatedAt: 10,
+          },
+        ],
       }
     )
 
-    expect(payload.version).toBe(1)
+    expect(payload.version).toBe(2)
     expect(Array.isArray(payload.items)).toBe(true)
     expect(payload.items).toHaveLength(1)
     expect(payload.items[0]?.assets[0]?.path).toBe('assets/c1/i1/file.pdf')
     expect(payload.items[0]?.notes[0]?.content).toBe('nota')
+    expect(payload.items[0]?.assets[0]?.text).toBe('Texto extraído por OCR')
+    expect(payload.items[0]?.assets[0]?.bboxes).toEqual([
+      { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+    ])
+  })
+
+  it('sets text to null and bboxes to empty array when no extraction or annotations exist', () => {
+    const collection = {
+      id: 'c1',
+      name: 'Empty',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      {
+        id: 'i1',
+        title: 'No data',
+        collectionId: 'c1',
+        metadata: null,
+        createdAt: 3,
+        updatedAt: 4,
+      },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/img.png',
+      type: 'image',
+      size: 50,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {}, // no extractions
+      {} // no annotations
+    )
+
+    expect(payload.items[0]!.assets[0]!.text).toBeNull()
+    expect(payload.items[0]!.assets[0]!.bboxes).toEqual([])
+  })
+
+  it('ignores underline annotations for bboxes — only rectangles are collected', () => {
+    const collection = {
+      id: 'c1',
+      name: 'UnderlineOnly',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'UL', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/img.png',
+      type: 'image',
+      size: 50,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {},
+      {
+        a1: [
+          {
+            id: 'ann1',
+            assetId: 'a1',
+            page: 1,
+            kind: 'underline',
+            color: '#0000ff',
+            x: 0.1,
+            y: 0.5,
+            width: 0.4,
+            height: 0.02,
+            createdAt: 9,
+            updatedAt: 10,
+          },
+        ],
+      }
+    )
+
+    expect(payload.items[0]!.assets[0]!.bboxes).toEqual([])
+  })
+
+  it('collects ALL rectangle bboxes when multiple annotations exist', () => {
+    const collection = {
+      id: 'c1',
+      name: 'Multi',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'Multi', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/img.png',
+      type: 'image',
+      size: 50,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {},
+      {
+        a1: [
+          {
+            id: 'ann1',
+            assetId: 'a1',
+            page: 1,
+            kind: 'underline',
+            color: '#0000ff',
+            x: 0.1,
+            y: 0.5,
+            width: 0.4,
+            height: 0.02,
+            createdAt: 9,
+            updatedAt: 10,
+          },
+          {
+            id: 'ann2',
+            assetId: 'a1',
+            page: 1,
+            kind: 'rectangle',
+            color: '#ff0000',
+            x: 0.2,
+            y: 0.3,
+            width: 0.5,
+            height: 0.6,
+            createdAt: 11,
+            updatedAt: 12,
+          },
+          {
+            id: 'ann3',
+            assetId: 'a1',
+            page: 1,
+            kind: 'rectangle',
+            color: '#00ff00',
+            x: 0.7,
+            y: 0.8,
+            width: 0.1,
+            height: 0.1,
+            createdAt: 13,
+            updatedAt: 14,
+          },
+        ],
+      }
+    )
+
+    // ALL rectangles, in order — underline is filtered out
+    expect(payload.items[0]!.assets[0]!.bboxes).toEqual([
+      { x: 0.2, y: 0.3, width: 0.5, height: 0.6 },
+      { x: 0.7, y: 0.8, width: 0.1, height: 0.1 },
+    ])
+  })
+
+  it('includes text from extraction when asset has OCR data', () => {
+    const collection = {
+      id: 'c1',
+      name: 'WithOCR',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'OCR', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/doc.pdf',
+      type: 'pdf',
+      size: 100,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {
+        a1: {
+          id: 'e1',
+          assetId: 'a1',
+          textContent: 'Contenido nativo del PDF',
+          method: 'native',
+          confidence: null,
+          createdAt: 8,
+        },
+      },
+      {}
+    )
+
+    expect(payload.items[0]!.assets[0]!.text).toBe('Contenido nativo del PDF')
+    expect(payload.items[0]!.assets[0]!.bboxes).toEqual([])
   })
 })
 
@@ -122,6 +365,8 @@ describe('exportCollectionById', () => {
       items: { findByCollection: vi.fn() },
       assets: { findByItem: vi.fn() },
       notes: { findByItem: vi.fn() },
+      extractions: { findByAsset: vi.fn() },
+      annotations: { findByAsset: vi.fn() },
     }
 
     const result = await exportCollectionById(asExportStore(store), 'missing')
@@ -149,22 +394,40 @@ describe('exportCollectionById', () => {
       createdAt: 3,
       updatedAt: 4,
     }
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/mock/app-data/assets/c1/i1/acta.pdf',
+      type: 'pdf',
+      size: 10,
+      createdAt: 5,
+    }
+    const extraction = {
+      id: 'e1',
+      assetId: 'a1',
+      textContent: 'Texto OCR',
+      method: 'ocr',
+      confidence: 0.9,
+      createdAt: 8,
+    }
+    const annotation = {
+      id: 'ann1',
+      assetId: 'a1',
+      page: 1,
+      kind: 'rectangle' as const,
+      color: '#ff0000',
+      x: 0.1,
+      y: 0.2,
+      width: 0.3,
+      height: 0.4,
+      createdAt: 9,
+      updatedAt: 10,
+    }
 
     const store: ExportStoreMock = {
       collections: { findById: vi.fn().mockResolvedValue(collection) },
       items: { findByCollection: vi.fn().mockResolvedValue([item]) },
-      assets: {
-        findByItem: vi.fn().mockResolvedValue([
-          {
-            id: 'a1',
-            itemId: 'i1',
-            path: '/mock/app-data/assets/c1/i1/acta.pdf',
-            type: 'pdf',
-            size: 10,
-            createdAt: 5,
-          },
-        ]),
-      },
+      assets: { findByItem: vi.fn().mockResolvedValue([asset]) },
       notes: {
         findByItem: vi
           .fn()
@@ -172,6 +435,8 @@ describe('exportCollectionById', () => {
             { id: 'n1', itemId: 'i1', content: 'nota', createdAt: 6, updatedAt: 7 },
           ]),
       },
+      extractions: { findByAsset: vi.fn().mockResolvedValue(extraction) },
+      annotations: { findByAsset: vi.fn().mockResolvedValue([annotation]) },
     }
 
     const path = await exportCollectionById(asExportStore(store), 'c1')
@@ -183,5 +448,110 @@ describe('exportCollectionById', () => {
       })
     )
     expect(writeFile).toHaveBeenCalledTimes(1)
+
+    // Verify the written JSON contains the new fields
+    const writtenBytes = vi.mocked(writeFile).mock.calls[0]![1] as Uint8Array
+    const writtenStr = new TextDecoder().decode(writtenBytes)
+    const parsed = JSON.parse(writtenStr)
+
+    expect(parsed.version).toBe(2)
+    expect(parsed.items[0].assets[0].text).toBe('Texto OCR')
+    expect(parsed.items[0].assets[0].bboxes).toEqual([{ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }])
+  })
+
+  it('queries extractions and annotations for each asset', async () => {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(save).mockResolvedValue('/out/export.json')
+    vi.mocked(writeFile).mockResolvedValue(undefined)
+
+    const collection = {
+      id: 'c1',
+      name: 'Test',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const item = {
+      id: 'i1',
+      title: 'Doc',
+      collectionId: 'c1',
+      metadata: null,
+      createdAt: 3,
+      updatedAt: 4,
+    }
+    const asset1 = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/img1.png',
+      type: 'image',
+      size: 50,
+      createdAt: 5,
+    }
+    const asset2 = {
+      id: 'a2',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/img2.png',
+      type: 'image',
+      size: 60,
+      createdAt: 6,
+    }
+
+    const store: ExportStoreMock = {
+      collections: { findById: vi.fn().mockResolvedValue(collection) },
+      items: { findByCollection: vi.fn().mockResolvedValue([item]) },
+      assets: { findByItem: vi.fn().mockResolvedValue([asset1, asset2]) },
+      notes: { findByItem: vi.fn().mockResolvedValue([]) },
+      extractions: {
+        findByAsset: vi
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'e1',
+            assetId: 'a1',
+            textContent: 'OCR 1',
+            method: 'ocr',
+            confidence: 0.8,
+            createdAt: 7,
+          })
+          .mockResolvedValueOnce(null),
+      },
+      annotations: {
+        findByAsset: vi
+          .fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            {
+              id: 'ann2',
+              assetId: 'a2',
+              page: 1,
+              kind: 'rectangle',
+              color: '#00ff00',
+              x: 0.5,
+              y: 0.5,
+              width: 0.2,
+              height: 0.2,
+              createdAt: 9,
+              updatedAt: 10,
+            },
+          ]),
+      },
+    }
+
+    await exportCollectionById(asExportStore(store), 'c1')
+
+    expect(store.extractions.findByAsset).toHaveBeenCalledWith('a1')
+    expect(store.extractions.findByAsset).toHaveBeenCalledWith('a2')
+    expect(store.annotations.findByAsset).toHaveBeenCalledWith('a1')
+    expect(store.annotations.findByAsset).toHaveBeenCalledWith('a2')
+
+    const writtenBytes = vi.mocked(writeFile).mock.calls[0]![1] as Uint8Array
+    const parsed = JSON.parse(new TextDecoder().decode(writtenBytes))
+
+    // asset1 has text but no bboxes
+    expect(parsed.items[0].assets[0].text).toBe('OCR 1')
+    expect(parsed.items[0].assets[0].bboxes).toEqual([])
+    // asset2 has bboxes but no text
+    expect(parsed.items[0].assets[1].text).toBeNull()
+    expect(parsed.items[0].assets[1].bboxes).toEqual([{ x: 0.5, y: 0.5, width: 0.2, height: 0.2 }])
   })
 })

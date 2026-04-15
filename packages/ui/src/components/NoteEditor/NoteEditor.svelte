@@ -1,11 +1,12 @@
 <script lang="ts">
   import type { NoteEditorProps } from './NoteEditor.types'
 
-  let { content = '', placeholder = '', onsave, oncancel }: NoteEditorProps = $props()
+  let { content = '', placeholder = '', onsave }: NoteEditorProps = $props()
 
   let internalContent = $state('')
   let originalContent = $state('')
   let lastExternalContent = $state<string | undefined>(undefined)
+  let textareaEl: HTMLTextAreaElement | undefined = $state(undefined)
 
   $effect(() => {
     if (lastExternalContent === undefined) {
@@ -25,25 +26,29 @@
   })
 
   const isEmpty = $derived(internalContent.trim().length === 0)
-  const isUnchanged = $derived(internalContent === originalContent)
-  const isSaveDisabled = $derived(isEmpty || isUnchanged)
+  const isSaveDisabled = $derived(isEmpty)
 
   function handleInput(e: Event) {
     const target = e.target as HTMLTextAreaElement
     internalContent = target.value
   }
 
-  function handleSave() {
-    onsave?.(internalContent)
-  }
-
-  function handleCancel() {
-    oncancel?.()
+  async function handleSave() {
+    try {
+      await onsave?.(internalContent)
+      internalContent = ''
+      originalContent = ''
+      lastExternalContent = ''
+      textareaEl?.focus()
+    } catch {
+      // Save failed — keep content so the user can retry
+    }
   }
 </script>
 
 <div class="note-editor">
   <textarea
+    bind:this={textareaEl}
     class="note-editor__textarea"
     rows="3"
     {placeholder}
@@ -52,14 +57,6 @@
   ></textarea>
 
   <div class="note-editor__actions">
-    <button
-      class="note-editor__btn note-editor__btn--cancel"
-      type="button"
-      data-testid="note-cancel"
-      onclick={handleCancel}
-    >
-      Cancel
-    </button>
     <button
       class="note-editor__btn note-editor__btn--save"
       type="button"
@@ -127,17 +124,6 @@
   .note-editor__btn:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-  }
-
-  .note-editor__btn--cancel {
-    background-color: transparent;
-    color: var(--color-text-secondary);
-    border-color: var(--color-border);
-  }
-
-  .note-editor__btn--cancel:hover:not(:disabled) {
-    background-color: var(--color-surface-raised);
-    color: var(--color-text-primary);
   }
 
   .note-editor__btn--save {

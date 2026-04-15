@@ -1,12 +1,29 @@
 import { save } from '@tauri-apps/plugin-dialog'
 import { writeFile } from '@tauri-apps/plugin-fs'
-import type { Asset, Collection, Item, Note, StoreApi } from '@entropia/store'
+import type {
+  Annotation,
+  Asset,
+  Collection,
+  Extraction,
+  Item,
+  Note,
+  StoreApi,
+} from '@entropia/store'
+
+type ExportBbox = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 type ExportAsset = {
   filename: string
   type: string
   size: number | null
   path: string
+  text: string | null
+  bboxes: ExportBbox[]
 }
 
 type ExportNote = {
@@ -52,14 +69,26 @@ function getFilename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path
 }
 
+/**
+ * Collect all rectangle annotation bounding boxes.
+ * Underline annotations are excluded — they are not representative bboxes.
+ */
+function collectBboxes(annotations: Annotation[]): ExportBbox[] {
+  return annotations
+    .filter((a) => a.kind === 'rectangle')
+    .map((a) => ({ x: a.x, y: a.y, width: a.width, height: a.height }))
+}
+
 export function buildCollectionExportData(
   collection: Collection,
   items: Item[],
   assetsByItemId: Record<string, Asset[]>,
-  notesByItemId: Record<string, Note[]>
+  notesByItemId: Record<string, Note[]>,
+  extractionsByAssetId: Record<string, Extraction | null>,
+  annotationsByAssetId: Record<string, Annotation[]>
 ): CollectionExportPayload {
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     collection: {
       id: collection.id,
@@ -79,6 +108,8 @@ export function buildCollectionExportData(
         type: asset.type,
         size: asset.size ?? null,
         path: toRelativeAssetPath(asset.path),
+        text: extractionsByAssetId[asset.id]?.textContent ?? null,
+        bboxes: collectBboxes(annotationsByAssetId[asset.id] ?? []),
       })),
       notes: (notesByItemId[item.id] ?? []).map((note) => ({
         content: note.content,
@@ -100,6 +131,8 @@ export async function exportCollectionById(
 
   const assetsByItemId: Record<string, Asset[]> = {}
   const notesByItemId: Record<string, Note[]> = {}
+  const extractionsByAssetId: Record<string, Extraction | null> = {}
+  const annotationsByAssetId: Record<string, Annotation[]> = {}
 
   for (const item of items) {
     const [assets, notes] = await Promise.all([
@@ -108,9 +141,25 @@ export async function exportCollectionById(
     ])
     assetsByItemId[item.id] = assets
     notesByItemId[item.id] = notes
+
+    for (const asset of assets) {
+      const [extraction, assetAnnotations] = await Promise.all([
+        store.extractions.findByAsset(asset.id),
+        store.annotations.findByAsset(asset.id),
+      ])
+      extractionsByAssetId[asset.id] = extraction
+      annotationsByAssetId[asset.id] = assetAnnotations
+    }
   }
 
-  const payload = buildCollectionExportData(collection, items, assetsByItemId, notesByItemId)
+  const payload = buildCollectionExportData(
+    collection,
+    items,
+    assetsByItemId,
+    notesByItemId,
+    extractionsByAssetId,
+    annotationsByAssetId
+  )
   return exportCollectionToJson(payload, `${collection.name}.json`)
 }
 

@@ -53,20 +53,45 @@ describe('DocumentViewer', () => {
     MockResizeObserver.instances = []
   })
 
-  function setImageSize(img: HTMLImageElement, width: number, height: number) {
-    Object.defineProperty(img, 'clientWidth', { configurable: true, value: width })
-    Object.defineProperty(img, 'clientHeight', { configurable: true, value: height })
+  function setupImage(
+    img: HTMLImageElement,
+    naturalW: number,
+    naturalH: number,
+    displayW: number,
+    displayH: number
+  ) {
+    // clientWidth/clientHeight reflect the CSS size (what we set via style)
+    Object.defineProperty(img, 'clientWidth', { configurable: true, value: displayW })
+    Object.defineProperty(img, 'clientHeight', { configurable: true, value: displayH })
+    // naturalWidth/naturalHeight reflect the intrinsic image dimensions
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: naturalW })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: naturalH })
     img.getBoundingClientRect = vi.fn(() => ({
       x: 0,
       y: 0,
       top: 0,
       left: 0,
-      right: width,
-      bottom: height,
-      width,
-      height,
+      right: displayW,
+      bottom: displayH,
+      width: displayW,
+      height: displayH,
       toJSON: () => ({}),
     }))
+  }
+
+  /** Simulate measuring the container by patching getComputedStyle */
+  function mockContainerSize(width: number, height: number) {
+    const origGetComputedStyle = window.getComputedStyle
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((elt: Element) => {
+      const real = origGetComputedStyle(elt)
+      return {
+        ...real,
+        paddingLeft: '16px',
+        paddingRight: '16px',
+        paddingTop: '16px',
+        paddingBottom: '16px',
+      } as CSSStyleDeclaration
+    })
   }
 
   describe('image mode', () => {
@@ -104,7 +129,25 @@ describe('DocumentViewer', () => {
       expect(screen.queryByTestId('pdf-controls')).not.toBeInTheDocument()
     })
 
-    it('creates a rectangle annotation from normalized drag geometry', async () => {
+    it('renders image zoom controls', () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      expect(screen.getByTestId('image-controls')).toBeInTheDocument()
+      expect(screen.getByTestId('image-zoom-in')).toBeInTheDocument()
+      expect(screen.getByTestId('image-zoom-out')).toBeInTheDocument()
+    })
+
+    it('creates a rectangle annotation with normalized coordinates relative to natural image size', async () => {
       const onAnnotationsChange = vi.fn()
 
       render(DocumentViewer, {
@@ -121,9 +164,11 @@ describe('DocumentViewer', () => {
       })
 
       const img = screen.getByRole('img') as HTMLImageElement
-      setImageSize(img, 200, 100)
+      // Natural 200x100, displayed at 200x100 (fitScale=1, zoom=1)
+      setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances[0]?.trigger(img)
+      // Trigger resize observers (image + container)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
 
       const overlay = await screen.findByTestId('annotation-overlay')
       overlay.getBoundingClientRect = vi.fn(() => ({
@@ -138,24 +183,114 @@ describe('DocumentViewer', () => {
         toJSON: () => ({}),
       }))
 
+      // Drag from (20,10) to (120,60) on a 200x100 display
       await fireEvent.pointerDown(overlay, { clientX: 20, clientY: 10, button: 0 })
       await fireEvent.pointerMove(overlay, { clientX: 120, clientY: 60, button: 0 })
       await fireEvent.pointerUp(overlay, { clientX: 120, clientY: 60, button: 0 })
 
       expect(onAnnotationsChange).toHaveBeenCalledTimes(1)
-      expect(onAnnotationsChange).toHaveBeenCalledWith(
-        expect.arrayContaining([
-          expect.objectContaining({
-            kind: 'rectangle',
-            color: 'var(--color-accent)',
-            x: 0.1,
-            y: 0.1,
-            width: 0.5,
-            height: 0.5,
-            page: 1,
-          }),
-        ])
-      )
+      const created = onAnnotationsChange.mock.calls[0][0][0]
+      expect(created.kind).toBe('rectangle')
+      // Normalized: 20/200=0.1, 10/100=0.1, 100/200=0.5, 50/100=0.5
+      expect(created.x).toBeCloseTo(0.1, 3)
+      expect(created.y).toBeCloseTo(0.1, 3)
+      expect(created.width).toBeCloseTo(0.5, 3)
+      expect(created.height).toBeCloseTo(0.5, 3)
+    })
+
+    it('renders annotations in natural-image viewBox coordinates', async () => {
+      const annotation = {
+        id: 'ann-1',
+        assetId: 'asset-1',
+        page: 1,
+        kind: 'rectangle' as const,
+        color: 'var(--color-accent)',
+        x: 0.25,
+        y: 0.1,
+        width: 0.5,
+        height: 0.4,
+        createdAt: 10,
+        updatedAt: 10,
+      }
+
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [annotation],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      // Natural 200x100, displayed at 200x100
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const shape = await screen.findByTestId('annotation-shape-ann-1')
+      // ViewBox is "0 0 200 100" → normalized * natural = viewBox px
+      expect(shape).toHaveAttribute('x', '50') // 0.25 * 200
+      expect(shape).toHaveAttribute('y', '10') // 0.1 * 100
+      expect(shape).toHaveAttribute('width', '100') // 0.5 * 200
+      expect(shape).toHaveAttribute('height', '40') // 0.4 * 100
+    })
+
+    it('keeps annotation positions correct after image resize (zoom stays)', async () => {
+      const annotation = {
+        id: 'ann-1',
+        assetId: 'asset-1',
+        page: 1,
+        kind: 'rectangle' as const,
+        color: 'var(--color-accent)',
+        x: 0.25,
+        y: 0.1,
+        width: 0.5,
+        height: 0.4,
+        createdAt: 10,
+        updatedAt: 10,
+      }
+
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [annotation],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+
+      // First: natural 200x100, displayed at 200x100
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const shape = await screen.findByTestId('annotation-shape-ann-1')
+      // ViewBox coordinates are always in natural-image space (200x100)
+      expect(shape).toHaveAttribute('x', '50')
+      expect(shape).toHaveAttribute('y', '10')
+      expect(shape).toHaveAttribute('width', '100')
+      expect(shape).toHaveAttribute('height', '40')
+
+      // Now resize: same natural image but displayed at 400x200
+      setupImage(img, 200, 100, 400, 200)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      await waitFor(() => {
+        // ViewBox coords don't change — they're in natural-image space (200x100)
+        expect(shape).toHaveAttribute('x', '50')
+        expect(shape).toHaveAttribute('y', '10')
+        expect(shape).toHaveAttribute('width', '100')
+        expect(shape).toHaveAttribute('height', '40')
+      })
     })
 
     it('selects, recolors, deletes, and deselects annotations', async () => {
@@ -193,9 +328,9 @@ describe('DocumentViewer', () => {
       })
 
       const img = screen.getByRole('img') as HTMLImageElement
-      setImageSize(img, 200, 100)
+      setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances[0]?.trigger(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
 
       const shape = await screen.findByTestId('annotation-shape-ann-1')
       await fireEvent.click(shape)
@@ -241,17 +376,65 @@ describe('DocumentViewer', () => {
       expect(onSelectedAnnotationIdChange).toHaveBeenLastCalledWith(null)
     })
 
-    it('keeps overlay alignment after image resize', async () => {
+    it('creates an underline annotation by horizontal drag with fixed stroke', async () => {
+      const onAnnotationsChange = vi.fn()
+
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'underline',
+          annotationColor: 'var(--color-accent)',
+          onAnnotationsChange,
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const overlay = await screen.findByTestId('annotation-overlay')
+      overlay.getBoundingClientRect = vi.fn(() => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }))
+
+      // Drag from (20,50) to (120,80) — vertical movement ignored for underline
+      await fireEvent.pointerDown(overlay, { clientX: 20, clientY: 50, button: 0 })
+      await fireEvent.pointerMove(overlay, { clientX: 120, clientY: 80, button: 0 })
+      await fireEvent.pointerUp(overlay, { clientX: 120, clientY: 80, button: 0 })
+
+      expect(onAnnotationsChange).toHaveBeenCalledTimes(1)
+      const created = onAnnotationsChange.mock.calls[0][0][0]
+      expect(created.kind).toBe('underline')
+      expect(created.width).toBeCloseTo(0.5, 3) // (120-20)/200 = 0.5
+      expect(created.x).toBeCloseTo(0.1, 3) // 20/200 = 0.1
+      expect(created.y).toBeCloseTo(0.49, 2) // startY 0.5 - 0.01
+      expect(created.height).toBe(0.02)
+    })
+
+    it('renders underline annotations with non-scaling stroke', async () => {
       const annotation = {
-        id: 'ann-1',
+        id: 'ann-ul',
         assetId: 'asset-1',
         page: 1,
-        kind: 'rectangle' as const,
+        kind: 'underline' as const,
         color: 'var(--color-accent)',
-        x: 0.25,
-        y: 0.1,
+        x: 0.1,
+        y: 0.49,
         width: 0.5,
-        height: 0.4,
+        height: 0.02,
         createdAt: 10,
         updatedAt: 10,
       }
@@ -269,27 +452,80 @@ describe('DocumentViewer', () => {
       })
 
       const img = screen.getByRole('img') as HTMLImageElement
-      setImageSize(img, 200, 100)
+      setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
 
-      const observer = MockResizeObserver.instances[0]
-      observer?.trigger(img)
+      const line = await screen.findByTestId('annotation-shape-ann-ul')
+      // Fixed 2px stroke with non-scaling-stroke
+      expect(line).toHaveAttribute('stroke-width', '2')
+      expect(line).toHaveAttribute('vector-effect', 'non-scaling-stroke')
+    })
 
-      const shape = await screen.findByTestId('annotation-shape-ann-1')
-      expect(shape).toHaveAttribute('x', '50')
-      expect(shape).toHaveAttribute('y', '10')
-      expect(shape).toHaveAttribute('width', '100')
-      expect(shape).toHaveAttribute('height', '40')
-
-      setImageSize(img, 400, 200)
-      observer?.trigger(img)
-
-      await waitFor(() => {
-        expect(shape).toHaveAttribute('x', '100')
-        expect(shape).toHaveAttribute('y', '20')
-        expect(shape).toHaveAttribute('width', '200')
-        expect(shape).toHaveAttribute('height', '80')
+    it('does not show the select/arrow tool button in the toolbar', () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
       })
+
+      expect(
+        screen.queryByRole('button', { name: /select annotation tool/i })
+      ).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /rectangle annotation tool/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /underline annotation tool/i })).toBeInTheDocument()
+    })
+
+    it('toggles tool off when clicking the already-active tool button', async () => {
+      const onAnnotationToolChange = vi.fn()
+
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'rectangle',
+          annotationColor: 'var(--color-accent)',
+          onAnnotationToolChange,
+        },
+      })
+
+      await fireEvent.click(screen.getByRole('button', { name: /rectangle annotation tool/i }))
+      expect(onAnnotationToolChange).toHaveBeenCalledWith('select')
+    })
+
+    it('collapses and expands the toolbar', async () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      expect(screen.getByTestId('annotation-toolbar')).toBeInTheDocument()
+
+      await fireEvent.click(screen.getByRole('button', { name: /collapse annotation toolbar/i }))
+
+      expect(screen.queryByTestId('annotation-toolbar')).not.toBeInTheDocument()
+      expect(screen.getByTestId('annotation-toolbar-fab')).toBeInTheDocument()
+
+      await fireEvent.click(screen.getByTestId('annotation-toolbar-fab'))
+
+      expect(screen.getByTestId('annotation-toolbar')).toBeInTheDocument()
+      expect(screen.queryByTestId('annotation-toolbar-fab')).not.toBeInTheDocument()
     })
   })
 

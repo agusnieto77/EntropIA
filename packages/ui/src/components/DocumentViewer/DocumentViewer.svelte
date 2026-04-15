@@ -24,18 +24,35 @@
     { value: 'var(--color-danger)', label: 'Danger' },
   ]
   const MIN_DRAW_PX = 6
+  const UNDERLINE_STROKE_PX = 2
+  const UNDERLINE_HITBOX_NORMALIZED = 0.02
+  const MIN_ZOOM = 0.5
+  const MAX_ZOOM = 4.0
+  const ZOOM_STEP = 0.25
 
   // PDF state
   let currentPage = $state(1)
   let totalPages = $state(0)
-  let zoom = $state(1.0)
+  let pdfZoom = $state(1.0)
   let loading = $state(false)
   let error = $state<string | null>(null)
 
   let canvasEl: HTMLCanvasElement | undefined = $state()
   let imgEl: HTMLImageElement | undefined = $state()
+  let containerEl: HTMLElement | undefined = $state()
   let pdfDoc: any = null
-  let imageBounds = $state({ width: 0, height: 0 })
+
+  // Image geometry — natural (intrinsic) dimensions of the source file
+  let naturalW = $state(0)
+  let naturalH = $state(0)
+
+  // Container inner dimensions (content area, padding excluded)
+  let containerW = $state(0)
+  let containerH = $state(0)
+
+  // Image zoom level (1.0 = fit-to-container)
+  let imageZoom = $state(1.0)
+
   let draft = $state<{
     startX: number
     startY: number
@@ -44,12 +61,31 @@
     kind: Exclude<AnnotationTool, 'select'>
   } | null>(null)
 
+  // ── Derived geometry ──────────────────────────────────────────────
+  // fitScale: the scale that makes the image fit inside the container
+  const fitScale = $derived(
+    naturalW > 0 && naturalH > 0 && containerW > 0 && containerH > 0
+      ? Math.min(containerW / naturalW, containerH / naturalH)
+      : 1
+  )
+
+  // Display dimensions: what the image (and SVG overlay) measure on screen
+  const displayW = $derived(Math.round(naturalW * fitScale * imageZoom))
+  const displayH = $derived(Math.round(naturalH * fitScale * imageZoom))
+
+  const hasRenderableBounds = $derived(naturalW > 0 && naturalH > 0)
+
+  const canZoomIn = $derived(imageZoom < MAX_ZOOM)
+  const canZoomOut = $derived(imageZoom > MIN_ZOOM)
+
   const canGoPrev = $derived(currentPage > 1)
   const canGoNext = $derived(currentPage < totalPages)
-  const canZoomIn = $derived(zoom < 3.0)
-  const canZoomOut = $derived(zoom > 0.5)
-  const hasRenderableBounds = $derived(imageBounds.width > 0 && imageBounds.height > 0)
+  const canPdfZoomIn = $derived(pdfZoom < 3.0)
+  const canPdfZoomOut = $derived(pdfZoom > 0.5)
 
+  const overlayCursor = $derived(annotationTool === 'select' ? 'default' : 'crosshair')
+
+  // ── Helpers ────────────────────────────────────────────────────────
   function clamp01(value: number) {
     return Math.max(0, Math.min(1, value))
   }
@@ -81,19 +117,19 @@
     }
   }
 
-  function measureImage() {
-    imageBounds = {
-      width: imgEl?.clientWidth ?? 0,
-      height: imgEl?.clientHeight ?? 0,
-    }
+  /** Convert normalized [0,1] → natural-image pixels (SVG viewBox space) */
+  function px(value: number, axis: 'x' | 'y') {
+    const dimension = axis === 'x' ? naturalW : naturalH
+    return String(Math.round(value * dimension))
   }
 
+  /** Convert a viewport PointerEvent to normalized [0,1] coordinates.
+   *  Uses getBoundingClientRect which accounts for CSS transforms, so this
+   *  works correctly at any zoom level. */
   function getNormalizedPoint(event: PointerEvent) {
     const target = event.currentTarget as SVGSVGElement
     const rect = target.getBoundingClientRect()
-    if (rect.width === 0 || rect.height === 0) {
-      return null
-    }
+    if (rect.width === 0 || rect.height === 0) return null
 
     return {
       x: clamp01((event.clientX - rect.left) / rect.width),
@@ -113,19 +149,32 @@
   }
 
   function meetsMinimumSize(box: { width: number; height: number }, kind: AnnotationTool) {
-    const minWidth = MIN_DRAW_PX / Math.max(imageBounds.width, 1)
-    const minHeight = MIN_DRAW_PX / Math.max(imageBounds.height, 1)
+    // Minimum size in display pixels, converted to normalized coords via display dimensions
+    const minNormW = MIN_DRAW_PX / Math.max(displayW, 1)
+    const minNormH = MIN_DRAW_PX / Math.max(displayH, 1)
     if (kind === 'underline') {
-      return box.width >= minWidth
+      return box.width >= minNormW
     }
-    return box.width >= minWidth && box.height >= minHeight
+    return box.width >= minNormW && box.height >= minNormH
   }
 
-  function px(value: number, axis: 'x' | 'y') {
-    const dimension = axis === 'x' ? imageBounds.width : imageBounds.height
-    return String(Math.round(value * dimension))
+  // ── Measurement ────────────────────────────────────────────────────
+  function measureImage() {
+    if (!imgEl) return
+    naturalW = imgEl.naturalWidth
+    naturalH = imgEl.naturalHeight
   }
 
+  function measureContainer() {
+    if (!containerEl) return
+    const style = getComputedStyle(containerEl)
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+    containerW = containerEl.clientWidth - padX
+    containerH = containerEl.clientHeight - padY
+  }
+
+  // ── Handlers ────────────────────────────────────────────────────────
   function handleToolbarToolChange(tool: AnnotationTool) {
     onAnnotationToolChange(tool)
     if (tool !== annotationTool) {
@@ -135,38 +184,24 @@
 
   function handleToolbarColorChange(color: string) {
     onAnnotationColorChange(color)
-
-    if (!selectedAnnotationId) {
-      return
-    }
-
+    if (!selectedAnnotationId) return
     onAnnotationsChange(
-      annotations.map((annotation) =>
-        annotation.id === selectedAnnotationId
-          ? { ...annotation, color, updatedAt: Date.now() }
-          : annotation
+      annotations.map((a) =>
+        a.id === selectedAnnotationId ? { ...a, color, updatedAt: Date.now() } : a
       )
     )
   }
 
   function handleDeleteSelected() {
-    if (!selectedAnnotationId) {
-      return
-    }
-
-    onAnnotationsChange(annotations.filter((annotation) => annotation.id !== selectedAnnotationId))
+    if (!selectedAnnotationId) return
+    onAnnotationsChange(annotations.filter((a) => a.id !== selectedAnnotationId))
     onSelectedAnnotationIdChange(null)
   }
 
   function handleOverlayPointerDown(event: PointerEvent) {
-    if (!hasRenderableBounds || event.button !== 0) {
-      return
-    }
-
+    if (!hasRenderableBounds || event.button !== 0) return
     const point = getNormalizedPoint(event)
-    if (!point) {
-      return
-    }
+    if (!point) return
 
     if (annotationTool === 'select') {
       onSelectedAnnotationIdChange(null)
@@ -183,34 +218,41 @@
   }
 
   function handleOverlayPointerMove(event: PointerEvent) {
-    if (!draft) {
-      return
-    }
-
+    if (!draft) return
     const point = getNormalizedPoint(event)
-    if (!point) {
-      return
-    }
-
+    if (!point) return
     draft = {
       ...draft,
       currentX: point.x,
-      currentY: point.y,
+      currentY: draft.kind === 'underline' ? draft.startY : point.y,
     }
   }
 
   function finishDraft() {
-    if (!draft) {
+    if (!draft) return
+    const kind = draft.kind
+
+    if (kind === 'underline') {
+      const x = round(Math.min(draft.startX, draft.currentX))
+      const width = round(Math.abs(draft.currentX - draft.startX))
+      const y = round(clamp01(draft.startY - UNDERLINE_HITBOX_NORMALIZED / 2))
+      const minWidth = MIN_DRAW_PX / Math.max(displayW, 1)
+      const clampedWidth = round(Math.min(width, 1 - x))
+
+      draft = null
+      if (clampedWidth < minWidth) return
+
+      onAnnotationsChange([
+        ...annotations,
+        createLocalAnnotation('underline', x, y, clampedWidth, UNDERLINE_HITBOX_NORMALIZED),
+      ])
+      onSelectedAnnotationIdChange(null)
       return
     }
 
     const box = toDraftBox(draft)
-    const kind = draft.kind
     draft = null
-
-    if (!meetsMinimumSize(box, kind)) {
-      return
-    }
+    if (!meetsMinimumSize(box, kind)) return
 
     onAnnotationsChange([
       ...annotations,
@@ -222,44 +264,34 @@
   function handleShapeClick(annotationId: string) {
     onSelectedAnnotationIdChange(annotationId)
   }
-
   function handleShapePointerDown(event: PointerEvent, annotationId: string) {
     event.stopPropagation()
     handleShapeClick(annotationId)
   }
-
   function handleShapeKeydown(event: KeyboardEvent, annotationId: string) {
-    if (event.key !== 'Enter' && event.key !== ' ') {
-      return
-    }
-
+    if (event.key !== 'Enter' && event.key !== ' ') return
     event.preventDefault()
     event.stopPropagation()
     handleShapeClick(annotationId)
   }
 
-  $effect(() => {
-    if (type !== 'image' || !imgEl) {
-      imageBounds = { width: 0, height: 0 }
-      return
-    }
+  // ── Zoom (image) ──────────────────────────────────────────────────
+  function imageZoomIn() {
+    if (canZoomIn) imageZoom = Math.min(MAX_ZOOM, imageZoom + ZOOM_STEP)
+  }
+  function imageZoomOut() {
+    if (canZoomOut) imageZoom = Math.max(MIN_ZOOM, imageZoom - ZOOM_STEP)
+  }
 
-    measureImage()
-    const observer = new ResizeObserver(() => measureImage())
-    observer.observe(imgEl)
-
-    return () => observer.disconnect()
-  })
-
+  // ── PDF ─────────────────────────────────────────────────────────────
   function resetViewerState() {
     loading = false
     error = null
     currentPage = 1
     totalPages = 0
-    zoom = 1.0
+    pdfZoom = 1.0
     pdfDoc = null
   }
-
   function activatePdfMode() {
     loading = true
     error = null
@@ -288,7 +320,7 @@
     if (!pdfDoc || !canvasEl) return
     try {
       const page = await pdfDoc.getPage(currentPage)
-      const viewport = page.getViewport({ scale: zoom })
+      const viewport = page.getViewport({ scale: pdfZoom })
       const context = canvasEl.getContext('2d')
       if (!context) return
       canvasEl.width = viewport.width
@@ -305,45 +337,73 @@
       renderPage()
     }
   }
-
   function nextPage() {
     if (canGoNext) {
       currentPage++
       renderPage()
     }
   }
-
-  function zoomIn() {
-    if (canZoomIn) {
-      zoom = Math.min(3.0, zoom + 0.25)
+  function pdfZoomIn() {
+    if (canPdfZoomIn) {
+      pdfZoom = Math.min(3.0, pdfZoom + 0.25)
+      renderPage()
+    }
+  }
+  function pdfZoomOut() {
+    if (canPdfZoomOut) {
+      pdfZoom = Math.max(0.5, pdfZoom - 0.25)
       renderPage()
     }
   }
 
-  function zoomOut() {
-    if (canZoomOut) {
-      zoom = Math.max(0.5, zoom - 0.25)
-      renderPage()
+  // ── Effects ────────────────────────────────────────────────────────
+  $effect(() => {
+    if (type !== 'image' || !imgEl) {
+      naturalW = 0
+      naturalH = 0
+      return
     }
-  }
+    measureImage()
+    const obs = new ResizeObserver(() => measureImage())
+    obs.observe(imgEl)
+    return () => obs.disconnect()
+  })
+
+  $effect(() => {
+    if (type !== 'image' || !containerEl) return
+    measureContainer()
+    const obs = new ResizeObserver(() => measureContainer())
+    obs.observe(containerEl)
+    return () => obs.disconnect()
+  })
 
   $effect(() => {
     if (type !== 'pdf') {
       resetViewerState()
       return
     }
-
     activatePdfMode()
     void loadPdf()
   })
 
+  // ── Draft rendering ─────────────────────────────────────────────────
   const draftBox = $derived(draft ? toDraftBox(draft) : null)
+  const draftUnderline = $derived(
+    draft?.kind === 'underline'
+      ? {
+          x1: Math.min(draft.startX, draft.currentX),
+          x2: Math.max(draft.startX, draft.currentX),
+          y: draft.startY,
+        }
+      : null
+  )
 </script>
 
 <div class="document-viewer">
   {#if type === 'image'}
-    <div class="document-viewer__image-container">
-      <div class="document-viewer__image-stage">
+    <!-- svelte-ignore a11y_no_static_element_interactions — overlay needs pointer events -->
+    <div class="document-viewer__image-container" bind:this={containerEl}>
+      <div class="document-viewer__toolbar-anchor">
         <AnnotationToolbar
           tool={annotationTool}
           color={annotationColor}
@@ -353,12 +413,15 @@
           onColorChange={handleToolbarColorChange}
           onDeleteSelected={handleDeleteSelected}
         />
+      </div>
 
+      <div class="document-viewer__image-stage">
         <img
           bind:this={imgEl}
           src={assetUrl}
           alt="Document"
           class="document-viewer__image"
+          style={`width:${displayW}px;height:${displayH}px;`}
           onload={measureImage}
         />
 
@@ -368,9 +431,10 @@
             data-testid="annotation-overlay"
             role="application"
             aria-label="Image annotation overlay"
-            width={imageBounds.width}
-            height={imageBounds.height}
-            viewBox={`0 0 ${imageBounds.width} ${imageBounds.height}`}
+            width={displayW}
+            height={displayH}
+            viewBox={`0 0 ${naturalW} ${naturalH}`}
+            style={`--overlay-cursor: ${overlayCursor}`}
             onpointerdown={handleOverlayPointerDown}
             onpointermove={handleOverlayPointerMove}
             onpointerup={finishDraft}
@@ -390,6 +454,7 @@
                     ? 'var(--color-text-primary)'
                     : annotation.color}
                   stroke-width={annotation.id === selectedAnnotationId ? 2 : 1.5}
+                  vector-effect="non-scaling-stroke"
                   role="button"
                   tabindex="-1"
                   aria-label={`Select annotation ${annotation.id}`}
@@ -428,11 +493,9 @@
                     stroke={annotation.id === selectedAnnotationId
                       ? 'var(--color-text-primary)'
                       : annotation.color}
-                    stroke-width={Math.max(
-                      3,
-                      Math.round(annotation.height * imageBounds.height) || 3
-                    )}
+                    stroke-width={UNDERLINE_STROKE_PX}
                     stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
                     role="button"
                     tabindex="-1"
                     aria-label={`Select annotation ${annotation.id}`}
@@ -447,35 +510,63 @@
               {/if}
             {/each}
 
-            {#if draftBox}
-              {#if draft?.kind === 'rectangle'}
-                <rect
-                  x={px(draftBox.x, 'x')}
-                  y={px(draftBox.y, 'y')}
-                  width={px(draftBox.width, 'x')}
-                  height={px(draftBox.height, 'y')}
-                  fill={annotationColor}
-                  fill-opacity="0.14"
-                  stroke={annotationColor}
-                  stroke-dasharray="6 4"
-                  stroke-width="1.5"
-                />
-              {:else}
-                <line
-                  x1={px(draftBox.x, 'x')}
-                  y1={px(draftBox.y + draftBox.height / 2, 'y')}
-                  x2={px(draftBox.x + draftBox.width, 'x')}
-                  y2={px(draftBox.y + draftBox.height / 2, 'y')}
-                  stroke={annotationColor}
-                  stroke-width={Math.max(3, Math.round(draftBox.height * imageBounds.height) || 3)}
-                  stroke-dasharray="6 4"
-                  stroke-linecap="round"
-                />
-              {/if}
+            {#if draftBox && draft?.kind === 'rectangle'}
+              <rect
+                x={px(draftBox.x, 'x')}
+                y={px(draftBox.y, 'y')}
+                width={px(draftBox.width, 'x')}
+                height={px(draftBox.height, 'y')}
+                fill={annotationColor}
+                fill-opacity="0.14"
+                stroke={annotationColor}
+                stroke-dasharray="6 4"
+                stroke-width="1.5"
+                vector-effect="non-scaling-stroke"
+              />
+            {/if}
+
+            {#if draftUnderline}
+              <line
+                x1={px(draftUnderline.x1, 'x')}
+                y1={px(draftUnderline.y, 'y')}
+                x2={px(draftUnderline.x2, 'x')}
+                y2={px(draftUnderline.y, 'y')}
+                stroke={annotationColor}
+                stroke-width={UNDERLINE_STROKE_PX}
+                stroke-dasharray="6 4"
+                stroke-linecap="round"
+                vector-effect="non-scaling-stroke"
+              />
             {/if}
           </svg>
         {/if}
       </div>
+    </div>
+
+    <div class="document-viewer__controls" data-testid="image-controls">
+      <button
+        type="button"
+        class="document-viewer__btn"
+        data-testid="image-zoom-out"
+        disabled={!canZoomOut}
+        onclick={imageZoomOut}
+        aria-label="Zoom out"
+      >
+        &minus;
+      </button>
+      <span class="document-viewer__zoom-info" data-testid="image-zoom-info">
+        {Math.round(imageZoom * 100)}%
+      </span>
+      <button
+        type="button"
+        class="document-viewer__btn"
+        data-testid="image-zoom-in"
+        disabled={!canZoomIn}
+        onclick={imageZoomIn}
+        aria-label="Zoom in"
+      >
+        +
+      </button>
     </div>
   {:else}
     {#if loading}
@@ -486,9 +577,7 @@
     {/if}
 
     {#if error}
-      <div class="document-viewer__error" data-testid="pdf-error" role="alert">
-        {error}
-      </div>
+      <div class="document-viewer__error" data-testid="pdf-error" role="alert">{error}</div>
     {/if}
 
     <div class="document-viewer__canvas-container">
@@ -502,53 +591,39 @@
         data-testid="pdf-prev"
         disabled={!canGoPrev}
         onclick={prevPage}
-        aria-label="Previous page"
+        aria-label="Previous page">&#8249;</button
       >
-        &#8249;
-      </button>
-
-      <span class="document-viewer__page-info" data-testid="pdf-page-info">
-        {currentPage} / {totalPages}
-      </span>
-
+      <span class="document-viewer__page-info" data-testid="pdf-page-info"
+        >{currentPage} / {totalPages}</span
+      >
       <button
         type="button"
         class="document-viewer__btn"
         data-testid="pdf-next"
         disabled={!canGoNext}
         onclick={nextPage}
-        aria-label="Next page"
+        aria-label="Next page">&#8250;</button
       >
-        &#8250;
-      </button>
-
       <span class="document-viewer__separator"></span>
-
       <button
         type="button"
         class="document-viewer__btn"
         data-testid="pdf-zoom-out"
-        disabled={!canZoomOut}
-        onclick={zoomOut}
-        aria-label="Zoom out"
+        disabled={!canPdfZoomOut}
+        onclick={pdfZoomOut}
+        aria-label="Zoom out">&minus;</button
       >
-        &minus;
-      </button>
-
-      <span class="document-viewer__zoom-info" data-testid="pdf-zoom-info">
-        {Math.round(zoom * 100)}%
-      </span>
-
+      <span class="document-viewer__zoom-info" data-testid="pdf-zoom-info"
+        >{Math.round(pdfZoom * 100)}%</span
+      >
       <button
         type="button"
         class="document-viewer__btn"
         data-testid="pdf-zoom-in"
-        disabled={!canZoomIn}
-        onclick={zoomIn}
-        aria-label="Zoom in"
+        disabled={!canPdfZoomIn}
+        onclick={pdfZoomIn}
+        aria-label="Zoom in">+</button
       >
-        +
-      </button>
     </div>
   {/if}
 </div>
@@ -566,11 +641,19 @@
 
   .document-viewer__image-container {
     flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     overflow: auto;
     padding: var(--space-4);
+    position: relative;
+  }
+
+  .document-viewer__toolbar-anchor {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    justify-content: flex-end;
+    pointer-events: none;
+    padding: 0 var(--space-2) var(--space-2) 0;
   }
 
   .document-viewer__image-stage {
@@ -578,21 +661,18 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    max-width: 100%;
-    max-height: 100%;
+    margin: auto;
   }
 
   .document-viewer__image {
     display: block;
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
+    flex-shrink: 0;
   }
 
   .document-viewer__overlay {
     position: absolute;
     inset: 0;
-    cursor: crosshair;
+    cursor: var(--overlay-cursor, crosshair);
   }
 
   .document-viewer__canvas-container {

@@ -1,6 +1,5 @@
 export interface NoteEditorProps {
   content?: string
   placeholder?: string
-  onsave?: (content: string) => void
-  oncancel?: () => void
+  onsave?: (content: string) => void | Promise<void>
 }

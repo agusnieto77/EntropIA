@@ -24,46 +24,6 @@ describe('NoteEditor', () => {
     expect(saveBtn).toBeDisabled()
   })
 
-  it('save button is disabled when content is unchanged', () => {
-    render(NoteEditor, { props: { content: 'Original text' } })
-    const saveBtn = screen.getByTestId('note-save')
-    expect(saveBtn).toBeDisabled()
-  })
-
-  it('save button is enabled when content is changed', async () => {
-    render(NoteEditor, { props: { content: 'Original' } })
-    const textarea = screen.getByRole('textbox')
-    await fireEvent.input(textarea, { target: { value: 'Modified' } })
-    const saveBtn = screen.getByTestId('note-save')
-    expect(saveBtn).not.toBeDisabled()
-  })
-
-  it('disables save again when edited content returns to baseline', async () => {
-    render(NoteEditor, { props: { content: 'Original note' } })
-    const textarea = screen.getByRole('textbox')
-    const saveBtn = screen.getByTestId('note-save')
-
-    await fireEvent.input(textarea, { target: { value: 'Original note v2' } })
-    expect(saveBtn).not.toBeDisabled()
-
-    await fireEvent.input(textarea, { target: { value: 'Original note' } })
-    expect(saveBtn).toBeDisabled()
-  })
-
-  it('updates baseline when parent provides new content', async () => {
-    const view = render(NoteEditor, { props: { content: 'first baseline' } })
-    const textarea = screen.getByRole('textbox')
-    const saveBtn = screen.getByTestId('note-save')
-
-    await fireEvent.input(textarea, { target: { value: 'locally edited' } })
-    expect(saveBtn).not.toBeDisabled()
-
-    await view.rerender({ content: 'second baseline' })
-
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('second baseline')
-    expect(screen.getByTestId('note-save')).toBeDisabled()
-  })
-
   it('save button is enabled when content goes from empty to non-empty', async () => {
     render(NoteEditor, { props: {} })
     const textarea = screen.getByRole('textbox')
@@ -84,11 +44,33 @@ describe('NoteEditor', () => {
     expect(onsave).toHaveBeenCalledWith('My note')
   })
 
-  it('calls oncancel when cancel is clicked', async () => {
-    const oncancel = vi.fn()
-    render(NoteEditor, { props: { oncancel } })
-    const cancelBtn = screen.getByTestId('note-cancel')
-    await fireEvent.click(cancelBtn)
-    expect(oncancel).toHaveBeenCalledOnce()
+  it('clears textarea after successful save', async () => {
+    const onsave = vi.fn().mockResolvedValue(undefined)
+    render(NoteEditor, { props: { onsave } })
+    const textarea = screen.getByRole('textbox')
+    await fireEvent.input(textarea, { target: { value: 'A note to save' } })
+
+    const saveBtn = screen.getByTestId('note-save')
+    await fireEvent.click(saveBtn)
+
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
+    expect(saveBtn).toBeDisabled()
+  })
+
+  it('does not clear textarea when onsave rejects', async () => {
+    const onsave = vi.fn().mockRejectedValue(new Error('Save failed'))
+    render(NoteEditor, { props: { onsave } })
+    const textarea = screen.getByRole('textbox')
+    await fireEvent.input(textarea, { target: { value: 'A note that fails' } })
+
+    const saveBtn = screen.getByTestId('note-save')
+    await fireEvent.click(saveBtn)
+
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('A note that fails')
+  })
+
+  it('does not render a cancel button', () => {
+    render(NoteEditor, { props: {} })
+    expect(screen.queryByTestId('note-cancel')).not.toBeInTheDocument()
   })
 })

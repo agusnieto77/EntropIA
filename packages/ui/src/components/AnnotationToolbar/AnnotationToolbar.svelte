@@ -26,67 +26,99 @@
     onDeleteSelected = () => {},
   }: AnnotationToolbarProps = $props()
 
-  const toolOptions: Array<{ value: AnnotationTool; label: string; short: string }> = [
-    { value: 'select', label: 'Select annotation tool', short: '↖' },
+  let collapsed = $state(false)
+
+  const toolOptions: Array<{
+    value: Exclude<AnnotationTool, 'select'>
+    label: string
+    short: string
+  }> = [
     { value: 'rectangle', label: 'Rectangle annotation tool', short: '▭' },
     { value: 'underline', label: 'Underline annotation tool', short: '▁' },
   ]
+
+  function handleToolClick(option: (typeof toolOptions)[number]) {
+    if (tool === option.value) {
+      onToolChange('select')
+    } else {
+      onToolChange(option.value)
+    }
+  }
 </script>
 
-<div
-  class="annotation-toolbar"
-  data-testid="annotation-toolbar"
-  role="toolbar"
-  aria-label="Image annotations"
->
-  <div class="annotation-toolbar__group">
-    {#each toolOptions as option (option.value)}
-      <button
-        type="button"
-        class="annotation-toolbar__button"
-        class:annotation-toolbar__button--active={tool === option.value}
-        aria-label={option.label}
-        aria-pressed={tool === option.value}
-        onclick={() => onToolChange(option.value)}
-      >
-        {option.short}
-      </button>
-    {/each}
-  </div>
-
-  <div class="annotation-toolbar__group">
-    {#each colors as option (option.value)}
-      <button
-        type="button"
-        class="annotation-toolbar__swatch"
-        class:annotation-toolbar__swatch--active={color === option.value}
-        aria-label={`${option.label} annotation color`}
-        aria-pressed={color === option.value}
-        title={option.label}
-        onclick={() => onColorChange(option.value)}
-      >
-        <span class="annotation-toolbar__swatch-fill" style={`background:${option.value}`}></span>
-      </button>
-    {/each}
-  </div>
-
+{#if collapsed}
   <button
     type="button"
-    class="annotation-toolbar__button annotation-toolbar__button--danger"
-    aria-label="Delete selected annotation"
-    disabled={!hasSelection}
-    onclick={onDeleteSelected}
+    class="annotation-toolbar__fab"
+    data-testid="annotation-toolbar-fab"
+    aria-label="Expand annotation toolbar"
+    title="Expand toolbar"
+    onclick={() => (collapsed = false)}
   >
-    ✕
+    ✎
   </button>
-</div>
+{:else}
+  <div
+    class="annotation-toolbar"
+    data-testid="annotation-toolbar"
+    role="toolbar"
+    aria-label="Image annotations"
+  >
+    <div class="annotation-toolbar__group">
+      {#each toolOptions as option (option.value)}
+        <button
+          type="button"
+          class="annotation-toolbar__button"
+          class:annotation-toolbar__button--active={tool === option.value}
+          aria-label={option.label}
+          aria-pressed={tool === option.value}
+          onclick={() => handleToolClick(option)}
+        >
+          {option.short}
+        </button>
+      {/each}
+    </div>
+
+    <div class="annotation-toolbar__group">
+      {#each colors as option (option.value)}
+        <button
+          type="button"
+          class="annotation-toolbar__swatch"
+          class:annotation-toolbar__swatch--active={color === option.value}
+          aria-label={`${option.label} annotation color`}
+          aria-pressed={color === option.value}
+          title={option.label}
+          onclick={() => onColorChange(option.value)}
+        >
+          <span class="annotation-toolbar__swatch-fill" style={`background:${option.value}`}></span>
+        </button>
+      {/each}
+    </div>
+
+    <button
+      type="button"
+      class="annotation-toolbar__button annotation-toolbar__button--danger"
+      aria-label="Delete selected annotation"
+      disabled={!hasSelection}
+      onclick={onDeleteSelected}
+    >
+      ✕
+    </button>
+
+    <button
+      type="button"
+      class="annotation-toolbar__button annotation-toolbar__button--collapse"
+      aria-label="Collapse annotation toolbar"
+      title="Collapse toolbar"
+      onclick={() => (collapsed = true)}
+    >
+      ›
+    </button>
+  </div>
+{/if}
 
 <style>
   .annotation-toolbar {
-    position: absolute;
-    top: var(--space-3);
-    right: var(--space-3);
-    z-index: 3;
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -96,6 +128,34 @@
     background: color-mix(in srgb, var(--color-surface-raised) 92%, transparent);
     box-shadow: var(--shadow-md);
     backdrop-filter: blur(10px);
+    pointer-events: auto;
+  }
+
+  .annotation-toolbar__fab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface-raised) 90%, transparent);
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(10px);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font-size: var(--font-size-md);
+    line-height: 1;
+    pointer-events: auto;
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .annotation-toolbar__fab:hover {
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
   }
 
   .annotation-toolbar__group {
@@ -149,6 +209,15 @@
     color: var(--color-danger);
   }
 
+  .annotation-toolbar__button--collapse {
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-lg);
+  }
+
+  .annotation-toolbar__button--collapse:hover {
+    color: var(--color-text-primary);
+  }
+
   .annotation-toolbar__swatch-fill {
     width: 14px;
     height: 14px;
@@ -158,8 +227,6 @@
 
   @media (max-width: 720px) {
     .annotation-toolbar {
-      left: var(--space-3);
-      right: var(--space-3);
       justify-content: space-between;
       flex-wrap: wrap;
     }
