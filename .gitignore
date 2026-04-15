@@ -4,6 +4,11 @@ node_modules/
 # Errores
 .errores/
 
+# skills
+.agentes/
+./qwen
+.claude
+
 # Flujo
 FLUJO.md
 
