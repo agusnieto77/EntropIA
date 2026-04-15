@@ -12,7 +12,7 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 default = ["embeddings"]
-embeddings = ["dep:fastembed-upstream", "dep:fastembed-shim", "dep:sqlite-vec-upstream", "dep:sqlite-vec-shim"]
+embeddings = ["dep:fastembed-upstream", "dep:fastembed-shim", "dep:sqlite-vec-shim"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -34,7 +34,9 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(windows))'.dependencies]
 fastembed-upstream = { package = "fastembed", version = "5", optional = true }
-sqlite-vec-upstream = { package = "sqlite-vec", version = "0.1.10-alpha.3", optional = true }
+# Shim for sqlite-vec across all platforms — upstream 0.1.10-alpha.3 is missing
+# sqlite-vec-diskann.c, breaking the build on macOS and Linux too (not just MSVC).
+sqlite-vec-shim = { package = "sqlite-vec", path = "vendor/sqlite-vec", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Windows shim to keep `embeddings` feature compilable without linking ORT.
@@ -42,11 +44,6 @@ sqlite-vec-upstream = { package = "sqlite-vec", version = "0.1.10-alpha.3", opti
 # Rollback: switch this back to crates.io fastembed once ORT/MSVC linker
 # compatibility is stable for our CI baseline.
 fastembed-shim = { package = "fastembed", path = "vendor/fastembed-shim", optional = true }
-# Windows shim to avoid upstream sqlite-vec DISKANN packaging failure
-# (`sqlite-vec-diskann.c` missing in 0.1.10-alpha.3 during MSVC build).
-# Scope: build unblock for default-features tests only.
-# Rollback: remove this target override once upstream ships a fixed crate,
-# then restore crates.io dependency for Windows.
 sqlite-vec-shim = { package = "sqlite-vec", path = "vendor/sqlite-vec", optional = true }
 
 [profile.release]
