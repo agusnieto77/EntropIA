@@ -57,6 +57,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             db::commands::db_execute,
+            db::commands::db_execute_batch,
             db::commands::db_select,
             db::commands::db_select_rows,
             ocr::commands::extract_text,

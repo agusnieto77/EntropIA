@@ -46,11 +46,51 @@ describe('ItemCard', () => {
     expect(screen.getByText('Author: John Doe')).toBeInTheDocument()
   })
 
-  it('calls onclick when clicked', async () => {
+  it('calls onclick when the main card area is clicked', async () => {
     const onclick = vi.fn()
     render(ItemCard, { props: { ...baseProps, onclick } })
-    const card = screen.getByRole('button')
-    await fireEvent.click(card)
+    const card = screen.getByRole('button', { name: /test document/i })
+    // The main card button contains the content, click on the title area
+    const title = screen.getByText('Test Document')
+    await fireEvent.click(title)
     expect(onclick).toHaveBeenCalledOnce()
+  })
+
+  describe('delete button', () => {
+    it('does not render delete button when onDelete is not provided', () => {
+      render(ItemCard, { props: baseProps })
+      expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument()
+    })
+
+    it('renders delete button with aria-label when onDelete is provided', () => {
+      const onDelete = vi.fn()
+      render(ItemCard, { props: { ...baseProps, onDelete } })
+      const deleteBtn = screen.getByRole('button', { name: 'Delete Test Document' })
+      expect(deleteBtn).toBeInTheDocument()
+    })
+
+    it('calls onDelete when delete button is clicked without triggering onclick', async () => {
+      const onclick = vi.fn()
+      const onDelete = vi.fn()
+      render(ItemCard, { props: { ...baseProps, onclick, onDelete } })
+
+      const deleteBtn = screen.getByRole('button', { name: 'Delete Test Document' })
+      await fireEvent.click(deleteBtn)
+
+      expect(onDelete).toHaveBeenCalledOnce()
+      expect(onclick).not.toHaveBeenCalled()
+    })
+
+    it('calls onclick when main card is clicked (not delete button)', async () => {
+      const onclick = vi.fn()
+      const onDelete = vi.fn()
+      render(ItemCard, { props: { ...baseProps, onclick, onDelete } })
+
+      const title = screen.getByText('Test Document')
+      await fireEvent.click(title)
+
+      expect(onclick).toHaveBeenCalledOnce()
+      expect(onDelete).not.toHaveBeenCalled()
+    })
   })
 })

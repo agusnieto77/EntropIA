@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   copyFile: vi.fn(),
   mkdir: vi.fn(),
   writeFile: vi.fn(),
+  remove: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({

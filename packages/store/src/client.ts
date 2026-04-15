@@ -13,6 +13,11 @@ export const createDbClient = (): DbClient => ({
     console.log('[db] execute done, rowsAffected:', result.rowsAffected)
     return result
   },
+  async executeBatch(sql: string) {
+    console.log('[db] executeBatch:', sql.slice(0, 100), '...')
+    await invoke('db_execute_batch', { sql })
+    console.log('[db] executeBatch done')
+  },
   async select<T = Record<string, unknown>>(sql: string, params: unknown[] = []) {
     console.log('[db] select:', sql.slice(0, 50), '...')
     const result = await invoke<T[]>('db_select', { sql, params })

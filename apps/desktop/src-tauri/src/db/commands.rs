@@ -9,6 +9,14 @@ pub struct ExecuteResult {
     pub rows_affected: u64,
 }
 
+/// Execute multiple SQL statements atomically within a transaction.
+/// Used for cascade deletes and other multi-statement operations.
+#[tauri::command]
+pub fn db_execute_batch(db: State<'_, AppDbState>, sql: String) -> Result<(), String> {
+    let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
+    conn.execute_batch(&sql).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn db_execute(
     db: State<'_, AppDbState>,

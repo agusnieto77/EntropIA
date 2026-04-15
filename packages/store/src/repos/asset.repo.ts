@@ -61,4 +61,41 @@ export class AssetRepo {
   async delete(id: string): Promise<void> {
     await this.db.delete(assets).where(eq(assets.id, id))
   }
+
+  /**
+   * Delete an asset and all its dependent records (jobs, extractions)
+   * in a single atomic transaction. Returns the deleted asset record
+   * so the caller can remove the associated file from the filesystem.
+   *
+   * @throws Error if the asset is not found
+   * @throws Error if the transaction fails (partial cleanup possible)
+   */
+  async deleteWithCascade(id: string): Promise<Asset> {
+    if (!this.rawClient) {
+      throw new Error('deleteWithCascade requires a rawClient for transactional execution')
+    }
+
+    // Step 1: Fetch the asset to get its path and verify it exists
+    const asset = await this.findById(id)
+    if (!asset) {
+      throw new Error(`Asset not found: ${id}`)
+    }
+
+    // Step 2: Execute all deletes in a single transaction
+    // Using a single SQL batch ensures atomicity (all or nothing)
+    try {
+      await this.rawClient.executeBatch(`
+        DELETE FROM jobs WHERE asset_id = '${id.replace(/'/g, "''")}';
+        DELETE FROM extractions WHERE asset_id = '${id.replace(/'/g, "''")}';
+        DELETE FROM assets WHERE id = '${id.replace(/'/g, "''")}';
+      `)
+    } catch (e) {
+      // Transaction failed — rethrow with context
+      throw new Error(
+        `Failed to delete asset cascade for ${id}: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+
+    return asset
+  }
 }

@@ -2,7 +2,7 @@
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
   import { pickAndImportFiles, importFilesFromPaths, type ImportedFile } from '$lib/file-import'
-  import { getAssetUrl } from '$lib/file-import'
+  import { getAssetUrl, deleteAssetFile } from '$lib/file-import'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -21,13 +21,41 @@
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
 
-  // Cache itemId → { assetCount, thumbnailUrl } for ItemCard rendering
-  let itemAssetMeta = $state<Map<string, { assetCount: number; thumbnailUrl: string | null }>>(
-    new Map()
-  )
+  // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath }
+  let itemAssetMeta = $state<
+    Map<
+      string,
+      {
+        assetCount: number
+        thumbnailUrl: string | null
+        primaryAssetId: string | null
+        primaryAssetPath: string | null
+      }
+    >
+  >(new Map())
 
-  function getItemAssetMeta(itemId: string): { assetCount: number; thumbnailUrl: string | null } {
-    return itemAssetMeta.get(itemId) ?? { assetCount: 0, thumbnailUrl: null }
+  // Delete confirmation state
+  let showDeleteConfirm = $state(false)
+  let pendingDeleteAssetId = $state<string | null>(null)
+  let pendingDeleteItemId = $state<string | null>(null)
+  let pendingDeleteFilename = $state<string | null>(null)
+  let deleting = $state(false)
+  let deleteError = $state<string | null>(null)
+
+  function getItemAssetMeta(itemId: string): {
+    assetCount: number
+    thumbnailUrl: string | null
+    primaryAssetId: string | null
+    primaryAssetPath: string | null
+  } {
+    return (
+      itemAssetMeta.get(itemId) ?? {
+        assetCount: 0,
+        thumbnailUrl: null,
+        primaryAssetId: null,
+        primaryAssetPath: null,
+      }
+    )
   }
 
   async function loadItemAssets(itemIds: string[]) {
@@ -43,6 +71,8 @@
         newMeta.set(itemId, {
           assetCount: assets.length,
           thumbnailUrl: thumbAsset ? getAssetUrl(thumbAsset.path) : null,
+          primaryAssetId: thumbAsset?.id ?? null,
+          primaryAssetPath: thumbAsset?.path ?? null,
         })
       } catch (e) {
         console.error('[CollectionView] Failed to load assets for item', itemId, e)
@@ -270,6 +300,81 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Asset deletion flow
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Extract just the filename from a full native path.
+   */
+  function extractFilename(nativePath: string): string {
+    return nativePath.split(/[/\\]/).pop() ?? 'unknown file'
+  }
+
+  /**
+   * Open the delete confirmation dialog for the primary asset of an item.
+   */
+  function handleDeleteClick(itemId: string) {
+    const meta = getItemAssetMeta(itemId)
+    if (!meta.primaryAssetId || !meta.primaryAssetPath) {
+      error = 'No asset found to delete for this item.'
+      return
+    }
+    pendingDeleteAssetId = meta.primaryAssetId
+    pendingDeleteItemId = itemId
+    pendingDeleteFilename = extractFilename(meta.primaryAssetPath)
+    showDeleteConfirm = true
+    deleteError = null
+  }
+
+  /**
+   * Cancel the delete confirmation dialog.
+   */
+  function handleDeleteCancel() {
+    showDeleteConfirm = false
+    pendingDeleteAssetId = null
+    pendingDeleteItemId = null
+    pendingDeleteFilename = null
+    deleteError = null
+  }
+
+  /**
+   * Execute the asset deletion: remove file from FS, then cascade delete from DB.
+   */
+  async function handleDeleteConfirm() {
+    if (!pendingDeleteAssetId || !pendingDeleteItemId) return
+
+    deleting = true
+    deleteError = null
+
+    try {
+      const store = getStore()
+
+      // Step 1: Fetch the asset to get its path (before we lose the meta)
+      const asset = await store.assets.findById(pendingDeleteAssetId)
+      if (!asset) {
+        throw new Error('Asset not found in database.')
+      }
+
+      // Step 2: Delete the file from filesystem (ENOENT is OK, other errors abort)
+      await deleteAssetFile(asset.path)
+
+      // Step 3: Cascade delete from database (jobs, extractions, asset)
+      await store.assets.deleteWithCascade(pendingDeleteAssetId)
+
+      // Step 4: Reload asset metadata for the affected item
+      await loadItemAssets([pendingDeleteItemId])
+
+      // Step 5: Close dialog
+      handleDeleteCancel()
+    } catch (e) {
+      deleteError = e instanceof Error ? e.message : 'Failed to delete asset.'
+      console.error('[CollectionView] Delete failed:', e)
+    } finally {
+      deleting = false
+    }
+  }
+
   onMount(() => {
     loadItems()
 
@@ -360,8 +465,41 @@
               itemId: item.id,
               itemTitle: item.title,
             })}
+          onDelete={() => handleDeleteClick(item.id)}
         />
       {/each}
+    </div>
+  {/if}
+
+  <!-- Delete confirmation modal -->
+  {#if showDeleteConfirm}
+    <div class="modal-overlay" onclick={handleDeleteCancel} role="presentation">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-modal-title"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <h3 id="delete-modal-title" class="modal-title">Delete Asset</h3>
+        <p class="modal-message">
+          Are you sure you want to delete <strong>{pendingDeleteFilename}</strong>? This will also
+          remove associated OCR text and processing jobs. This action cannot be undone.
+        </p>
+
+        {#if deleteError}
+          <p class="modal-error">{deleteError}</p>
+        {/if}
+
+        <div class="modal-actions">
+          <Button variant="secondary" onclick={handleDeleteCancel} disabled={deleting}>
+            Cancel
+          </Button>
+          <Button variant="danger" onclick={handleDeleteConfirm} disabled={deleting}>
+            {deleting ? 'Deleting...' : 'Delete'}
+          </Button>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
@@ -410,5 +548,60 @@
     outline: 1px dashed var(--color-primary);
     outline-offset: 6px;
     border-radius: var(--radius-md);
+  }
+
+  /* Delete confirmation modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: var(--space-4);
+  }
+
+  .modal {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    max-width: 420px;
+    width: 100%;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .modal-title {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-primary);
+    margin: 0 0 var(--space-3) 0;
+  }
+
+  .modal-message {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    margin: 0 0 var(--space-4) 0;
+    line-height: 1.5;
+  }
+
+  .modal-message strong {
+    color: var(--color-text-primary);
+  }
+
+  .modal-error {
+    font-size: var(--font-size-sm);
+    color: var(--color-danger);
+    margin: 0 0 var(--space-4) 0;
+    padding: var(--space-2) var(--space-3);
+    background-color: rgba(224, 92, 106, 0.1);
+    border-radius: var(--radius-sm);
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: var(--space-3);
+    justify-content: flex-end;
   }
 </style>

@@ -5,6 +5,7 @@ import {
   SUPPORTED_FORMATS,
   classifyFileType,
   importFilesFromPaths,
+  deleteAssetFile,
 } from './file-import'
 
 type OpenSelection = string[] | string | null
@@ -152,5 +153,52 @@ describe('importFilesFromPaths', () => {
     expect(result.imported).toHaveLength(1)
     expect(result.skippedDuplicatePaths).toBe(1)
     expect(copyFile).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('deleteAssetFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('successfully removes an existing file', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(remove).mockResolvedValue(undefined)
+
+    await expect(deleteAssetFile('/path/to/file.pdf')).resolves.toBeUndefined()
+    expect(remove).toHaveBeenCalledWith('/path/to/file.pdf')
+  })
+
+  it('continues silently when file does not exist (ENOENT)', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(remove).mockRejectedValue(new Error('ENOENT: no such file or directory'))
+
+    await expect(deleteAssetFile('/path/to/missing.pdf')).resolves.toBeUndefined()
+    expect(remove).toHaveBeenCalledWith('/path/to/missing.pdf')
+  })
+
+  it('continues silently when file is not found (NotFound variant)', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(remove).mockRejectedValue(new Error('NotFound: file not found'))
+
+    await expect(deleteAssetFile('/path/to/missing.pdf')).resolves.toBeUndefined()
+  })
+
+  it('throws on permission errors', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(remove).mockRejectedValue(new Error('Permission denied'))
+
+    await expect(deleteAssetFile('/path/to/locked.pdf')).rejects.toThrow(
+      'Failed to delete asset file: Permission denied'
+    )
+  })
+
+  it('throws on unknown filesystem errors', async () => {
+    const { remove } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(remove).mockRejectedValue(new Error('Unknown IO error'))
+
+    await expect(deleteAssetFile('/path/to/file.pdf')).rejects.toThrow(
+      'Failed to delete asset file: Unknown IO error'
+    )
   })
 })

@@ -5,4 +5,5 @@ export interface ItemCardProps {
   thumbnailPath?: string
   metadataPreview?: string
   onclick?: () => void
+  onDelete?: (e: MouseEvent) => void
 }

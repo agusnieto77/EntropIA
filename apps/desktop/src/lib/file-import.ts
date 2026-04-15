@@ -1,5 +1,5 @@
 import { open } from '@tauri-apps/plugin-dialog'
-import { copyFile, mkdir } from '@tauri-apps/plugin-fs'
+import { copyFile, mkdir, remove } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { convertFileSrc } from '@tauri-apps/api/core'
 
@@ -113,4 +113,31 @@ export async function importFilesFromPaths(
  */
 export function getAssetUrl(nativePath: string): string {
   return convertFileSrc(nativePath)
+}
+
+/**
+ * Delete an asset file from the filesystem.
+ *
+ * - If the file does not exist (ENOENT/not-found), logs a warning and returns
+ *   successfully — the DB cleanup should still proceed.
+ * - If a permission error or other filesystem error occurs, throws so the
+ *   caller can abort the deletion flow.
+ */
+export async function deleteAssetFile(nativePath: string): Promise<void> {
+  try {
+    await remove(nativePath)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    // ENOENT / NotFound — file already gone, continue with DB cleanup
+    if (
+      message.includes('ENOENT') ||
+      message.includes('not found') ||
+      message.includes('NotFound')
+    ) {
+      console.warn('[file-import] Asset file not found, continuing with DB cleanup:', nativePath)
+      return
+    }
+    // Permission error or other FS error — abort
+    throw new Error(`Failed to delete asset file: ${message}`)
+  }
 }

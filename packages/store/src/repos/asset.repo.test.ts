@@ -190,4 +190,88 @@ describe('AssetRepo', () => {
       await expect(repo.delete('del-1')).resolves.toBeUndefined()
     })
   })
+
+  describe('deleteWithCascade', () => {
+    it('throws when rawClient is not provided', async () => {
+      const repoNoRaw = new AssetRepo(db.db)
+      await expect(repoNoRaw.deleteWithCascade('asset-1')).rejects.toThrow(
+        'deleteWithCascade requires a rawClient'
+      )
+    })
+
+    it('throws when asset is not found', async () => {
+      // Mock Drizzle select for findById to return empty
+      const selectResult = createChainMock([])
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: vi.fn().mockResolvedValue(undefined),
+        select: vi.fn().mockResolvedValue([]),
+      } as unknown as DbClient
+      const repoWithRaw = new AssetRepo(db.db, rawClient)
+
+      await expect(repoWithRaw.deleteWithCascade('non-existent')).rejects.toThrow(
+        'Asset not found: non-existent'
+      )
+    })
+
+    it('returns the deleted asset and executes batch delete', async () => {
+      const asset = {
+        id: 'asset-1',
+        itemId: 'item-1',
+        path: '/app-data/assets/coll-1/item-1/uuid_file.pdf',
+        type: 'pdf',
+        size: 1024,
+        createdAt: 100,
+      }
+
+      // Mock Drizzle select for findById (used by deleteWithCascade)
+      const selectResult = createChainMock([asset])
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: vi.fn().mockResolvedValue(undefined),
+        select: vi.fn().mockResolvedValue([asset]),
+      } as unknown as DbClient
+      const repoWithRaw = new AssetRepo(db.db, rawClient)
+
+      const result = await repoWithRaw.deleteWithCascade('asset-1')
+
+      expect(result).toEqual(asset)
+      expect(rawClient.executeBatch).toHaveBeenCalledOnce()
+      const batchSql = rawClient.executeBatch.mock.calls[0]?.[0] as string
+      expect(batchSql).toContain('DELETE FROM jobs')
+      expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM assets')
+      expect(batchSql).toContain('asset-1')
+    })
+
+    it('rethrows error when batch execution fails', async () => {
+      const asset = {
+        id: 'asset-1',
+        itemId: 'item-1',
+        path: '/app-data/assets/coll-1/item-1/uuid_file.pdf',
+        type: 'pdf',
+        size: 1024,
+        createdAt: 100,
+      }
+
+      // Mock Drizzle select for findById (used by deleteWithCascade)
+      const selectResult = createChainMock([asset])
+      ;(db.db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectResult.proxy)
+
+      const rawClient = {
+        execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
+        executeBatch: vi.fn().mockRejectedValue(new Error('constraint violation')),
+        select: vi.fn().mockResolvedValue([asset]),
+      } as unknown as DbClient
+      const repoWithRaw = new AssetRepo(db.db, rawClient)
+
+      await expect(repoWithRaw.deleteWithCascade('asset-1')).rejects.toThrow(
+        'Failed to delete asset cascade for asset-1: constraint violation'
+      )
+    })
+  })
 })

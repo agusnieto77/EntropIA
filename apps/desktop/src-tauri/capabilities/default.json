@@ -23,6 +23,7 @@
     "fs:allow-mkdir",
     "fs:allow-exists",
     "fs:allow-write-file",
+    "fs:allow-remove",
     "dialog:allow-open",
     "dialog:allow-save"
   ]
