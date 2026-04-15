@@ -67,6 +67,10 @@ jobs:
         shell: pwsh
         run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
 
+      - name: Download OCR models
+        shell: pwsh
+        run: pnpm --filter @entropia/desktop download-ocr-models
+
       - name: Build Tauri application
         uses: tauri-apps/tauri-action@v0
         env:

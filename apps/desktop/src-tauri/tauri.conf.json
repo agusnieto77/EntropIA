@@ -3,9 +3,9 @@
   "version": "0.0.1",
   "identifier": "com.entropia.app",
   "build": {
-    "beforeDevCommand": "pnpm download-ocr-models && pnpm dev",
+    "beforeDevCommand": "pnpm --filter @entropia/desktop download-ocr-models && pnpm --filter @entropia/desktop dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm download-ocr-models && pnpm build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -25,22 +25,14 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$APPDATA/**/*"
-        ]
+        "scope": ["$APPDATA/**/*"]
       }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/icon.ico"
-    ],
-    "resources": [
-      "resources/text-detection.rten",
-      "resources/text-recognition.rten",
-      "resources/*"
-    ]
+    "icon": ["icons/icon.ico"],
+    "resources": ["resources/text-detection.rten", "resources/text-recognition.rten", "resources/*"]
   }
 }
