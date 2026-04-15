@@ -61,6 +61,7 @@ pub fn run() {
             db::commands::db_select,
             db::commands::db_select_rows,
             ocr::commands::extract_text,
+            ocr::commands::update_extraction_text_cmd,
             nlp::commands::index_fts,
             nlp::commands::embed_item,
             nlp::commands::extract_entities,

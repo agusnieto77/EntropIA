@@ -127,6 +127,13 @@ export class OcrStore {
     const current = this.states.get(assetId) ?? { ...IDLE_STATE }
     this.states.set(assetId, { ...current, ...partial })
   }
+
+  /** Updates the extracted text content for an asset (user edit). */
+  setTextContent(assetId: string, text: string): void {
+    const current = this.states.get(assetId)
+    if (!current) return
+    this.states.set(assetId, { ...current, textContent: text, textLength: text.length })
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

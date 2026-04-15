@@ -65,14 +65,14 @@ Defines the user-facing interface elements for OCR: the trigger button, progress
 
 ### Requirement: Extracted Text Panel
 
-`ItemView` MUST render a collapsible read-only text panel for each asset that has a completed extraction. The panel MUST display the full `text_content` returned by `ExtractionRepo.findByAsset`.
+`ItemView` MUST render a collapsible editable text panel for each asset that has a completed extraction. The panel MUST display the full `text_content` returned by `ExtractionRepo.findByAsset` in a `<textarea>` that allows the user to manually correct OCR output. The panel MUST show a metadata line with the extraction method and current character count (e.g., `via ocr · 1234 chars`), and the character count MUST update reactively as the user edits the text.
 
 #### Scenario: Panel renders after successful extraction
 
 - GIVEN an asset with status `done` and a non-empty `text_content`
 - WHEN `ItemView` renders
 - THEN a collapsible text panel is visible for that asset
-- AND it displays the extracted text as read-only
+- AND it displays the extracted text in an editable textarea
 
 #### Scenario: Panel is collapsed by default
 
@@ -93,6 +93,47 @@ Defines the user-facing interface elements for OCR: the trigger button, progress
 - WHEN `ItemView` renders
 - THEN an error message is shown instead of the text panel
 - AND the message includes an indication that extraction failed
+
+#### Scenario: Character count updates on user edit
+
+- GIVEN an asset with a completed extraction showing `via ocr · 500 chars`
+- WHEN the user edits the textarea content
+- THEN the character count updates reactively to reflect the new text length
+- AND the `via ocr` method label remains unchanged
+
+---
+
+### Requirement: Persist Manual Corrections
+
+When the user edits the extracted text in the textarea, the correction MUST be persisted to the database. The system MUST use a debounced save (500ms after the last keystroke) to avoid excessive writes. The original extraction metadata (`id`, `created_at`, `method`, `confidence`) MUST be preserved — only `text_content` is updated. After persisting, the system MUST re-index the item into FTS5 so search reflects the corrected text.
+
+#### Scenario: Correction persists after user stops typing
+
+- GIVEN an asset with a completed extraction showing `via ocr · 500 chars`
+- WHEN the user edits the textarea and stops typing for 500ms
+- THEN the corrected text is saved to the `extractions` table
+- AND only the `text_content` column is updated
+- AND the `id`, `created_at`, `method`, and `confidence` columns remain unchanged
+
+#### Scenario: Rapid typing triggers a single persist
+
+- GIVEN an asset with a completed extraction
+- WHEN the user types 10 characters in rapid succession (within 500ms)
+- THEN only ONE database write occurs, 500ms after the last keystroke
+- AND the final text content is persisted
+
+#### Scenario: FTS re-index after correction
+
+- GIVEN an item whose extraction text was corrected by the user
+- WHEN the correction is persisted to the database
+- THEN the item is re-indexed into the `fts_items` FTS5 table
+- AND subsequent searches match the corrected text
+
+#### Scenario: Correction survives app restart
+
+- GIVEN a user corrects an extraction and the debounced save completes
+- WHEN the app is closed and reopened
+- THEN the corrected text is displayed in the textarea (not the original OCR output)
 
 ---
 

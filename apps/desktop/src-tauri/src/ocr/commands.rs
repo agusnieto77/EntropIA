@@ -1,6 +1,7 @@
 /// Tauri IPC commands for OCR operations.
 
-use super::{OcrJob, OcrQueue};
+use super::{update_extraction_text, OcrJob, OcrQueue};
+use crate::db::state::AppDbState;
 use tauri::State;
 
 /// Submit an OCR extraction job to the background worker queue.
@@ -28,4 +29,18 @@ pub async fn extract_text(
 
     ocr_queue.submit(job)?;
     Ok("queued".to_string())
+}
+
+/// Update the text_content of the latest extraction for an asset.
+///
+/// This allows users to manually correct OCR output and persist the correction.
+/// The original extraction metadata (id, created_at, method, confidence) is preserved.
+#[tauri::command]
+pub async fn update_extraction_text_cmd(
+    asset_id: String,
+    text_content: String,
+    db: State<'_, AppDbState>,
+) -> Result<(), String> {
+    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock poisoned: {e}"))?;
+    update_extraction_text(&conn, &asset_id, &text_content)
 }

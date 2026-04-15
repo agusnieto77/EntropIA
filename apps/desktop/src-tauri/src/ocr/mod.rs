@@ -196,6 +196,36 @@ fn save_extraction(
     Ok(())
 }
 
+/// Update only the text_content of the latest extraction for an asset.
+/// Preserves id, created_at, method, and confidence.
+/// Returns `Ok(())` even if no extraction exists (no-op).
+fn update_extraction_text(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    text_content: &str,
+) -> Result<(), String> {
+    // Find the latest extraction for this asset
+    let mut stmt = conn
+        .prepare("SELECT id FROM extractions WHERE asset_id = ?1 ORDER BY created_at DESC LIMIT 1")
+        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+
+    let extraction_id: Result<String, _> = stmt.query_row([asset_id], |row| row.get(0));
+
+    drop(stmt); // release borrow before execute
+
+    match extraction_id {
+        Ok(id) => {
+            conn.execute(
+                "UPDATE extractions SET text_content = ?1 WHERE id = ?2",
+                rusqlite::params![text_content, id],
+            )
+            .map_err(|e| format!("Failed to update extraction text: {e}"))?;
+            Ok(())
+        }
+        Err(_) => Ok(()), // no extraction exists — no-op
+    }
+}
+
 // ── Job Processing ──────────────────────────────────────────────────────────
 
 /// Process a single OCR job. Returns `(method, text_content)` on success.

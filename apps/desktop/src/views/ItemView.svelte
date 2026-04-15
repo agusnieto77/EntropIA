@@ -20,6 +20,7 @@
   } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
+  import { invoke } from '@tauri-apps/api/core'
   import type { Item, Asset, Note } from '@entropia/store'
   import type { Entity } from '@entropia/ui'
 
@@ -45,6 +46,31 @@
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
   let ocrTick = $state(0)
+  // Edited text per asset — tracks user corrections to OCR output
+  let ocrEditedText = $state(new Map<string, string>())
+  // Debounce timers per asset for persisting edits to DB
+  let ocrPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
+
+  /** Schedule a debounced persist of edited text to the DB (500ms after last keystroke). */
+  function schedulePersist(assetId: string, text: string) {
+    // Cancel any pending timer for this asset
+    const existing = ocrPersistTimers.get(assetId)
+    if (existing) clearTimeout(existing)
+
+    // Schedule new persist
+    const timer = setTimeout(async () => {
+      try {
+        await invoke('update_extraction_text_cmd', { assetId, textContent: text })
+        // Re-index FTS so search reflects the corrected text
+        await indexFts(itemId).catch(() => {})
+      } catch (e) {
+        console.error('[ItemView] Failed to persist OCR correction:', e)
+      }
+      ocrPersistTimers.delete(assetId)
+    }, 500)
+
+    ocrPersistTimers.set(assetId, timer)
+  }
 
   // NLP state — mirrors OcrStore pattern
   const nlpStore = new NlpStore()
@@ -328,6 +354,11 @@
   onDestroy(() => {
     ocrStore.stopListening()
     nlpStore.stopListening()
+    // Clear any pending debounce timers to avoid stale persist after unmount
+    for (const timer of ocrPersistTimers.values()) {
+      clearTimeout(timer)
+    }
+    ocrPersistTimers.clear()
   })
 </script>
 
@@ -463,17 +494,26 @@
                 {:else if ocr.status === 'error'}
                   <p class="ocr-error">Extraction failed: {ocr.error}</p>
                 {:else if ocr.status === 'done'}
+                  {@const editedText = ocrEditedText.get(asset.id) ?? ocr.textContent ?? ''}
+                  {@const displayLength = editedText.length}
                   <details class="ocr-result">
                     <summary>
                       Extracted text
                       <span class="ocr-meta">
-                        via {ocr.method ?? 'unknown'} · {ocr.textLength ?? 0} chars
+                        via {ocr.method ?? 'unknown'} · {displayLength} chars
                       </span>
                     </summary>
-                    <pre class="ocr-result-body">
-                      {#if ocr.textContent}{ocr.textContent}{:else}Text extracted successfully ({ocr.textLength ??
-                          0} characters via {ocr.method ?? 'unknown'}).{/if}
-                    </pre>
+                    <textarea
+                      class="ocr-result-body ocr-textarea"
+                      rows="8"
+                      oninput={(e) => {
+                        const val = e.currentTarget.value
+                        ocrEditedText.set(asset.id, val)
+                        ocrStore.setTextContent(asset.id, val)
+                        schedulePersist(asset.id, val)
+                        ocrTick++
+                      }}>{editedText}</textarea
+                    >
                   </details>
                 {/if}
               </div>
@@ -822,6 +862,30 @@
     color: var(--color-text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .ocr-textarea {
+    width: 100%;
+    min-height: 8rem;
+    padding: var(--space-2);
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+    background: var(--color-surface-alt, rgba(0, 0, 0, 0.03));
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    resize: vertical;
+    white-space: pre-wrap;
+    word-break: break-word;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .ocr-textarea:focus {
+    border-color: var(--color-primary, #4a90d9);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+  }
+  .ocr-textarea:hover:not(:focus) {
+    border-color: var(--color-border-hover, rgba(0, 0, 0, 0.15));
   }
 
   /* ── Analysis Panel ── */

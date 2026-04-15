@@ -59,4 +59,14 @@ export class ExtractionRepo {
   async delete(id: string): Promise<void> {
     await this.db.delete(extractions).where(eq(extractions.id, id))
   }
+
+  /**
+   * Update only the text_content of the latest extraction for an asset.
+   * Preserves id, created_at, method, and confidence.
+   */
+  async updateText(assetId: string, textContent: string): Promise<void> {
+    const latest = await this.findByAsset(assetId)
+    if (!latest) return
+    await this.db.update(extractions).set({ textContent }).where(eq(extractions.id, latest.id))
+  }
 }
