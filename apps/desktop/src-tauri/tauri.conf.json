@@ -25,14 +25,28 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**/*"]
+        "scope": [
+          "$APPDATA/**/*"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/text-detection.rten",
+      "resources/text-recognition.rten",
+      "resources/*"
+    ]
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/*", "resources/*.rten"]
+    "resources": [
+    "resources/text-detection.rten",
+    "resources/text-recognition.rten",
+    "resources/*"
+    ]
   }
 }
