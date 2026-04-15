@@ -3,6 +3,7 @@ node_modules/
 
 # temporal
 .temporal/
+temporal/
 
 # mds
 openspec/
@@ -18,7 +19,7 @@ docs/
 
 # skills
 .agentes/
-./qwen
+qwen/
 .claude
 
 # Flujo
@@ -34,6 +35,8 @@ build/
 
 # Rust / Tauri
 target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/coverage-rust/
 apps/desktop/src-tauri/vendor/**/target/
 apps/desktop/src-tauri/vendor/**/Cargo.lock
 
@@ -45,8 +48,6 @@ apps/desktop/src-tauri/vendor/**/Cargo.lock
 # Environment files
 .env
 .env.*
-.env.local
-.env.*.local
 
 # IDE
 .vscode/
@@ -64,8 +65,10 @@ Thumbs.db
 npm-debug.log*
 pnpm-debug.log*
 
-# Test coverage
+# Test coverage / CI
 coverage/
+.ci-evidence/
+__test-fixtures__/
 .atl/verify-artifacts/
 .atl/tmp/
 auditorias/
