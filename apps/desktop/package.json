@@ -9,7 +9,7 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src",
     "test": "vitest run",
-    "download-ocr-models": "powershell -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/download-ocr-models.ps1"
+    "download-ocr-models": "node -e \"const {platform} = require('os'); const {execSync} = require('child_process'); const script = platform() === 'win32' ? 'powershell -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/download-ocr-models.ps1' : 'bash ./src-tauri/scripts/download-ocr-models.sh'; execSync(script, {stdio: 'inherit'})\""
   },
   "dependencies": {
     "@entropia/store": "workspace:*",
