@@ -64,7 +64,8 @@ jobs:
         run: git checkout -- pnpm-lock.yaml
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        shell: pwsh
+        run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
 
       - name: Build Tauri application
         uses: tauri-apps/tauri-action@v0
