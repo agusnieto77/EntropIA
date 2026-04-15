@@ -42,11 +42,5 @@
       "resources/text-recognition.rten",
       "resources/*"
     ]
-    "icon": ["icons/icon.ico"],
-    "resources": [
-    "resources/text-detection.rten",
-    "resources/text-recognition.rten",
-    "resources/*"
-    ]
   }
 }
