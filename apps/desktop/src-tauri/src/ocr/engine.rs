@@ -7,14 +7,24 @@ use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
 use rten::Model;
 use std::path::PathBuf;
 
-use tauri::Manager;
+use tauri::{Manager, path::BaseDirectory};
 
-/// Wraps the `ocrs` engine with pre-loaded models.
 pub struct OcrEngine {
     engine: OcrsEngine,
 }
 
 fn resolve_model_path(app_handle: &tauri::AppHandle, file_name: &str) -> Option<PathBuf> {
+    // ✅ Método principal: usar resources del bundle (forma correcta en Tauri)
+    if let Ok(path) = app_handle
+        .path()
+        .resolve(file_name, BaseDirectory::Resource)
+    {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    // 🔁 Fallbacks (por si algo falla en dev o layouts raros)
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
@@ -22,11 +32,10 @@ fn resolve_model_path(app_handle: &tauri::AppHandle, file_name: &str) -> Option<
         candidates.push(resource_dir.join("resources").join(file_name));
     }
 
-    if let Ok(exe_path) = app_handle.path().executable() {
-        if let Some(exe_dir) = exe_path.parent() {
-            candidates.push(exe_dir.join(file_name));
-            candidates.push(exe_dir.join("resources").join(file_name));
-        }
+    // ✅ FIX: usar executable_dir en vez de executable
+    if let Ok(exe_dir) = app_handle.path().executable_dir() {
+        candidates.push(exe_dir.join(file_name));
+        candidates.push(exe_dir.join("resources").join(file_name));
     }
 
     candidates.into_iter().find(|candidate| candidate.is_file())
@@ -35,16 +44,21 @@ fn resolve_model_path(app_handle: &tauri::AppHandle, file_name: &str) -> Option<
 fn missing_model_error(app_handle: &tauri::AppHandle, file_name: &str) -> String {
     let mut searched: Vec<PathBuf> = Vec::new();
 
+    if let Ok(path) = app_handle
+        .path()
+        .resolve(file_name, BaseDirectory::Resource)
+    {
+        searched.push(path);
+    }
+
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
         searched.push(resource_dir.join(file_name));
         searched.push(resource_dir.join("resources").join(file_name));
     }
 
-    if let Ok(exe_path) = app_handle.path().executable() {
-        if let Some(exe_dir) = exe_path.parent() {
-            searched.push(exe_dir.join(file_name));
-            searched.push(exe_dir.join("resources").join(file_name));
-        }
+    if let Ok(exe_dir) = app_handle.path().executable_dir() {
+        searched.push(exe_dir.join(file_name));
+        searched.push(exe_dir.join("resources").join(file_name));
     }
 
     let searched_paths = searched
@@ -57,17 +71,6 @@ fn missing_model_error(app_handle: &tauri::AppHandle, file_name: &str) -> String
 }
 
 impl OcrEngine {
-    /// Load detection and recognition models from the app's bundled resources.
-    ///
-    /// Expects the following files in the bundled resources directory:
-    /// - `text-detection.rten`  — detection model
-    /// - `text-recognition.rten` — recognition model
-    ///
-    /// Resolves model paths dynamically at runtime from the bundled resources
-    /// directory, with conservative fallbacks for installer layouts.
-    ///
-    /// # Errors
-    /// Returns `Err(String)` if model files are missing or fail to load.
     pub fn load_models(app_handle: &tauri::AppHandle) -> Result<Self, String> {
         let detection_path = resolve_model_path(app_handle, "text-detection.rten")
             .ok_or_else(|| missing_model_error(app_handle, "text-detection.rten"))?;
@@ -81,6 +84,7 @@ impl OcrEngine {
                 detection_path.display()
             )
         })?;
+
         let recognition_model = Model::load_file(&recognition_path).map_err(|e| {
             format!(
                 "Failed to load recognition model at {}: {e}",
@@ -98,15 +102,7 @@ impl OcrEngine {
         Ok(Self { engine })
     }
 
-    /// Run OCR inference on a pre-processed grayscale image.
-    ///
-    /// Converts the `GrayImage` to an RGB8 buffer (ocrs expects RGB), then
-    /// prepares input and extracts all text as a single string.
-    ///
-    /// # Errors
-    /// Returns `Err(String)` on inference failure.
     pub fn run_ocr(&self, image: GrayImage) -> Result<String, String> {
-        // ocrs expects RGB input — expand single channel to 3-channel
         let (w, h) = image.dimensions();
         let rgb = image::DynamicImage::ImageLuma8(image).into_rgb8();
 
