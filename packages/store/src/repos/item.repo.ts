@@ -214,4 +214,34 @@ export class ItemRepo {
     if (!this.ftsRepo || !query.trim()) return []
     return this.ftsRepo.search(query, 50)
   }
+
+  /**
+   * Search items across ALL collections.
+   * Tries FTS5 first, falls back to SQL LIKE on title and metadata.
+   */
+  async searchGlobal(query: string, limit = 20): Promise<Item[]> {
+    if (!query.trim()) return []
+
+    // Try FTS5 first
+    if (this.ftsRepo) {
+      const ftsResults = await this.ftsRepo.search(query, limit)
+      if (ftsResults.length > 0) {
+        const ids = ftsResults.map((r) => r.itemId)
+        return this.db
+          .select()
+          .from(items)
+          .where(ids.length === 1 ? eq(items.id, ids[0]!) : or(...ids.map((id) => eq(items.id, id)))!)
+          .orderBy(desc(items.updatedAt))
+      }
+    }
+
+    // Fallback: SQL LIKE on title and metadata
+    const pattern = `%${query}%`
+    return this.db
+      .select()
+      .from(items)
+      .where(or(like(items.title, pattern), like(items.metadata, pattern)))
+      .orderBy(desc(items.updatedAt))
+      .limit(limit)
+  }
 }
