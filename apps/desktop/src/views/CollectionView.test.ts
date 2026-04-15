@@ -11,9 +11,13 @@ const { storeRef, navigationRef } = vi.hoisted(() => ({
         create: vi.fn(),
         update: vi.fn(),
         delete: vi.fn(),
+        deleteWithCascade: vi.fn(),
       },
       assets: {
         create: vi.fn(),
+        findByItem: vi.fn(),
+        findById: vi.fn(),
+        deleteWithCascade: vi.fn(),
       },
     },
   },

@@ -189,7 +189,7 @@ describe('DocumentViewer', () => {
       await fireEvent.pointerUp(overlay, { clientX: 120, clientY: 60, button: 0 })
 
       expect(onAnnotationsChange).toHaveBeenCalledTimes(1)
-      const created = onAnnotationsChange.mock.calls[0][0][0]
+      const created = onAnnotationsChange.mock.calls[0]![0]![0]!
       expect(created.kind).toBe('rectangle')
       // Normalized: 20/200=0.1, 10/100=0.1, 100/200=0.5, 50/100=0.5
       expect(created.x).toBeCloseTo(0.1, 3)
@@ -416,7 +416,7 @@ describe('DocumentViewer', () => {
       await fireEvent.pointerUp(overlay, { clientX: 120, clientY: 80, button: 0 })
 
       expect(onAnnotationsChange).toHaveBeenCalledTimes(1)
-      const created = onAnnotationsChange.mock.calls[0][0][0]
+      const created = onAnnotationsChange.mock.calls[0]![0]![0]!
       expect(created.kind).toBe('underline')
       expect(created.width).toBeCloseTo(0.5, 3) // (120-20)/200 = 0.5
       expect(created.x).toBeCloseTo(0.1, 3) // 20/200 = 0.1
