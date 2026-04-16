@@ -94,5 +94,16 @@ auditorias/
 # Misc
 *.tsbuildinfo
 
-# OCR models (downloaded by download-ocr-models.ps1)
+# OCR models (rten format, no longer used)
 *.rten
+
+# Whisper GGML models (legacy, replaced by faster-whisper which manages its own models)
+apps/desktop/src-tauri/resources/models/ggml-*.bin
+
+# Python cache
+__pycache__/
+
+# One-off conversion scripts (whisper-rs era, no longer needed)
+convert_whisper_ggmlv2.py
+convert-h5-to-ggml.py
+download-ggml-model.sh
