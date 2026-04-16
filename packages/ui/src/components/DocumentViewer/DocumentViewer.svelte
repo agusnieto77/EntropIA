@@ -1,5 +1,6 @@
 <script lang="ts">
   import AnnotationToolbar from '../AnnotationToolbar/AnnotationToolbar.svelte'
+  import AudioPlayer from '../AudioPlayer/AudioPlayer.svelte'
   import type { DocumentViewerProps } from './DocumentViewer.types'
   import type { AnnotationTool, ViewerAnnotation } from './DocumentViewer.types'
 
@@ -568,6 +569,8 @@
         +
       </button>
     </div>
+  {:else if type === 'audio'}
+    <AudioPlayer src={assetUrl} />
   {:else}
     {#if loading}
       <div class="document-viewer__loading" data-testid="pdf-loading">

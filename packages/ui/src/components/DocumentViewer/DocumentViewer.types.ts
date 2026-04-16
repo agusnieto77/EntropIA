@@ -15,9 +15,11 @@ export interface ViewerAnnotation {
   updatedAt: number
 }
 
+export type ViewerType = 'image' | 'pdf' | 'audio'
+
 export interface DocumentViewerProps {
   path: string
-  type: 'image' | 'pdf'
+  type: ViewerType
   assetUrl: string
   annotations?: ViewerAnnotation[]
   selectedAnnotationId?: string | null
