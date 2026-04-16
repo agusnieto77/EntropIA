@@ -152,6 +152,21 @@ CREATE TABLE IF NOT EXISTS annotations (
 CREATE INDEX IF NOT EXISTS annotations_asset_id_idx ON annotations(asset_id);
 CREATE INDEX IF NOT EXISTS annotations_asset_page_idx ON annotations(asset_id, page)
   `.trim(),
+
+  '0008_transcriptions': `
+CREATE TABLE IF NOT EXISTS transcriptions (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  text_content TEXT NOT NULL,
+  language TEXT,
+  duration_ms INTEGER,
+  model TEXT NOT NULL,
+  segments TEXT,
+  confidence REAL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transcriptions_asset_id ON transcriptions(asset_id)
+  `.trim(),
 }
 
 /**

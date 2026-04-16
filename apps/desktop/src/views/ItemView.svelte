@@ -2,6 +2,7 @@
   import { getStore } from '$lib/db'
   import { getAssetUrl } from '$lib/file-import'
   import { OcrStore, extractText } from '$lib/ocr'
+  import { TranscriptionStore, transcribeAudio } from '$lib/transcription'
   import {
     NlpStore,
     indexFts,
@@ -33,6 +34,7 @@
     ViewerAnnotation,
     AnnotationKind as ViewerAnnotationKind,
   } from '@entropia/ui'
+  import { TranscriptionRepo } from '@entropia/store'
 
   let { itemId, collectionId }: { itemId: string; collectionId: string } = $props()
 
@@ -71,6 +73,18 @@
   // Debounce timers per asset for persisting edits to DB
   let ocrPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
 
+  // Transcription state — mirrors OcrStore pattern for audio assets
+  const transcriptionStore = new TranscriptionStore({
+    onComplete: (assetId) => {
+      // After transcription completes, auto-trigger FTS indexing
+      void indexFts(itemId).catch(() => {})
+      void assetId
+    },
+  })
+  let transcriptionTick = $state(0)
+  let transEditedText = $state(new Map<string, string>())
+  let transPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
+
   /** Schedule a debounced persist of edited text to the DB (500ms after last keystroke). */
   function schedulePersist(assetId: string, text: string) {
     // Cancel any pending timer for this asset
@@ -90,6 +104,24 @@
     }, 500)
 
     ocrPersistTimers.set(assetId, timer)
+  }
+
+  /** Schedule a debounced persist of edited transcription text to the DB. */
+  function scheduleTranscriptionPersist(assetId: string, text: string) {
+    const existing = transPersistTimers.get(assetId)
+    if (existing) clearTimeout(existing)
+
+    const timer = setTimeout(async () => {
+      try {
+        await invoke('update_transcription_text_cmd', { assetId, textContent: text })
+        await indexFts(itemId).catch(() => {})
+      } catch (e) {
+        console.error('[ItemView] Failed to persist transcription correction:', e)
+      }
+      transPersistTimers.delete(assetId)
+    }, 500)
+
+    transPersistTimers.set(assetId, timer)
   }
 
   // NLP state — mirrors OcrStore pattern
@@ -243,6 +275,20 @@
     }
   }
 
+  async function handleTranscribeAudio(asset: Asset) {
+    transcriptionStore._updateState(asset.id, { status: 'pending', progress: 0 })
+    transcriptionTick++
+    try {
+      await transcribeAudio(asset.id, asset.path)
+    } catch (e) {
+      transcriptionStore._updateState(asset.id, {
+        status: 'error',
+        error: e instanceof Error ? e.message : 'Transcription failed',
+      })
+      transcriptionTick++
+    }
+  }
+
   /** Load existing extraction text for all assets on mount (persistence between sessions). */
   async function loadExistingExtractions() {
     const store = getStore()
@@ -261,10 +307,37 @@
     }
   }
 
+  /** Load existing transcriptions for all audio assets on mount. */
+  async function loadExistingTranscriptions() {
+    const store = getStore()
+    for (const asset of assets) {
+      if (asset.type !== 'audio') continue
+      const transcription = await store.transcriptions.findByAsset(asset.id)
+      if (transcription) {
+        transcriptionStore._updateState(asset.id, {
+          status: 'done',
+          progress: 100,
+          text: transcription.textContent,
+          language: transcription.language ?? undefined,
+          durationMs: transcription.durationMs ?? undefined,
+          segmentsCount: transcription.segments
+            ? TranscriptionRepo.parseSegments(transcription.segments).length
+            : 0,
+        })
+        transcriptionTick++
+      }
+    }
+  }
+
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
     return ocrStore.getState(assetId)
+  }
+
+  function getTranscriptionState(assetId: string) {
+    void transcriptionTick
+    return transcriptionStore.getState(assetId)
   }
 
   function getNlpState() {
@@ -424,6 +497,7 @@
       notes = loadedNotes
       // Load existing extraction text for persistence between sessions
       await loadExistingExtractions()
+      await loadExistingTranscriptions()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load item'
     } finally {
@@ -512,6 +586,18 @@
         }
       })
 
+    transcriptionStore
+      .startListening((eventName, callback) =>
+        listen(eventName, callback).then((unlisten) => () => unlisten())
+      )
+      .then(() => {
+        const origUpdate = transcriptionStore._updateState.bind(transcriptionStore)
+        transcriptionStore._updateState = (assetId, partial) => {
+          origUpdate(assetId, partial)
+          transcriptionTick++
+        }
+      })
+
     return () => {
       if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     }
@@ -520,11 +606,16 @@
   onDestroy(() => {
     ocrStore.stopListening()
     nlpStore.stopListening()
+    transcriptionStore.stopListening()
     // Clear any pending debounce timers to avoid stale persist after unmount
     for (const timer of ocrPersistTimers.values()) {
       clearTimeout(timer)
     }
     ocrPersistTimers.clear()
+    for (const timer of transPersistTimers.values()) {
+      clearTimeout(timer)
+    }
+    transPersistTimers.clear()
     clearAnnotationSaveTimer()
   })
 </script>
@@ -704,6 +795,68 @@
           </div>
         {/if}
       </section>
+
+      {#if assets.some((a) => a.type === 'audio')}
+        <section class="section">
+          <h3>Audio Transcription</h3>
+          <div class="ocr-list">
+            {#each assets.filter((a) => a.type === 'audio') as asset (asset.id)}
+              {@const ts = getTranscriptionState(asset.id)}
+              {@const filename = asset.path.split(/[/\\]/).pop() ?? 'Audio'}
+              {@const busy = ts.status === 'pending' || ts.status === 'running'}
+              <div class="ocr-item">
+                <div class="ocr-item-header">
+                  <span class="ocr-filename">&#x1f50a; {filename}</span>
+                  <button
+                    class="ocr-btn"
+                    disabled={busy}
+                    onclick={() => handleTranscribeAudio(asset)}
+                    title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+                  >
+                    {busy ? 'Transcribing…' : 'Transcribe'}
+                  </button>
+                </div>
+
+                {#if ts.status === 'running'}
+                  <progress class="ocr-progress" value={ts.progress} max="100">
+                    {ts.progress}%
+                  </progress>
+                  <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
+                {:else if ts.status === 'pending'}
+                  <p class="ocr-status-text">Starting transcription…</p>
+                {:else if ts.status === 'error'}
+                  <p class="ocr-error">Transcription failed: {ts.error}</p>
+                {:else if ts.status === 'done'}
+                  {@const editedText = transEditedText.get(asset.id) ?? ts.text ?? ''}
+                  {@const displayLength = editedText.length}
+                  <details class="ocr-result">
+                    <summary>
+                      Transcription
+                      <span class="ocr-meta">
+                        {#if ts.language}{ts.language} &middot;
+                        {/if}{displayLength} chars
+                        {#if ts.durationMs}
+                          &middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                      </span>
+                    </summary>
+                    <textarea
+                      class="ocr-result-body ocr-textarea"
+                      rows="8"
+                      oninput={(e) => {
+                        const val = e.currentTarget.value
+                        transEditedText.set(asset.id, val)
+                        transcriptionStore.setTextContent(asset.id, val)
+                        scheduleTranscriptionPersist(asset.id, val)
+                        transcriptionTick++
+                      }}>{editedText}</textarea
+                    >
+                  </details>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
 
       {#if assets.length > 0}
         <section class="section">

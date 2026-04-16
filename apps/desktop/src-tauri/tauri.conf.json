@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "identifier": "com.entropia.app",
   "build": {
-    "beforeDevCommand": "pnpm --filter @entropia/desktop download-ocr-models && pnpm --filter @entropia/desktop dev",
+    "beforeDevCommand": "pnpm --filter @entropia/desktop dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
@@ -33,6 +33,6 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/text-detection.rten", "resources/text-recognition.rten", "resources/*"]
+    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "scripts/*"]
   }
 }

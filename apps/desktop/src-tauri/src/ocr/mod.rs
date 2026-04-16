@@ -1,13 +1,11 @@
 pub mod commands;
 mod engine;
 mod pdf;
-mod preprocessor;
 
 use engine::OcrEngine;
 use pdf::{extract_pdf_text, is_quality_text};
-use preprocessor::preprocess_image;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
 // ── Event payloads ──────────────────────────────────────────────────────────
@@ -80,12 +78,33 @@ impl OcrQueue {
         app_handle: AppHandle,
     ) {
         tauri::async_runtime::spawn(async move {
-            // Load models once — if this fails, every job will get an error event.
+            // Initialize Tesseract engine — if this fails, every job will get an error event.
             let engine_result = {
-                let handle = app_handle.clone();
-                tokio::task::spawn_blocking(move || OcrEngine::load_models(&handle))
+                // In Tesseract 5.x, the datapath is the tessdata directory ITSELF
+                // (the directory containing .traineddata files), NOT its parent.
+                // The old 3.x/4.x convention of passing the parent was changed.
+                //
+                // Tauri bundles "resources/tessdata/" under {exe_dir}/resources/tessdata/.
+                // BaseDirectory::Resource points to {exe_dir}, so we resolve the
+                // full relative path to get the actual tessdata directory.
+                let tesseract_datapath = app_handle
+                    .path()
+                    .resolve("resources/tessdata", BaseDirectory::Resource)
+                    .map(|p| {
+                        // Tauri on Windows may return paths with the \\?\ extended-length
+                        // prefix (e.g. \\?\C:\Users\…). Tesseract's C API does NOT
+                        // understand this prefix and fails with TessInitError{-1}.
+                        // Strip it so Tesseract gets a plain drive-letter path.
+                        let mut s = p.to_string_lossy().into_owned();
+                        if s.starts_with(r"\\?\") {
+                            s = s[4..].to_string();
+                        }
+                        s
+                    })
+                    .ok();
+                tokio::task::spawn_blocking(move || OcrEngine::init("spa+eng", tesseract_datapath.as_deref()))
                     .await
-                    .map_err(|e| format!("Model loading task panicked: {e}"))
+                    .map_err(|e| format!("Engine init task panicked: {e}"))
                     .and_then(|r| r)
             };
 
@@ -280,30 +299,21 @@ async fn process_pdf(
     }
 }
 
-/// Image pipeline: preprocess → OCR inference.
+/// Image pipeline: OCR inference via Tesseract.
 async fn process_image(
     engine: &OcrEngine,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
 ) -> Result<(String, String), String> {
-    // Stage 2 — preprocessing (50 %)
-    emit_progress(app_handle, asset_id, 50, "preprocessing");
+    emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
+    let engine_clone = engine.clone();
     let bytes_owned = bytes.to_vec();
-    let gray_image = tokio::task::spawn_blocking(move || -> Result<image::GrayImage, String> {
-        let img = image::load_from_memory(&bytes_owned)
-            .map_err(|e| format!("Failed to decode image: {e}"))?;
-        Ok(preprocess_image(img))
-    })
-    .await
-    .map_err(|e| format!("Preprocessing task panicked: {e}"))??;
 
-    // Stage 3 — OCR inference (75 %)
-    emit_progress(app_handle, asset_id, 75, "ocr_inference");
-
-    let text = engine
-        .run_ocr(gray_image)
+    let text = tokio::task::spawn_blocking(move || engine_clone.run_ocr(&bytes_owned))
+        .await
+        .map_err(|e| format!("OCR task panicked: {e}"))?
         .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     emit_progress(app_handle, asset_id, 100, "done");

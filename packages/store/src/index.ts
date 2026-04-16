@@ -14,6 +14,7 @@ export {
   entities,
   triples,
   annotations,
+  transcriptions,
 } from './schema'
 
 // Migration runner
@@ -31,6 +32,8 @@ export { EntityRepo } from './repos/entity.repo'
 export { FtsRepo, sanitizeFts5Query } from './repos/fts.repo'
 export { EmbeddingRepo } from './repos/embedding.repo'
 export { TripleRepo } from './repos/triple.repo'
+export { TranscriptionRepo } from './repos/transcription.repo'
+export type { Transcription, TranscriptionSegment } from './repos/transcription.repo'
 
 // Store API
 export { initStore } from './repos/store'

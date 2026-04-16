@@ -4,12 +4,13 @@ import { appDataDir, join } from '@tauri-apps/api/path'
 import { convertFileSrc } from '@tauri-apps/api/core'
 
 const SUPPORTED_IMAGES = ['png', 'jpg', 'jpeg', 'webp', 'tiff', 'tif']
-export const SUPPORTED_FORMATS = [...SUPPORTED_IMAGES, 'pdf']
+const SUPPORTED_AUDIO = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg']
+export const SUPPORTED_FORMATS = [...SUPPORTED_IMAGES, 'pdf', ...SUPPORTED_AUDIO]
 
 export interface ImportedFile {
   originalName: string
   destPath: string
-  type: 'image' | 'pdf'
+  type: 'image' | 'pdf' | 'audio'
   size: number
 }
 
@@ -21,12 +22,13 @@ export interface ImportFromPathsResult {
 
 /**
  * Classify a filename by its extension.
- * Returns 'image', 'pdf', or null if unsupported.
+ * Returns 'image', 'pdf', 'audio', or null if unsupported.
  */
-export function classifyFileType(filename: string): 'image' | 'pdf' | null {
+export function classifyFileType(filename: string): 'image' | 'pdf' | 'audio' | null {
   const ext = filename.split('.').pop()?.toLowerCase() ?? ''
   if (SUPPORTED_IMAGES.includes(ext)) return 'image'
   if (ext === 'pdf') return 'pdf'
+  if (SUPPORTED_AUDIO.includes(ext)) return 'audio'
   return null
 }
 

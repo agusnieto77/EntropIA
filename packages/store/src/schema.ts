@@ -113,6 +113,23 @@ export const triples = sqliteTable('triples', {
 })
 
 // ---------------------------------------------------------------------------
+// Transcriptions — Whisper-based audio transcription results for an asset
+// ---------------------------------------------------------------------------
+export const transcriptions = sqliteTable('transcriptions', {
+  id: text('id').primaryKey(),
+  assetId: text('asset_id')
+    .notNull()
+    .references(() => assets.id, { onDelete: 'cascade' }),
+  textContent: text('text_content').notNull(),
+  language: text('language'),
+  durationMs: integer('duration_ms'),
+  model: text('model').notNull(),
+  segments: text('segments'), // JSON array of { start_ms, end_ms, text }
+  confidence: real('confidence'),
+  createdAt: integer('created_at').notNull(),
+})
+
+// ---------------------------------------------------------------------------
 // Annotations — visual overlays linked to an asset/page
 // ---------------------------------------------------------------------------
 export const annotations = sqliteTable(

@@ -11,6 +11,7 @@ import { EntityRepo } from './entity.repo'
 import { FtsRepo } from './fts.repo'
 import { EmbeddingRepo } from './embedding.repo'
 import { TripleRepo } from './triple.repo'
+import { TranscriptionRepo } from './transcription.repo'
 
 export interface StoreApi {
   collections: CollectionRepo
@@ -24,6 +25,7 @@ export interface StoreApi {
   fts: FtsRepo
   embeddings: EmbeddingRepo
   triples: TripleRepo
+  transcriptions: TranscriptionRepo
 }
 
 export async function initStore(): Promise<StoreApi> {
@@ -49,5 +51,6 @@ export async function initStore(): Promise<StoreApi> {
     fts: new FtsRepo(client),
     embeddings,
     triples: new TripleRepo(db),
+    transcriptions: new TranscriptionRepo(db),
   }
 }

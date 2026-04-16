@@ -1,124 +1,44 @@
-/// OCR engine wrapper around the `ocrs` crate.
-///
-/// Loads detection + recognition models from the app's bundled resources
-/// and provides a synchronous `run_ocr` method suitable for `spawn_blocking`.
-use image::GrayImage;
-use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
-use rten::Model;
-use std::path::PathBuf;
+use std::io::Cursor;
 
-use tauri::{Manager, path::BaseDirectory};
-
+#[derive(Clone)]
 pub struct OcrEngine {
-    engine: OcrsEngine,
-}
-
-fn resolve_model_path(app_handle: &tauri::AppHandle, file_name: &str) -> Option<PathBuf> {
-    // ✅ Método principal: usar resources del bundle (forma correcta en Tauri)
-    if let Ok(path) = app_handle
-        .path()
-        .resolve(file_name, BaseDirectory::Resource)
-    {
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    // 🔁 Fallbacks (por si algo falla en dev o layouts raros)
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join(file_name));
-        candidates.push(resource_dir.join("resources").join(file_name));
-    }
-
-    // ✅ FIX: usar executable_dir en vez de executable
-    if let Ok(exe_dir) = app_handle.path().executable_dir() {
-        candidates.push(exe_dir.join(file_name));
-        candidates.push(exe_dir.join("resources").join(file_name));
-    }
-
-    candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-fn missing_model_error(app_handle: &tauri::AppHandle, file_name: &str) -> String {
-    let mut searched: Vec<PathBuf> = Vec::new();
-
-    if let Ok(path) = app_handle
-        .path()
-        .resolve(file_name, BaseDirectory::Resource)
-    {
-        searched.push(path);
-    }
-
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        searched.push(resource_dir.join(file_name));
-        searched.push(resource_dir.join("resources").join(file_name));
-    }
-
-    if let Ok(exe_dir) = app_handle.path().executable_dir() {
-        searched.push(exe_dir.join(file_name));
-        searched.push(exe_dir.join("resources").join(file_name));
-    }
-
-    let searched_paths = searched
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join("; ");
-
-    format!("Model file '{file_name}' was not found. Searched: {searched_paths}")
+    lang: String,
+    data_path: Option<String>,
 }
 
 impl OcrEngine {
-    pub fn load_models(app_handle: &tauri::AppHandle) -> Result<Self, String> {
-        let detection_path = resolve_model_path(app_handle, "text-detection.rten")
-            .ok_or_else(|| missing_model_error(app_handle, "text-detection.rten"))?;
-
-        let recognition_path = resolve_model_path(app_handle, "text-recognition.rten")
-            .ok_or_else(|| missing_model_error(app_handle, "text-recognition.rten"))?;
-
-        let detection_model = Model::load_file(&detection_path).map_err(|e| {
+    pub fn init(lang: &str, data_path: Option<&str>) -> Result<Self, String> {
+        leptess::LepTess::new(data_path, lang).map_err(|e| {
             format!(
-                "Failed to load detection model at {}: {e}",
-                detection_path.display()
+                "Failed to initialize Tesseract (lang={}, data_path={:?}): {e}",
+                lang, data_path
             )
         })?;
 
-        let recognition_model = Model::load_file(&recognition_path).map_err(|e| {
-            format!(
-                "Failed to load recognition model at {}: {e}",
-                recognition_path.display()
-            )
-        })?;
-
-        let engine = OcrsEngine::new(OcrEngineParams {
-            detection_model: Some(detection_model),
-            recognition_model: Some(recognition_model),
-            ..Default::default()
+        Ok(Self {
+            lang: lang.to_string(),
+            data_path: data_path.map(String::from),
         })
-        .map_err(|e| format!("Failed to initialise OCR engine: {e}"))?;
-
-        Ok(Self { engine })
     }
 
-    pub fn run_ocr(&self, image: GrayImage) -> Result<String, String> {
-        let (w, h) = image.dimensions();
-        let rgb = image::DynamicImage::ImageLuma8(image).into_rgb8();
+    pub fn run_ocr(&self, image_bytes: &[u8]) -> Result<String, String> {
+        let img = image::load_from_memory(image_bytes)
+            .map_err(|e| format!("Failed to decode image: {e}"))?;
 
-        let img_source = ImageSource::from_bytes(rgb.as_raw(), (w, h))
-            .map_err(|e| format!("Failed to create image source ({w}x{h}): {e}"))?;
+        let mut tiff_buf = Vec::new();
+        img.write_to(
+            &mut Cursor::new(&mut tiff_buf),
+            image::ImageFormat::Tiff.into(),
+        )
+        .map_err(|e| format!("Failed to encode image to TIFF: {e}"))?;
 
-        let ocr_input = self
-            .engine
-            .prepare_input(img_source)
-            .map_err(|e| format!("Failed to prepare OCR input: {e}"))?;
+        let mut lt = leptess::LepTess::new(self.data_path.as_deref(), &self.lang)
+            .map_err(|e| format!("Failed to create Tesseract instance: {e}"))?;
 
-        let text = self
-            .engine
-            .get_text(&ocr_input)
-            .map_err(|e| format!("OCR inference failed: {e}"))?;
+        lt.set_image_from_mem(&tiff_buf)
+            .map_err(|e| format!("Failed to load image into Tesseract: {e}"))?;
 
-        Ok(text)
+        lt.get_utf8_text()
+            .map_err(|e| format!("OCR inference failed: {e}"))
     }
 }

@@ -1,7 +1,8 @@
 /// Image preprocessing pipeline for OCR input.
 ///
 /// Converts a colour image to grayscale and applies adaptive thresholding
-/// to produce a binarised image suitable for the `ocrs` inference engine.
+/// to produce a binarised image. Currently unused — Tesseract handles
+/// its own preprocessing internally.
 use image::{DynamicImage, GrayImage};
 use imageproc::contrast::adaptive_threshold;
 

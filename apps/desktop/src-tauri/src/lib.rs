@@ -1,10 +1,12 @@
 mod db;
 mod nlp;
 mod ocr;
+mod transcription;
 
 use db::state::AppDbState;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
+use transcription::TranscriptionQueue;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -53,6 +55,12 @@ pub fn run() {
             app.manage(nlp_queue);
             NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone());
 
+            // Transcription queue: faster-whisper subprocess for audio transcription.
+            // Each job spawns a Python process, no persistent state needed.
+            let (transcription_queue, transcription_receiver) = TranscriptionQueue::new();
+            app.manage(transcription_queue);
+            TranscriptionQueue::start_worker(db_path.clone(), transcription_receiver, app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -68,6 +76,8 @@ pub fn run() {
             nlp::commands::extract_triples,
             nlp::commands::fts_search,
             nlp::commands::similar_items,
+            transcription::commands::transcribe_audio,
+            transcription::commands::update_transcription_text_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
