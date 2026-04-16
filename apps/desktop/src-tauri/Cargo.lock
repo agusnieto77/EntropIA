@@ -1094,8 +1094,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sqlite-vec 0.1.10-alpha.3",
- "sqlite-vec 0.1.10-alpha.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sqlite-vec",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4903,15 +4902,6 @@ name = "sqlite-vec"
 version = "0.1.10-alpha.3"
 dependencies = [
  "rusqlite",
-]
-
-[[package]]
-name = "sqlite-vec"
-version = "0.1.10-alpha.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02b89e325282d9d05a53c7e5510b886d9510059c2b854c9606d07652549686f1"
-dependencies = [
- "cc",
 ]
 
 [[package]]
