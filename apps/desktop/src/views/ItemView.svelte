@@ -799,169 +799,169 @@
             </div>
           {/if}
         </section>
+      {/if}
 
-        {#if assets.some((a) => a.type === 'audio')}
-          <section class="section">
-            <h3>Audio Transcription</h3>
-            <div class="ocr-list">
-              {#each assets.filter((a) => a.type === 'audio') as asset (asset.id)}
-                {@const ts = getTranscriptionState(asset.id)}
-                {@const filename = asset.path.split(/[/\\]/).pop() ?? 'Audio'}
-                {@const busy = ts.status === 'pending' || ts.status === 'running'}
-                <div class="ocr-item">
-                  <div class="ocr-item-header">
-                    <span class="ocr-filename">&#x1f50a; {filename}</span>
-                    <button
-                      class="ocr-btn"
-                      disabled={busy}
-                      onclick={() => handleTranscribeAudio(asset)}
-                      title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+      {#if assets.some((a) => a.type === 'audio')}
+        <section class="section">
+          <h3>Audio Transcription</h3>
+          <div class="ocr-list">
+            {#each assets.filter((a) => a.type === 'audio') as asset (asset.id)}
+              {@const ts = getTranscriptionState(asset.id)}
+              {@const filename = asset.path.split(/[/\\]/).pop() ?? 'Audio'}
+              {@const busy = ts.status === 'pending' || ts.status === 'running'}
+              <div class="ocr-item">
+                <div class="ocr-item-header">
+                  <span class="ocr-filename">&#x1f50a; {filename}</span>
+                  <button
+                    class="ocr-btn"
+                    disabled={busy}
+                    onclick={() => handleTranscribeAudio(asset)}
+                    title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+                  >
+                    {busy ? 'Transcribing…' : 'Transcribe'}
+                  </button>
+                </div>
+
+                {#if ts.status === 'running'}
+                  <progress class="ocr-progress" value={ts.progress} max="100">
+                    {ts.progress}%
+                  </progress>
+                  <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
+                {:else if ts.status === 'pending'}
+                  <p class="ocr-status-text">Starting transcription…</p>
+                {:else if ts.status === 'error'}
+                  <p class="ocr-error">Transcription failed: {ts.error}</p>
+                {:else if ts.status === 'done'}
+                  {@const editedText = transEditedText.get(asset.id) ?? ts.text ?? ''}
+                  {@const displayLength = editedText.length}
+                  <details class="ocr-result">
+                    <summary>
+                      Transcription
+                      <span class="ocr-meta">
+                        {#if ts.language}{ts.language} &middot;
+                        {/if}{displayLength} chars
+                        {#if ts.durationMs}
+                          &middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                      </span>
+                    </summary>
+                    <textarea
+                      class="ocr-result-body ocr-textarea"
+                      rows="8"
+                      oninput={(e) => {
+                        const val = e.currentTarget.value
+                        transEditedText.set(asset.id, val)
+                        transcriptionStore.setTextContent(asset.id, val)
+                        scheduleTranscriptionPersist(asset.id, val)
+                        transcriptionTick++
+                      }}>{editedText}</textarea
                     >
-                      {busy ? 'Transcribing…' : 'Transcribe'}
-                    </button>
-                  </div>
-
-                  {#if ts.status === 'running'}
-                    <progress class="ocr-progress" value={ts.progress} max="100">
-                      {ts.progress}%
-                    </progress>
-                    <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
-                  {:else if ts.status === 'pending'}
-                    <p class="ocr-status-text">Starting transcription…</p>
-                  {:else if ts.status === 'error'}
-                    <p class="ocr-error">Transcription failed: {ts.error}</p>
-                  {:else if ts.status === 'done'}
-                    {@const editedText = transEditedText.get(asset.id) ?? ts.text ?? ''}
-                    {@const displayLength = editedText.length}
-                    <details class="ocr-result">
-                      <summary>
-                        Transcription
-                        <span class="ocr-meta">
-                          {#if ts.language}{ts.language} &middot;
-                          {/if}{displayLength} chars
-                          {#if ts.durationMs}
-                            &middot; {Math.round(ts.durationMs / 1000)}s{/if}
-                        </span>
-                      </summary>
-                      <textarea
-                        class="ocr-result-body ocr-textarea"
-                        rows="8"
-                        oninput={(e) => {
-                          const val = e.currentTarget.value
-                          transEditedText.set(asset.id, val)
-                          transcriptionStore.setTextContent(asset.id, val)
-                          scheduleTranscriptionPersist(asset.id, val)
-                          transcriptionTick++
-                        }}>{editedText}</textarea
-                      >
-                    </details>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          </section>
-        {/if}
-
-        {#if assets.length > 0}
-          <section class="section">
-            <button
-              class="analysis-toggle"
-              onclick={() => {
-                analysisOpen = !analysisOpen
-                if (analysisOpen) {
-                  loadEntities()
-                  loadSimilarItems()
-                  loadTriples()
-                }
-              }}
-            >
-              Analysis {analysisOpen ? '▲' : '▼'}
-            </button>
-
-            {#if analysisOpen}
-              {@const nlp = getNlpState()}
-              <div class="analysis-panel">
-                <div class="nlp-actions">
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
-                    onclick={handleIndexFts}
-                  >
-                    Full-Text Index
-                    <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
-                  </button>
-
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.embed === 'pending' || nlp.embed === 'running'}
-                    onclick={handleEmbedItem}
-                  >
-                    Generate Embeddings
-                    <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
-                  </button>
-
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
-                    onclick={handleExtractEntities}
-                  >
-                    Extract Entities
-                    <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
-                  </button>
-
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.triples === 'pending' || nlp.triples === 'running'}
-                    onclick={handleExtractTriples}
-                  >
-                    Extract Triples
-                    <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
-                  </button>
-                </div>
-
-                <div class="entities-section">
-                  <h4>Entities</h4>
-                  <EntityViewer {entities} />
-                </div>
-
-                <div class="triples-section">
-                  <h4>Semantic Triples (S|P|O)</h4>
-                  {#if triples.length === 0}
-                    <p class="empty-text">No triples extracted yet for this item.</p>
-                  {:else}
-                    <ul class="triples-list">
-                      {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
-                        <li class="triple-item">
-                          <span class="triple-cell">{triple.subject}</span>
-                          <span class="triple-cell">{triple.predicate}</span>
-                          <span class="triple-cell">{triple.object}</span>
-                        </li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </div>
-
-                {#if similarItemIds.length > 0}
-                  <div class="similar-section">
-                    <h4>Similar Items</h4>
-                    <ul class="similar-list">
-                      {#each similarItemIds.slice(0, 5) as id (id)}
-                        <li class="similar-item">{id}</li>
-                      {/each}
-                    </ul>
-                  </div>
-                {:else}
-                  <div class="similar-section">
-                    <h4>Similar Items</h4>
-                    <p class="empty-text">
-                      No embeddings yet. Generate embeddings to find similar items.
-                    </p>
-                  </div>
+                  </details>
                 {/if}
               </div>
-            {/if}
-          </section>
-        {/if}
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+      {#if assets.length > 0}
+        <section class="section">
+          <button
+            class="analysis-toggle"
+            onclick={() => {
+              analysisOpen = !analysisOpen
+              if (analysisOpen) {
+                loadEntities()
+                loadSimilarItems()
+                loadTriples()
+              }
+            }}
+          >
+            Analysis {analysisOpen ? '▲' : '▼'}
+          </button>
+
+          {#if analysisOpen}
+            {@const nlp = getNlpState()}
+            <div class="analysis-panel">
+              <div class="nlp-actions">
+                <button
+                  class="nlp-btn"
+                  disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
+                  onclick={handleIndexFts}
+                >
+                  Full-Text Index
+                  <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
+                </button>
+
+                <button
+                  class="nlp-btn"
+                  disabled={nlp.embed === 'pending' || nlp.embed === 'running'}
+                  onclick={handleEmbedItem}
+                >
+                  Generate Embeddings
+                  <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
+                </button>
+
+                <button
+                  class="nlp-btn"
+                  disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
+                  onclick={handleExtractEntities}
+                >
+                  Extract Entities
+                  <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
+                </button>
+
+                <button
+                  class="nlp-btn"
+                  disabled={nlp.triples === 'pending' || nlp.triples === 'running'}
+                  onclick={handleExtractTriples}
+                >
+                  Extract Triples
+                  <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                </button>
+              </div>
+
+              <div class="entities-section">
+                <h4>Entities</h4>
+                <EntityViewer {entities} />
+              </div>
+
+              <div class="triples-section">
+                <h4>Semantic Triples (S|P|O)</h4>
+                {#if triples.length === 0}
+                  <p class="empty-text">No triples extracted yet for this item.</p>
+                {:else}
+                  <ul class="triples-list">
+                    {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
+                      <li class="triple-item">
+                        <span class="triple-cell">{triple.subject}</span>
+                        <span class="triple-cell">{triple.predicate}</span>
+                        <span class="triple-cell">{triple.object}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+
+              {#if similarItemIds.length > 0}
+                <div class="similar-section">
+                  <h4>Similar Items</h4>
+                  <ul class="similar-list">
+                    {#each similarItemIds.slice(0, 5) as id (id)}
+                      <li class="similar-item">{id}</li>
+                    {/each}
+                  </ul>
+                </div>
+              {:else}
+                <div class="similar-section">
+                  <h4>Similar Items</h4>
+                  <p class="empty-text">
+                    No embeddings yet. Generate embeddings to find similar items.
+                  </p>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </section>
       {/if}
     </div>
   </div>
