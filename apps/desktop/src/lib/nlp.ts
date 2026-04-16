@@ -36,7 +36,9 @@ export interface FtsResult {
 
 export interface SimilarItem {
   itemId: string
-  distance: number
+  title: string
+  collectionId: string
+  similarity: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -72,6 +72,16 @@ export class NavigationStore {
     this.emit()
   }
 
+  /** Replace the current view — useful for navigating between sibling items without stacking. */
+  replace(view: View): void {
+    if (this._history.length === 0) {
+      this._history = [view]
+    } else {
+      this._history = [...this._history.slice(0, -1), view]
+    }
+    this.emit()
+  }
+
   back(): void {
     if (this._history.length > 1) {
       this._history = this._history.slice(0, -1)

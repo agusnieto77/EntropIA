@@ -166,6 +166,70 @@ mod tests {
             _ => panic!("Expected EnrichItem job, got: {:?}", job),
         }
     }
+
+    #[test]
+    fn cosine_distance_identical_vectors_is_zero() {
+        let a = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        let b = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        let dist = super::cosine_distance(&a, &b).unwrap();
+        assert!((dist - 0.0).abs() < 1e-10, "identical vectors should have distance 0");
+    }
+
+    #[test]
+    fn cosine_distance_opposite_vectors_is_two() {
+        let a = vec![1.0_f32, 0.0_f32, 0.0_f32];
+        let b = vec![-1.0_f32, 0.0_f32, 0.0_f32];
+        let dist = super::cosine_distance(&a, &b).unwrap();
+        assert!((dist - 2.0).abs() < 1e-10, "opposite vectors should have distance 2");
+    }
+
+    #[test]
+    fn cosine_distance_orthogonal_vectors_is_one() {
+        let a = vec![1.0_f32, 0.0_f32, 0.0_f32];
+        let b = vec![0.0_f32, 1.0_f32, 0.0_f32];
+        let dist = super::cosine_distance(&a, &b).unwrap();
+        assert!((dist - 1.0).abs() < 1e-10, "orthogonal vectors should have distance 1");
+    }
+
+    #[test]
+    fn cosine_distance_different_lengths_returns_none() {
+        let a = vec![1.0_f32, 2.0_f32];
+        let b = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        assert!(super::cosine_distance(&a, &b).is_none());
+    }
+
+    #[test]
+    fn cosine_distance_empty_vectors_returns_none() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        assert!(super::cosine_distance(&a, &b).is_none());
+    }
+
+    #[test]
+    fn cosine_distance_zero_magnitude_returns_none() {
+        let a = vec![0.0_f32, 0.0_f32, 0.0_f32];
+        let b = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        assert!(super::cosine_distance(&a, &b).is_none());
+    }
+
+    #[test]
+    fn cosine_distance_proportional_vectors_is_zero() {
+        let a = vec![1.0_f32, 2.0_f32, 3.0_f32];
+        let b = vec![2.0_f32, 4.0_f32, 6.0_f32];
+        let dist = super::cosine_distance(&a, &b).unwrap();
+        assert!((dist - 0.0).abs() < 1e-10, "proportional vectors should have distance 0");
+    }
+
+    #[test]
+    fn floats_to_blob_round_trips_for_similarity_search() {
+        let original = vec![0.5_f32, -0.3_f32, 0.8_f32, 1.0_f32];
+        let blob: Vec<u8> = original.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let recovered: Vec<f32> = blob
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(recovered, original, "blob round-trip should preserve values");
+    }
 }
 
 /// Search `fts_items` using full-text search.
@@ -200,21 +264,134 @@ pub async fn fts_search(
 
 /// Find items similar to `item_id` using kNN vector search.
 ///
-/// Returns up to `limit` (default 5) similar items ordered by cosine distance.
-/// Returns empty array if sqlite-vec is not loaded or item has no embedding.
+/// Returns up to `limit` (default 5) similar items ordered by cosine distance
+/// (most similar first). Returns empty array if the item has no embedding or
+/// there are no other items with embeddings.
+///
+/// Since sqlite-vec is a no-op shim on Windows, this performs a full table
+/// scan of `vec_items` and computes cosine similarity in Rust. This is fine
+/// for MVP-scale data (<10k items).
 #[tauri::command]
 pub async fn similar_items(
     item_id: String,
     limit: Option<u8>,
-    nlp_queue: State<'_, NlpQueue>,
+    db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<serde_json::Value, String> {
-    let _ = nlp_queue;
-    let limit = limit.unwrap_or(5);
-    // Similar to fts_search: kNN queries are executed via db_select from frontend.
-    // This command validates the parameters and delegates to db_select pathway.
-    Ok(serde_json::json!({
-        "item_id": item_id,
-        "limit": limit,
-        "note": "Use db_select with vec_search for similarity queries"
-    }))
+    let limit = limit.unwrap_or(5) as usize;
+
+    let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
+
+    // Read the target item's embedding (stored as little-endian f32 blob)
+    let target_blob: Vec<u8> = conn
+        .query_row(
+            "SELECT embedding FROM vec_items WHERE item_id = ?1",
+            rusqlite::params![item_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                format!("No embedding found for item '{item_id}'")
+            } else {
+                format!("Failed to read embedding for '{item_id}': {e}")
+            }
+        })?;
+
+    // Convert blob to f32 vector
+    if target_blob.len() % 4 != 0 {
+        return Err(format!(
+            "Embedding blob has invalid size: {} bytes (not divisible by 4)",
+            target_blob.len()
+        ));
+    }
+    let target: Vec<f32> = target_blob
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+
+    // Read all other embeddings with their titles and collection_id via JOIN
+    let mut stmt = conn
+        .prepare(
+            "SELECT v.item_id, i.title, i.collection_id, v.embedding
+             FROM vec_items v
+             LEFT JOIN items i ON i.id = v.item_id
+             WHERE v.item_id != ?1",
+        )
+        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![item_id], |row| {
+            let id: String = row.get(0)?;
+            let title: Option<String> = row.get(1)?;
+            let collection_id: Option<String> = row.get(2)?;
+            let blob: Vec<u8> = row.get(3)?;
+            Ok((id, title.unwrap_or_default(), collection_id.unwrap_or_default(), blob))
+        })
+        .map_err(|e| format!("Failed to execute query: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read rows: {e}"))?;
+
+    // Compute cosine distance for each item
+    let mut results: Vec<(String, String, String, f64)> = rows
+        .into_iter()
+        .filter_map(|(id, title, collection_id, blob)| {
+            if blob.len() % 4 != 0 || blob.len() != target_blob.len() {
+                return None; // Skip incompatible embeddings
+            }
+            let other: Vec<f32> = blob
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+
+            let distance = cosine_distance(&target, &other)?;
+            // Convert distance to similarity (1.0 = identical, 0.0 = unrelated)
+            let similarity = 1.0 - distance;
+            Some((id, title, collection_id, similarity))
+        })
+        .collect();
+
+    // Sort by similarity descending (most similar first) and take top-k
+    results.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+    let results: Vec<_> = results
+        .into_iter()
+        .take(limit)
+        .map(|(id, title, collection_id, similarity)| {
+            serde_json::json!({
+                "itemId": id,
+                "title": title,
+                "collectionId": collection_id,
+                "similarity": similarity,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::Value::Array(results))
+}
+
+/// Compute cosine distance (1 - cosine_similarity) between two f32 vectors.
+/// Returns None if either vector has zero magnitude.
+fn cosine_distance(a: &[f32], b: &[f32]) -> Option<f64> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+
+    let mut dot = 0.0_f64;
+    let mut mag_a = 0.0_f64;
+    let mut mag_b = 0.0_f64;
+
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        let ai = *ai as f64;
+        let bi = *bi as f64;
+        dot += ai * bi;
+        mag_a += ai * ai;
+        mag_b += bi * bi;
+    }
+
+    let mag_a = mag_a.sqrt();
+    let mag_b = mag_b.sqrt();
+
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return None;
+    }
+
+    Some(1.0 - dot / (mag_a * mag_b))
 }

@@ -23,6 +23,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
+  import { navigation } from '$lib/navigation'
   import type {
     Item,
     Asset,
@@ -129,7 +130,9 @@
   const nlpStore = new NlpStore()
   let nlpTick = $state(0)
   let entities = $state<Entity[]>([])
-  let similarItemIds = $state<string[]>([])
+  let similarItems = $state<
+    Array<{ itemId: string; title: string; collectionId: string; similarity: number }>
+  >([])
   let triples = $state<Array<{ subject: string; predicate: string; object: string }>>([])
   let analysisOpen = $state(false)
 
@@ -404,10 +407,25 @@
   async function loadSimilarItems() {
     try {
       const results = await fetchSimilarItems(itemId, 5)
-      similarItemIds = results.map((r: { itemId: string }) => r.itemId)
+      similarItems = results.map((r) => ({
+        itemId: r.itemId,
+        title: r.title,
+        collectionId: r.collectionId,
+        similarity: r.similarity,
+      }))
     } catch {
-      similarItemIds = []
+      similarItems = []
     }
+  }
+
+  function navigateToSimilarItem(item: { itemId: string; title: string; collectionId: string }) {
+    navigation.replace({
+      name: 'item',
+      itemId: item.itemId,
+      collectionId: item.collectionId,
+      collectionName: '',
+      itemTitle: item.title || item.itemId,
+    })
   }
 
   async function loadTriples() {
@@ -550,8 +568,17 @@
     }
   })
 
+  $effect(() => {
+    // Reload all data when navigating to a different item.
+    // Reading itemId here ensures the effect re-runs when the prop changes.
+    const _id = itemId
+    void loadData()
+    void loadEntities()
+    void loadTriples()
+    void loadSimilarItems()
+  })
+
   onMount(() => {
-    loadData()
     ocrStore
       .startListening((eventName, callback) =>
         listen(eventName, callback).then((unlisten) => {
@@ -942,12 +969,15 @@
                 {/if}
               </div>
 
-              {#if similarItemIds.length > 0}
+              {#if similarItems.length > 0}
                 <div class="similar-section">
                   <h4>Similar Items</h4>
                   <ul class="similar-list">
-                    {#each similarItemIds.slice(0, 5) as id (id)}
-                      <li class="similar-item">{id}</li>
+                    {#each similarItems.slice(0, 5) as item (item.itemId)}
+                      <li class="similar-item" onclick={() => navigateToSimilarItem(item)}>
+                        <span class="similar-title">{item.title || item.itemId}</span>
+                        <span class="similar-score">({(item.similarity * 100).toFixed(1)}%)</span>
+                      </li>
                     {/each}
                   </ul>
                 </div>
@@ -1353,6 +1383,26 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface-raised);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease;
+  }
+
+  .similar-item:hover {
+    background: var(--color-surface-elevated);
+    border-color: var(--color-accent);
+  }
+
+  .similar-score {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-tertiary, var(--color-text-secondary));
+    opacity: 0.7;
+    white-space: nowrap;
+    margin-left: var(--space-2);
   }
 
   .triples-list {
