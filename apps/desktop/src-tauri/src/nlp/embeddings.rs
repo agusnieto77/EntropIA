@@ -1,27 +1,191 @@
-/// Embedding computation using fastembed `all-MiniLM-L6-v2` (384 dimensions).
+/// Embedding computation via fastembed Python subprocess.
 ///
-/// `EmbeddingEngine` is initialized once and reused. If the model fails to load,
-/// `compute_and_store` logs a warning and returns `Ok(())` — embeddings are
-/// degraded silently; FTS5 and NER continue unaffected.
+/// Spawns `embed.py` as a child process to compute text embeddings using
+/// `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dims,
+/// 50+ languages including Spanish).
+///
+/// This replaces the Rust fastembed crate which fails on Windows due to
+/// ORT/MSVC linker issues (LNK2001/LNK2019 with `__std_*` symbols).
+/// The subprocess approach provides complete crash isolation — if Python
+/// crashes, we catch it as `Result::Err` instead of a hard abort.
+///
+/// Architecture mirrors the transcription engine (transcription/engine.rs):
+/// - Each embedding call spawns a fresh Python process
+/// - Model is loaded per-call (cached by fastembed after first download)
+/// - Output wrapped in sentinel markers for reliable JSON extraction
 use rusqlite::{params, Connection};
+use serde::Deserialize;
+use std::path::PathBuf;
+use std::process::Command;
 
 use super::text_provider;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Compute embedding for item's text (extractions + transcriptions) and store it in `vec_items`.
+/// Embedding engine configuration — resolved once at NLP worker startup.
+#[derive(Clone)]
+pub struct EmbeddingConfig {
+    /// Path to the Python interpreter with `fastembed` installed.
+    pub python_path: PathBuf,
+    /// Path to the `embed.py` script.
+    pub script_path: PathBuf,
+    /// Model name for fastembed (default: multilingual).
+    pub model_name: String,
+}
+
+/// Embedding engine — spawns Python as a child process.
+pub struct EmbeddingEngine {
+    config: EmbeddingConfig,
+}
+
+/// JSON output from the Python `embed.py` script.
+#[derive(Debug, Deserialize)]
+struct EmbedOutput {
+    vector: Vec<f32>,
+    dim: usize,
+    model: String,
+}
+
+impl EmbeddingEngine {
+    /// Initialize the engine by verifying Python and script paths exist.
+    pub fn init(config: EmbeddingConfig) -> Result<Self, String> {
+        // Verify the script exists
+        if !config.script_path.exists() {
+            return Err(format!(
+                "Embedding script not found: {}",
+                config.script_path.display()
+            ));
+        }
+
+        // Verify python exists
+        let python_is_valid = if config.python_path.is_absolute()
+            || config.python_path.parent().map_or(false, |p| p.exists())
+        {
+            config.python_path.exists()
+        } else {
+            // Bare command name on PATH — verify by running it
+            Command::new(&config.python_path)
+                .arg("--version")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        if !python_is_valid {
+            return Err(format!(
+                "Python interpreter not found or not working: {}",
+                config.python_path.display()
+            ));
+        }
+
+        eprintln!(
+            "[nlp/embeddings] Engine configured: python={}, script={}, model={}",
+            config.python_path.display(),
+            config.script_path.display(),
+            config.model_name,
+        );
+
+        Ok(Self { config })
+    }
+
+    /// Compute embedding for a single text string via Python subprocess.
+    ///
+    /// Returns a 384-dimensional float vector. Errors are non-fatal —
+    /// callers should treat them as degradation.
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        let mut cmd = Command::new(&self.config.python_path);
+        cmd.arg(&self.config.script_path)
+            .arg("--text")
+            .arg(text)
+            .arg("--model")
+            .arg(&self.config.model_name)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let output = cmd.output().map_err(|e| {
+            format!(
+                "Failed to spawn Python process (python={}): {e}",
+                self.config.python_path.display()
+            )
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            let exit_code = output.status.code().unwrap_or(-1);
+            return Err(format!(
+                "Embedding script failed (exit code {exit_code}).\n\
+                 Python: {}\n\
+                 Script: {}\n\
+                 Stderr: {}",
+                self.config.python_path.display(),
+                self.config.script_path.display(),
+                stderr.trim(),
+            ));
+        }
+
+        // Extract JSON between sentinel markers
+        let json_str = extract_sentinel_json(&stdout);
+
+        let embed_output: EmbedOutput = serde_json::from_str(json_str).map_err(|e| {
+            format!(
+                "Failed to parse embedding JSON: {e}\n\
+                 Extracted ({} chars): {}\n\
+                 Stderr: {}",
+                json_str.len(),
+                if json_str.len() > 200 {
+                    &json_str[..200]
+                } else {
+                    json_str
+                },
+                stderr.trim(),
+            )
+        })?;
+
+        eprintln!(
+            "[nlp/embeddings] Python embedding complete: {} dims, model={}",
+            embed_output.dim, embed_output.model
+        );
+
+        Ok(embed_output.vector)
+    }
+}
+
+/// Compute embedding for item's text (extractions + transcriptions) and store it.
 ///
-/// Graceful fallback: if fastembed or sqlite-vec is unavailable, logs a warning
-/// and returns `Ok(())` without modifying the database.
-pub fn compute_and_store(conn: &Connection, item_id: &str) -> Result<(), String> {
+/// Graceful fallback: if the Python subprocess or sqlite-vec is unavailable,
+/// logs a warning and returns `Ok(())` without modifying the database.
+pub fn compute_and_store(
+    engine: Option<&EmbeddingEngine>,
+    conn: &Connection,
+    item_id: &str,
+) -> Result<(), String> {
     // Fetch concatenated text from both extractions and transcriptions
     let text = text_provider::get_item_text(conn, item_id)?;
     if text.trim().is_empty() {
         return Ok(()); // Nothing to embed — not an error
     }
 
-    // Attempt to compute embedding via fastembed
-    let vector = match embed_text(&text) {
+    // Need an engine to compute embeddings
+    let engine = match engine {
+        Some(e) => e,
+        None => {
+            eprintln!(
+                "{}",
+                embedding_degradation_log(
+                    item_id,
+                    "No embedding engine configured (Python not found)"
+                )
+            );
+            return Ok(());
+        }
+    };
+
+    // Attempt to compute embedding via Python subprocess
+    let vector = match engine.embed_text(&text) {
         Ok(v) => v,
         Err(e) => {
             // Non-fatal degradation
@@ -30,43 +194,9 @@ pub fn compute_and_store(conn: &Connection, item_id: &str) -> Result<(), String>
         }
     };
 
-    // Attempt to upsert into vec_items (requires sqlite-vec loaded)
+    // Attempt to upsert into vec_items (requires table to exist)
     let blob = floats_to_blob(&vector);
     upsert_vec_item(conn, item_id, &blob)
-}
-
-/// Embed a single text string and return a 384-dimensional float vector.
-///
-/// Returns `Err` if fastembed fails; callers should treat this as a non-fatal
-/// degradation.
-pub fn embed_text(text: &str) -> Result<Vec<f32>, String> {
-    #[cfg(not(feature = "embeddings"))]
-    {
-        let _ = text;
-        return Err("Embeddings feature is disabled at compile time".to_string());
-    }
-
-    #[cfg(feature = "embeddings")]
-    {
-        #[cfg(windows)]
-        use fastembed_shim::{EmbeddingModel, InitOptions, TextEmbedding};
-        #[cfg(not(windows))]
-        use fastembed_upstream::{EmbeddingModel, InitOptions, TextEmbedding};
-
-        let mut model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(false),
-        )
-        .map_err(|e| format!("Failed to load fastembed model: {e}"))?;
-
-        let embeddings = model
-            .embed(vec![text.to_string()], None)
-            .map_err(|e| format!("fastembed embedding failed: {e}"))?;
-
-        embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| "fastembed returned empty embeddings".to_string())
-    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,10 +219,114 @@ fn upsert_vec_item(conn: &Connection, item_id: &str, blob: &[u8]) -> Result<(), 
     match result {
         Ok(_) => Ok(()),
         Err(e) => {
-            // vec0 table might not exist if sqlite-vec wasn't loaded — degrade gracefully
+            // vec_items table might not exist if sqlite-vec wasn't loaded — degrade gracefully
             eprintln!("[nlp/embeddings] vec_items upsert failed for {item_id}: {e}");
             Ok(())
         }
+    }
+}
+
+/// Extract JSON content between `===EMBED_JSON_BEGIN===` and
+/// `===EMBED_JSON_END===` sentinels. Falls back to the full output
+/// if sentinels are not found (backwards compatibility).
+fn extract_sentinel_json(output: &str) -> &str {
+    const BEGIN: &str = "===EMBED_JSON_BEGIN===";
+    const END: &str = "===EMBED_JSON_END===";
+
+    if let Some(start_idx) = output.find(BEGIN) {
+        let content_start = start_idx + BEGIN.len();
+        if let Some(end_idx) = output[content_start..].find(END) {
+            let json_content = &output[content_start..content_start + end_idx];
+            return json_content.trim();
+        }
+    }
+
+    // Fallback: return the full trimmed output (backwards compat)
+    output.trim()
+}
+
+/// Find the Python interpreter on the system that has `fastembed` available.
+///
+/// Tries each candidate, runs `python -c "import fastembed"` to verify
+/// the module is importable. Falls back to the first Python found if none
+/// have fastembed (the error from the subprocess will be clearer).
+pub fn which_python() -> PathBuf {
+    let candidates = [
+        // Conda environments first — most likely to have ML packages
+        r"C:\Users\agusn\miniconda3\python.exe",
+        r"C:\Users\agusn\anaconda3\python.exe",
+        r"C:\Users\agusn\miniconda3\envs\entropia\python.exe",
+        // System Python
+        "python",
+        "python3",
+        "python3.11",
+        "python3.12",
+    ];
+
+    let mut first_found: Option<PathBuf> = None;
+
+    for candidate in &candidates {
+        let path = PathBuf::from(candidate);
+
+        // Check if the interpreter exists and runs
+        let version_ok = Command::new(&path)
+            .arg("--version")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        if version_ok.is_err() {
+            continue;
+        }
+
+        let version_output = version_ok.unwrap();
+        if !version_output.status.success() {
+            continue;
+        }
+
+        if first_found.is_none() {
+            first_found = Some(path.clone());
+        }
+
+        // Verify fastembed is importable
+        let import_ok = Command::new(&path)
+            .args(["-c", "import fastembed; print('ok')"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        if let Ok(output) = import_ok {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.trim() == "ok" {
+                    eprintln!(
+                        "[nlp/embeddings] Found Python with fastembed: {}",
+                        path.display()
+                    );
+                    return path;
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!(
+                    "[nlp/embeddings] Python {} found but fastembed not importable: {}",
+                    path.display(),
+                    stderr.trim()
+                );
+            }
+        }
+    }
+
+    // No Python with fastembed found — return the first Python we found
+    // so the error from the subprocess makes the problem clear.
+    if let Some(path) = first_found {
+        eprintln!(
+            "[nlp/embeddings] WARNING: No Python with fastembed found. Falling back to: {}",
+            path.display()
+        );
+        path
+    } else {
+        eprintln!("[nlp/embeddings] ERROR: No Python interpreter found on this system!");
+        PathBuf::from("python")
     }
 }
 
@@ -160,14 +394,13 @@ mod tests {
 
     #[test]
     fn embedding_degradation_log_includes_item_id_and_reason() {
-        let message =
-            embedding_degradation_log("item-42", "Embeddings feature is disabled at compile time");
+        let message = embedding_degradation_log("item-42", "No embedding engine configured");
         assert!(
             message.contains("item-42"),
             "log message must include item id for operational diagnosis"
         );
         assert!(
-            message.contains("Embeddings feature is disabled at compile time"),
+            message.contains("No embedding engine configured"),
             "log message must include degradation reason"
         );
     }
@@ -181,9 +414,29 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "embeddings"))]
     #[test]
-    fn compute_and_store_degrades_gracefully_when_feature_is_disabled() {
+    fn extract_sentinel_json_finds_embedded_json() {
+        let output = "some noise\n===EMBED_JSON_BEGIN===\n{\"vector\":[1.0],\"dim\":1,\"model\":\"test\"}\n===EMBED_JSON_END===\nmore noise";
+        let json = extract_sentinel_json(output);
+        assert!(
+            json.contains("\"vector\""),
+            "should extract JSON between sentinels"
+        );
+    }
+
+    #[test]
+    fn extract_sentinel_json_falls_back_to_full_output() {
+        let output = "{\"vector\":[1.0],\"dim\":1}";
+        let json = extract_sentinel_json(output);
+        assert_eq!(
+            json,
+            output.trim(),
+            "should return full output when no sentinels"
+        );
+    }
+
+    #[test]
+    fn compute_and_store_degrades_gracefully_when_no_engine() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
         conn.execute_batch(
             "
@@ -238,10 +491,10 @@ mod tests {
         )
         .expect("extraction should be inserted");
 
-        let result = compute_and_store(&conn, "item-1");
+        let result = compute_and_store(None, &conn, "item-1");
         assert!(
             result.is_ok(),
-            "feature-disabled embeddings path must degrade non-fatally"
+            "no-engine embeddings path must degrade non-fatally"
         );
     }
 }

@@ -5,15 +5,11 @@ pub mod ner;
 pub mod text_provider;
 pub mod triples;
 
-use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
-#[cfg(feature = "embeddings")]
-fn load_sqlite_vec(conn: &rusqlite::Connection) -> Result<(), String> {
-    sqlite_vec_shim::load(conn)
-}
+use embeddings::EmbeddingEngine;
 
 // ── Event payloads ───────────────────────────────────────────────────────────
 
@@ -86,14 +82,6 @@ impl NlpQueue {
                     let _ = c.execute_batch(
                         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
                     );
-                    #[cfg(feature = "embeddings")]
-                    {
-                        // Load sqlite-vec extension for vec0 virtual table support.
-                        if let Err(e) = load_sqlite_vec(&c) {
-                            // Non-fatal: embeddings will be degraded, FTS5/NER continue.
-                            eprintln!("[nlp] sqlite-vec load failed: {e} — embedding jobs will be skipped");
-                        }
-                    }
                     c
                 }
                 Err(e) => {
@@ -102,12 +90,64 @@ impl NlpQueue {
                 }
             };
 
+            // Create vec_items table as a regular table (fallback when sqlite-vec
+            // extension is not available). When sqlite-vec becomes available
+            // on all platforms, this can be replaced with a vec0 virtual table.
+            // Using a regular table means kNN search requires a full scan, but
+            // for MVP-scale data (<10k items) this is perfectly fine.
+            if let Err(e) = conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS vec_items(
+                    item_id TEXT PRIMARY KEY,
+                    embedding BLOB NOT NULL
+                )",
+            ) {
+                eprintln!("[nlp] Failed to create vec_items table: {e} — embedding storage will be unavailable");
+            }
+
+            // Resolve embedding script path: try Resource directory first (production),
+            // then source (dev) — mirrors transcription script resolution.
+            let embed_script_path = app_handle
+                .path()
+                .resolve("scripts/embed.py", BaseDirectory::Resource)
+                .unwrap_or_else(|_| {
+                    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/scripts/embed.py");
+                    if dev_path.exists() {
+                        dev_path
+                    } else {
+                        std::path::PathBuf::from("scripts/embed.py")
+                    }
+                });
+
+            eprintln!(
+                "[nlp/embeddings] Script path: {}",
+                embed_script_path.display()
+            );
+
+            // Find Python interpreter with fastembed
+            let python_path = embeddings::which_python();
+
+            // Initialize embedding engine (non-fatal if unavailable)
+            let embed_engine = match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+                python_path: python_path.clone(),
+                script_path: embed_script_path,
+                model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+            }) {
+                Ok(engine) => {
+                    eprintln!("[nlp/embeddings] Engine ready.");
+                    Some(engine)
+                }
+                Err(e) => {
+                    eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                    None
+                }
+            };
+
             while let Some(job) = receiver.recv().await {
                 match job {
                     NlpJob::IndexFts { item_id } => {
                         emit_progress(&app_handle, &item_id, "fts", 10);
                         let result = tokio::task::block_in_place(|| {
-                            // Fetch item data from DB and index into FTS5.
                             fts::index_item_from_db(&conn, &item_id)
                         });
                         match result {
@@ -120,7 +160,10 @@ impl NlpQueue {
                     }
                     NlpJob::ComputeEmbedding { item_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let result = tokio::task::block_in_place(|| embeddings::compute_and_store(&conn, &item_id));
+                        let engine_ref = embed_engine.as_ref();
+                        let result = tokio::task::block_in_place(|| {
+                            embeddings::compute_and_store(engine_ref, &conn, &item_id)
+                        });
                         match result {
                             Ok(_) => {
                                 emit_progress(&app_handle, &item_id, "embed", 100);
@@ -156,23 +199,26 @@ impl NlpQueue {
                         }
                     }
                     NlpJob::EnrichItem { item_id } => {
-                        let sub_jobs: [(&str, fn(&Connection, &str) -> Result<(), String>); 4] = [
-                            ("fts", fts::index_item_from_db),
-                            ("embed", embeddings::compute_and_store),
-                            ("ner", ner::extract_and_store),
-                            ("triples", triples::extract_and_store),
-                        ];
-                        for (name, handler) in sub_jobs {
-                            emit_progress(&app_handle, &item_id, name, 10);
-                            let result = tokio::task::block_in_place(|| handler(&conn, &item_id));
-                            match result {
-                                Ok(_) => {
-                                    emit_progress(&app_handle, &item_id, name, 100);
-                                    emit_complete(&app_handle, &item_id, name);
-                                }
-                                Err(e) => emit_error(&app_handle, &item_id, name, &e),
-                            }
-                        }
+                        // Run all 4 sub-jobs sequentially; errors don't short-circuit.
+                        // Embedding uses engine (may be None → graceful degradation).
+                        // FTS, NER, Triples are pure Rust and always available.
+                        let engine_ref = embed_engine.as_ref();
+
+                        emit_progress(&app_handle, &item_id, "fts", 10);
+                        let r = tokio::task::block_in_place(|| fts::index_item_from_db(&conn, &item_id));
+                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "fts", 100); emit_complete(&app_handle, &item_id, "fts"); } Err(e) => emit_error(&app_handle, &item_id, "fts", &e), }
+
+                        emit_progress(&app_handle, &item_id, "embed", 10);
+                        let r = tokio::task::block_in_place(|| embeddings::compute_and_store(engine_ref, &conn, &item_id));
+                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "embed", 100); emit_complete(&app_handle, &item_id, "embed"); } Err(e) => emit_error(&app_handle, &item_id, "embed", &e), }
+
+                        emit_progress(&app_handle, &item_id, "ner", 10);
+                        let r = tokio::task::block_in_place(|| ner::extract_and_store(&conn, &item_id));
+                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "ner", 100); emit_complete(&app_handle, &item_id, "ner"); } Err(e) => emit_error(&app_handle, &item_id, "ner", &e), }
+
+                        emit_progress(&app_handle, &item_id, "triples", 10);
+                        let r = tokio::task::block_in_place(|| triples::extract_and_store(&conn, &item_id));
+                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "triples", 100); emit_complete(&app_handle, &item_id, "triples"); } Err(e) => emit_error(&app_handle, &item_id, "triples", &e), }
                     }
                 }
             }
@@ -219,31 +265,27 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
 
-fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
+    fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {
             NlpJob::IndexFts { item_id } => fts::index_item_from_db(conn, item_id),
-            NlpJob::ComputeEmbedding { item_id } => embeddings::compute_and_store(conn, item_id),
+            NlpJob::ComputeEmbedding { item_id } => {
+                // No engine in test context → graceful degradation
+                embeddings::compute_and_store(None, conn, item_id)
+            }
             NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id),
             NlpJob::ExtractTriples { item_id } => triples::extract_and_store(conn, item_id),
             NlpJob::EnrichItem { item_id } => {
                 // Run all 4 sub-jobs sequentially; errors don't short-circuit
-                // Matches worker semantics: individual sub-job errors are emitted
-                // as events but do NOT prevent remaining sub-jobs from running.
-                let jobs: [(&str, fn(&Connection, &str) -> Result<(), String>); 4] = [
-                    ("fts", fts::index_item_from_db),
-                    ("embed", embeddings::compute_and_store),
-                    ("ner", ner::extract_and_store),
-                    ("triples", triples::extract_and_store),
-                ];
-                for (_name, handler) in jobs {
-                    let _ = handler(conn, item_id);
-                }
+                let _ = fts::index_item_from_db(conn, item_id);
+                let _ = embeddings::compute_and_store(None, conn, item_id);
+                let _ = ner::extract_and_store(conn, item_id);
+                let _ = triples::extract_and_store(conn, item_id);
                 Ok(())
             }
         }
     }
 
-fn setup_worker_test_db() -> Connection {
+    fn setup_worker_test_db() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory db should open");
 
         conn.execute_batch(
@@ -336,7 +378,6 @@ fn setup_worker_test_db() -> Connection {
         .expect("extraction should be inserted");
     }
 
-    #[cfg(not(feature = "embeddings"))]
     #[test]
     fn compute_embedding_job_degrades_and_non_embedding_jobs_keep_working() {
         let conn = setup_worker_test_db();
@@ -405,7 +446,6 @@ fn setup_worker_test_db() -> Connection {
         assert!(triple_rows > 0, "Triples should persist at least one row");
     }
 
-    #[cfg(not(feature = "embeddings"))]
     #[test]
     fn embedding_degradation_on_missing_item_does_not_block_other_items() {
         let conn = setup_worker_test_db();
@@ -439,7 +479,7 @@ fn setup_worker_test_db() -> Connection {
             "FTS for a different item should remain operational"
         );
 
-let fts_rows: i64 = conn
+        let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
             .expect("fts row count should be queryable");
         assert_eq!(fts_rows, 1, "FTS indexing for unaffected item must persist");
@@ -447,7 +487,6 @@ let fts_rows: i64 = conn
 
     // ── EnrichItem integration tests ──────────────────────────────────────────
 
-    #[cfg(not(feature = "embeddings"))]
     #[test]
     fn enrich_item_runs_all_four_sub_jobs() {
         let conn = setup_worker_test_db();
@@ -502,7 +541,7 @@ let fts_rows: i64 = conn
 
     #[test]
     fn enrich_item_continues_after_sub_job_failure() {
-        // Run EnrichItem on an item — without embeddings feature, embedding degrades gracefully.
+        // Run EnrichItem on an item — embedding degrades gracefully (no engine).
         // All other sub-jobs should still complete successfully.
         let conn = setup_worker_test_db();
         seed_item(

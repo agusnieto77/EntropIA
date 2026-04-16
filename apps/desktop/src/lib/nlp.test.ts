@@ -458,12 +458,17 @@ describe('NlpStore', () => {
   })
 })
 
-describe('windows ORT linker contract governance', () => {
-  it('keeps rollback note colocated with Windows feature-gating config', () => {
+describe('embedding architecture governance', () => {
+  it('does not depend on Rust fastembed crate (migrated to Python subprocess)', () => {
     const cargoToml = readRepoFile('../../src-tauri/Cargo.toml')
 
-    expect(cargoToml).toContain(
-      'Rollback: switch this back to crates.io fastembed once ORT/MSVC linker'
-    )
+    // Embeddings now use Python subprocess (scripts/embed.py) instead of
+    // the Rust fastembed crate, which fails on Windows due to ORT/MSVC
+    // linker issues. This test ensures we don't accidentally re-introduce
+    // the Rust crate dependency.
+    expect(cargoToml).not.toContain('fastembed-upstream')
+    expect(cargoToml).not.toContain('fastembed-shim')
+    expect(cargoToml).not.toContain('sqlite-vec-shim')
+    expect(cargoToml).not.toContain('[features]')
   })
 })

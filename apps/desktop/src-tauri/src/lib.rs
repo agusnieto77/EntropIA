@@ -49,8 +49,8 @@ pub fn run() {
             OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
-            // The NLP worker opens its own dedicated connection so sqlite-vec can be loaded
-            // independently without affecting the OCR or UI connections.
+            // The NLP worker opens its own dedicated connection and initializes the
+            // embedding engine (Python subprocess) independently from OCR/UI connections.
             let (nlp_queue, nlp_receiver) = NlpQueue::new();
             app.manage(nlp_queue);
             NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone());

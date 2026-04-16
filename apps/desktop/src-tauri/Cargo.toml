@@ -10,10 +10,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[features]
-default = ["embeddings"]
-embeddings = ["dep:fastembed-upstream", "dep:fastembed-shim", "dep:sqlite-vec-shim"]
-
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
@@ -30,26 +26,10 @@ tokio = { version = "1", features = ["full"] }
 regex = "1"
 once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
-# whisper-rs removed: replaced with faster-whisper Python subprocess
-# (avoids C++ foreign exception crashes on Windows with ggml/F16C)
-# whisper-rs = "0.16"
-# hound and symphonia no longer needed — faster-whisper handles audio decoding
-# hound = "3.5"
-# symphonia = { version = "0.5", features = ["wav", "mp3", "flac", "aac", "isomp4", "pcm"] }
-
-[target.'cfg(not(windows))'.dependencies]
-fastembed-upstream = { package = "fastembed", version = "5", optional = true }
-# Shim for sqlite-vec across all platforms — upstream 0.1.10-alpha.3 is missing
-# sqlite-vec-diskann.c, breaking the build on macOS and Linux too (not just MSVC).
-sqlite-vec-shim = { package = "sqlite-vec", path = "vendor/sqlite-vec", optional = true }
-
-[target.'cfg(windows)'.dependencies]
-# Windows shim to keep `embeddings` feature compilable without linking ORT.
-# Contract: default-features on Windows must degrade embeddings non-fatally.
-# Rollback: switch this back to crates.io fastembed once ORT/MSVC linker
-# compatibility is stable for our CI baseline.
-fastembed-shim = { package = "fastembed", path = "vendor/fastembed-shim", optional = true }
-sqlite-vec-shim = { package = "sqlite-vec", path = "vendor/sqlite-vec", optional = true }
+# Embeddings now use Python fastembed subprocess (scripts/embed.py) instead of
+# the Rust crate, which fails on Windows due to ORT/MSVC linker issues.
+# Transcription also uses Python subprocess (scripts/transcribe.py).
+# Both follow the same pattern: Rust spawns Python, captures JSON output.
 
 [profile.release]
 panic = "abort"
