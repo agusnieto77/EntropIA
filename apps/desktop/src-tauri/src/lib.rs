@@ -74,6 +74,7 @@ pub fn run() {
             nlp::commands::embed_item,
             nlp::commands::extract_entities,
             nlp::commands::extract_triples,
+            nlp::commands::enrich_item,
             nlp::commands::fts_search,
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,

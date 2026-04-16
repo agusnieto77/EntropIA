@@ -57,6 +57,18 @@ pub async fn extract_triples(
     enqueue(&nlp_queue, NlpJob::ExtractTriples { item_id })
 }
 
+/// Submit a full enrichment pipeline job (FTS + embed + NER + triples) for `item_id`.
+///
+/// The worker runs all 4 sub-jobs sequentially. Errors in individual sub-jobs
+/// are logged and emitted as `nlp:error` events but do NOT block remaining sub-jobs.
+#[tauri::command]
+pub async fn enrich_item(
+    item_id: String,
+    nlp_queue: State<'_, NlpQueue>,
+) -> Result<String, String> {
+    enqueue(&nlp_queue, NlpJob::EnrichItem { item_id })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,7 +115,7 @@ mod tests {
         );
     }
 
-    #[test]
+#[test]
     fn enqueue_keeps_non_embedding_jobs_stable() {
         let (queue, _receiver) = NlpQueue::new();
 
@@ -129,6 +141,30 @@ mod tests {
         assert_eq!(fts.unwrap(), "queued");
         assert_eq!(ner.unwrap(), "queued");
         assert_eq!(triples.unwrap(), "queued");
+    }
+
+    #[test]
+    fn enrich_item_command_enqueues_job_and_returns_queued() {
+        let (queue, mut rx) = NlpQueue::new();
+
+        let result = enqueue(
+            &queue,
+            NlpJob::EnrichItem {
+                item_id: "item-enrich-cmd".to_string(),
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "queued");
+
+        // Verify the job was actually enqueued with the right variant
+        let job = rx.try_recv().expect("should receive enqueued job");
+        match job {
+            NlpJob::EnrichItem { item_id } => {
+                assert_eq!(item_id, "item-enrich-cmd");
+            }
+            _ => panic!("Expected EnrichItem job, got: {:?}", job),
+        }
     }
 }
 

@@ -52,7 +52,7 @@ describe('classifyFileType', () => {
 })
 
 describe('SUPPORTED_FORMATS', () => {
-  it('includes all image and pdf formats', () => {
+  it('includes all image, pdf, and audio formats', () => {
     expect(SUPPORTED_FORMATS).toContain('png')
     expect(SUPPORTED_FORMATS).toContain('jpg')
     expect(SUPPORTED_FORMATS).toContain('jpeg')
@@ -60,7 +60,15 @@ describe('SUPPORTED_FORMATS', () => {
     expect(SUPPORTED_FORMATS).toContain('tiff')
     expect(SUPPORTED_FORMATS).toContain('tif')
     expect(SUPPORTED_FORMATS).toContain('pdf')
-    expect(SUPPORTED_FORMATS).toHaveLength(7)
+    // Audio formats
+    expect(SUPPORTED_FORMATS).toContain('wav')
+    expect(SUPPORTED_FORMATS).toContain('mp3')
+    expect(SUPPORTED_FORMATS).toContain('flac')
+    expect(SUPPORTED_FORMATS).toContain('m4a')
+    expect(SUPPORTED_FORMATS).toContain('aac')
+    expect(SUPPORTED_FORMATS).toContain('ogg')
+    // 6 image + 1 pdf + 6 audio = 13
+    expect(SUPPORTED_FORMATS).toHaveLength(13)
   })
 })
 

@@ -5,6 +5,8 @@
 /// there is no automatic sync with the source table.
 use rusqlite::{params, Connection};
 
+use super::text_provider;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,28 +37,8 @@ pub fn index_item_from_db(conn: &Connection, item_id: &str) -> Result<(), String
         None => return Ok(()), // Item not found — not an error
     };
 
-    // Fetch extracted text (concatenate all extractions)
-    let extracted_text: String = {
-        let mut stmt = conn
-            .prepare(
-                r#"
-                SELECT COALESCE(e.text_content, '')
-                FROM extractions e
-                JOIN assets a ON e.asset_id = a.id
-                WHERE a.item_id = ?1
-                ORDER BY e.created_at ASC
-                "#,
-            )
-            .map_err(|e| format!("Failed to prepare extraction query: {e}"))?;
-
-        let texts: Vec<String> = stmt
-            .query_map(params![item_id], |row| row.get(0))
-            .map_err(|e| format!("Failed to query extractions: {e}"))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        texts.join(" ")
-    };
+    // Fetch extracted text from both extractions and transcriptions via text_provider
+    let extracted_text = text_provider::get_item_text(conn, item_id)?;
 
     fts_index_item(conn, item_id, &title, &metadata, &extracted_text)
 }
@@ -420,6 +402,145 @@ mod tests {
         assert!(
             err.contains("FTS5 row mapping failed"),
             "unexpected error: {err}"
+        );
+    }
+
+    // ── index_item_from_db with text_provider (Task 2.1) ─────────────────────
+
+    fn setup_fts_db_with_assets() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory DB failed");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE items (
+              id TEXT PRIMARY KEY,
+              collection_id TEXT,
+              title TEXT NOT NULL,
+              metadata TEXT
+            );
+
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE extractions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE VIRTUAL TABLE fts_items USING fts5(
+                item_id UNINDEXED,
+                title,
+                metadata,
+                extracted_text,
+                tokenize = 'unicode61 remove_diacritics 1',
+                content = ''
+            );
+            "#,
+        )
+        .expect("full FTS schema creation failed");
+        conn
+    }
+
+    #[test]
+    fn index_item_from_db_indexes_transcription_text_via_text_provider() {
+        let conn = setup_fts_db_with_assets();
+
+        // Insert item and asset
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params!["item-t1", "col-1", "Test Document", "{}"],
+        )
+        .expect("item insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-t1", "item-t1", "audio.mp3", "audio", 1_i64],
+        )
+        .expect("asset insert");
+
+        // Insert transcription (no extractions!)
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["trans-t1", "asset-t1", "Don Manuel Belgrano en la ciudad de Buenos Aires", "es", 5000_i64, "base", "[]", 0.9_f64, 2_i64],
+        )
+        .expect("transcription insert");
+
+        // FTS should find "Belgrano" from transcription text
+        index_item_from_db(&conn, "item-t1").expect("index_item_from_db should succeed");
+
+        let results = fts_search(&conn, "Belgrano", None).expect("search should succeed");
+        assert_eq!(
+            results.len(),
+            1,
+            "FTS should find the item via transcription text"
+        );
+        assert_eq!(results[0].item_id, "item-t1");
+    }
+
+    #[test]
+    fn index_item_from_db_concatenates_extraction_and_transcription_text() {
+        let conn = setup_fts_db_with_assets();
+
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params!["item-t2", "col-1", "Multi-Source Doc", "{}"],
+        )
+        .expect("item insert");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-t2", "item-t2", "page1.png", "image", 1_i64],
+        )
+        .expect("asset insert");
+
+        // Extraction text
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["ext-t2", "asset-t2", "colonial manuscript text", 10_i64],
+        )
+        .expect("extraction insert");
+
+        // Transcription text
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["trans-t2", "asset-t2", "audio transcript palabras", "es", 3000_i64, "base", "[]", 0.85_f64, 20_i64],
+        )
+        .expect("transcription insert");
+
+        index_item_from_db(&conn, "item-t2").expect("index_item_from_db should succeed");
+
+        // Both "colonial" (from extraction) and "palabras" (from transcription) should be searchable
+        let results_extraction =
+            fts_search(&conn, "colonial", None).expect("search extraction text");
+        assert_eq!(
+            results_extraction.len(),
+            1,
+            "FTS should find extraction text"
+        );
+
+        let results_transcription =
+            fts_search(&conn, "palabras", None).expect("search transcription text");
+        assert_eq!(
+            results_transcription.len(),
+            1,
+            "FTS should find transcription text"
         );
     }
 }

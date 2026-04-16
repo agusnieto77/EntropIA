@@ -5,33 +5,20 @@
 /// degraded silently; FTS5 and NER continue unaffected.
 use rusqlite::{params, Connection};
 
+use super::text_provider;
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Compute embedding for item's extracted text and store it in `vec_items`.
+/// Compute embedding for item's text (extractions + transcriptions) and store it in `vec_items`.
 ///
 /// Graceful fallback: if fastembed or sqlite-vec is unavailable, logs a warning
 /// and returns `Ok(())` without modifying the database.
 pub fn compute_and_store(conn: &Connection, item_id: &str) -> Result<(), String> {
-    // Fetch extracted text for the item (latest extraction)
-    let text: Option<String> = conn
-        .query_row(
-            r#"
-            SELECT e.text_content
-            FROM extractions e
-            JOIN assets a ON e.asset_id = a.id
-            WHERE a.item_id = ?1
-            ORDER BY e.created_at DESC
-            LIMIT 1
-            "#,
-            params![item_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let text = match text {
-        Some(t) if !t.is_empty() => t,
-        _ => return Ok(()), // Nothing to embed — not an error
-    };
+    // Fetch concatenated text from both extractions and transcriptions
+    let text = text_provider::get_item_text(conn, item_id)?;
+    if text.trim().is_empty() {
+        return Ok(()); // Nothing to embed — not an error
+    }
 
     // Attempt to compute embedding via fastembed
     let vector = match embed_text(&text) {
@@ -200,25 +187,54 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
         conn.execute_batch(
             "
-            CREATE TABLE assets (id TEXT PRIMARY KEY, item_id TEXT NOT NULL);
+            CREATE TABLE items (
+              id TEXT PRIMARY KEY,
+              collection_id TEXT,
+              title TEXT NOT NULL,
+              metadata TEXT
+            );
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
             CREATE TABLE extractions (
               id TEXT PRIMARY KEY,
               asset_id TEXT NOT NULL,
               text_content TEXT,
-              created_at TEXT NOT NULL
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
             );
             ",
         )
         .expect("schema should be created");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id) VALUES (?1, ?2)",
-            params!["asset-1", "item-1"],
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params!["item-1", "col-1", "Title", "{}"],
+        )
+        .expect("item should be inserted");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-1", "item-1", "asset.txt", "txt", 1_i64],
         )
         .expect("asset should be inserted");
         conn.execute(
             "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params!["ext-1", "asset-1", "texto para embedding", "2026-04-12T00:00:00Z"],
+            params!["ext-1", "asset-1", "texto para embedding", 2_i64],
         )
         .expect("extraction should be inserted");
 

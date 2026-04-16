@@ -143,6 +143,11 @@ export async function extractTriples(itemId: string): Promise<void> {
   await invoke('extract_triples', { itemId })
 }
 
+/** Submit a full enrichment pipeline job (FTS + embed + NER + triples) for `itemId`. */
+export async function enrichItem(itemId: string): Promise<void> {
+  await invoke('enrich_item', { itemId })
+}
+
 /** Search items using FTS5. Returns results ordered by BM25 relevance. */
 export async function ftsSearch(query: string, collectionId?: string): Promise<FtsResult[]> {
   return await invoke('fts_search', { query, collectionId })

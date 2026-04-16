@@ -6,6 +6,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use rusqlite::{params, Connection};
 
+use super::text_provider;
+
 // ── Entity types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,28 +96,15 @@ pub fn extract_entities(text: &str) -> Vec<Entity> {
     entities
 }
 
-/// Fetch the extracted text for `item_id`, run NER, and persist results to DB.
+/// Fetch text for `item_id` (extractions + transcriptions), run NER, and persist results to DB.
 pub fn extract_and_store(conn: &Connection, item_id: &str) -> Result<(), String> {
-    // Fetch extracted text for the item (latest extraction)
-    let text: Option<String> = conn
-        .query_row(
-            r#"
-            SELECT e.text_content
-            FROM extractions e
-            JOIN assets a ON e.asset_id = a.id
-            WHERE a.item_id = ?1
-            ORDER BY e.created_at DESC
-            LIMIT 1
-            "#,
-            params![item_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let text = match text {
-        Some(t) if !t.is_empty() => t,
-        _ => return Ok(()), // Nothing to index — not an error
-    };
+    let text = text_provider::get_item_text(conn, item_id)?;
+    if text.trim().is_empty() {
+        // No text to process — clean up any previous entities
+        conn.execute("DELETE FROM entities WHERE item_id = ?1", params![item_id])
+            .map_err(|e| format!("Failed to delete old entities: {e}"))?;
+        return Ok(());
+    }
 
     let entities = extract_entities(&text);
 
@@ -389,5 +378,218 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             .collect();
 
         assert!(places.is_empty(), "unexpected PLACE entities: {places:?}");
+    }
+
+    // ── Integration tests for extract_and_store with text_provider ──────────
+
+    fn setup_ner_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+
+        conn.execute_batch(
+            r#"
+            CREATE TABLE items (
+              id TEXT PRIMARY KEY,
+              collection_id TEXT,
+              title TEXT NOT NULL,
+              metadata TEXT
+            );
+
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE extractions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE entities (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              entity_type TEXT NOT NULL,
+              value TEXT NOT NULL,
+              start_offset INTEGER NOT NULL,
+              end_offset INTEGER NOT NULL,
+              confidence REAL NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("NER test schema should be created");
+
+        conn
+    }
+
+    fn seed_ner_item(conn: &Connection, item_id: &str, asset_id: &str) {
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params![item_id, "col-1", "Test Item", "{}"],
+        )
+        .expect("item insert should succeed");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![asset_id, item_id, "audio.mp3", "audio", 1_i64],
+        )
+        .expect("asset insert should succeed");
+    }
+
+    fn seed_ner_extraction(
+        conn: &Connection,
+        ext_id: &str,
+        asset_id: &str,
+        text: &str,
+        created_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![ext_id, asset_id, text, created_at],
+        )
+        .expect("extraction insert should succeed");
+    }
+
+    fn seed_ner_transcription(
+        conn: &Connection,
+        trans_id: &str,
+        asset_id: &str,
+        text: &str,
+        created_at: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![trans_id, asset_id, text, "es", 1000_i64, "base", "[]", 0.9_f64, created_at],
+        )
+        .expect("transcription insert should succeed");
+    }
+
+    #[test]
+    fn extract_and_store_detects_entities_from_transcription_only() {
+        let conn = setup_ner_db();
+        seed_ner_item(&conn, "item-trans-ner", "asset-trans-ner");
+
+        // No extractions — only a transcription with colonial person names
+        seed_ner_transcription(
+            &conn,
+            "trans-ner-1",
+            "asset-trans-ner",
+            "Don Manuel Belgrano y Doña Juana Azurduy en la ciudad de Buenos Aires",
+            10_i64,
+        );
+
+        extract_and_store(&conn, "item-trans-ner").expect("extract_and_store should succeed");
+
+        let entity_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
+                params!["item-trans-ner"],
+                |row| row.get(0),
+            )
+            .expect("entity count should be queryable");
+
+        assert!(
+            entity_count > 0,
+            "NER should detect entities from transcription-only text, found {entity_count}"
+        );
+
+        // Verify specific entities detected
+        let person_values: Vec<String> = conn
+            .prepare("SELECT value FROM entities WHERE item_id = ?1 AND entity_type = 'person'")
+            .unwrap()
+            .query_map(params!["item-trans-ner"], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            person_values.iter().any(|v| v.contains("Manuel Belgrano")),
+            "Expected 'Don Manuel Belgrano' entity from transcription text, got: {person_values:?}"
+        );
+    }
+
+    #[test]
+    fn extract_and_store_detects_entities_from_combined_text() {
+        let conn = setup_ner_db();
+        seed_ner_item(&conn, "item-combo-ner", "asset-combo-ner");
+
+        // Extraction with limited text
+        seed_ner_extraction(
+            &conn,
+            "ext-combo-ner",
+            "asset-combo-ner",
+            "Documento colonial.",
+            5_i64,
+        );
+
+        // Transcription adds person names
+        seed_ner_transcription(
+            &conn,
+            "trans-combo-ner",
+            "asset-combo-ner",
+            "Don San Martín fue gobernador de Cuyo.",
+            10_i64,
+        );
+
+        extract_and_store(&conn, "item-combo-ner").expect("extract_and_store should succeed");
+
+        let entity_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
+                params!["item-combo-ner"],
+                |row| row.get(0),
+            )
+            .expect("entity count should be queryable");
+
+        assert!(
+            entity_count > 0,
+            "NER should detect entities from combined extraction + transcription text"
+        );
+    }
+
+    #[test]
+    fn extract_and_store_deletes_old_entities_when_text_is_empty() {
+        let conn = setup_ner_db();
+        seed_ner_item(&conn, "item-empty-ner", "asset-empty-ner");
+
+        // No extractions, no transcriptions — empty text
+
+        // Insert a stale entity manually
+        conn.execute(
+            "INSERT INTO entities(id, item_id, entity_type, value, start_offset, end_offset, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["entity-stale", "item-empty-ner", "person", "Stale Entity", 0_i64, 12_i64, 1.0_f64, 1_i64],
+        )
+        .expect("stale entity insert");
+
+        extract_and_store(&conn, "item-empty-ner").expect("extract_and_store should succeed");
+
+        let entity_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
+                params!["item-empty-ner"],
+                |row| row.get(0),
+            )
+            .expect("entity count should be queryable");
+
+        assert_eq!(
+            entity_count, 0,
+            "Old entities should be deleted when no text is available"
+        );
     }
 }

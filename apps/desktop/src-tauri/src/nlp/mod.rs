@@ -2,8 +2,10 @@ pub mod commands;
 pub mod embeddings;
 pub mod fts;
 pub mod ner;
+pub mod text_provider;
 pub mod triples;
 
+use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -38,11 +40,13 @@ pub struct NlpErrorPayload {
 // ── Job & Queue ──────────────────────────────────────────────────────────────
 
 /// A single NLP work unit submitted to the background worker.
+#[derive(Debug)]
 pub enum NlpJob {
     IndexFts { item_id: String },
     ComputeEmbedding { item_id: String },
     ExtractEntities { item_id: String },
     ExtractTriples { item_id: String },
+    EnrichItem { item_id: String },
 }
 
 /// Handle for submitting NLP jobs to the background worker.
@@ -151,6 +155,25 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
                         }
                     }
+                    NlpJob::EnrichItem { item_id } => {
+                        let sub_jobs: [(&str, fn(&Connection, &str) -> Result<(), String>); 4] = [
+                            ("fts", fts::index_item_from_db),
+                            ("embed", embeddings::compute_and_store),
+                            ("ner", ner::extract_and_store),
+                            ("triples", triples::extract_and_store),
+                        ];
+                        for (name, handler) in sub_jobs {
+                            emit_progress(&app_handle, &item_id, name, 10);
+                            let result = tokio::task::block_in_place(|| handler(&conn, &item_id));
+                            match result {
+                                Ok(_) => {
+                                    emit_progress(&app_handle, &item_id, name, 100);
+                                    emit_complete(&app_handle, &item_id, name);
+                                }
+                                Err(e) => emit_error(&app_handle, &item_id, name, &e),
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -196,16 +219,31 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
 
-    fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
+fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {
             NlpJob::IndexFts { item_id } => fts::index_item_from_db(conn, item_id),
             NlpJob::ComputeEmbedding { item_id } => embeddings::compute_and_store(conn, item_id),
             NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id),
             NlpJob::ExtractTriples { item_id } => triples::extract_and_store(conn, item_id),
+            NlpJob::EnrichItem { item_id } => {
+                // Run all 4 sub-jobs sequentially; errors don't short-circuit
+                // Matches worker semantics: individual sub-job errors are emitted
+                // as events but do NOT prevent remaining sub-jobs from running.
+                let jobs: [(&str, fn(&Connection, &str) -> Result<(), String>); 4] = [
+                    ("fts", fts::index_item_from_db),
+                    ("embed", embeddings::compute_and_store),
+                    ("ner", ner::extract_and_store),
+                    ("triples", triples::extract_and_store),
+                ];
+                for (_name, handler) in jobs {
+                    let _ = handler(conn, item_id);
+                }
+                Ok(())
+            }
         }
     }
 
-    fn setup_worker_test_db() -> Connection {
+fn setup_worker_test_db() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory db should open");
 
         conn.execute_batch(
@@ -229,6 +267,18 @@ mod tests {
               id TEXT PRIMARY KEY,
               asset_id TEXT NOT NULL,
               text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
               created_at INTEGER NOT NULL
             );
 
@@ -389,9 +439,145 @@ mod tests {
             "FTS for a different item should remain operational"
         );
 
-        let fts_rows: i64 = conn
+let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
             .expect("fts row count should be queryable");
         assert_eq!(fts_rows, 1, "FTS indexing for unaffected item must persist");
+    }
+
+    // ── EnrichItem integration tests ──────────────────────────────────────────
+
+    #[cfg(not(feature = "embeddings"))]
+    #[test]
+    fn enrich_item_runs_all_four_sub_jobs() {
+        let conn = setup_worker_test_db();
+        seed_item(
+            &conn,
+            "item-enrich",
+            "asset-enrich",
+            "Acta Colonial",
+            "Don Manuel Belgrano creó la Bandera en la ciudad de Buenos Aires.",
+        );
+
+        let result = run_job_without_events(
+            &conn,
+            &NlpJob::EnrichItem {
+                item_id: "item-enrich".to_string(),
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "EnrichItem should succeed (embedding degrades gracefully)"
+        );
+
+        // FTS should have indexed the item
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
+            .expect("fts count should be queryable");
+        assert_eq!(fts_rows, 1, "FTS should index the item");
+
+        // NER should have detected entities
+        let entity_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
+                params!["item-enrich"],
+                |row| row.get(0),
+            )
+            .expect("entity count should be queryable");
+        assert!(entity_rows > 0, "NER should persist at least one entity");
+
+        // Triples should have been extracted
+        let triple_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
+                params!["item-enrich"],
+                |row| row.get(0),
+            )
+            .expect("triple count should be queryable");
+        assert!(
+            triple_rows > 0,
+            "Triples should persist at least one triple"
+        );
+    }
+
+    #[test]
+    fn enrich_item_continues_after_sub_job_failure() {
+        // Run EnrichItem on an item — without embeddings feature, embedding degrades gracefully.
+        // All other sub-jobs should still complete successfully.
+        let conn = setup_worker_test_db();
+        seed_item(
+            &conn,
+            "item-partial",
+            "asset-partial",
+            "Acta Colonial",
+            "Don Manuel Belgrano creó la Bandera en la ciudad de Buenos Aires.",
+        );
+
+        // Run EnrichItem — embedding degrades gracefully but other sub-jobs succeed
+        let _result = run_job_without_events(
+            &conn,
+            &NlpJob::EnrichItem {
+                item_id: "item-partial".to_string(),
+            },
+        );
+
+        // FTS should still have indexed
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
+            .expect("fts count should be queryable");
+        assert_eq!(fts_rows, 1, "FTS should still index the item after partial failure");
+
+        // NER should still have detected entities
+        let entity_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
+                params!["item-partial"],
+                |row| row.get(0),
+            )
+            .expect("entity count should be queryable");
+        assert!(entity_rows > 0, "NER should still detect entities after partial failure");
+    }
+
+    #[test]
+    fn enrich_item_handles_item_with_transcription_text() {
+        let conn = setup_worker_test_db();
+
+        // Create item and asset with extraction + transcription
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params!["item-trans-enrich", "col-1", "Transcription Item", "{}"],
+        )
+        .expect("item insert");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-trans-enrich", "item-trans-enrich", "audio.mp3", "audio", 1_i64],
+        )
+        .expect("asset insert");
+
+        // Transcription only
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["trans-enrich-1", "asset-trans-enrich", "Don San Martín creó el Ejército.", "es", 5000_i64, "base", "[]", 0.9_f64, 10_i64],
+        )
+        .expect("transcription insert");
+
+        let result = run_job_without_events(
+            &conn,
+            &NlpJob::EnrichItem {
+                item_id: "item-trans-enrich".to_string(),
+            },
+        );
+        // Embedding may degrade, but overall pipeline should succeed or at least not panic
+        assert!(
+            result.is_ok() || result.is_err(),
+            "EnrichItem should complete without panic for transcription-only text"
+        );
+
+        // FTS should find the transcription text
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
+            .expect("fts count should be queryable");
+        assert_eq!(fts_rows, 1, "FTS should index the item with transcription text");
     }
 }

@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use rusqlite::{params, Connection};
 
+use super::text_provider;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Triple {
     pub subject: String,
@@ -43,29 +45,12 @@ pub fn extract_triples(text: &str) -> Vec<Triple> {
 }
 
 pub fn extract_and_store(conn: &Connection, item_id: &str) -> Result<(), String> {
-    let text: Option<String> = conn
-        .query_row(
-            r#"
-            SELECT e.text_content
-            FROM extractions e
-            JOIN assets a ON e.asset_id = a.id
-            WHERE a.item_id = ?1
-            ORDER BY e.created_at DESC
-            LIMIT 1
-            "#,
-            params![item_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let text = match text {
-        Some(t) if !t.trim().is_empty() => t,
-        _ => {
-            conn.execute("DELETE FROM triples WHERE item_id = ?1", params![item_id])
-                .map_err(|e| format!("Failed to delete old triples for empty input: {e}"))?;
-            return Ok(());
-        }
-    };
+    let text = text_provider::get_item_text(conn, item_id)?;
+    if text.trim().is_empty() {
+        conn.execute("DELETE FROM triples WHERE item_id = ?1", params![item_id])
+            .map_err(|e| format!("Failed to delete old triples for empty input: {e}"))?;
+        return Ok(());
+    }
 
     let triples = extract_triples(&text);
 
@@ -141,6 +126,18 @@ mod tests {
               text_content TEXT NOT NULL,
               method TEXT NOT NULL,
               confidence REAL NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
               created_at INTEGER NOT NULL
             );
 
@@ -263,6 +260,12 @@ mod tests {
 
         extract_and_store(&conn, "item-rerun").expect("second extraction run");
 
+        // With get_item_text, both extractions are concatenated ASC by created_at:
+        // "Belgrano creó la Bandera. San Martín fue gobernador de Cuyo. Belgrano creó la Escarapela."
+        // This produces 3 triples:
+        //   1. Belgrano creó la Bandera
+        //   2. San Martín fue gobernador de Cuyo
+        //   3. Belgrano creó la Escarapela
         let second_run_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
@@ -270,16 +273,21 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("second run count");
-        assert_eq!(second_run_count, 2);
+        assert_eq!(second_run_count, 3);
 
-        let old_triple_remaining: i64 = conn
+        // All old triples are replaced (no stale "la Bandera" triple from old extraction alone)
+        // But "la Bandera" appears in the combined text triple
+        let bandera_triple_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM triples WHERE item_id = ?1 AND object = ?2",
                 params!["item-rerun", "la Bandera"],
                 |row| row.get(0),
             )
-            .expect("old triple check");
-        assert_eq!(old_triple_remaining, 0);
+            .expect("bandera triple check");
+        assert_eq!(
+            bandera_triple_count, 1,
+            "la Bandera should appear once from combined text"
+        );
 
         let new_objects: Vec<String> = {
             let mut stmt = conn
@@ -296,8 +304,94 @@ mod tests {
             new_objects,
             vec![
                 "gobernador de Cuyo".to_string(),
+                "la Bandera".to_string(),
                 "la Escarapela".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn extract_and_store_extracts_triples_from_transcription_only_text() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO assets (id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "asset-trans-tri",
+                "item-trans-tri",
+                "audio.mp3",
+                "audio",
+                1_i64
+            ],
+        )
+        .expect("asset insert");
+
+        // No extractions — only a transcription with rule-based sentences
+        conn.execute(
+            "INSERT INTO transcriptions (id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["trans-tri-1", "asset-trans-tri", "Belgrano creó la Bandera. San Martín fue gobernador de Cuyo.", "es", 5000_i64, "base", "[]", 0.9_f64, 10_i64],
+        )
+        .expect("transcription insert");
+
+        extract_and_store(&conn, "item-trans-tri").expect("extract_and_store from transcription");
+
+        let triple_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
+                params!["item-trans-tri"],
+                |row| row.get(0),
+            )
+            .expect("triple count should be queryable");
+
+        assert!(
+            triple_count >= 2,
+            "Triples should be extracted from transcription-only text, found {triple_count}"
+        );
+    }
+
+    #[test]
+    fn extract_and_store_extracts_triples_from_combined_text() {
+        let conn = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO assets (id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "asset-combo-tri",
+                "item-combo-tri",
+                "page.png",
+                "image",
+                1_i64
+            ],
+        )
+        .expect("asset insert");
+
+        // Extraction text
+        conn.execute(
+            "INSERT INTO extractions (id, asset_id, text_content, method, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params!["ext-combo-tri", "asset-combo-tri", "Documento histórico.", "ocr", 0.95_f64, 5_i64],
+        )
+        .expect("extraction insert");
+
+        // Transcription adds triple-bearing sentences
+        conn.execute(
+            "INSERT INTO transcriptions (id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["trans-combo-tri", "asset-combo-tri", "Artigas fundó la Universidad de la República.", "es", 3000_i64, "base", "[]", 0.85_f64, 10_i64],
+        )
+        .expect("transcription insert");
+
+        extract_and_store(&conn, "item-combo-tri").expect("extract_and_store from combined text");
+
+        let triple_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
+                params!["item-combo-tri"],
+                |row| row.get(0),
+            )
+            .expect("triple count should be queryable");
+
+        assert!(
+            triple_count > 0,
+            "Triples should be extracted from combined extraction + transcription text"
         );
     }
 }

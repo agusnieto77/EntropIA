@@ -6,6 +6,7 @@
   import {
     NlpStore,
     indexFts,
+    enrichItem,
     embedItem,
     extractEntities,
     extractTriples,
@@ -59,9 +60,9 @@
   // OCR state — plain TS class, updated via Tauri events
   const ocrStore = new OcrStore({
     onComplete: (assetId) => {
-      // After OCR extraction completes, auto-trigger FTS indexing for this item
-      void indexFts(itemId).catch(() => {
-        // Non-fatal: FTS indexing failure doesn't block the UI
+      // After OCR extraction completes, auto-trigger full enrichment for this item
+      void enrichItem(itemId).catch(() => {
+        // Non-fatal: enrichment failure doesn't block the UI
       })
       void assetId // suppress unused warning (assetId belongs to an asset of itemId)
     },
@@ -76,8 +77,8 @@
   // Transcription state — mirrors OcrStore pattern for audio assets
   const transcriptionStore = new TranscriptionStore({
     onComplete: (assetId) => {
-      // After transcription completes, auto-trigger FTS indexing
-      void indexFts(itemId).catch(() => {})
+      // After transcription completes, auto-trigger full enrichment
+      void enrichItem(itemId).catch(() => {})
       void assetId
     },
   })
@@ -95,8 +96,8 @@
     const timer = setTimeout(async () => {
       try {
         await invoke('update_extraction_text_cmd', { assetId, textContent: text })
-        // Re-index FTS so search reflects the corrected text
-        await indexFts(itemId).catch(() => {})
+        // Re-enrich so search reflects the corrected text
+        await enrichItem(itemId).catch(() => {})
       } catch (e) {
         console.error('[ItemView] Failed to persist OCR correction:', e)
       }
@@ -114,7 +115,7 @@
     const timer = setTimeout(async () => {
       try {
         await invoke('update_transcription_text_cmd', { assetId, textContent: text })
-        await indexFts(itemId).catch(() => {})
+        await enrichItem(itemId).catch(() => {})
       } catch (e) {
         console.error('[ItemView] Failed to persist transcription correction:', e)
       }
