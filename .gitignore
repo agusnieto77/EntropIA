@@ -119,8 +119,9 @@ test_*.txt
 *_preprocessed.txt
 *_via_app.txt
 *_via_python.txt
-error*.txt
+*error*.txt
 logs.txt
 prueba_*.txt
 test_paddleocr/
 test_manual*.txt
+check_error.txt
