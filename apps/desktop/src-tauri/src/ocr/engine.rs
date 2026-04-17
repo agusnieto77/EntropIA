@@ -1,4 +1,7 @@
-use std::io::Cursor;
+use std::fs;
+use std::io::{Cursor, Write};
+use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Clone)]
 pub struct OcrEngine {
@@ -25,19 +28,14 @@ const CROP_PADDING: u32 = 10;
 /// 300 DPI is standard for document OCR.
 const FALLBACK_DPI: i32 = 300;
 
-/// Block radius for adaptive thresholding (Sauvola-style).
-/// A radius of 15 = 31×31 neighbourhood window. Larger values smooth out
-/// local variations more aggressively; smaller values preserve fine detail
-/// but may be noisier. 15 works well for typical document photos.
-const ADAPTIVE_BLOCK_RADIUS: u32 = 15;
+/// Block size for adaptive thresholding (must be odd).
+/// 31 = 31×31 neighbourhood window. Matches OpenCV default for document OCR.
+const ADAPTIVE_BLOCK_SIZE: u32 = 31;
 
-/// k parameter for Sauvola thresholding. Controls sensitivity to local contrast.
-/// Standard value is 0.34. Lower = more aggressive binarization.
-const SAUVOLA_K: f64 = 0.34;
-
-/// R parameter for Sauvola thresholding. Dynamic range of standard deviation.
-/// 128.0 is standard for 8-bit images.
-const SAUVOLA_R: f64 = 128.0;
+/// Constant subtracted from mean in adaptive thresholding.
+/// Positive value makes thresholding more aggressive (more black).
+/// 10 is standard for document images.
+const ADAPTIVE_C: i32 = 10;
 
 /// If the percentage of "white" pixels (luminance > 230) in the auto-cropped
 /// image is below this threshold, the image is considered a non-standard
@@ -68,6 +66,20 @@ impl OcrEngine {
     pub fn run_ocr(&self, image_bytes: &[u8]) -> Result<String, String> {
         let preprocessed = preprocess_for_ocr(image_bytes)?;
 
+        // Strategy: Try Tesseract CLI first (writes PNG to disk, reads back).
+        // This matches the Python/pytesseract behavior that correctly detects
+        // multi-column layouts. CLI gives Tesseract full file metadata (DPI, etc.)
+        // which helps layout detection. Fallback to leptess if CLI fails.
+        if let Some(tesseract_exe) = find_tesseract_exe() {
+            if let Some(data_path) = &self.data_path {
+                match run_tesseract_cli(&tesseract_exe, &preprocessed, &self.lang, data_path) {
+                    Ok(text) => return Ok(text),
+                    Err(e) => eprintln!("[OCR] CLI failed ({e}), falling back to leptess"),
+                }
+            }
+        }
+
+        // Fallback: leptess in-memory API
         let mut lt = leptess::LepTess::new(self.data_path.as_deref(), &self.lang)
             .map_err(|e| format!("Failed to create Tesseract instance: {e}"))?;
 
@@ -121,12 +133,13 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let needs_binarization = has_non_white_background(&cropped);
 
     let processed = if needs_binarization {
-        // Sauvola adaptive thresholding: superior to simple mean thresholding
-        // for documents with uneven illumination, yellowed paper, or dark backgrounds.
-        // Formula: T(x,y) = mean(x,y) * [1 + k * (std(x,y)/R - 1)]
-        // This produces clean black-on-white text even from challenging images.
+        // Gaussian adaptive thresholding: matches OpenCV's ADAPTIVE_THRESH_GAUSSIAN_C.
+        // This produces clean black-on-white text while preserving column gutters,
+        // which is critical for Tesseract's layout detection (PSM 3).
+        // Unlike Sauvola, Gaussian weighting is less aggressive and maintains
+        // the spatial separation between columns.
         let gray = cropped.to_luma8();
-        let binary = sauvola_threshold(&gray, ADAPTIVE_BLOCK_RADIUS);
+        let binary = adaptive_threshold_gaussian(&gray, ADAPTIVE_BLOCK_SIZE, ADAPTIVE_C);
         image::DynamicImage::ImageLuma8(binary)
     } else {
         cropped
@@ -231,47 +244,70 @@ fn upscale_if_needed(img: &image::DynamicImage) -> image::DynamicImage {
     img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
 }
 
-/// Sauvola adaptive thresholding — the gold standard for document binarization.
+/// Gaussian adaptive thresholding — matches OpenCV's ADAPTIVE_THRESH_GAUSSIAN_C.
 ///
-/// Unlike simple mean thresholding, Sauvola accounts for local contrast:
-/// T(x,y) = mean(x,y) * [1 + k * (std(x,y)/R - 1)]
+/// For each pixel, computes a weighted mean of the neighbourhood where weights
+/// are a Gaussian window centered on the pixel. Threshold = mean - C.
+/// Pixel < threshold → black (0), else white (255).
 ///
-/// This handles uneven illumination, yellowed paper, and dark backgrounds
-/// that break simple thresholding. The k parameter (0.34) and R (128.0)
-/// are standard values for 8-bit document images.
-fn sauvola_threshold(img: &image::GrayImage, radius: u32) -> image::GrayImage {
+/// This preserves column gutters better than Sauvola, which is critical for
+/// Tesseract's layout detection (PSM 3). Block size must be odd.
+fn adaptive_threshold_gaussian(
+    img: &image::GrayImage,
+    block_size: u32,
+    c: i32,
+) -> image::GrayImage {
     let (width, height) = img.dimensions();
     let mut result = image::GrayImage::new(width, height);
 
+    // Precompute Gaussian weights for the kernel
+    let radius = block_size / 2;
+    let sigma = radius as f64 / 3.0; // Standard Gaussian sigma
+    let mut weights = Vec::with_capacity((block_size * block_size) as usize);
+    let mut weight_sum = 0.0f64;
+
+    for dy in 0..block_size {
+        for dx in 0..block_size {
+            let gx = (dx as f64) - (radius as f64);
+            let gy = (dy as f64) - (radius as f64);
+            let w = (-((gx * gx + gy * gy) / (2.0 * sigma * sigma))).exp();
+            weights.push(w);
+            weight_sum += w;
+        }
+    }
+
+    // Normalize weights
+    for w in &mut weights {
+        *w /= weight_sum;
+    }
+
     for y in 0..height {
         for x in 0..width {
-            // Compute mean and std in the local window
-            let mut sum: f64 = 0.0;
-            let mut sum_sq: f64 = 0.0;
-            let mut count: f64 = 0.0;
+            let mut weighted_sum = 0.0f64;
+            let mut wi = 0;
 
-            let y_start = y.saturating_sub(radius);
-            let y_end = (y + radius).min(height - 1);
-            let x_start = x.saturating_sub(radius);
-            let x_end = (x + radius).min(width - 1);
+            let y_start = y.saturating_sub(radius) as i32;
+            let y_end = (y + radius).min(height - 1) as i32;
+            let x_start = x.saturating_sub(radius) as i32;
+            let x_end = (x + radius).min(width - 1) as i32;
 
-            for wy in y_start..=y_end {
-                for wx in x_start..=x_end {
-                    let pixel = img.get_pixel(wx, wy)[0] as f64;
-                    sum += pixel;
-                    sum_sq += pixel * pixel;
-                    count += 1.0;
+            for ky in 0..block_size as i32 {
+                let wy = y_start + ky;
+                if wy < 0 || wy > y_end {
+                    wi += block_size as usize;
+                    continue;
+                }
+                for kx in 0..block_size as i32 {
+                    let wx = x_start + kx;
+                    if wx >= 0 && wx <= x_end {
+                        let pixel = img.get_pixel(wx as u32, wy as u32)[0] as f64;
+                        weighted_sum += pixel * weights[wi];
+                    }
+                    wi += 1;
                 }
             }
 
-            let mean = sum / count;
-            let variance = (sum_sq / count) - (mean * mean);
-            let std = variance.max(0.0).sqrt();
-
-            // Sauvola threshold formula
-            let threshold = mean * (1.0 + SAUVOLA_K * ((std / SAUVOLA_R) - 1.0));
-
-            // Binarize: pixel below threshold becomes black (0), else white (255)
+            let threshold = weighted_sum - (c as f64);
             let value = if (img.get_pixel(x, y)[0] as f64) < threshold {
                 0u8
             } else {
@@ -283,4 +319,97 @@ fn sauvola_threshold(img: &image::GrayImage, radius: u32) -> image::GrayImage {
     }
 
     result
+}
+
+// ── Tesseract CLI Helper ───────────────────────────────────────────────────────────
+
+/// Find tesseract.exe in common installation paths.
+fn find_tesseract_exe() -> Option<PathBuf> {
+    let candidates = [
+        // vcpkg default location (EntropIA's setup)
+        r"C:\vcpkg\installed\x64-windows-static-md\tools\tesseract\tesseract.exe",
+        // Standard Tesseract-OCR installer
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ];
+
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    None
+}
+
+/// Run Tesseract CLI with PSM 3 (Fully Automatic).
+///
+/// This writes the preprocessed image to a temp PNG file and calls
+/// `tesseract.exe` directly. This matches the Python/pytesseract behavior
+/// that correctly detects multi-column layouts.
+///
+/// CLI gives Tesseract full file metadata (DPI, color profile, etc.) which
+/// helps the layout detection engine. The in-memory API (`set_image_from_mem`)
+/// does not provide this metadata, which can cause column interleaving.
+fn run_tesseract_cli(
+    tesseract_exe: &PathBuf,
+    image_data: &[u8],
+    lang: &str,
+    data_path: &str,
+) -> Result<String, String> {
+    // Create temp directory for this OCR run
+    let temp_dir = std::env::temp_dir().join("entropia_ocr");
+    fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
+
+    // Use a unique filename based on timestamp to avoid collisions
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let input_path = temp_dir.join(format!("input_{}.png", timestamp));
+    let output_path = temp_dir.join(format!("output_{}", timestamp));
+
+    // Write preprocessed image to temp file
+    let mut file = fs::File::create(&input_path)
+        .map_err(|e| format!("Failed to create temp image file: {e}"))?;
+    file.write_all(image_data)
+        .map_err(|e| format!("Failed to write temp image: {e}"))?;
+
+    // Build CLI command: tesseract input output -l lang --psm 3
+    let mut cmd = Command::new(tesseract_exe);
+    cmd.arg(&input_path)
+        .arg(&output_path)
+        .arg("-l")
+        .arg(lang)
+        .arg("--psm")
+        .arg("3") // Fully Automatic Page Segmentation
+        .env("TESSDATA_PREFIX", data_path);
+
+    // Execute Tesseract
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute Tesseract CLI: {e}"))?;
+
+    // Cleanup temp files (best effort)
+    let _ = fs::remove_file(&input_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_file(output_path.with_extension("txt"));
+        return Err(format!(
+            "Tesseract CLI failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr
+        ));
+    }
+
+    // Read output text file
+    let output_file = output_path.with_extension("txt");
+    let text = fs::read_to_string(&output_file)
+        .map_err(|e| format!("Failed to read Tesseract output: {e}"))?;
+
+    // Cleanup output file
+    let _ = fs::remove_file(&output_file);
+
+    Ok(text)
 }
