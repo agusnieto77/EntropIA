@@ -33,6 +33,30 @@ export function classifyFileType(filename: string): 'image' | 'pdf' | 'audio' | 
 }
 
 /**
+ * Open a file picker dialog and return the selected file paths.
+ * Does NOT copy or classify files — the caller handles that.
+ */
+export async function pickFiles(): Promise<string[]> {
+  try {
+    const selected = await open({
+      multiple: true,
+      filters: [
+        {
+          name: 'Documents',
+          extensions: SUPPORTED_FORMATS,
+        },
+      ],
+    })
+
+    if (!selected) return []
+    return Array.isArray(selected) ? selected : [selected]
+  } catch (e) {
+    console.error('[file-import] pickFiles error:', e)
+    throw new Error(`Failed to open file dialog: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+/**
  * Open a file picker dialog, copy selected files into the app data directory,
  * and return metadata about imported files.
  */
@@ -63,25 +87,41 @@ export async function pickAndImportFiles(
   }
 }
 
-export async function importFilesFromPaths(
-  filePaths: string[],
+/**
+ * Copy a single file into the app data directory under `{collectionId}/{itemId}/`.
+ * Returns the destination path.
+ */
+async function copyFileToItem(
+  sourcePath: string,
   collectionId: string,
   itemId: string
-): Promise<ImportFromPathsResult> {
+): Promise<string> {
   const dataDir = await appDataDir()
   const destDir = await join(dataDir, 'assets', collectionId, itemId)
   await mkdir(destDir, { recursive: true })
 
-  const imported: ImportedFile[] = []
+  const name = sourcePath.split(/[/\\]/).pop() ?? 'unknown'
+  const destPath = await join(destDir, `${crypto.randomUUID()}_${name}`)
+  await copyFile(sourcePath, destPath)
+  return destPath
+}
+
+/**
+ * Classify and validate a batch of file paths.
+ * Returns classified files ready to be imported and rejected filenames.
+ */
+export function classifyFiles(filePaths: string[]): {
+  classified: { sourcePath: string; name: string; type: 'image' | 'pdf' | 'audio' }[]
+  rejected: string[]
+} {
+  const classified: { sourcePath: string; name: string; type: 'image' | 'pdf' | 'audio' }[] = []
   const rejected: string[] = []
   const seenSourcePaths = new Set<string>()
-  let skippedDuplicatePaths = 0
 
   for (const filePath of filePaths) {
     const normalizedSource = filePath.toLowerCase()
     if (seenSourcePaths.has(normalizedSource)) {
-      skippedDuplicatePaths++
-      continue
+      continue // silently skip duplicates — caller can track if needed
     }
     seenSourcePaths.add(normalizedSource)
 
@@ -92,14 +132,29 @@ export async function importFilesFromPaths(
       continue
     }
 
-    const destPath = await join(destDir, `${crypto.randomUUID()}_${name}`)
-    await copyFile(filePath, destPath)
+    classified.push({ sourcePath: filePath, name, type })
+  }
 
+  return { classified, rejected }
+}
+
+export async function importFilesFromPaths(
+  filePaths: string[],
+  collectionId: string,
+  itemId: string
+): Promise<ImportFromPathsResult> {
+  const { classified, rejected } = classifyFiles(filePaths)
+  const skippedDuplicatePaths = filePaths.length - classified.length - rejected.length
+
+  const imported: ImportedFile[] = []
+
+  for (const file of classified) {
+    const destPath = await copyFileToItem(file.sourcePath, collectionId, itemId)
     imported.push({
-      originalName: name,
+      originalName: file.name,
       destPath,
-      type,
-      size: 0, // Size not available from dialog; consumer can stat if needed
+      type: file.type,
+      size: 0,
     })
   }
 
@@ -107,6 +162,30 @@ export async function importFilesFromPaths(
     imported,
     rejected,
     skippedDuplicatePaths,
+  }
+}
+
+/**
+ * Import a single file: copy it to the app data directory under its own item.
+ * Returns the ImportedFile metadata.
+ */
+export async function importSingleFile(
+  sourcePath: string,
+  collectionId: string,
+  itemId: string
+): Promise<ImportedFile> {
+  const name = sourcePath.split(/[/\\]/).pop() ?? 'unknown'
+  const type = classifyFileType(name)
+  if (!type) {
+    throw new Error(`Unsupported file format: ${name}`)
+  }
+
+  const destPath = await copyFileToItem(sourcePath, collectionId, itemId)
+  return {
+    originalName: name,
+    destPath,
+    type,
+    size: 0,
   }
 }
 

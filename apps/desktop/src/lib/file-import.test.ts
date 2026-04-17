@@ -4,7 +4,9 @@ import {
   getAssetUrl,
   SUPPORTED_FORMATS,
   classifyFileType,
+  classifyFiles,
   importFilesFromPaths,
+  importSingleFile,
   deleteAssetFile,
 } from './file-import'
 
@@ -161,6 +163,76 @@ describe('importFilesFromPaths', () => {
     expect(result.imported).toHaveLength(1)
     expect(result.skippedDuplicatePaths).toBe(1)
     expect(copyFile).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('classifyFiles', () => {
+  it('classifies a mixed batch of files', () => {
+    const result = classifyFiles([
+      'C:/docs/scan.pdf',
+      'C:/photos/sunset.png',
+      'C:/audio/interview.mp3',
+      'C:/docs/readme.docx',
+    ])
+
+    expect(result.classified).toHaveLength(3)
+    expect(result.classified[0]).toMatchObject({ name: 'scan.pdf', type: 'pdf' })
+    expect(result.classified[1]).toMatchObject({ name: 'sunset.png', type: 'image' })
+    expect(result.classified[2]).toMatchObject({ name: 'interview.mp3', type: 'audio' })
+    expect(result.rejected).toEqual(['readme.docx'])
+  })
+
+  it('skips duplicate source paths silently', () => {
+    const duplicatePath = 'C:/docs/acta.pdf'
+    const result = classifyFiles([duplicatePath, duplicatePath, duplicatePath])
+
+    expect(result.classified).toHaveLength(1)
+    expect(result.rejected).toEqual([])
+  })
+
+  it('handles case-insensitive duplicate paths', () => {
+    const result = classifyFiles(['C:/docs/acta.pdf', 'c:/docs/acta.pdf'])
+
+    expect(result.classified).toHaveLength(1)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const result = classifyFiles([])
+    expect(result.classified).toEqual([])
+    expect(result.rejected).toEqual([])
+  })
+})
+
+describe('importSingleFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('copies a single file and returns ImportedFile metadata', async () => {
+    const { copyFile, mkdir } = await import('@tauri-apps/plugin-fs')
+    const { appDataDir, join } = await import('@tauri-apps/api/path')
+
+    vi.mocked(mkdir).mockResolvedValue(undefined)
+    vi.mocked(copyFile).mockResolvedValue(undefined)
+    vi.mocked(appDataDir).mockResolvedValue('/mock/app-data')
+    vi.mocked(join).mockImplementation((...parts: string[]) => Promise.resolve(parts.join('/')))
+
+    const result = await importSingleFile('C:/photos/sunset.png', 'coll-1', 'item-1')
+
+    expect(result).toMatchObject({
+      originalName: 'sunset.png',
+      type: 'image',
+    })
+    expect(result.destPath).toContain('coll-1')
+    expect(result.destPath).toContain('item-1')
+    expect(mkdir).toHaveBeenCalled()
+    expect(copyFile).toHaveBeenCalled()
+  })
+
+  it('throws for unsupported file types', async () => {
+    await expect(importSingleFile('C:/docs/readme.docx', 'coll-1', 'item-1')).rejects.toThrow(
+      'Unsupported file format'
+    )
   })
 })
 

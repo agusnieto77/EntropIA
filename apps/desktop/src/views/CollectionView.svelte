@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
-  import { pickAndImportFiles, importFilesFromPaths, type ImportedFile } from '$lib/file-import'
+  import { pickFiles, classifyFiles, importSingleFile, type ImportedFile } from '$lib/file-import'
   import { getAssetUrl, deleteAssetFile } from '$lib/file-import'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
@@ -113,37 +113,18 @@
     await loadItems()
   }
 
-  async function finalizeImportedItem(itemId: string, imported: ImportedFile[]) {
+  async function finalizeImportedItem(itemId: string, imported: ImportedFile) {
     const store = getStore()
 
-    if (imported.length === 0) {
-      return
-    }
-
     await store.items.update(itemId, {
-      title: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
+      title: imported.originalName.replace(/\.[^.]+$/, ''),
     })
 
-    for (const file of imported) {
-      await store.assets.create({
-        itemId,
-        path: file.destPath,
-        type: file.type,
-        size: file.size,
-      })
-    }
-
-    await loadItems()
-
-    navigation.navigate({
-      name: 'item',
-      collectionId,
-      collectionName:
-        navigation.current.name === 'collection'
-          ? (navigation.current as { collectionName: string }).collectionName
-          : '',
+    await store.assets.create({
       itemId,
-      itemTitle: imported[0]!.originalName.replace(/\.[^.]+$/, ''),
+      path: imported.destPath,
+      type: imported.type,
+      size: imported.size,
     })
   }
 
@@ -161,53 +142,102 @@
     importNotice = null
     const store = getStore()
 
-    let itemId: string
+    // Step 1: Open file picker — get raw paths BEFORE creating any items
+    let selectedPaths: string[]
     try {
-      console.log('[import] creating item, collectionId:', collectionId)
-      const item = await store.items.create({
-        title: 'Untitled Document',
-        collectionId,
-        metadata: null,
-      })
-      itemId = item.id
+      selectedPaths = await pickFiles()
     } catch (e) {
-      console.log('[import] ERROR creating item, collectionId:', collectionId, e)
-      error = formatImportStageError('Failed to import files', 'creating item', e)
+      error = formatImportStageError('Failed to import files', 'selecting files', e)
       importing = false
       return
     }
 
-    let imported: ImportedFile[]
-    try {
-      imported = await pickAndImportFiles(collectionId, itemId)
-    } catch (e) {
-      error = formatImportStageError(
-        'Failed to import files',
-        'selecting/copying/importing files',
-        e
-      )
+    if (selectedPaths.length === 0) {
       importing = false
       return
     }
 
-    if (imported.length === 0) {
-      try {
-        await store.items.delete(itemId)
-      } catch (e) {
-        error = formatImportStageError('Failed to import files', 'cleaning up empty import item', e)
-      } finally {
-        importing = false
+    // Step 2: Classify files (no DB or FS side effects yet)
+    const { classified, rejected } = classifyFiles(selectedPaths)
+
+    if (classified.length === 0) {
+      if (rejected.length > 0) {
+        error = `Unsupported format: ${rejected.join(', ')}`
       }
+      importing = false
       return
     }
 
-    try {
-      await finalizeImportedItem(itemId, imported)
-    } catch (e) {
-      error = formatImportStageError('Failed to import files', 'finalizing imported item', e)
-    } finally {
-      importing = false
+    // Step 3: Create one item per file, copy file, create asset
+    const createdItemIds: string[] = []
+    let importError: string | null = null
+
+    for (const file of classified) {
+      let itemId: string
+      try {
+        const item = await store.items.create({
+          title: file.name.replace(/\.[^.]+$/, ''),
+          collectionId,
+          metadata: null,
+        })
+        itemId = item.id
+      } catch (e) {
+        importError = formatImportStageError('Failed to import files', 'creating item', e)
+        break
+      }
+
+      try {
+        const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await finalizeImportedItem(itemId, imported)
+        createdItemIds.push(itemId)
+      } catch (e) {
+        // Clean up the item if file copy failed
+        try {
+          await store.items.delete(itemId)
+        } catch {
+          // ignore cleanup errors
+        }
+        importError = formatImportStageError('Failed to import files', `importing ${file.name}`, e)
+        break
+      }
     }
+
+    await loadItems()
+
+    // Navigate to the last created item
+    if (createdItemIds.length > 0) {
+      const lastItemId = createdItemIds[createdItemIds.length - 1]!
+      const lastFile = classified[classified.length - 1]!
+      navigation.navigate({
+        name: 'item',
+        collectionId,
+        collectionName:
+          navigation.current.name === 'collection'
+            ? (navigation.current as { collectionName: string }).collectionName
+            : '',
+        itemId: lastItemId,
+        itemTitle: lastFile.name.replace(/\.[^.]+$/, ''),
+      })
+    }
+
+    // Build notice for partial imports
+    const noticeParts: string[] = []
+    if (rejected.length > 0) {
+      noticeParts.push(`${rejected.length} unsupported skipped: ${rejected.join(', ')}`)
+    }
+    if (importError) {
+      noticeParts.push(`error: ${importError}`)
+    }
+    importNotice =
+      noticeParts.length > 0
+        ? `${createdItemIds.length} imported (${noticeParts.join(' · ')})`
+        : null
+
+    if (importError && createdItemIds.length === 0) {
+      error = importError
+    }
+
+    importing = false
   }
 
   async function handleImportFromDroppedPaths(paths: string[]) {
@@ -216,75 +246,92 @@
     importNotice = null
     const store = getStore()
 
-    let itemId: string
-    try {
-      const item = await store.items.create({
-        title: 'Untitled Document',
-        collectionId,
-        metadata: null,
-      })
-      itemId = item.id
-    } catch (e) {
-      error = formatImportStageError('Failed to import dropped files', 'creating item', e)
+    // Step 1: Classify dropped files (no DB or FS side effects yet)
+    const { classified, rejected } = classifyFiles(paths)
+
+    if (classified.length === 0) {
+      if (rejected.length > 0) {
+        error = `Unsupported format: ${rejected.join(', ')}`
+      }
       importing = false
       dragActive = false
       return
     }
 
-    let result: Awaited<ReturnType<typeof importFilesFromPaths>>
-    try {
-      result = await importFilesFromPaths(paths, collectionId, itemId)
-    } catch (e) {
-      error = formatImportStageError(
-        'Failed to import dropped files',
-        'selecting/copying/importing files',
-        e
-      )
-      importing = false
-      dragActive = false
-      return
-    }
+    // Step 2: Create one item per file, copy file, create asset
+    const createdItemIds: string[] = []
+    let importError: string | null = null
 
-    if (result.imported.length === 0) {
+    for (const file of classified) {
+      let itemId: string
       try {
-        await store.items.delete(itemId)
-        if (result.rejected.length > 0) {
-          error = `Unsupported format: ${result.rejected.join(', ')}`
-        }
+        const item = await store.items.create({
+          title: file.name.replace(/\.[^.]+$/, ''),
+          collectionId,
+          metadata: null,
+        })
+        itemId = item.id
       } catch (e) {
-        error = formatImportStageError(
+        importError = formatImportStageError('Failed to import dropped files', 'creating item', e)
+        break
+      }
+
+      try {
+        const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await finalizeImportedItem(itemId, imported)
+        createdItemIds.push(itemId)
+      } catch (e) {
+        try {
+          await store.items.delete(itemId)
+        } catch {
+          // ignore cleanup errors
+        }
+        importError = formatImportStageError(
           'Failed to import dropped files',
-          'cleaning up empty import item',
+          `importing ${file.name}`,
           e
         )
-      } finally {
-        importing = false
-        dragActive = false
+        break
       }
-      return
     }
 
-    try {
-      await finalizeImportedItem(itemId, result.imported)
+    await loadItems()
 
-      const noticeParts: string[] = []
-      if (result.rejected.length > 0) {
-        noticeParts.push(`unsupported skipped: ${result.rejected.join(', ')}`)
-      }
-      if (result.skippedDuplicatePaths > 0) {
-        noticeParts.push(`duplicate paths skipped: ${result.skippedDuplicatePaths}`)
-      }
-      importNotice = noticeParts.length > 0 ? `Import completed (${noticeParts.join(' · ')})` : null
-    } catch (e) {
-      error = formatImportStageError(
-        'Failed to import dropped files',
-        'finalizing imported item',
-        e
-      )
-    } finally {
-      importing = false
-      dragActive = false
+    // Navigate to the last created item
+    if (createdItemIds.length > 0) {
+      const lastItemId = createdItemIds[createdItemIds.length - 1]!
+      const lastFile = classified[classified.length - 1]!
+      navigation.navigate({
+        name: 'item',
+        collectionId,
+        collectionName:
+          navigation.current.name === 'collection'
+            ? (navigation.current as { collectionName: string }).collectionName
+            : '',
+        itemId: lastItemId,
+        itemTitle: lastFile.name.replace(/\.[^.]+$/, ''),
+      })
     }
+
+    // Build notice
+    const noticeParts: string[] = []
+    if (rejected.length > 0) {
+      noticeParts.push(`${rejected.length} unsupported skipped: ${rejected.join(', ')}`)
+    }
+    if (importError) {
+      noticeParts.push(`error: ${importError}`)
+    }
+    importNotice =
+      noticeParts.length > 0
+        ? `${createdItemIds.length} imported (${noticeParts.join(' · ')})`
+        : null
+
+    if (importError && createdItemIds.length === 0) {
+      error = importError
+    }
+
+    importing = false
+    dragActive = false
   }
 
   async function handleExportJson() {
