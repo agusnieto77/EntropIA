@@ -66,16 +66,25 @@ impl OcrEngine {
     pub fn run_ocr(&self, image_bytes: &[u8]) -> Result<String, String> {
         let preprocessed = preprocess_for_ocr(image_bytes)?;
 
-        // Strategy: Try Tesseract CLI first (writes PNG to disk, reads back).
-        // This matches the Python/pytesseract behavior that correctly detects
-        // multi-column layouts. CLI gives Tesseract full file metadata (DPI, etc.)
-        // which helps layout detection. Fallback to leptess if CLI fails.
+        // Strategy: Try Tesseract CLI first.
+        // We attempt CLI even if data_path is None by using a known default path.
+        // This ensures we get the correct column layout detection (PSM 3) which
+        // relies on file metadata that the in-memory API lacks.
         if let Some(tesseract_exe) = find_tesseract_exe() {
-            if let Some(data_path) = &self.data_path {
-                match run_tesseract_cli(&tesseract_exe, &preprocessed, &self.lang, data_path) {
-                    Ok(text) => return Ok(text),
-                    Err(e) => eprintln!("[OCR] CLI failed ({e}), falling back to leptess"),
-                }
+            // Use provided data_path or fallback to vcpkg default
+            let effective_data_path = self
+                .data_path
+                .as_deref()
+                .unwrap_or(r"C:\vcpkg\installed\x64-windows-static-md\share\tessdata");
+
+            match run_tesseract_cli(
+                &tesseract_exe,
+                &preprocessed,
+                &self.lang,
+                effective_data_path,
+            ) {
+                Ok(text) => return Ok(text),
+                Err(e) => eprintln!("[OCR] CLI failed ({e}), falling back to leptess"),
             }
         }
 
