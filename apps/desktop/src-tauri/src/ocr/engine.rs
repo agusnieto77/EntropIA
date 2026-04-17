@@ -147,6 +147,12 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
 
     let final_img = upscale_if_needed(&processed);
 
+    // Save debug image for comparison with Python preprocessing
+    let debug_path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("debug_rust_preprocessed.png");
+    let _ = final_img.save(&debug_path);
+
     let mut buf = Vec::with_capacity(image_bytes.len());
     final_img
         .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
@@ -179,6 +185,8 @@ fn has_non_white_background(img: &image::DynamicImage) -> bool {
 /// Find the bounding box of all non-white content and crop to it, removing blank
 /// margins and erased zones. Returns the original image unchanged if no content
 /// is detected (e.g. a solid-white image).
+///
+/// Uses luminance (grayscale) to match OpenCV's behavior in Python tests.
 fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
     let (width, height) = (img.width(), img.height());
     let rgba = img.to_rgba8();
@@ -191,13 +199,13 @@ fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
     for y in 0..height {
         for x in 0..width {
             let pixel = rgba.get_pixel(x, y);
-            // A pixel is "content" when at least one channel is darker than the
-            // white threshold. This catches colored text, grey scan artifacts,
-            // and avoids false positives from pure-white/erased zones.
-            if pixel[0] < WHITE_THRESHOLD
-                || pixel[1] < WHITE_THRESHOLD
-                || pixel[2] < WHITE_THRESHOLD
-            {
+            // Calculate luminance to match OpenCV's grayscale conversion:
+            // 0.299*R + 0.587*G + 0.114*B
+            let luminance =
+                0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
+
+            // A pixel is "content" when luminance is darker than the threshold.
+            if luminance < WHITE_THRESHOLD as f32 {
                 x_min = x_min.min(x);
                 y_min = y_min.min(y);
                 x_max = x_max.max(x);
