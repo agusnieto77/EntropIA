@@ -971,6 +971,7 @@ dependencies = [
  "leptess",
  "once_cell",
  "pdf-extract",
+ "png 0.18.1",
  "regex",
  "rusqlite",
  "serde",

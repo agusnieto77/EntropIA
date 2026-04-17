@@ -3,6 +3,10 @@ use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+/// 300 DPI expressed as pixels per meter (PNG pHYs unit specifier).
+/// 300 / 0.0254 = 11811.02… → 11811
+const PNG_PPM: u32 = 11811;
+
 #[derive(Clone)]
 pub struct OcrEngine {
     lang: String,
@@ -71,11 +75,14 @@ impl OcrEngine {
         // This ensures we get the correct column layout detection (PSM 3) which
         // relies on file metadata that the in-memory API lacks.
         if let Some(tesseract_exe) = find_tesseract_exe() {
+            eprintln!("[OCR] Found tesseract at: {:?}", tesseract_exe);
             // Use provided data_path or fallback to vcpkg default
             let effective_data_path = self
                 .data_path
                 .as_deref()
                 .unwrap_or(r"C:\vcpkg\installed\x64-windows-static-md\share\tessdata");
+            eprintln!("[OCR] Using tessdata: {}", effective_data_path);
+            eprintln!("[OCR] Attempting CLI with lang={}, psm=3, oem=3", self.lang);
 
             match run_tesseract_cli(
                 &tesseract_exe,
@@ -83,12 +90,20 @@ impl OcrEngine {
                 &self.lang,
                 effective_data_path,
             ) {
-                Ok(text) => return Ok(text),
-                Err(e) => eprintln!("[OCR] CLI failed ({e}), falling back to leptess"),
+                Ok(text) => {
+                    eprintln!("[OCR] CLI succeeded, returning {} chars", text.len());
+                    return Ok(text);
+                }
+                Err(e) => {
+                    eprintln!("[OCR] CLI FAILED ({e}), falling back to leptess");
+                }
             }
+        } else {
+            eprintln!("[OCR] tesseract.exe not found in any known path, using leptess fallback");
         }
 
         // Fallback: leptess in-memory API
+        eprintln!("[OCR] Using leptess in-memory API (fallback)");
         let mut lt = leptess::LepTess::new(self.data_path.as_deref(), &self.lang)
             .map_err(|e| format!("Failed to create Tesseract instance: {e}"))?;
 
@@ -137,24 +152,50 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let img =
         image::load_from_memory(image_bytes).map_err(|e| format!("Failed to decode image: {e}"))?;
 
+    let debug_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(&std::path::PathBuf::from("."))
+        .join("debug_ocr_steps");
+    let _ = std::fs::create_dir_all(&debug_dir);
+
+    // Debug: save original decoded image
+    let _ = img.save(debug_dir.join("01_original.png"));
+
     let cropped = auto_crop_whitespace(&img);
 
+    // Debug: save cropped image
+    let _ = cropped.save(debug_dir.join("02_cropped.png"));
+
     let needs_binarization = has_non_white_background(&cropped);
+    eprintln!("[OCR] needs_binarization = {}", needs_binarization);
 
     let processed = if needs_binarization {
+        // Debug: save grayscale before thresholding
+        let gray = cropped.to_luma8();
+        let _ = image::DynamicImage::ImageLuma8(gray.clone()).save(debug_dir.join("03_gray.png"));
+
         // Gaussian adaptive thresholding: matches OpenCV's ADAPTIVE_THRESH_GAUSSIAN_C.
         // This produces clean black-on-white text while preserving column gutters,
         // which is critical for Tesseract's layout detection (PSM 3).
         // Unlike Sauvola, Gaussian weighting is less aggressive and maintains
         // the spatial separation between columns.
-        let gray = cropped.to_luma8();
         let binary = adaptive_threshold_gaussian(&gray, ADAPTIVE_BLOCK_SIZE, ADAPTIVE_C);
-        image::DynamicImage::ImageLuma8(binary)
+        let binary_img = image::DynamicImage::ImageLuma8(binary);
+
+        // Debug: save binary image
+        let _ = binary_img.save(debug_dir.join("04_binary.png"));
+
+        binary_img
     } else {
         cropped
     };
 
     let final_img = upscale_if_needed(&processed);
+
+    // Debug: save final preprocessed image
+    let _ = final_img.save(debug_dir.join("05_final.png"));
 
     // Save debug image for visual comparison with Python preprocessing.
     // Written to the workspace root so it's easy to find.
@@ -171,7 +212,68 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
         .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
         .map_err(|e| format!("Failed to encode preprocessed image as PNG: {e}"))?;
 
+    // Inject explicit pHYs chunk (DPI metadata) so Tesseract doesn't estimate
+    // resolution from content analysis. Without this, different PNG encoders
+    // can cause Tesseract to estimate different DPI values (e.g. 300 vs 302),
+    // which changes layout detection results.
+    inject_phys_chunk(&mut buf, PNG_PPM);
+
     Ok(buf)
+}
+
+/// Inject a pHYs chunk into an existing PNG byte buffer.
+///
+/// The PNG format stores chunks sequentially. We insert the pHYs chunk right
+/// after the IHDR chunk (which is always the first chunk after the 8-byte PNG
+/// signature). This ensures Tesseract reads the explicit DPI metadata before
+/// processing the image data.
+///
+/// `ppm` = pixels per meter. For 300 DPI: 300 / 0.0254 ≈ 11811.
+fn inject_phys_chunk(png_data: &mut Vec<u8>, ppm: u32) {
+    // PNG signature is 8 bytes, then IHDR chunk follows.
+    // IHDR chunk structure: 4 bytes length + 4 bytes "IHDR" + 13 bytes data + 4 bytes CRC
+    // Total IHDR chunk = 4 + 4 + 13 + 4 = 25 bytes
+    // So pHYs should be inserted at offset 8 + 25 = 33
+    const PNG_SIGNATURE_LEN: usize = 8;
+    const IHDR_CHUNK_LEN: usize = 4 + 4 + 13 + 4; // length + type + data + CRC
+    let insert_pos = PNG_SIGNATURE_LEN + IHDR_CHUNK_LEN;
+
+    if png_data.len() < insert_pos {
+        return;
+    }
+
+    // Build pHYs chunk
+    let mut phys_chunk = Vec::with_capacity(9 + 12); // data + header/footer
+    phys_chunk.extend_from_slice(&9u32.to_be_bytes()); // Length: 9 bytes
+    phys_chunk.extend_from_slice(b"pHYs"); // Type
+    phys_chunk.extend_from_slice(&ppm.to_be_bytes()); // Pixels per unit, X
+    phys_chunk.extend_from_slice(&ppm.to_be_bytes()); // Pixels per unit, Y
+    phys_chunk.push(1); // Unit specifier: 1 = meter
+
+    // Calculate CRC32 for the chunk (type + data)
+    let crc_data = &phys_chunk[4..]; // Skip length bytes
+    let crc = crc32(crc_data);
+    phys_chunk.extend_from_slice(&crc.to_be_bytes());
+
+    // Insert the chunk at the correct position
+    png_data.splice(insert_pos..insert_pos, phys_chunk);
+}
+
+/// Simple CRC32 implementation for PNG chunk checksums.
+/// Uses the standard CRC-32 polynomial (0xEDB88320) with initial value 0xFFFFFFFF.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFFFFFF
 }
 
 /// Detect whether an image has a non-white background.
