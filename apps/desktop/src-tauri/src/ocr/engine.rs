@@ -25,11 +25,19 @@ const CROP_PADDING: u32 = 10;
 /// 300 DPI is standard for document OCR.
 const FALLBACK_DPI: i32 = 300;
 
-/// Block radius for adaptive thresholding (Sauvola-style via imageproc).
+/// Block radius for adaptive thresholding (Sauvola-style).
 /// A radius of 15 = 31×31 neighbourhood window. Larger values smooth out
 /// local variations more aggressively; smaller values preserve fine detail
 /// but may be noisier. 15 works well for typical document photos.
 const ADAPTIVE_BLOCK_RADIUS: u32 = 15;
+
+/// k parameter for Sauvola thresholding. Controls sensitivity to local contrast.
+/// Standard value is 0.34. Lower = more aggressive binarization.
+const SAUVOLA_K: f64 = 0.34;
+
+/// R parameter for Sauvola thresholding. Dynamic range of standard deviation.
+/// 128.0 is standard for 8-bit images.
+const SAUVOLA_R: f64 = 128.0;
 
 /// If the percentage of "white" pixels (luminance > 230) in the auto-cropped
 /// image is below this threshold, the image is considered a non-standard
@@ -73,10 +81,14 @@ impl OcrEngine {
         // size interpretation whenever metadata is missing.
         lt.set_fallback_source_resolution(FALLBACK_DPI);
 
-        // Use PSM 3 (Fully Automatic) - Tesseract detects layout automatically.
-        // For multi-column documents, this reads column-by-column (not human reading order),
-        // but provides excellent text recognition quality (~90%+ accuracy).
-        // The extracted text is fully searchable even if column order differs from human reading.
+        // NOTE: Tesseract uses PSM 3 (Fully Automatic Page Segmentation) by default.
+        // This mode automatically detects layout, columns, and orientation.
+        // The `leptess` crate v0.14 does not expose set_page_seg_mode(), so we rely
+        // on the default. If we need to change PSM in the future, we'd need to either:
+        //   a) Upgrade leptess to a version that exposes this API, or
+        //   b) Call Tesseract CLI directly with --psm flag.
+        // For now, PSM 3 default works well for most document layouts.
+
         lt.get_utf8_text()
             .map_err(|e| format!("OCR inference failed: {e}"))
     }
@@ -109,10 +121,12 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let needs_binarization = has_non_white_background(&cropped);
 
     let processed = if needs_binarization {
-        // Adaptive binarization: convert to grayscale, then Sauvola threshold.
-        // This produces a clean black-on-white image from dark/colored backgrounds.
+        // Sauvola adaptive thresholding: superior to simple mean thresholding
+        // for documents with uneven illumination, yellowed paper, or dark backgrounds.
+        // Formula: T(x,y) = mean(x,y) * [1 + k * (std(x,y)/R - 1)]
+        // This produces clean black-on-white text even from challenging images.
         let gray = cropped.to_luma8();
-        let binary = imageproc::contrast::adaptive_threshold(&gray, ADAPTIVE_BLOCK_RADIUS);
+        let binary = sauvola_threshold(&gray, ADAPTIVE_BLOCK_RADIUS);
         image::DynamicImage::ImageLuma8(binary)
     } else {
         cropped
@@ -215,4 +229,58 @@ fn upscale_if_needed(img: &image::DynamicImage) -> image::DynamicImage {
     let new_h = (h as f32 * scale) as u32;
 
     img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
+}
+
+/// Sauvola adaptive thresholding — the gold standard for document binarization.
+///
+/// Unlike simple mean thresholding, Sauvola accounts for local contrast:
+/// T(x,y) = mean(x,y) * [1 + k * (std(x,y)/R - 1)]
+///
+/// This handles uneven illumination, yellowed paper, and dark backgrounds
+/// that break simple thresholding. The k parameter (0.34) and R (128.0)
+/// are standard values for 8-bit document images.
+fn sauvola_threshold(img: &image::GrayImage, radius: u32) -> image::GrayImage {
+    let (width, height) = img.dimensions();
+    let mut result = image::GrayImage::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            // Compute mean and std in the local window
+            let mut sum: f64 = 0.0;
+            let mut sum_sq: f64 = 0.0;
+            let mut count: f64 = 0.0;
+
+            let y_start = y.saturating_sub(radius);
+            let y_end = (y + radius).min(height - 1);
+            let x_start = x.saturating_sub(radius);
+            let x_end = (x + radius).min(width - 1);
+
+            for wy in y_start..=y_end {
+                for wx in x_start..=x_end {
+                    let pixel = img.get_pixel(wx, wy)[0] as f64;
+                    sum += pixel;
+                    sum_sq += pixel * pixel;
+                    count += 1.0;
+                }
+            }
+
+            let mean = sum / count;
+            let variance = (sum_sq / count) - (mean * mean);
+            let std = variance.max(0.0).sqrt();
+
+            // Sauvola threshold formula
+            let threshold = mean * (1.0 + SAUVOLA_K * ((std / SAUVOLA_R) - 1.0));
+
+            // Binarize: pixel below threshold becomes black (0), else white (255)
+            let value = if (img.get_pixel(x, y)[0] as f64) < threshold {
+                0u8
+            } else {
+                255u8
+            };
+
+            result.put_pixel(x, y, image::Luma([value]));
+        }
+    }
+
+    result
 }
