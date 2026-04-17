@@ -147,9 +147,13 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
 
     let final_img = upscale_if_needed(&processed);
 
-    // Save debug image for comparison with Python preprocessing
+    // Save debug image for visual comparison with Python preprocessing.
+    // Written to the workspace root so it's easy to find.
     let debug_path = std::env::current_dir()
         .unwrap_or_default()
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(&std::path::PathBuf::from("."))
         .join("debug_rust_preprocessed.png");
     let _ = final_img.save(&debug_path);
 
@@ -205,6 +209,7 @@ fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
                 0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
 
             // A pixel is "content" when luminance is darker than the threshold.
+            // This matches Python's: cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
             if luminance < WHITE_THRESHOLD as f32 {
                 x_min = x_min.min(x);
                 y_min = y_min.min(y);
@@ -383,12 +388,14 @@ fn run_tesseract_cli(
     file.write_all(image_data)
         .map_err(|e| format!("Failed to write temp image: {e}"))?;
 
-    // Build CLI command: tesseract input output -l lang --psm 3
+    // Build CLI command: tesseract input output -l lang --oem 3 --psm 3
     let mut cmd = Command::new(tesseract_exe);
     cmd.arg(&input_path)
         .arg(&output_path)
         .arg("-l")
         .arg(lang)
+        .arg("--oem")
+        .arg("3") // LSTM OCR Engine (matches Python/pytesseract default)
         .arg("--psm")
         .arg("3") // Fully Automatic Page Segmentation
         .env("TESSDATA_PREFIX", data_path);
