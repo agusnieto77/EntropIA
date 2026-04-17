@@ -107,3 +107,20 @@ __pycache__/
 convert_whisper_ggmlv2.py
 convert-h5-to-ggml.py
 download-ggml-model.sh
+
+# OCR debug artifacts (images, text outputs, temp test dirs)
+*.jpg
+debug_ocr_steps/
+debug_rust_*.png
+opencv_*.png
+rust_*.png
+test_*.png
+test_*.txt
+*_preprocessed.txt
+*_via_app.txt
+*_via_python.txt
+error*.txt
+logs.txt
+prueba_*.txt
+test_paddleocr/
+test_manual*.txt
