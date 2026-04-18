@@ -133,7 +133,19 @@
     class="audio-player__progress"
     data-testid="audio-progress-bar"
     onclick={seek}
+    onkeydown={(e) => {
+      if (e.key === 'ArrowRight') {
+        skip(5)
+      } else if (e.key === 'ArrowLeft') {
+        skip(-5)
+      } else if (e.key === 'Home') {
+        if (audioEl) audioEl.currentTime = 0
+      } else if (e.key === 'End') {
+        if (audioEl) audioEl.currentTime = duration
+      }
+    }}
     role="slider"
+    tabindex="0"
     aria-label="Seek"
     aria-valuemin={0}
     aria-valuemax={100}

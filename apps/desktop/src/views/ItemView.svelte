@@ -610,6 +610,9 @@
           if (job === 'ner' && status === 'done' && id === itemId) {
             loadEntities()
           }
+          if (job === 'embed' && status === 'done' && id === itemId) {
+            loadSimilarItems()
+          }
           if (job === 'triples' && status === 'done' && id === itemId) {
             loadTriples()
           }
@@ -928,6 +931,10 @@
                   <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
                 </button>
 
+                {#if nlp.errors?.embed}
+                  <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
+                {/if}
+
                 <button
                   class="nlp-btn"
                   disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
@@ -974,9 +981,14 @@
                   <h4>Similar Items</h4>
                   <ul class="similar-list">
                     {#each similarItems.slice(0, 5) as item (item.itemId)}
-                      <li class="similar-item" onclick={() => navigateToSimilarItem(item)}>
-                        <span class="similar-title">{item.title || item.itemId}</span>
-                        <span class="similar-score">({(item.similarity * 100).toFixed(1)}%)</span>
+                      <li class="similar-item">
+                        <button
+                          class="similar-item-btn"
+                          onclick={() => navigateToSimilarItem(item)}
+                        >
+                          <span class="similar-title">{item.title || item.itemId}</span>
+                          <span class="similar-score">({(item.similarity * 100).toFixed(1)}%)</span>
+                        </button>
                       </li>
                     {/each}
                   </ul>
@@ -1377,16 +1389,10 @@
   }
 
   .similar-item {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-    padding: var(--space-1) var(--space-2);
+    padding: 0;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface-raised);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    cursor: pointer;
     transition:
       background 0.15s ease,
       border-color 0.15s ease;
@@ -1395,6 +1401,25 @@
   .similar-item:hover {
     background: var(--color-surface-elevated);
     border-color: var(--color-accent);
+  }
+
+  .similar-item-btn {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    padding: var(--space-1) var(--space-2);
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .similar-item-btn:hover {
+    background: transparent;
   }
 
   .similar-score {

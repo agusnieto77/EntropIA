@@ -9,6 +9,19 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn apply_windows_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// Configuration for the transcription engine.
 #[derive(Clone)]
 pub struct WhisperConfig {
@@ -78,8 +91,9 @@ impl WhisperEngine {
             config.python_path.exists()
         } else {
             // Bare command name on PATH — verify by running it
-            std::process::Command::new(&config.python_path)
-                .arg("--version")
+            let mut cmd = std::process::Command::new(&config.python_path);
+            apply_windows_no_window(&mut cmd);
+            cmd.arg("--version")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()
@@ -121,6 +135,7 @@ impl WhisperEngine {
         );
 
         let mut cmd = Command::new(&self.config.python_path);
+        apply_windows_no_window(&mut cmd);
         cmd.arg(&self.config.script_path)
             .arg(audio_path)
             .arg("--model")

@@ -18,6 +18,19 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn apply_windows_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 use super::text_provider;
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -31,6 +44,8 @@ pub struct EmbeddingConfig {
     pub script_path: PathBuf,
     /// Model name for fastembed (default: multilingual).
     pub model_name: String,
+    /// Directory to cache HuggingFace models (avoids broken symlinks on Windows).
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// Embedding engine — spawns Python as a child process.
@@ -64,8 +79,9 @@ impl EmbeddingEngine {
             config.python_path.exists()
         } else {
             // Bare command name on PATH — verify by running it
-            Command::new(&config.python_path)
-                .arg("--version")
+            let mut cmd = Command::new(&config.python_path);
+            apply_windows_no_window(&mut cmd);
+            cmd.arg("--version")
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()
@@ -96,12 +112,18 @@ impl EmbeddingEngine {
     /// callers should treat them as degradation.
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
         let mut cmd = Command::new(&self.config.python_path);
+        apply_windows_no_window(&mut cmd);
         cmd.arg(&self.config.script_path)
             .arg("--text")
             .arg(text)
             .arg("--model")
-            .arg(&self.config.model_name)
-            .stdout(std::process::Stdio::piped())
+            .arg(&self.config.model_name);
+
+        if let Some(ref cache_dir) = self.config.cache_dir {
+            cmd.arg("--cache-dir").arg(cache_dir);
+        }
+
+        cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
         let output = cmd.output().map_err(|e| {
@@ -156,8 +178,10 @@ impl EmbeddingEngine {
 
 /// Compute embedding for item's text (extractions + transcriptions) and store it.
 ///
-/// Graceful fallback: if the Python subprocess or sqlite-vec is unavailable,
-/// logs a warning and returns `Ok(())` without modifying the database.
+/// Computes and persists embeddings for an item.
+///
+/// Returns `Err(...)` with a precise reason when embedding cannot be generated
+/// or persisted, so the UI can surface actionable errors.
 pub fn compute_and_store(
     engine: Option<&EmbeddingEngine>,
     conn: &Connection,
@@ -166,21 +190,19 @@ pub fn compute_and_store(
     // Fetch concatenated text from both extractions and transcriptions
     let text = text_provider::get_item_text(conn, item_id)?;
     if text.trim().is_empty() {
-        return Ok(()); // Nothing to embed — not an error
+        return Err(format!(
+            "No source text available for item '{item_id}' (run OCR/transcription first)"
+        ));
     }
 
     // Need an engine to compute embeddings
     let engine = match engine {
         Some(e) => e,
         None => {
-            eprintln!(
-                "{}",
-                embedding_degradation_log(
-                    item_id,
-                    "No embedding engine configured (Python not found)"
-                )
-            );
-            return Ok(());
+            return Err(embedding_degradation_log(
+                item_id,
+                "No embedding engine configured (Python with fastembed not found)",
+            ));
         }
     };
 
@@ -188,9 +210,7 @@ pub fn compute_and_store(
     let vector = match engine.embed_text(&text) {
         Ok(v) => v,
         Err(e) => {
-            // Non-fatal degradation
-            eprintln!("{}", embedding_degradation_log(item_id, &e));
-            return Ok(());
+            return Err(embedding_degradation_log(item_id, &e));
         }
     };
 
@@ -218,11 +238,9 @@ fn upsert_vec_item(conn: &Connection, item_id: &str, blob: &[u8]) -> Result<(), 
 
     match result {
         Ok(_) => Ok(()),
-        Err(e) => {
-            // vec_items table might not exist if sqlite-vec wasn't loaded — degrade gracefully
-            eprintln!("[nlp/embeddings] vec_items upsert failed for {item_id}: {e}");
-            Ok(())
-        }
+        Err(e) => Err(format!(
+            "[nlp/embeddings] Failed to persist embedding for {item_id}: {e}"
+        )),
     }
 }
 
@@ -247,87 +265,165 @@ fn extract_sentinel_json(output: &str) -> &str {
 
 /// Find the Python interpreter on the system that has `fastembed` available.
 ///
-/// Tries each candidate, runs `python -c "import fastembed"` to verify
-/// the module is importable. Falls back to the first Python found if none
-/// have fastembed (the error from the subprocess will be clearer).
-pub fn which_python() -> PathBuf {
-    let candidates = [
-        // Conda environments first — most likely to have ML packages
-        r"C:\Users\agusn\miniconda3\python.exe",
-        r"C:\Users\agusn\anaconda3\python.exe",
-        r"C:\Users\agusn\miniconda3\envs\entropia\python.exe",
-        // System Python
-        "python",
-        "python3",
-        "python3.11",
-        "python3.12",
-    ];
+/// Discovery strategy:
+/// 1. If `CONDA_PREFIX` env var is set, prefer that Python (we're inside a conda env)
+/// 2. Use `where` (Windows) / `which` (Unix) to discover all Python executables on PATH
+/// 3. Try python3 explicitly on Unix
+/// 4. Scan common Conda/Python install locations not on PATH (Windows)
+/// 5. Return the first match with the required module, or None if nothing works
+pub fn which_python() -> Option<PathBuf> {
+    let module = "fastembed";
+    let mut candidates = Vec::new();
 
-    let mut first_found: Option<PathBuf> = None;
+    // 1. Conda environment — if CONDA_PREFIX is set, that Python is authoritative
+    if let Ok(conda_prefix) = std::env::var("CONDA_PREFIX") {
+        let conda_python = if cfg!(windows) {
+            PathBuf::from(&conda_prefix).join("python.exe")
+        } else {
+            PathBuf::from(&conda_prefix).join("bin").join("python")
+        };
+        eprintln!(
+            "[nlp/embeddings] CONDA_PREFIX detected: {}",
+            conda_python.display()
+        );
+        candidates.push(conda_python);
+    }
 
-    for candidate in &candidates {
-        let path = PathBuf::from(candidate);
+    // 2. Discover Python executables on PATH via `where` (Windows) / `which` (Unix)
+    let finder_cmd = if cfg!(windows) { "where" } else { "which" };
+    let mut find_python_cmd = Command::new(finder_cmd);
+    apply_windows_no_window(&mut find_python_cmd);
+    if let Ok(output) = find_python_cmd
+        .arg("python")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let path = PathBuf::from(line.trim());
+                if path.is_file() && !candidates.contains(&path) {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
 
-        // Check if the interpreter exists and runs
-        let version_ok = Command::new(&path)
-            .arg("--version")
+    // 3. Also try python3 explicitly (common on Linux/macOS)
+    if cfg!(unix) {
+        let mut find_python3_cmd = Command::new(finder_cmd);
+        apply_windows_no_window(&mut find_python3_cmd);
+        if let Ok(output) = find_python3_cmd
+            .arg("python3")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output();
-
-        if version_ok.is_err() {
-            continue;
-        }
-
-        let version_output = version_ok.unwrap();
-        if !version_output.status.success() {
-            continue;
-        }
-
-        if first_found.is_none() {
-            first_found = Some(path.clone());
-        }
-
-        // Verify fastembed is importable
-        let import_ok = Command::new(&path)
-            .args(["-c", "import fastembed; print('ok')"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
-        if let Ok(output) = import_ok {
+            .output()
+        {
             if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let path = PathBuf::from(line.trim());
+                    if path.is_file() && !candidates.contains(&path) {
+                        candidates.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Scan common Conda/Python install locations not on PATH
+    //    (e.g. r-miniconda, miniconda3, anaconda3 under AppData or home)
+    if cfg!(windows) {
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let home = PathBuf::from(&user_profile);
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let lad = PathBuf::from(&local_app_data);
+                for dir in [
+                    lad.join("r-miniconda"), // R's embedded Conda
+                    lad.join("miniconda3"),  // Miniconda in AppData\Local
+                    lad.join("anaconda3"),   // Anaconda in AppData\Local
+                    home.join("miniconda3"), // Miniconda in user home
+                    home.join("anaconda3"),  // Anaconda in user home
+                    home.join(".conda"),     // .conda directory
+                ] {
+                    let python_exe = dir.join("python.exe");
+                    if python_exe.is_file() && !candidates.contains(&python_exe) {
+                        eprintln!(
+                            "[nlp/embeddings] Found Python at common location: {}",
+                            python_exe.display()
+                        );
+                        candidates.push(python_exe);
+                    }
+                    // Also check envs/ subdirectories
+                    let envs_dir = dir.join("envs");
+                    if envs_dir.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&envs_dir) {
+                            for entry in entries.flatten() {
+                                let env_python = entry.path().join("python.exe");
+                                if env_python.is_file() && !candidates.contains(&env_python) {
+                                    eprintln!(
+                                        "[nlp/embeddings] Found Python in Conda env: {}",
+                                        env_python.display()
+                                    );
+                                    candidates.push(env_python);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        eprintln!("[nlp/embeddings] ERROR: No Python interpreter found on this system!");
+        return None;
+    }
+
+    // 5. Probe each candidate for the required module
+    for candidate in &candidates {
+        let mut probe_cmd = Command::new(candidate);
+        apply_windows_no_window(&mut probe_cmd);
+        let import_ok = probe_cmd
+            .args(["-c", &format!("import {module}; print('ok')")])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        match import_ok {
+            Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if stdout.trim() == "ok" {
                     eprintln!(
-                        "[nlp/embeddings] Found Python with fastembed: {}",
-                        path.display()
+                        "[nlp/embeddings] Found Python with {module}: {}",
+                        candidate.display()
                     );
-                    return path;
+                    return Some(candidate.clone());
                 }
-            } else {
+            }
+            Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!(
-                    "[nlp/embeddings] Python {} found but fastembed not importable: {}",
-                    path.display(),
+                    "[nlp/embeddings] Python {} found but {module} not importable: {}",
+                    candidate.display(),
                     stderr.trim()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[nlp/embeddings] Failed to probe {}: {e}",
+                    candidate.display()
                 );
             }
         }
     }
 
-    // No Python with fastembed found — return the first Python we found
-    // so the error from the subprocess makes the problem clear.
-    if let Some(path) = first_found {
-        eprintln!(
-            "[nlp/embeddings] WARNING: No Python with fastembed found. Falling back to: {}",
-            path.display()
-        );
-        path
-    } else {
-        eprintln!("[nlp/embeddings] ERROR: No Python interpreter found on this system!");
-        PathBuf::from("python")
-    }
+    eprintln!(
+        "[nlp/embeddings] WARNING: No Python with {module} found among {} candidates",
+        candidates.len()
+    );
+    None
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────

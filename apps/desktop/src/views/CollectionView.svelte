@@ -543,13 +543,18 @@
 
   <!-- Delete confirmation modal -->
   {#if showDeleteConfirm}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="modal-overlay" onclick={handleDeleteCancel} role="presentation">
       <div
         class="modal"
+        tabindex="-1"
         role="dialog"
         aria-modal="true"
         aria-labelledby="delete-modal-title"
         onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') handleDeleteCancel()
+        }}
       >
         <h3 id="delete-modal-title" class="modal-title">Delete Asset</h3>
         <p class="modal-message">

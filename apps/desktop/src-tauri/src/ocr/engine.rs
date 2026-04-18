@@ -3,6 +3,19 @@ use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn apply_windows_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// 300 DPI expressed as pixels per meter (PNG pHYs unit specifier).
 /// 300 / 0.0254 = 11811.02… → 11811
 const PNG_PPM: u32 = 11811;
@@ -501,6 +514,7 @@ fn run_tesseract_cli(
 
     // Build CLI command: tesseract input output -l lang --oem 3 --psm 3
     let mut cmd = Command::new(tesseract_exe);
+    apply_windows_no_window(&mut cmd);
     cmd.arg(&input_path)
         .arg(&output_path)
         .arg("-l")

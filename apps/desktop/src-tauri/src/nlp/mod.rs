@@ -6,6 +6,8 @@ pub mod text_provider;
 pub mod triples;
 
 use serde::Serialize;
+use rusqlite::OptionalExtension;
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
@@ -125,13 +127,28 @@ impl NlpQueue {
             );
 
             // Find Python interpreter with fastembed
-            let python_path = embeddings::which_python();
+            let python_path = match embeddings::which_python() {
+                Some(p) => p,
+                None => {
+                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+                    // Use a placeholder; the engine init will fail and degrade gracefully
+                    PathBuf::from("python")
+                }
+            };
+
+            // Resolve model cache directory for HuggingFace (avoids broken symlinks on Windows)
+            let embed_cache_dir = app_handle
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data dir for NLP cache")
+                .join("hf_cache");
 
             // Initialize embedding engine (non-fatal if unavailable)
             let embed_engine = match EmbeddingEngine::init(embeddings::EmbeddingConfig {
                 python_path: python_path.clone(),
                 script_path: embed_script_path,
                 model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                cache_dir: Some(embed_cache_dir),
             }) {
                 Ok(engine) => {
                     eprintln!("[nlp/embeddings] Engine ready.");
@@ -166,8 +183,19 @@ impl NlpQueue {
                         });
                         match result {
                             Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "embed", 100);
-                                emit_complete(&app_handle, &item_id, "embed");
+                                match embedding_exists(&conn, &item_id) {
+                                    Ok(true) => {
+                                        emit_progress(&app_handle, &item_id, "embed", 100);
+                                        emit_complete(&app_handle, &item_id, "embed");
+                                    }
+                                    Ok(false) => emit_error(
+                                        &app_handle,
+                                        &item_id,
+                                        "embed",
+                                        "Embedding job completed but no vector was persisted",
+                                    ),
+                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                                }
                             }
                             Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
                         }
@@ -210,7 +238,24 @@ impl NlpQueue {
 
                         emit_progress(&app_handle, &item_id, "embed", 10);
                         let r = tokio::task::block_in_place(|| embeddings::compute_and_store(engine_ref, &conn, &item_id));
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "embed", 100); emit_complete(&app_handle, &item_id, "embed"); } Err(e) => emit_error(&app_handle, &item_id, "embed", &e), }
+                        match r {
+                            Ok(_) => {
+                                match embedding_exists(&conn, &item_id) {
+                                    Ok(true) => {
+                                        emit_progress(&app_handle, &item_id, "embed", 100);
+                                        emit_complete(&app_handle, &item_id, "embed");
+                                    }
+                                    Ok(false) => emit_error(
+                                        &app_handle,
+                                        &item_id,
+                                        "embed",
+                                        "Embedding job completed but no vector was persisted",
+                                    ),
+                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                                }
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                        }
 
                         emit_progress(&app_handle, &item_id, "ner", 10);
                         let r = tokio::task::block_in_place(|| ner::extract_and_store(&conn, &item_id));
@@ -258,6 +303,19 @@ fn emit_error(app_handle: &AppHandle, item_id: &str, job: &str, error: &str) {
             error: error.to_string(),
         },
     );
+}
+
+fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, String> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM vec_items WHERE item_id = ?1 LIMIT 1",
+            rusqlite::params![item_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to verify persisted embedding: {e}"))?;
+
+    Ok(found.is_some())
 }
 
 #[cfg(test)]
