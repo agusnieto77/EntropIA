@@ -461,8 +461,16 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
         let result = upsert_vec_item(&conn, "item-1", &[1, 2, 3, 4]);
         assert!(
-            result.is_ok(),
-            "missing vec_items table must not fail embedding pipeline"
+            result.is_err(),
+            "missing vec_items table should return a degradation error"
+        );
+
+        let error = result
+            .err()
+            .expect("missing vec_items table should yield error details");
+        assert!(
+            error.contains("Failed to persist embedding"),
+            "error should preserve persistence failure context"
         );
     }
 
@@ -589,8 +597,16 @@ mod tests {
 
         let result = compute_and_store(None, &conn, "item-1");
         assert!(
-            result.is_ok(),
-            "no-engine embeddings path must degrade non-fatally"
+            result.is_err(),
+            "no-engine embeddings path should return degradation error"
+        );
+
+        let error = result
+            .err()
+            .expect("no-engine path should include degradation reason");
+        assert!(
+            error.contains("Skipping embedding for item-1"),
+            "degradation error should include item id"
         );
     }
 }

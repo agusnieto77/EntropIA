@@ -472,7 +472,18 @@ mod tests {
             },
         );
 
-        assert!(embed.is_ok(), "embedding job should degrade non-fatally");
+        assert!(
+            embed.is_err(),
+            "embedding job should report degradation as an error result"
+        );
+        assert!(
+            embed
+                .as_ref()
+                .err()
+                .map(|e| e.contains("Skipping embedding for item-1"))
+                .unwrap_or(false),
+            "embedding degradation should include item context"
+        );
         assert!(fts.is_ok(), "FTS job should still run after embedding degradation");
         assert!(ner.is_ok(), "NER job should still run after embedding degradation");
         assert!(
@@ -529,8 +540,16 @@ mod tests {
         );
 
         assert!(
-            embed_missing.is_ok(),
-            "missing-item embedding should degrade without hard failure"
+            embed_missing.is_err(),
+            "missing-item embedding should return a controlled degradation error"
+        );
+        assert!(
+            embed_missing
+                .as_ref()
+                .err()
+                .map(|e| e.contains("No source text available for item 'item-missing'"))
+                .unwrap_or(false),
+            "missing-item degradation should explain why embedding was skipped"
         );
         assert!(
             fts_ok.is_ok(),
