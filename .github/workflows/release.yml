@@ -10,21 +10,29 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build ${{ matrix.name }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
+          - name: windows-latest
+            platform: windows-latest
             build_args: ''
-          - platform: macos-latest
+            rust_target: ''
+          - name: macos-14 (arm64)
+            platform: macos-14
             build_args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
-            build_args: '--target x86_64-apple-darwin -- --no-default-features'
-          - platform: ubuntu-22.04
+            rust_target: 'aarch64-apple-darwin'
+          - name: macos-13 (x64)
+            platform: macos-13
             build_args: '-- --no-default-features'
+            rust_target: ''
+          - name: ubuntu-22.04
+            platform: ubuntu-22.04
+            build_args: '-- --no-default-features'
+            rust_target: ''
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -44,7 +52,7 @@ jobs:
             patchelf
 
       - name: Install macOS OCR dependencies
-        if: matrix.platform == 'macos-latest'
+        if: startsWith(matrix.platform, 'macos-')
         run: |
           brew update
           brew install leptonica tesseract pkg-config
@@ -75,9 +83,9 @@ jobs:
           toolchain: 1.88.0
 
       - name: Install Rust target (macOS cross-compilation)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.rust_target != ''
         run: |
-          rustup target add ${{ contains(matrix.build_args, 'aarch64') && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
+          rustup target add ${{ matrix.rust_target }}
 
       - name: Restore canonical lockfile
         run: git checkout -- pnpm-lock.yaml
