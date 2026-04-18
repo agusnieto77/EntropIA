@@ -55,6 +55,9 @@ function Invoke-Contract {
 
   if ($DiagnosticsOnly) {
     Write-Host "[DIAG] $Name complete"
+    # Keep diagnostics truly non-blocking for the CI step.
+    # PowerShell can propagate the last native command exit code unless reset.
+    $global:LASTEXITCODE = 0
   }
   else {
     Write-Host "[PASS] $Name"
