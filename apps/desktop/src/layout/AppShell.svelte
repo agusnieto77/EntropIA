@@ -53,7 +53,7 @@
 
     <p class="footer__credits">
       Desarrollado por
-      <a href={HLAB_URL} onclick={openHlabWebsite}>HLab (Laboratorio de Humanidades Digitales)</a>
+      <a href={HLAB_URL} onclick={openHlabWebsite}>HLab</a>
     </p>
   </footer>
 </div>
