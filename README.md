@@ -4,6 +4,8 @@
 
 ## Herramienta para análisis computacional en Humanidades Digitales
 
+Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.com.ar/).
+
 **EntropIA** es una aplicación de escritorio open-source diseñada para investigadores en **ciencias sociales y humanidades**, con énfasis en **historia digital** y prácticas de archivo computacional. Orientada al trabajo con **fuentes primarias digitalizadas** (imágenes, PDFs escaneados, documentos fragmentarios), EntropIA media la **construcción de corpus, interpretación automatizada y producción de conocimiento estructurado**.
 
 En el contexto de la investigación cualitativa a escala, donde las fuentes son inherentemente incompletas o degradadas, EntropIA genera **capas interpretativas** locales y offline:
