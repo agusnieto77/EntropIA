@@ -27,9 +27,6 @@
     <p>
       Desarrollado por
       <a href={HLAB_URL} onclick={openHlabWebsite}>HLab (Laboratorio de Humanidades Digitales)</a>
-      <a href="https://hlab.com.ar/" target="_blank" rel="noopener noreferrer"
-        >HLab (Laboratorio de Humanidades Digitales)</a
-      >
     </p>
   </footer>
 </div>
