@@ -6,8 +6,43 @@ mod transcription;
 use db::state::AppDbState;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
-use transcription::TranscriptionQueue;
+use std::process::Command;
 use tauri::Manager;
+use transcription::TranscriptionQueue;
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only HTTP(S) URLs are allowed".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", &url]);
+        cmd
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = Command::new("open");
+        cmd.arg(&url);
+        cmd
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&url);
+        cmd
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("Failed to open URL: {error}"))?;
+
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -35,8 +70,8 @@ pub fn run() {
             eprintln!("[setup] PRAGMA foreign_keys=ON");
 
             // OCR worker connection
-            let worker_conn =
-                rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database (worker)");
+            let worker_conn = rusqlite::Connection::open(&db_path)
+                .expect("Failed to open SQLite database (worker)");
             worker_conn
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (worker)");
@@ -59,7 +94,11 @@ pub fn run() {
             // Each job spawns a Python process, no persistent state needed.
             let (transcription_queue, transcription_receiver) = TranscriptionQueue::new();
             app.manage(transcription_queue);
-            TranscriptionQueue::start_worker(db_path.clone(), transcription_receiver, app.handle().clone());
+            TranscriptionQueue::start_worker(
+                db_path.clone(),
+                transcription_receiver,
+                app.handle().clone(),
+            );
 
             Ok(())
         })
@@ -79,6 +118,7 @@ pub fn run() {
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
+            open_external_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

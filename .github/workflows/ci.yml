@@ -38,6 +38,8 @@ jobs:
 
   windows-rust-feature-contract:
     name: Windows Rust Feature Contract
+    needs: [detect-rust-changes]
+    if: needs.detect-rust-changes.outputs.has_rs_changes == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -94,6 +96,7 @@ jobs:
     name: Rust Quality Report (report-first)
     runs-on: windows-latest
     needs: [detect-rust-changes]
+    if: needs.detect-rust-changes.outputs.has_rs_changes == 'true'
     steps:
       - uses: actions/checkout@v6
         with:
