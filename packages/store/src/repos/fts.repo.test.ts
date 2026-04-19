@@ -81,9 +81,13 @@ describe('sanitizeFts5Query', () => {
 function createMockDbClient(): DbClient & {
   _executedSql: string[]
   _selectResults: unknown[]
+  _selectCalls: Array<{ sql: string; params?: unknown[] }>
+  _selectResultsQueue: unknown[][]
 } {
   const executedSql: string[] = []
+  const selectCalls: Array<{ sql: string; params?: unknown[] }> = []
   let selectResults: unknown[] = []
+  let selectResultsQueue: unknown[][] = []
 
   return {
     _executedSql: executedSql,
@@ -93,14 +97,27 @@ function createMockDbClient(): DbClient & {
     set _selectResults(v: unknown[]) {
       selectResults = v
     },
+    get _selectCalls() {
+      return selectCalls
+    },
+    get _selectResultsQueue() {
+      return selectResultsQueue
+    },
+    set _selectResultsQueue(v: unknown[][]) {
+      selectResultsQueue = v
+    },
 
     async execute(sql: string, _params?: unknown[]) {
       executedSql.push(sql)
       return { rowsAffected: 1 }
     },
 
-    async select<T>(sql: string, _params?: unknown[]): Promise<T[]> {
+    async select<T>(sql: string, params?: unknown[]): Promise<T[]> {
       executedSql.push(sql)
+      selectCalls.push({ sql, params })
+      if (selectResultsQueue.length > 0) {
+        return (selectResultsQueue.shift() ?? []) as T[]
+      }
       return selectResults as T[]
     },
 
@@ -170,6 +187,46 @@ describe('FtsRepo', () => {
       await repo.search('cabildo')
       const hasMATCH = client._executedSql.some((sql) => sql.includes('MATCH'))
       expect(hasMATCH).toBe(true)
+    })
+
+    it('joins items by rowid because fts_items is contentless', async () => {
+      client._selectResults = []
+      await repo.search('cabildo')
+      const joinSql = client._executedSql.find((sql) => sql.includes('JOIN items i ON i.rowid = f.rowid'))
+      expect(joinSql).toBeDefined()
+      expect(joinSql).toContain('bm25(fts_items)')
+    })
+
+    it('falls back to OR query when strict search returns no rows', async () => {
+      client._selectResultsQueue = [[], [{ item_id: 'item-10', rank: -1.1 }]]
+
+      const results = await repo.search('Sindicato Obrero de la Industria del Pescado')
+
+      expect(client._selectCalls.length).toBe(2)
+      expect(client._selectCalls[1]?.params?.[0]).toContain(' OR ')
+      expect(results).toEqual([{ itemId: 'item-10', rank: -1.1 }])
+    })
+
+    it('returns debug metadata with strict strategy', async () => {
+      client._selectResults = [{ item_id: 'item-1', rank: -0.5 }]
+
+      const response = await repo.searchWithDebug('cabildo')
+
+      expect(response.debug.rawQuery).toBe('cabildo')
+      expect(response.debug.sanitizedQuery).toBe('"cabildo"')
+      expect(response.debug.strategy).toBe('strict')
+      expect(response.debug.matchCount).toBe(1)
+      expect(response.debug.resultIds).toEqual(['item-1'])
+    })
+  })
+
+  describe('stats', () => {
+    it('returns total rows from fts_items', async () => {
+      client._selectResults = [{ total_rows: 35 }]
+
+      const stats = await repo.stats()
+
+      expect(stats).toEqual({ totalRows: 35 })
     })
   })
 

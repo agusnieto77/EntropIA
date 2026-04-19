@@ -28,6 +28,17 @@ type AnnotationRow = {
 
 type StoreOptions = {
   triplesRows?: TripleRow[]
+  itemsById?: Record<
+    string,
+    {
+      id: string
+      title: string
+      collectionId: string
+      metadata: string
+    }
+  >
+  ftsSearchImpl?: (_query: string, _limit?: number) => Promise<Array<{ itemId: string; rank: number }>>
+  ftsStatsTotal?: number
   assetsRows?: Array<{
     id: string
     itemId: string
@@ -45,6 +56,16 @@ type StoreOptions = {
 
 function createStore({
   triplesRows = [],
+  itemsById = {
+    'item-1': {
+      id: 'item-1',
+      title: 'Acta histórica',
+      collectionId: 'col-1',
+      metadata: '{}',
+    },
+  },
+  ftsSearchImpl = async () => [],
+  ftsStatsTotal = 35,
   assetsRows = [
     {
       id: 'asset-1',
@@ -59,11 +80,7 @@ function createStore({
 }: StoreOptions = {}) {
   return {
     items: {
-      findById: vi.fn().mockResolvedValue({
-        id: 'item-1',
-        title: 'Acta histórica',
-        metadata: '{}',
-      }),
+      findById: vi.fn().mockImplementation(async (id: string) => itemsById[id] ?? null),
       update: vi.fn().mockResolvedValue(undefined),
     },
     assets: {
@@ -86,6 +103,23 @@ function createStore({
     },
     entities: {
       findByItemId: vi.fn().mockResolvedValue([]),
+    },
+    fts: {
+      search: vi.fn().mockImplementation(ftsSearchImpl),
+      searchWithDebug: vi.fn().mockImplementation(async (query: string, limit?: number) => {
+        const results = await ftsSearchImpl(query, limit)
+        return {
+          results,
+          debug: {
+            rawQuery: query,
+            sanitizedQuery: query ? `"${query}"` : '',
+            strategy: results.length > 0 ? 'strict' : 'relaxed',
+            matchCount: results.length,
+            resultIds: results.map((row) => row.itemId),
+          },
+        }
+      }),
+      stats: vi.fn().mockResolvedValue({ totalRows: ftsStatsTotal }),
     },
     triples: {
       findByItemId: vi.fn().mockResolvedValue(triplesRows),
@@ -221,6 +255,158 @@ describe('ItemView semantic triples panel', () => {
 
     await fireEvent.click(triplesBtn)
     expect(extractTriplesMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('ItemView full-text search in Analysis panel', () => {
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    similarItemsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('shows FTS results only after entering a query', async () => {
+    storeRef.current = createStore({
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+        'item-2': {
+          id: 'item-2',
+          title: 'Acta del Cabildo',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+        'item-3': {
+          id: 'item-3',
+          title: 'Registro de otra colección',
+          collectionId: 'col-2',
+          metadata: '{}',
+        },
+      },
+      ftsSearchImpl: async () => [
+        { itemId: 'item-2', rank: -1.234 },
+        { itemId: 'item-3', rank: -0.5 },
+        { itemId: 'item-1', rank: -0.1 },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    await fireEvent.click(analysisToggle)
+
+    expect(await screen.findByText('Ingresá un término para ver resultados.')).toBeInTheDocument()
+
+    const input = await screen.findByPlaceholderText('Escribí para buscar...')
+    await fireEvent.input(input, { target: { value: 'cabildo' } })
+
+    await waitFor(() => {
+      expect(storeRef.current.fts.searchWithDebug).toHaveBeenCalledWith('cabildo', 10)
+      expect(storeRef.current.fts.stats).toHaveBeenCalled()
+    })
+
+    expect(await screen.findByText('Acta del', { exact: false })).toBeInTheDocument()
+    expect(await screen.findByText('Cabildo')).toBeInTheDocument()
+    expect(await screen.findByText('Registro de otra colección')).toBeInTheDocument()
+    expect(document.querySelectorAll('.fts-search-section .similar-item').length).toBe(3)
+    expect(document.querySelector('.fts-match')).toBeInTheDocument()
+
+    await fireEvent.input(input, { target: { value: '' } })
+    await waitFor(() => {
+      expect(screen.getByText('Ingresá un término para ver resultados.')).toBeInTheDocument()
+    })
+  })
+
+  it('executes immediate search on Enter and clears search on Escape', async () => {
+    storeRef.current = createStore({
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+        'item-2': {
+          id: 'item-2',
+          title: 'Cabildo abierto de Mayo',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+      },
+      ftsSearchImpl: async () => [{ itemId: 'item-2', rank: -0.33 }],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    await fireEvent.click(analysisToggle)
+
+    const input = (await screen.findByPlaceholderText('Escribí para buscar...')) as HTMLInputElement
+
+    await fireEvent.input(input, { target: { value: 'cabildo' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(storeRef.current.fts.searchWithDebug).toHaveBeenCalledTimes(1)
+      expect(storeRef.current.fts.searchWithDebug).toHaveBeenCalledWith('cabildo', 10)
+      expect(screen.getByText('Cabildo')).toBeInTheDocument()
+      expect(screen.getByText('abierto de Mayo', { exact: false })).toBeInTheDocument()
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(storeRef.current.fts.searchWithDebug).toHaveBeenCalledTimes(1)
+
+    await fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input.value).toBe('')
+    expect(screen.getByText('Ingresá un término para ver resultados.')).toBeInTheDocument()
+  })
+
+  it('shows FTS debug panel only in dev with query metadata', async () => {
+    storeRef.current = createStore({
+      ftsStatsTotal: 99,
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+        'item-2': {
+          id: 'item-2',
+          title: 'Sindicato Obrero',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+      },
+      ftsSearchImpl: async () => [{ itemId: 'item-2', rank: -0.4 }],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    await fireEvent.click(analysisToggle)
+
+    expect(await screen.findByText('FTS Debug (dev only)')).toBeInTheDocument()
+
+    const input = await screen.findByPlaceholderText('Escribí para buscar...')
+    await fireEvent.input(input, { target: { value: 'sindicato' } })
+
+    await waitFor(() => {
+      expect(screen.getByText('Indexed rows')).toBeInTheDocument()
+      expect(screen.getByText('99')).toBeInTheDocument()
+      expect(screen.getByText('Raw query')).toBeInTheDocument()
+      expect(screen.getByText('sindicato')).toBeInTheDocument()
+      expect(screen.getByText('Sanitized')).toBeInTheDocument()
+      expect(screen.getByText('"sindicato"')).toBeInTheDocument()
+      expect(screen.getByText('DB matches')).toBeInTheDocument()
+      expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(2)
+      expect(screen.getByText('item-2')).toBeInTheDocument()
+    })
   })
 })
 

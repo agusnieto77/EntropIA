@@ -38,6 +38,8 @@
   } from '@entropia/ui'
   import { TranscriptionRepo } from '@entropia/store'
 
+  const isDev = import.meta.env.DEV
+
   let { itemId, collectionId }: { itemId: string; collectionId: string } = $props()
 
   let item = $state<Item | null>(null)
@@ -133,6 +135,22 @@
   let similarItems = $state<
     Array<{ itemId: string; title: string; collectionId: string; similarity: number }>
   >([])
+  let ftsQuery = $state('')
+  let ftsResults = $state<Array<{ itemId: string; title: string; rank: number; collectionId: string }>>(
+    []
+  )
+  let ftsSearching = $state(false)
+  let ftsSearchError = $state<string | null>(null)
+  let ftsSearchTimer: ReturnType<typeof setTimeout> | null = null
+  let ftsIndexedRows = $state<number | null>(null)
+  let ftsDebug = $state<{
+    rawQuery: string
+    sanitizedQuery: string
+    strategy: 'empty' | 'strict' | 'relaxed'
+    matchCount: number
+    hydratedCount: number
+    resultIds: string[]
+  } | null>(null)
   let triples = $state<Array<{ subject: string; predicate: string; object: string }>>([])
   let analysisOpen = $state(false)
 
@@ -428,6 +446,171 @@
     })
   }
 
+  function clearFtsSearchTimer() {
+    if (ftsSearchTimer) {
+      clearTimeout(ftsSearchTimer)
+      ftsSearchTimer = null
+    }
+  }
+
+  function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  function getFtsTerms(rawQuery: string): string[] {
+    if (!rawQuery.trim()) return []
+
+    const noOperators = rawQuery.replace(/\b(AND|OR|NOT|NEAR)\b/gi, ' ')
+    const terms = noOperators
+      .split(/\s+/)
+      .map((token) => token.replace(/[()"\-*^:,./\\]/g, '').trim())
+      .filter((token) => token.length > 0)
+
+    return Array.from(new Set(terms.map((token) => token.toLocaleLowerCase())))
+  }
+
+  function splitHighlightedSegments(text: string, rawQuery: string) {
+    const terms = getFtsTerms(rawQuery)
+    if (terms.length === 0 || !text) return [{ text, isMatch: false }]
+
+    const pattern = terms
+      .slice()
+      .sort((a, b) => b.length - a.length)
+      .map((term) => escapeRegExp(term))
+      .join('|')
+
+    if (!pattern) return [{ text, isMatch: false }]
+
+    const regex = new RegExp(pattern, 'gi')
+    const segments: Array<{ text: string; isMatch: boolean }> = []
+    let lastIndex = 0
+
+    for (const match of text.matchAll(regex)) {
+      const index = match.index ?? 0
+      const value = match[0] ?? ''
+      if (index > lastIndex) {
+        segments.push({ text: text.slice(lastIndex, index), isMatch: false })
+      }
+      if (value) {
+        segments.push({ text: value, isMatch: true })
+      }
+      lastIndex = index + value.length
+    }
+
+    if (lastIndex < text.length) {
+      segments.push({ text: text.slice(lastIndex), isMatch: false })
+    }
+
+    return segments.length > 0 ? segments : [{ text, isMatch: false }]
+  }
+
+  async function runFtsSearch(rawQuery: string) {
+    const query = rawQuery.trim()
+    if (!query) {
+      ftsResults = []
+      ftsSearchError = null
+      ftsSearching = false
+      ftsDebug = null
+      return
+    }
+
+    ftsSearching = true
+    ftsSearchError = null
+
+    try {
+      const store = getStore()
+      if (isDev) {
+        const stats = await store.fts.stats()
+        ftsIndexedRows = stats.totalRows
+      }
+
+      const response = await store.fts.searchWithDebug(query, 10)
+      const rows = response.results
+
+      const hydrated = await Promise.all(
+        rows.map(async (row) => {
+          const found = await store.items.findById(row.itemId)
+          if (!found) return null
+
+          return {
+            itemId: found.id,
+            title: found.title,
+            rank: row.rank,
+            collectionId: found.collectionId,
+          }
+        })
+      )
+
+      ftsResults = hydrated.filter(
+        (row): row is { itemId: string; title: string; rank: number; collectionId: string } => !!row
+      )
+
+      if (isDev) {
+        ftsDebug = {
+          ...response.debug,
+          hydratedCount: ftsResults.length,
+        }
+      }
+    } catch {
+      ftsResults = []
+      ftsSearchError = 'No se pudo ejecutar la búsqueda full-text.'
+      if (isDev) {
+        ftsDebug = null
+      }
+    } finally {
+      ftsSearching = false
+    }
+  }
+
+  async function loadFtsStats() {
+    if (!isDev) return
+
+    try {
+      const store = getStore()
+      const stats = await store.fts.stats()
+      ftsIndexedRows = stats.totalRows
+    } catch {
+      ftsIndexedRows = null
+    }
+  }
+
+  function handleFtsInput(event: Event) {
+    const value = (event.currentTarget as HTMLInputElement).value
+    ftsQuery = value
+
+    clearFtsSearchTimer()
+    if (!value.trim()) {
+      ftsResults = []
+      ftsSearchError = null
+      ftsSearching = false
+      ftsDebug = null
+      return
+    }
+
+    ftsSearchTimer = setTimeout(() => {
+      void runFtsSearch(value)
+    }, 250)
+  }
+
+  function handleFtsKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      clearFtsSearchTimer()
+      void runFtsSearch(ftsQuery)
+      return
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      clearFtsSearchTimer()
+      ftsQuery = ''
+      ftsResults = []
+      ftsSearchError = null
+      ftsSearching = false
+      ftsDebug = null
+    }
+  }
+
   async function loadTriples() {
     try {
       const store = getStore()
@@ -650,6 +833,7 @@
     }
     transPersistTimers.clear()
     clearAnnotationSaveTimer()
+    clearFtsSearchTimer()
   })
 </script>
 
@@ -903,6 +1087,7 @@
                 loadEntities()
                 loadSimilarItems()
                 loadTriples()
+                loadFtsStats()
               }
             }}
           >
@@ -912,6 +1097,84 @@
           {#if analysisOpen}
             {@const nlp = getNlpState()}
             <div class="analysis-panel">
+              <div class="fts-search-section">
+                <h4>Search by Similar Text (FTS)</h4>
+                <input
+                  class="fts-search-input"
+                  type="search"
+                  placeholder="Escribí para buscar..."
+                  value={ftsQuery}
+                  oninput={handleFtsInput}
+                  onkeydown={handleFtsKeydown}
+                />
+
+                {#if ftsSearchError}
+                  <p class="ocr-error">{ftsSearchError}</p>
+                {:else if ftsSearching}
+                  <p class="empty-text">Buscando textos similares...</p>
+                {:else if ftsQuery.trim().length === 0}
+                  <p class="empty-text">Ingresá un término para ver resultados.</p>
+                {:else if ftsResults.length === 0}
+                  <p class="empty-text">No hay resultados para esa búsqueda.</p>
+                {:else}
+                  <ul class="similar-list">
+                    {#each ftsResults as result (result.itemId)}
+                      <li class="similar-item">
+                        <button class="similar-item-btn" onclick={() => navigateToSimilarItem(result)}>
+                          <span class="similar-title">
+                            {#each splitHighlightedSegments(result.title || result.itemId, ftsQuery) as segment, i (`${result.itemId}-seg-${i}-${segment.text}`)}
+                              {#if segment.isMatch}
+                                <mark class="fts-match">{segment.text}</mark>
+                              {:else}
+                                {segment.text}
+                              {/if}
+                            {/each}
+                          </span>
+                          <span class="similar-score">rank {result.rank.toFixed(3)}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+
+                {#if isDev}
+                  <details class="fts-debug-panel">
+                    <summary>FTS Debug (dev only)</summary>
+
+                    <div class="fts-debug-grid">
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">Indexed rows</span>
+                        <code>{ftsIndexedRows ?? 'unknown'}</code>
+                      </div>
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">Raw query</span>
+                        <code>{ftsDebug?.rawQuery ?? (ftsQuery.trim() || '—')}</code>
+                      </div>
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">Sanitized</span>
+                        <code>{ftsDebug?.sanitizedQuery || '—'}</code>
+                      </div>
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">Strategy</span>
+                        <code>{ftsDebug?.strategy ?? '—'}</code>
+                      </div>
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">DB matches</span>
+                        <code>{ftsDebug?.matchCount ?? 0}</code>
+                      </div>
+                      <div class="fts-debug-row">
+                        <span class="fts-debug-label">Hydrated items</span>
+                        <code>{ftsDebug?.hydratedCount ?? 0}</code>
+                      </div>
+                      <div class="fts-debug-row fts-debug-row--stacked">
+                        <span class="fts-debug-label">Result IDs</span>
+                        <code>{ftsDebug?.resultIds.join(', ') || '—'}</code>
+                      </div>
+                    </div>
+                  </details>
+                {/if}
+              </div>
+
               <div class="nlp-actions">
                 <button
                   class="nlp-btn"
@@ -1365,6 +1628,7 @@
   }
 
   .entities-section,
+  .fts-search-section,
   .triples-section,
   .similar-section {
     display: flex;
@@ -1373,10 +1637,84 @@
   }
 
   .entities-section h4,
+  .fts-search-section h4,
   .similar-section h4 {
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
     color: var(--color-text-secondary);
+  }
+
+  .fts-search-input {
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    padding: var(--space-2) var(--space-3);
+    outline: none;
+    font-family: var(--font-sans);
+  }
+
+  .fts-search-input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 20%, transparent);
+  }
+
+  .fts-match {
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 30%, transparent);
+    color: var(--color-text-primary);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  .fts-debug-panel {
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
+    background: var(--color-surface-raised);
+  }
+
+  .fts-debug-panel summary {
+    cursor: pointer;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    font-weight: var(--font-weight-medium);
+  }
+
+  .fts-debug-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .fts-debug-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-2);
+    font-size: var(--font-size-xs);
+  }
+
+  .fts-debug-row--stacked {
+    flex-direction: column;
+  }
+
+  .fts-debug-label {
+    color: var(--color-text-secondary);
+    min-width: 90px;
+  }
+
+  .fts-debug-row code {
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    flex: 1;
   }
 
   .similar-list {
