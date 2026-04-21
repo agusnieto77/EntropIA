@@ -39,6 +39,32 @@ describe('ItemCard', () => {
     expect(screen.getByTestId('item-placeholder')).toBeInTheDocument()
   })
 
+  it('renders audio play icon when primaryAssetType is audio', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'audio' },
+    })
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('item-placeholder')).not.toBeInTheDocument()
+    expect(screen.getByTestId('item-audio')).toBeInTheDocument()
+  })
+
+  it('renders audio play icon even when thumbnailPath is provided for audio', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'audio', thumbnailPath: 'asset://localhost/audio.mp3' },
+    })
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByTestId('item-audio')).toBeInTheDocument()
+  })
+
+  it('renders image thumbnail when primaryAssetType is image with thumbnailPath', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'image', thumbnailPath: 'asset://localhost/thumb.jpg' },
+    })
+    const img = screen.getByRole('img')
+    expect(img).toBeInTheDocument()
+    expect(screen.queryByTestId('item-audio')).not.toBeInTheDocument()
+  })
+
   it('renders metadata preview when provided', () => {
     render(ItemCard, {
       props: { ...baseProps, metadataPreview: 'Author: John Doe' },

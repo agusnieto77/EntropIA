@@ -6,10 +6,13 @@
     title,
     assetCount,
     thumbnailPath,
+    primaryAssetType,
     metadataPreview,
     onclick,
     onDelete,
   }: ItemCardProps = $props()
+
+  const isAudio = $derived(primaryAssetType === 'audio')
 
   const assetLabel = $derived(assetCount === 1 ? 'asset' : 'assets')
   const showDelete = $derived(!!onDelete)
@@ -18,7 +21,22 @@
 <div class="item-card">
   <button class="item-card__main" type="button" {onclick}>
     <div class="item-card__thumbnail">
-      {#if thumbnailPath}
+      {#if isAudio}
+        <div class="item-card__audio" data-testid="item-audio">
+          <svg
+            class="item-card__play-icon"
+            xmlns="http://www.w3.org/2000/svg"
+            width="40"
+            height="40"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="11" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3" />
+            <path d="M9.5 6.5l8 5.5-8 5.5V6.5z" />
+          </svg>
+        </div>
+      {:else if thumbnailPath}
         <img src={thumbnailPath} alt={title} class="item-card__img" />
       {:else}
         <div class="item-card__placeholder" data-testid="item-placeholder">
@@ -140,6 +158,25 @@
   .item-card__placeholder-icon {
     font-size: 32px;
     opacity: 0.4;
+  }
+
+  .item-card__audio {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+  }
+
+  .item-card__play-icon {
+    color: var(--color-text-muted);
+    opacity: 0.7;
+    transition: opacity 0.15s ease;
+  }
+
+  .item-card:hover .item-card__play-icon,
+  .item-card:focus-within .item-card__play-icon {
+    opacity: 1;
   }
 
   .item-card__content {

@@ -21,7 +21,7 @@
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
 
-  // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath }
+  // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath, primaryAssetType }
   let itemAssetMeta = $state<
     Map<
       string,
@@ -30,6 +30,7 @@
         thumbnailUrl: string | null
         primaryAssetId: string | null
         primaryAssetPath: string | null
+        primaryAssetType: string | null
       }
     >
   >(new Map())
@@ -47,6 +48,7 @@
     thumbnailUrl: string | null
     primaryAssetId: string | null
     primaryAssetPath: string | null
+    primaryAssetType: string | null
   } {
     return (
       itemAssetMeta.get(itemId) ?? {
@@ -54,6 +56,7 @@
         thumbnailUrl: null,
         primaryAssetId: null,
         primaryAssetPath: null,
+        primaryAssetType: null,
       }
     )
   }
@@ -68,11 +71,14 @@
         const imageAsset = assets.find((a) => a.type === 'image')
         // Use first asset as thumbnail if no image asset found (PDFs get preview too)
         const thumbAsset = imageAsset ?? assets[0]
+        // Audio assets have no visual preview — skip thumbnail URL
+        const isAudio = thumbAsset?.type === 'audio'
         newMeta.set(itemId, {
           assetCount: assets.length,
-          thumbnailUrl: thumbAsset ? getAssetUrl(thumbAsset.path) : null,
+          thumbnailUrl: !isAudio && thumbAsset ? getAssetUrl(thumbAsset.path) : null,
           primaryAssetId: thumbAsset?.id ?? null,
           primaryAssetPath: thumbAsset?.path ?? null,
+          primaryAssetType: thumbAsset?.type ?? null,
         })
       } catch (e) {
         console.error('[CollectionView] Failed to load assets for item', itemId, e)
@@ -524,6 +530,7 @@
           title={item.title}
           assetCount={meta.assetCount}
           thumbnailPath={meta.thumbnailUrl ?? undefined}
+          primaryAssetType={(meta.primaryAssetType as 'image' | 'pdf' | 'audio' | undefined) ?? undefined}
           onclick={() =>
             navigation.navigate({
               name: 'item',
