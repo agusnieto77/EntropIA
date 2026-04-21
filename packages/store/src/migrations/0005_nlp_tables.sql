@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY NOT NULL,
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-  entity_type TEXT NOT NULL CHECK(entity_type IN ('person','place','date','institution','custom')),
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('person','place','date','institution','organization','misc','custom')),
   value TEXT NOT NULL,
   start_offset INTEGER NOT NULL DEFAULT 0,
   end_offset INTEGER NOT NULL DEFAULT 0,

@@ -8,10 +8,12 @@ pub mod triples;
 use serde::Serialize;
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
 use embeddings::EmbeddingEngine;
+use ner::{NerRegistry, types::{NerConfig, NerEngineKind}};
 
 // ── Event payloads ───────────────────────────────────────────────────────────
 
@@ -45,6 +47,25 @@ pub enum NlpJob {
     ExtractEntities { item_id: String },
     ExtractTriples { item_id: String },
     EnrichItem { item_id: String },
+}
+
+pub fn lookup_item_id_for_asset(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT item_id FROM assets WHERE id = ?1",
+        rusqlite::params![asset_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to resolve item_id for asset {asset_id}: {e}"))
+}
+
+pub fn enqueue_entity_refresh_for_item(nlp_queue: &NlpQueue, item_id: &str) -> Result<(), String> {
+    nlp_queue.submit(NlpJob::ExtractEntities {
+        item_id: item_id.to_string(),
+    })
 }
 
 /// Handle for submitting NLP jobs to the background worker.
@@ -91,6 +112,12 @@ impl NlpQueue {
                     return;
                 }
             };
+
+            if table_exists(&conn, "entities") {
+                if let Err(e) = ensure_entities_schema(&conn) {
+                    eprintln!("[nlp] Failed to migrate entities schema: {e}");
+                }
+            }
 
             // Create vec_items table as a regular table (fallback when sqlite-vec
             // extension is not available). When sqlite-vec becomes available
@@ -160,6 +187,26 @@ impl NlpQueue {
                 }
             };
 
+            let ner_model_path = resolve_ner_resource(&app_handle, "model.onnx");
+            let ner_tokenizer_path = resolve_ner_resource(&app_handle, "tokenizer.json");
+            let ner_script_path = resolve_ner_script(&app_handle, "spacy_ner.py");
+            let ner_engine = resolve_ner_engine_kind();
+            let ner_python_path = ner::spacy::which_python().unwrap_or_else(|| PathBuf::from("python"));
+
+            let ner_config = NerConfig {
+                engine: ner_engine,
+                model_path: Some(ner_model_path),
+                tokenizer_path: Some(ner_tokenizer_path),
+                python_path: Some(ner_python_path),
+                script_path: Some(ner_script_path),
+                model_name: Some("es_core_news_lg".to_string()),
+                max_length: 256,
+                stride: 32,
+                score_threshold: 0.65,
+            };
+            ner::log_startup_status(&ner_config);
+            let ner_registry = NerRegistry::init(ner_config);
+
             while let Some(job) = receiver.recv().await {
                 match job {
                     NlpJob::IndexFts { item_id } => {
@@ -203,7 +250,10 @@ impl NlpQueue {
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
                         let result = tokio::task::block_in_place(|| {
-                            ner::extract_and_store(&conn, &item_id)
+                            catch_unwind(AssertUnwindSafe(|| {
+                                ner::extract_and_store(&conn, &item_id, &ner_registry)
+                            }))
+                            .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
                         });
                         match result {
                             Ok(_) => {
@@ -258,7 +308,12 @@ impl NlpQueue {
                         }
 
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let r = tokio::task::block_in_place(|| ner::extract_and_store(&conn, &item_id));
+                        let r = tokio::task::block_in_place(|| {
+                            catch_unwind(AssertUnwindSafe(|| {
+                                ner::extract_and_store(&conn, &item_id, &ner_registry)
+                            }))
+                            .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
+                        });
                         match r { Ok(_) => { emit_progress(&app_handle, &item_id, "ner", 100); emit_complete(&app_handle, &item_id, "ner"); } Err(e) => emit_error(&app_handle, &item_id, "ner", &e), }
 
                         emit_progress(&app_handle, &item_id, "triples", 10);
@@ -318,6 +373,128 @@ fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, 
     Ok(found.is_some())
 }
 
+fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
+    let resource_rel = format!("models/ner/{file_name}");
+    let resolved = app_handle
+        .path()
+        .resolve(&resource_rel, BaseDirectory::Resource)
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+
+    if resolved.exists() {
+        return resolved;
+    }
+
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/models/ner")
+        .join(file_name);
+    if dev_path.exists() {
+        eprintln!(
+            "[nlp/ner] Dev fallback resolved {} -> {}",
+            file_name,
+            dev_path.display()
+        );
+        return dev_path;
+    }
+
+    resolved
+}
+
+fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
+    let resource_rel = format!("scripts/{file_name}");
+    let resolved = app_handle
+        .path()
+        .resolve(&resource_rel, BaseDirectory::Resource)
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+
+    if resolved.exists() {
+        return resolved;
+    }
+
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts").join(file_name);
+    if dev_path.exists() {
+        eprintln!(
+            "[nlp/ner] Dev fallback resolved script {} -> {}",
+            file_name,
+            dev_path.display()
+        );
+        return dev_path;
+    }
+
+    resolved
+}
+
+fn resolve_ner_engine_kind() -> NerEngineKind {
+    match std::env::var("ENTROPIA_NER_ENGINE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("rule") | Some("rule_based") => NerEngineKind::RuleBased,
+        Some("onnx") => NerEngineKind::Onnx,
+        Some("hybrid") | None => NerEngineKind::Hybrid,
+        Some("spacy") => NerEngineKind::Spacy,
+        Some(other) => {
+            eprintln!("[nlp/ner] Unknown ENTROPIA_NER_ENGINE={other} — defaulting to hybrid (BERT-first + RegEx dates)");
+            NerEngineKind::Hybrid
+        }
+    }
+}
+
+fn format_panic_payload(context: &str, panic: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        return format!("{context}: {message}");
+    }
+
+    if let Some(message) = panic.downcast_ref::<String>() {
+        return format!("{context}: {message}");
+    }
+
+    context.to_string()
+}
+
+fn table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        rusqlite::params![table],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+fn column_exists(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("Failed to inspect {table}: {e}"))?;
+
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("Failed to read {table} columns: {e}"))?;
+
+    for existing in columns {
+        if existing.map_err(|e| format!("Failed to decode column name: {e}"))? == column {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn ensure_entities_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    if !column_exists(conn, "entities", "source")? {
+        conn.execute("ALTER TABLE entities ADD COLUMN source TEXT", [])
+            .map_err(|e| format!("Failed to add entities.source: {e}"))?;
+    }
+
+    if !column_exists(conn, "entities", "model_name")? {
+        conn.execute("ALTER TABLE entities ADD COLUMN model_name TEXT", [])
+            .map_err(|e| format!("Failed to add entities.model_name: {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,17 +507,31 @@ mod tests {
                 // No engine in test context → graceful degradation
                 embeddings::compute_and_store(None, conn, item_id)
             }
-            NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id),
+            NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id, &rule_based_registry()),
             NlpJob::ExtractTriples { item_id } => triples::extract_and_store(conn, item_id),
             NlpJob::EnrichItem { item_id } => {
                 // Run all 4 sub-jobs sequentially; errors don't short-circuit
                 let _ = fts::index_item_from_db(conn, item_id);
                 let _ = embeddings::compute_and_store(None, conn, item_id);
-                let _ = ner::extract_and_store(conn, item_id);
+                let _ = ner::extract_and_store(conn, item_id, &rule_based_registry());
                 let _ = triples::extract_and_store(conn, item_id);
                 Ok(())
             }
         }
+    }
+
+    fn rule_based_registry() -> NerRegistry {
+        NerRegistry::init(NerConfig {
+            engine: NerEngineKind::RuleBased,
+            model_path: None,
+            tokenizer_path: None,
+            python_path: None,
+            script_path: None,
+            model_name: None,
+            max_length: 256,
+            stride: 32,
+            score_threshold: 0.65,
+        })
     }
 
     fn setup_worker_test_db() -> Connection {
@@ -390,6 +581,8 @@ mod tests {
               start_offset INTEGER NOT NULL,
               end_offset INTEGER NOT NULL,
               confidence REAL NOT NULL,
+              source TEXT,
+              model_name TEXT,
               created_at INTEGER NOT NULL
             );
 
@@ -412,6 +605,8 @@ mod tests {
             "#,
         )
         .expect("nlp worker schema should be created");
+
+        ensure_entities_schema(&conn).expect("entities schema migration should succeed");
 
         conn
     }

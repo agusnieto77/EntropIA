@@ -90,11 +90,13 @@ export const entities = sqliteTable('entities', {
   itemId: text('item_id')
     .notNull()
     .references(() => items.id),
-  entityType: text('entity_type').notNull(), // 'person' | 'place' | 'date' | 'institution' | 'custom'
+  entityType: text('entity_type').notNull(), // 'person' | 'place' | 'date' | 'institution' | 'organization' | 'misc' | 'custom'
   value: text('value').notNull(),
   startOffset: integer('start_offset').notNull().default(0),
   endOffset: integer('end_offset').notNull().default(0),
   confidence: real('confidence').notNull().default(1.0),
+  source: text('source'),
+  modelName: text('model_name'),
   createdAt: integer('created_at').notNull(),
 })
 

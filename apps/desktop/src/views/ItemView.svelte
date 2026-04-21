@@ -132,6 +132,21 @@
   const nlpStore = new NlpStore()
   let nlpTick = $state(0)
   let entities = $state<Entity[]>([])
+  type EditableEntityType = 'person' | 'organization' | 'place' | 'misc' | 'date'
+  const EDITABLE_ENTITY_TYPES: EditableEntityType[] = [
+    'person',
+    'organization',
+    'place',
+    'misc',
+    'date',
+  ]
+  let newEntityValue = $state('')
+  let newEntityType = $state<EditableEntityType>('organization')
+  let editingEntityId = $state<string | null>(null)
+  let editingEntityValue = $state('')
+  let editingEntityType = $state<EditableEntityType>('organization')
+  let entityEditorOpen = $state(false)
+  let entityActionError = $state<string | null>(null)
   let similarItems = $state<
     Array<{ itemId: string; title: string; collectionId: string; similarity: number }>
   >([])
@@ -416,9 +431,98 @@
   async function loadEntities() {
     try {
       const store = getStore()
-      entities = (await store.entities.findByItemId(itemId)) as Entity[]
+      entities = ((await store.entities.findByItemId(itemId)) as Entity[]).filter(
+        (entity) => entity.confidence == null || entity.confidence > 0.89
+      )
     } catch {
       // Non-fatal: entities panel shows empty state
+    }
+  }
+
+  function normalizeManualEntityValue(value: string) {
+    return value.trim().replace(/^["'“”‘’«»\-–—\s]+|["'“”‘’«»\-–—\s]+$/g, '').trim()
+  }
+
+  function toEditableEntityType(entityType: Entity['entityType']): EditableEntityType {
+    if (
+      entityType === 'person' ||
+      entityType === 'organization' ||
+      entityType === 'place' ||
+      entityType === 'misc' ||
+      entityType === 'date'
+    ) {
+      return entityType
+    }
+    return 'organization'
+  }
+
+  async function handleCreateEntity() {
+    const value = normalizeManualEntityValue(newEntityValue)
+    if (!value) return
+    try {
+      await getStore().entities.create({
+        itemId,
+        entityType: newEntityType,
+        value,
+        startOffset: 0,
+        endOffset: 0,
+        confidence: 1.0,
+        source: 'manual',
+        modelName: null,
+        createdAt: Date.now(),
+      })
+      newEntityValue = ''
+      newEntityType = 'organization'
+      entityActionError = null
+      await loadEntities()
+    } catch (e) {
+      entityActionError = e instanceof Error ? e.message : 'Failed to add entity'
+    }
+  }
+
+  function startEditingEntity(entity: Entity) {
+    editingEntityId = entity.id
+    editingEntityValue = entity.value
+    editingEntityType = toEditableEntityType(entity.entityType)
+    entityEditorOpen = true
+    entityActionError = null
+  }
+
+  function cancelEditingEntity() {
+    editingEntityId = null
+    editingEntityValue = ''
+    editingEntityType = 'organization'
+    entityEditorOpen = false
+  }
+
+  async function handleSaveEntity(entityId: string) {
+    const value = normalizeManualEntityValue(editingEntityValue)
+    if (!value) return
+    try {
+      await getStore().entities.update(entityId, {
+        entityType: editingEntityType,
+        value,
+        confidence: 1.0,
+        source: 'manual',
+      })
+      cancelEditingEntity()
+      entityActionError = null
+      await loadEntities()
+    } catch (e) {
+      entityActionError = e instanceof Error ? e.message : 'Failed to save entity'
+    }
+  }
+
+  async function handleDeleteEntity(entityId: string) {
+    try {
+      await getStore().entities.delete(entityId)
+      if (editingEntityId === entityId) {
+        cancelEditingEntity()
+      }
+      entityActionError = null
+      await loadEntities()
+    } catch (e) {
+      entityActionError = e instanceof Error ? e.message : 'Failed to delete entity'
     }
   }
 
@@ -1219,7 +1323,104 @@
 
               <div class="entities-section">
                 <h4>Entities</h4>
-                <EntityViewer {entities} />
+                <EntityViewer {entities} onentityclick={startEditingEntity} />
+
+                <div class="entity-editor">
+                  <h5>Manual Entities</h5>
+                  <p class="entity-editor__hint">Click an entity tag above to edit or delete it.</p>
+
+                  <div class="entity-editor__create">
+                    <select
+                      value={newEntityType}
+                      aria-label="New entity type"
+                      onchange={(event) => {
+                        newEntityType = event.currentTarget.value as EditableEntityType
+                      }}
+                    >
+                      {#each EDITABLE_ENTITY_TYPES as type}
+                        <option value={type}>{type.toUpperCase()}</option>
+                      {/each}
+                    </select>
+                    <input
+                      bind:value={newEntityValue}
+                      type="text"
+                      placeholder="Add entity manually"
+                      aria-label="New entity value"
+                      onkeydown={(event) => event.key === 'Enter' && void handleCreateEntity()}
+                    />
+                    <button type="button" class="nlp-btn" onclick={handleCreateEntity}>Add</button>
+                  </div>
+
+                  {#if entityActionError}
+                    <p class="error">{entityActionError}</p>
+                  {/if}
+
+                </div>
+
+                {#if entityEditorOpen && editingEntityId}
+                  <div class="entity-modal" role="dialog" aria-modal="true" aria-label="Edit entity">
+                    <button
+                      type="button"
+                      class="entity-modal__backdrop"
+                      aria-label="Close entity editor"
+                      onclick={cancelEditingEntity}
+                    ></button>
+
+                    <div class="entity-modal__panel">
+                      <div class="entity-modal__header">
+                        <h5>Edit entity</h5>
+                        <button type="button" class="entity-modal__close" onclick={cancelEditingEntity}>×</button>
+                      </div>
+
+                      <div class="entity-modal__body">
+                        <label class="entity-modal__field">
+                          <span>Type</span>
+                          <select
+                            value={editingEntityType}
+                            aria-label="Edit entity type"
+                            onchange={(event) => {
+                              editingEntityType = event.currentTarget.value as EditableEntityType
+                            }}
+                          >
+                            {#each EDITABLE_ENTITY_TYPES as type}
+                              <option value={type}>{type.toUpperCase()}</option>
+                            {/each}
+                          </select>
+                        </label>
+
+                        <label class="entity-modal__field">
+                          <span>Value</span>
+                          <input
+                            bind:value={editingEntityValue}
+                            type="text"
+                            aria-label="Edit entity value"
+                            onkeydown={(event) => event.key === 'Enter' && editingEntityId && void handleSaveEntity(editingEntityId)}
+                          />
+                        </label>
+                      </div>
+
+                      <div class="entity-modal__actions">
+                        <button
+                          type="button"
+                          class="nlp-btn entity-modal__danger"
+                          onclick={() => editingEntityId && handleDeleteEntity(editingEntityId)}
+                        >
+                          Delete
+                        </button>
+                        <div class="entity-modal__actions-right">
+                          <button type="button" class="nlp-btn" onclick={cancelEditingEntity}>Cancel</button>
+                          <button
+                            type="button"
+                            class="nlp-btn"
+                            onclick={() => editingEntityId && handleSaveEntity(editingEntityId)}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                {/if}
               </div>
 
               <div class="triples-section">
@@ -1642,6 +1843,127 @@
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
     color: var(--color-text-secondary);
+  }
+
+  .entity-editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+  }
+
+  .entity-editor h5 {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .entity-editor__hint {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .entity-editor__create {
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
+  .entity-editor__create input,
+  .entity-editor__create select,
+  .entity-modal__field input,
+  .entity-modal__field select {
+    min-width: 0;
+    padding: var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+  }
+
+  .entity-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .entity-modal__backdrop {
+    position: absolute;
+    inset: 0;
+    border: none;
+    background: rgb(0 0 0 / 0.45);
+  }
+
+  .entity-modal__panel {
+    position: relative;
+    width: min(520px, calc(100vw - 2rem));
+    background: var(--color-surface-raised, var(--color-surface));
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    box-shadow: 0 20px 40px rgb(0 0 0 / 0.18);
+  }
+
+  .entity-modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .entity-modal__header h5 {
+    margin: 0;
+    font-size: var(--font-size-sm);
+  }
+
+  .entity-modal__close {
+    border: none;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .entity-modal__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .entity-modal__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+  }
+
+  .entity-modal__actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .entity-modal__actions-right {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .entity-modal__danger {
+    color: var(--color-danger, #dc2626);
   }
 
   .fts-search-input {

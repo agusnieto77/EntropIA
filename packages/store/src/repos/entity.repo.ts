@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, asc, ne, or, isNull } from 'drizzle-orm'
 import type { DrizzleClient } from '../types'
 import { entities } from '../schema'
 
@@ -10,23 +10,42 @@ export type NewEntity = {
   startOffset?: number
   endOffset?: number
   confidence?: number
+  source?: string | null
+  modelName?: string | null
   createdAt: number
 }
 
-export type EntityType = 'person' | 'place' | 'date' | 'institution' | 'custom'
+export type EntityType =
+  | 'person'
+  | 'place'
+  | 'date'
+  | 'institution'
+  | 'organization'
+  | 'misc'
+  | 'custom'
 
 export class EntityRepo {
   constructor(private db: DrizzleClient) {}
 
   async findByItemId(itemId: string): Promise<Entity[]> {
-    return this.db.select().from(entities).where(eq(entities.itemId, itemId))
+    return this.db
+      .select()
+      .from(entities)
+      .where(and(eq(entities.itemId, itemId), or(isNull(entities.source), ne(entities.source, 'manual_deleted'))))
+      .orderBy(asc(entities.createdAt), asc(entities.startOffset), asc(entities.value))
   }
 
   async findByItemIdAndType(itemId: string, type: EntityType): Promise<Entity[]> {
     return this.db
       .select()
       .from(entities)
-      .where(and(eq(entities.itemId, itemId), eq(entities.entityType, type)))
+      .where(
+        and(
+          eq(entities.itemId, itemId),
+          eq(entities.entityType, type),
+          or(isNull(entities.source), ne(entities.source, 'manual_deleted'))
+        )
+      )
   }
 
   async create(data: NewEntity): Promise<Entity> {
@@ -40,11 +59,45 @@ export class EntityRepo {
         startOffset: data.startOffset ?? 0,
         endOffset: data.endOffset ?? 0,
         confidence: data.confidence ?? 1.0,
+        source: data.source ?? null,
+        modelName: data.modelName ?? null,
         createdAt: data.createdAt,
       })
       .returning()
 
     return rows[0]!
+  }
+
+  async update(
+    id: string,
+    data: Partial<Pick<NewEntity, 'entityType' | 'value' | 'startOffset' | 'endOffset' | 'confidence' | 'source' | 'modelName'>>
+  ): Promise<Entity> {
+    const rows = await this.db
+      .update(entities)
+      .set({
+        ...(data.entityType !== undefined ? { entityType: data.entityType } : {}),
+        ...(data.value !== undefined ? { value: data.value } : {}),
+        ...(data.startOffset !== undefined ? { startOffset: data.startOffset } : {}),
+        ...(data.endOffset !== undefined ? { endOffset: data.endOffset } : {}),
+        ...(data.confidence !== undefined ? { confidence: data.confidence } : {}),
+        ...(data.source !== undefined ? { source: data.source } : {}),
+        ...(data.modelName !== undefined ? { modelName: data.modelName } : {}),
+      })
+      .where(eq(entities.id, id))
+      .returning()
+
+    return rows[0]!
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.db
+      .update(entities)
+      .set({
+        source: 'manual_deleted',
+        confidence: 1.0,
+        modelName: null,
+      })
+      .where(eq(entities.id, id))
   }
 
   async deleteByItemId(itemId: string): Promise<void> {

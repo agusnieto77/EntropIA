@@ -1,16 +1,25 @@
 <script lang="ts">
   import type { Entity, EntityType } from './EntityViewer.types'
-  import { ENTITY_TYPE_LABELS } from './EntityViewer.types'
+  import { ENTITY_TYPE_LABELS, ENTITY_TYPE_TAGS } from './EntityViewer.types'
 
   interface Props {
     entities: Entity[]
     onhighlight?: (detail: { startOffset: number; endOffset: number }) => void
+    onentityclick?: (entity: Entity) => void
   }
 
-  let { entities, onhighlight }: Props = $props()
+  let { entities, onhighlight, onentityclick }: Props = $props()
 
-  // Group entities by type, preserving order: person, place, date, institution, custom
-  const TYPE_ORDER: EntityType[] = ['person', 'place', 'date', 'institution', 'custom']
+  // Group entities by type, preserving order for core NER labels first.
+  const TYPE_ORDER: EntityType[] = [
+    'person',
+    'organization',
+    'institution',
+    'place',
+    'date',
+    'misc',
+    'custom',
+  ]
 
   const grouped = $derived(
     TYPE_ORDER.reduce<Map<EntityType, Entity[]>>((acc, type) => {
@@ -24,6 +33,7 @@
     if (entity.startOffset != null && entity.endOffset != null) {
       onhighlight?.({ startOffset: entity.startOffset, endOffset: entity.endOffset })
     }
+    onentityclick?.(entity)
   }
 </script>
 
@@ -48,12 +58,8 @@
                 onclick={() => handlePillClick(entity)}
                 title={entity.value}
               >
-                {entity.value}
-                {#if entity.confidence != null}
-                  <span class="entity-viewer__confidence" data-testid="entity-confidence"
-                    >{Math.round(entity.confidence * 100)}%</span
-                  >
-                {/if}
+                <span class="entity-viewer__tag">{ENTITY_TYPE_TAGS[entity.entityType]}</span>
+                <span class="entity-viewer__value">{entity.value}</span>
               </button>
             {/each}
           </div>
@@ -113,6 +119,7 @@
   .entity-viewer__pill {
     display: inline-flex;
     align-items: center;
+    gap: 6px;
     padding: 2px var(--space-2);
     border-radius: var(--radius-full);
     font-size: var(--font-size-xs);
@@ -156,8 +163,29 @@
     color: #9d174d;
   }
 
+  .entity-viewer__pill--organization {
+    background-color: #ede9fe;
+    color: #5b21b6;
+  }
+
+  .entity-viewer__pill--misc {
+    background-color: #f3f4f6;
+    color: #374151;
+  }
+
   .entity-viewer__pill--custom {
     background-color: var(--color-surface-raised);
     color: var(--color-text-secondary);
+  }
+
+  .entity-viewer__tag {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    opacity: 0.9;
+  }
+
+  .entity-viewer__value {
+    white-space: nowrap;
   }
 </style>

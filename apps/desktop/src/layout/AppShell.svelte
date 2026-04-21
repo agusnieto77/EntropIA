@@ -35,7 +35,7 @@
     {@render children()}
   </main>
   <footer class="footer">
-    <span class="footer__version">EntropIA v. beta</span>
+    <span class="footer__version">EntropIA v. <b>β</b></span>
 
     <a
       class="footer__github"
@@ -53,7 +53,7 @@
 
     <p class="footer__credits">
       Desarrollado por
-      <a href={HLAB_URL} onclick={openHlabWebsite}>HLab</a>
+      <a href={HLAB_URL} onclick={openHlabWebsite}><b>HLab</b></a>
     </p>
   </footer>
 </div>

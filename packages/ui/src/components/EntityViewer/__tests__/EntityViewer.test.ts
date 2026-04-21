@@ -108,7 +108,7 @@ describe('EntityViewer', () => {
     expect(groups).toHaveLength(1)
   })
 
-  it('shows confidence percentage on entity pill', () => {
+  it('shows NER tag on entity pill instead of confidence percentage', () => {
     const entity = makeEntity({
       id: 'c1',
       entityType: 'person',
@@ -116,18 +116,20 @@ describe('EntityViewer', () => {
       confidence: 0.85,
     })
     render(EntityViewer, { props: { entities: [entity] } })
-    expect(screen.getByTestId('entity-confidence')).toHaveTextContent('85%')
+    expect(screen.getByText('PER')).toBeInTheDocument()
+    expect(screen.queryByTestId('entity-confidence')).not.toBeInTheDocument()
   })
 
-  it('shows 100% confidence when confidence is 1.0', () => {
+  it('renders organization entities in their own group', () => {
     const entity = makeEntity({
       id: 'c2',
-      entityType: 'person',
-      value: 'Doña Juana',
+      entityType: 'organization',
+      value: 'Wilson Sons y Cía.',
       confidence: 1.0,
     })
     render(EntityViewer, { props: { entities: [entity] } })
-    expect(screen.getByTestId('entity-confidence')).toHaveTextContent('100%')
+    expect(screen.getByText(/organization/i)).toBeInTheDocument()
+    expect(screen.getByText('ORG')).toBeInTheDocument()
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -155,5 +157,16 @@ describe('EntityViewer', () => {
     await fireEvent.click(pill)
 
     expect(onhighlight).not.toHaveBeenCalled()
+  })
+
+  it('clicking an entity pill calls onentityclick with the entity', async () => {
+    const onentityclick = vi.fn()
+    const entity = makeEntity({ id: 'e-click', value: 'Mar del Plata' })
+    render(EntityViewer, { props: { entities: [entity], onentityclick } })
+
+    await fireEvent.click(screen.getByText('Mar del Plata'))
+
+    expect(onentityclick).toHaveBeenCalledOnce()
+    expect(onentityclick).toHaveBeenCalledWith(expect.objectContaining({ id: 'e-click' }))
   })
 })

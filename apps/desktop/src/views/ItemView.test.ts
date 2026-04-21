@@ -27,6 +27,16 @@ type AnnotationRow = {
 }
 
 type StoreOptions = {
+  entitiesRows?: Array<{
+    id: string
+    itemId: string
+    entityType: 'person' | 'organization' | 'place' | 'misc' | 'date' | 'institution'
+    value: string
+    startOffset: number | null
+    endOffset: number | null
+    confidence: number | null
+    createdAt: number
+  }>
   triplesRows?: TripleRow[]
   itemsById?: Record<
     string,
@@ -39,7 +49,7 @@ type StoreOptions = {
   >
   ftsSearchImpl?: (_query: string, _limit?: number) => Promise<Array<{ itemId: string; rank: number }>>
   ftsStatsTotal?: number
-  assetsRows?: Array<{
+    assetsRows?: Array<{
     id: string
     itemId: string
     path: string
@@ -55,6 +65,7 @@ type StoreOptions = {
 }
 
 function createStore({
+  entitiesRows = [],
   triplesRows = [],
   itemsById = {
     'item-1': {
@@ -102,7 +113,10 @@ function createStore({
       findByAsset: vi.fn().mockResolvedValue(null),
     },
     entities: {
-      findByItemId: vi.fn().mockResolvedValue([]),
+      findByItemId: vi.fn().mockResolvedValue(entitiesRows),
+      create: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
     },
     fts: {
       search: vi.fn().mockImplementation(ftsSearchImpl),
@@ -168,6 +182,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('@entropia/ui', async () => {
   const MockDocumentViewer = (await import('./__mocks__/MockDocumentViewer.svelte')).default
+  const MockEntityViewer = (await import('./__mocks__/MockEntityViewer.svelte')).default
 
   return {
     DocumentViewer: MockDocumentViewer,
@@ -175,7 +190,7 @@ vi.mock('@entropia/ui', async () => {
     NoteEditor: () => null,
     Button: () => null,
     Card: () => null,
-    EntityViewer: () => null,
+    EntityViewer: MockEntityViewer,
   }
 })
 
@@ -644,5 +659,88 @@ describe('ItemView image annotations', () => {
       expect(screen.getByTestId('viewer-type')).toHaveTextContent('pdf')
     })
     expect(storeRef.current.annotations.findByAsset).not.toHaveBeenCalled()
+  })
+})
+
+describe('ItemView entity editing UX', () => {
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    similarItemsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  async function renderAnalysisWithEntities() {
+    storeRef.current = createStore({
+      entitiesRows: [
+        {
+          id: 'entity-1',
+          itemId: 'item-1',
+          entityType: 'organization',
+          value: 'Mar del Plata',
+          startOffset: 10,
+          endOffset: 23,
+          confidence: 0.95,
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+    await fireEvent.click(await screen.findByRole('button', { name: /Analysis/i }))
+  }
+
+  it('opens entity modal from entity tag click and saves edits', async () => {
+    await renderAnalysisWithEntities()
+
+    await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
+
+    expect(await screen.findByRole('dialog', { name: /Edit entity/i })).toBeInTheDocument()
+
+    await fireEvent.input(screen.getByLabelText('Edit entity value'), {
+      target: { value: 'Mar del Plata 1970' },
+    })
+    await fireEvent.change(screen.getByLabelText('Edit entity type'), {
+      target: { value: 'date' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(storeRef.current.entities.update).toHaveBeenCalledWith('entity-1', {
+      entityType: 'date',
+      value: 'Mar del Plata 1970',
+      confidence: 1,
+      source: 'manual',
+    })
+  })
+
+  it('deletes entity from modal', async () => {
+    await renderAnalysisWithEntities()
+
+    await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(storeRef.current.entities.delete).toHaveBeenCalledWith('entity-1')
+  })
+
+  it('creates manual DATE entities', async () => {
+    await renderAnalysisWithEntities()
+
+    await fireEvent.change(screen.getByLabelText('New entity type'), {
+      target: { value: 'date' },
+    })
+    await fireEvent.input(screen.getByLabelText('New entity value'), {
+      target: { value: '21 de agosto de 1970' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    expect(storeRef.current.entities.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemId: 'item-1',
+        entityType: 'date',
+        value: '21 de agosto de 1970',
+        confidence: 1,
+        source: 'manual',
+      })
+    )
   })
 })

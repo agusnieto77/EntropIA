@@ -5,6 +5,7 @@
 pub mod commands;
 mod engine;
 
+use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
@@ -393,7 +394,7 @@ fn save_transcription(
     asset_id: &str,
     result: &TranscriptionResult,
     model_name: &str,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     // Serialize segments as JSON (using the same Segment struct)
     let segments_json = serde_json::to_string(&result.segments)
         .map_err(|e| format!("Failed to serialize segments: {e}"))?;
@@ -427,7 +428,7 @@ fn save_transcription(
     )
     .map_err(|e| format!("Failed to insert transcription: {e}"))?;
 
-    Ok(())
+    lookup_item_id_for_asset(conn, asset_id)
 }
 
 // ── Job Processing ──────────────────────────────────────────────────────────
@@ -451,7 +452,17 @@ fn process_job(
     emit_progress(app_handle, &job.asset_id, 80, "saving");
 
     // Stage 2 — persist to SQLite
-    save_transcription(conn, &job.asset_id, &result, "faster-whisper/base")?;
+    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, "faster-whisper/base")? {
+        if let Err(e) = enqueue_entity_refresh_for_item(&app_handle.state::<NlpQueue>(), &item_id) {
+            eprintln!("[nlp/ner] Failed to auto-enqueue ExtractEntities after transcription save for item {item_id}: {e}");
+        } else {
+            eprintln!(
+                "[nlp/ner] Auto-enqueued ExtractEntities after transcription save: asset_id={}, item_id={}",
+                job.asset_id,
+                item_id
+            );
+        }
+    }
 
     emit_progress(app_handle, &job.asset_id, 100, "done");
 

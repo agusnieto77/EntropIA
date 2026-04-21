@@ -4,6 +4,7 @@ mod pdf;
 
 use engine::OcrEngine;
 use pdf::{extract_pdf_text, is_quality_text};
+use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
@@ -144,15 +145,26 @@ impl OcrQueue {
                                 .map_err(|e| format!("Failed to open save connection: {e}"))?;
                             conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                                 .map_err(|e| format!("Failed to configure pragmas: {e}"))?;
-                            save_extraction(&conn, &aid, &text_for_save, &method_clone)
+                            save_extraction(&conn, &aid, &text_for_save, &method_clone)?;
+                            lookup_item_id_for_asset(&conn, &aid)
                         })
                         .await
                         .map_err(|e| format!("Save task panicked: {e}"))
                         .and_then(|r| r);
 
-                        if let Err(e) = save_result {
+                        if let Err(e) = &save_result {
                             eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
                             // Still emit complete — text is in memory even if DB save failed
+                        } else if let Ok(Some(item_id)) = &save_result {
+                            if let Err(e) = enqueue_entity_refresh_for_item(&app_handle.state::<NlpQueue>(), item_id) {
+                                eprintln!("[nlp/ner] Failed to auto-enqueue ExtractEntities after OCR save for item {item_id}: {e}");
+                            } else {
+                                eprintln!(
+                                    "[nlp/ner] Auto-enqueued ExtractEntities after OCR save: asset_id={}, item_id={}",
+                                    asset_id,
+                                    item_id
+                                );
+                            }
                         }
 
                         let _ = app_handle.emit(

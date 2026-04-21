@@ -2,6 +2,7 @@
 
 use super::{update_extraction_text, OcrJob, OcrQueue};
 use crate::db::state::AppDbState;
+use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use tauri::State;
 
 /// Submit an OCR extraction job to the background worker queue.
@@ -40,7 +41,19 @@ pub async fn update_extraction_text_cmd(
     asset_id: String,
     text_content: String,
     db: State<'_, AppDbState>,
+    nlp_queue: State<'_, NlpQueue>,
 ) -> Result<(), String> {
     let conn = db.ui_conn.lock().map_err(|e| format!("DB lock poisoned: {e}"))?;
-    update_extraction_text(&conn, &asset_id, &text_content)
+    update_extraction_text(&conn, &asset_id, &text_content)?;
+
+    if let Some(item_id) = lookup_item_id_for_asset(&conn, &asset_id)? {
+        enqueue_entity_refresh_for_item(&nlp_queue, &item_id)?;
+        eprintln!(
+            "[nlp/ner] Auto-enqueued ExtractEntities after OCR text update: asset_id={}, item_id={}",
+            asset_id,
+            item_id
+        );
+    }
+
+    Ok(())
 }

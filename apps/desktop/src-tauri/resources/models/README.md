@@ -1,5 +1,8 @@
 # Whisper Model Download
 
+> Note: this directory now also reserves `resources/models/ner/` for the Spanish NER ONNX assets used by `src/nlp/ner/onnx.rs`.
+> See `resources/models/ner/README.md` for the exact file layout expected by the runtime.
+
 The transcription feature requires a Whisper model file in GGML format compatible with whisper.cpp v1.8+ (as used by whisper-rs-sys 0.15.0).
 
 ## Quick Start

@@ -1,0 +1,33 @@
+{
+  "feature": "spanish-ner",
+  "engine": "onnx-runtime",
+  "runtime_mode": "load-dynamic",
+  "recommended_model_id": "mrm8488/bert-spanish-cased-finetuned-ner",
+  "required_files": [
+    "model.onnx",
+    "tokenizer.json"
+  ],
+  "recommended_files": [
+    "config.json"
+  ],
+  "runtime_files": {
+    "windows": [
+      "onnxruntime.dll"
+    ],
+    "linux": [
+      "libonnxruntime.so",
+      "libonnxruntime.so.1"
+    ],
+    "macos": [
+      "libonnxruntime.dylib"
+    ]
+  },
+  "resolved_paths": {
+    "model": "models/ner/model.onnx",
+    "tokenizer": "models/ner/tokenizer.json"
+  },
+  "notes": [
+    "If no runtime library is present in this folder or its parent, set ORT_DYLIB_PATH.",
+    "The desktop app falls back to rule-based NER when ONNX assets are unavailable."
+  ]
+}

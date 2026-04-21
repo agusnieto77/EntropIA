@@ -1,4 +1,11 @@
-export type EntityType = 'person' | 'place' | 'date' | 'institution' | 'custom'
+export type EntityType =
+  | 'person'
+  | 'place'
+  | 'date'
+  | 'institution'
+  | 'organization'
+  | 'misc'
+  | 'custom'
 
 export interface Entity {
   id: string
@@ -21,7 +28,19 @@ export const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   place: 'Place',
   date: 'Date',
   institution: 'Institution',
+  organization: 'Organization',
+  misc: 'Misc',
   custom: 'Custom',
+}
+
+export const ENTITY_TYPE_TAGS: Record<EntityType, string> = {
+  person: 'PER',
+  place: 'LOC',
+  date: 'DATE',
+  institution: 'ORG',
+  organization: 'ORG',
+  misc: 'MISC',
+  custom: 'CUSTOM',
 }
 
 /** CSS class suffix per entity type for color-coding */
@@ -30,5 +49,7 @@ export const ENTITY_TYPE_COLORS: Record<EntityType, string> = {
   place: 'place',
   date: 'date',
   institution: 'institution',
+  organization: 'organization',
+  misc: 'misc',
   custom: 'custom',
 }
