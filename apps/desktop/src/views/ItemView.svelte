@@ -40,6 +40,68 @@
 
   const isDev = import.meta.env.DEV
 
+  // ── Sidebar resize ──
+  const MIN_SIDEBAR_PCT = 20
+  const MAX_SIDEBAR_PCT = 50
+  const DEFAULT_SIDEBAR_PCT = 33
+
+  let sidebarWidth = $state((() => {
+    try {
+      const stored = localStorage.getItem('entropia-sidebar-width')
+      if (stored !== null) {
+        const parsed = Number(stored)
+        if (!isNaN(parsed)) {
+          return Math.max(MIN_SIDEBAR_PCT, Math.min(MAX_SIDEBAR_PCT, parsed))
+        }
+      }
+    } catch {}
+    return DEFAULT_SIDEBAR_PCT
+  })())
+
+  let isDragging = $state(false)
+  let itemViewEl: HTMLElement | undefined = $state()
+  let dragCleanup: (() => void) | null = null
+
+  function onResizeHandlePointerDown(e: PointerEvent) {
+    e.preventDefault()
+    isDragging = true
+
+    const startX = e.clientX
+    const startWidthPct = sidebarWidth
+    const containerEl = itemViewEl ?? document.querySelector('.item-view') ?? document.body
+    const containerWidth = (containerEl as HTMLElement).clientWidth
+
+    let rafId: number | null = null
+    let lastClientX = startX
+
+    function onPointerMove(e: PointerEvent) {
+      lastClientX = e.clientX
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        const deltaX = lastClientX - startX
+        const deltaPct = (deltaX / containerWidth) * 100
+        sidebarWidth = Math.max(MIN_SIDEBAR_PCT, Math.min(MAX_SIDEBAR_PCT, startWidthPct - deltaPct))
+        rafId = null
+      })
+    }
+
+    function onPointerUp() {
+      isDragging = false
+      try {
+        localStorage.setItem('entropia-sidebar-width', String(Math.round(sidebarWidth)))
+      } catch {}
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      document.body.classList.remove('no-select')
+      dragCleanup = null
+    }
+
+    document.body.classList.add('no-select')
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    dragCleanup = onPointerUp
+  }
+
   let { itemId, collectionId }: { itemId: string; collectionId: string } = $props()
 
   let item = $state<Item | null>(null)
@@ -938,6 +1000,7 @@
     transPersistTimers.clear()
     clearAnnotationSaveTimer()
     clearFtsSearchTimer()
+    if (dragCleanup) dragCleanup()
   })
 </script>
 
@@ -946,7 +1009,7 @@
 {:else if error && !item}
   <p class="error">{error}</p>
 {:else if item}
-  <div class="item-view">
+  <div class="item-view" bind:this={itemViewEl} style="grid-template-columns: 1fr 6px {sidebarWidth}%">
     <div class="left-panel">
       {#if selectedAsset}
         <DocumentViewer
@@ -990,6 +1053,13 @@
         </div>
       {/if}
     </div>
+
+    <div
+      class="resize-handle"
+      role="separator"
+      aria-orientation="vertical"
+      onpointerdown={onResizeHandlePointerDown}
+    ></div>
 
     <div class="right-panel">
       <h2 class="item-title">{item.title}</h2>
@@ -1476,8 +1546,8 @@
 <style>
   .item-view {
     display: grid;
-    grid-template-columns: 1fr 380px;
-    gap: var(--space-4);
+    /* grid-template-columns set via inline style */
+    gap: 0;
     height: 100%;
   }
   .left-panel {
@@ -1492,7 +1562,33 @@
     gap: var(--space-4);
     overflow-y: auto;
     padding: var(--space-3);
-    border-left: 1px solid var(--color-border);
+  }
+  .resize-handle {
+    width: 6px;
+    position: relative;
+    cursor: col-resize;
+    z-index: 1;
+  }
+  .resize-handle::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1px;
+    background-color: var(--color-border);
+    transition: background-color 0.15s ease, width 0.15s ease;
+  }
+  .resize-handle:hover::before {
+    background-color: var(--color-text-muted, var(--color-border));
+    width: 2px;
+  }
+  :global(body.no-select),
+  :global(body.no-select *) {
+    cursor: col-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
   }
   .item-title {
     font-size: var(--font-size-lg);
