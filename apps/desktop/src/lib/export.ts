@@ -8,6 +8,7 @@ import type {
   Item,
   Note,
   StoreApi,
+  Transcription,
 } from '@entropia/store'
 
 type ExportBbox = {
@@ -85,7 +86,8 @@ export function buildCollectionExportData(
   assetsByItemId: Record<string, Asset[]>,
   notesByItemId: Record<string, Note[]>,
   extractionsByAssetId: Record<string, Extraction | null>,
-  annotationsByAssetId: Record<string, Annotation[]>
+  annotationsByAssetId: Record<string, Annotation[]>,
+  transcriptionsByAssetId: Record<string, Transcription | null> = {}
 ): CollectionExportPayload {
   return {
     version: 2,
@@ -108,7 +110,10 @@ export function buildCollectionExportData(
         type: asset.type,
         size: asset.size ?? null,
         path: toRelativeAssetPath(asset.path),
-        text: extractionsByAssetId[asset.id]?.textContent ?? null,
+        text:
+          extractionsByAssetId[asset.id]?.textContent ??
+          transcriptionsByAssetId[asset.id]?.textContent ??
+          null,
         bboxes: collectBboxes(annotationsByAssetId[asset.id] ?? []),
       })),
       notes: (notesByItemId[item.id] ?? []).map((note) => ({
@@ -133,6 +138,7 @@ export async function exportCollectionById(
   const notesByItemId: Record<string, Note[]> = {}
   const extractionsByAssetId: Record<string, Extraction | null> = {}
   const annotationsByAssetId: Record<string, Annotation[]> = {}
+  const transcriptionsByAssetId: Record<string, Transcription | null> = {}
 
   for (const item of items) {
     const [assets, notes] = await Promise.all([
@@ -143,12 +149,14 @@ export async function exportCollectionById(
     notesByItemId[item.id] = notes
 
     for (const asset of assets) {
-      const [extraction, assetAnnotations] = await Promise.all([
+      const [extraction, assetAnnotations, transcription] = await Promise.all([
         store.extractions.findByAsset(asset.id),
         store.annotations.findByAsset(asset.id),
+        store.transcriptions.findByAsset(asset.id),
       ])
       extractionsByAssetId[asset.id] = extraction
       annotationsByAssetId[asset.id] = assetAnnotations
+      transcriptionsByAssetId[asset.id] = transcription
     }
   }
 
@@ -158,7 +166,8 @@ export async function exportCollectionById(
     assetsByItemId,
     notesByItemId,
     extractionsByAssetId,
-    annotationsByAssetId
+    annotationsByAssetId,
+    transcriptionsByAssetId
   )
   return exportCollectionToJson(payload, `${collection.name}.json`)
 }

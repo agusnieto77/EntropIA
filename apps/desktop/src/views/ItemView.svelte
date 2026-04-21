@@ -1857,6 +1857,7 @@
     border: 1px solid var(--color-border);
     border-top: none;
     border-radius: 0 0 var(--radius-md) var(--radius-md);
+    overflow: hidden;
   }
 
   .nlp-actions {
@@ -1946,6 +1947,7 @@
     flex-direction: column;
     gap: var(--space-2);
     margin-top: var(--space-3);
+    min-width: 0;
   }
 
   .entity-editor h5 {
@@ -1964,15 +1966,24 @@
 
   .entity-editor__create {
     display: grid;
-    grid-template-columns: 110px 1fr auto;
+    grid-template-columns: 35fr 50fr 15fr;
     gap: var(--space-2);
     align-items: center;
+    padding-bottom: var(--space-2);
+    min-width: 0;
   }
 
-  .entity-editor__create input,
-  .entity-editor__create select,
-  .entity-modal__field input,
-  .entity-modal__field select {
+  .entity-editor__create select {
+    min-width: 0;
+    padding: var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+  }
+
+  .entity-editor__create input {
     min-width: 0;
     padding: var(--space-2);
     border: 1px solid var(--color-border);
@@ -1980,6 +1991,11 @@
     background: var(--color-surface);
     color: var(--color-text-primary);
     font-size: var(--font-size-sm);
+  }
+
+  .entity-editor__create .nlp-btn {
+    width: 100%;
+    justify-content: center;
   }
 
   .entity-modal {

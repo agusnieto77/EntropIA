@@ -8,6 +8,7 @@ type ExportStoreMock = {
   notes: { findByItem: ReturnType<typeof vi.fn> }
   extractions: { findByAsset: ReturnType<typeof vi.fn> }
   annotations: { findByAsset: ReturnType<typeof vi.fn> }
+  transcriptions: { findByAsset: ReturnType<typeof vi.fn> }
 }
 
 type ExportStoreInput = Parameters<typeof exportCollectionById>[0]
@@ -352,6 +353,138 @@ describe('buildCollectionExportData', () => {
     expect(payload.items[0]!.assets[0]!.text).toBe('Contenido nativo del PDF')
     expect(payload.items[0]!.assets[0]!.bboxes).toEqual([])
   })
+
+  it('includes transcription text for audio assets when no extraction exists', () => {
+    const collection = {
+      id: 'c1',
+      name: 'WithTranscription',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'Audio', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/recording.wav',
+      type: 'audio',
+      size: 5000,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {}, // no extractions (audio assets have none)
+      {}, // no annotations
+      {
+        a1: {
+          id: 't1',
+          assetId: 'a1',
+          textContent: 'Transcripción del audio grabado',
+          language: 'es',
+          durationMs: 120000,
+          model: 'base',
+          segments: null,
+          confidence: 0.92,
+          createdAt: 8,
+        },
+      }
+    )
+
+    expect(payload.items[0]!.assets[0]!.text).toBe('Transcripción del audio grabado')
+  })
+
+  it('prefers extraction text over transcription when both exist', () => {
+    const collection = {
+      id: 'c1',
+      name: 'Both',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'Both', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/doc.pdf',
+      type: 'pdf',
+      size: 100,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {
+        a1: {
+          id: 'e1',
+          assetId: 'a1',
+          textContent: 'OCR text',
+          method: 'ocr',
+          confidence: null,
+          createdAt: 8,
+        },
+      },
+      {},
+      {
+        a1: {
+          id: 't1',
+          assetId: 'a1',
+          textContent: 'Transcription text',
+          language: 'es',
+          durationMs: 60000,
+          model: 'base',
+          segments: null,
+          confidence: null,
+          createdAt: 9,
+        },
+      }
+    )
+
+    expect(payload.items[0]!.assets[0]!.text).toBe('OCR text')
+  })
+
+  it('audio asset with no extraction and no transcription has text null', () => {
+    const collection = {
+      id: 'c1',
+      name: 'NoText',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const items = [
+      { id: 'i1', title: 'Empty', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+    ]
+    const asset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/audio.mp3',
+      type: 'audio',
+      size: 2000,
+      createdAt: 5,
+    }
+
+    const payload = buildCollectionExportData(
+      collection,
+      items,
+      { i1: [asset] },
+      { i1: [] },
+      {}, // no extractions
+      {}, // no annotations
+      {}  // no transcriptions
+    )
+
+    expect(payload.items[0]!.assets[0]!.text).toBeNull()
+  })
 })
 
 describe('exportCollectionById', () => {
@@ -367,6 +500,7 @@ describe('exportCollectionById', () => {
       notes: { findByItem: vi.fn() },
       extractions: { findByAsset: vi.fn() },
       annotations: { findByAsset: vi.fn() },
+      transcriptions: { findByAsset: vi.fn() },
     }
 
     const result = await exportCollectionById(asExportStore(store), 'missing')
@@ -437,6 +571,7 @@ describe('exportCollectionById', () => {
       },
       extractions: { findByAsset: vi.fn().mockResolvedValue(extraction) },
       annotations: { findByAsset: vi.fn().mockResolvedValue([annotation]) },
+      transcriptions: { findByAsset: vi.fn().mockResolvedValue(null) },
     }
 
     const path = await exportCollectionById(asExportStore(store), 'c1')
@@ -535,6 +670,9 @@ describe('exportCollectionById', () => {
             },
           ]),
       },
+      transcriptions: {
+        findByAsset: vi.fn().mockResolvedValue(null),
+      },
     }
 
     await exportCollectionById(asExportStore(store), 'c1')
@@ -543,6 +681,8 @@ describe('exportCollectionById', () => {
     expect(store.extractions.findByAsset).toHaveBeenCalledWith('a2')
     expect(store.annotations.findByAsset).toHaveBeenCalledWith('a1')
     expect(store.annotations.findByAsset).toHaveBeenCalledWith('a2')
+    expect(store.transcriptions.findByAsset).toHaveBeenCalledWith('a1')
+    expect(store.transcriptions.findByAsset).toHaveBeenCalledWith('a2')
 
     const writtenBytes = vi.mocked(writeFile).mock.calls[0]![1] as Uint8Array
     const parsed = JSON.parse(new TextDecoder().decode(writtenBytes))
@@ -553,5 +693,69 @@ describe('exportCollectionById', () => {
     // asset2 has bboxes but no text
     expect(parsed.items[0].assets[1].text).toBeNull()
     expect(parsed.items[0].assets[1].bboxes).toEqual([{ x: 0.5, y: 0.5, width: 0.2, height: 0.2 }])
+  })
+
+  it('exports audio asset with transcription text', async () => {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+    vi.mocked(save).mockResolvedValue('/out/audio-export.json')
+    vi.mocked(writeFile).mockResolvedValue(undefined)
+
+    const collection = {
+      id: 'c1',
+      name: 'Entrevistas',
+      description: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }
+    const item = {
+      id: 'i1',
+      title: 'Entrevista 1',
+      collectionId: 'c1',
+      metadata: null,
+      createdAt: 3,
+      updatedAt: 4,
+    }
+    const audioAsset = {
+      id: 'a1',
+      itemId: 'i1',
+      path: '/app/assets/c1/i1/interview.wav',
+      type: 'audio',
+      size: 5000,
+      createdAt: 5,
+    }
+
+    const store: ExportStoreMock = {
+      collections: { findById: vi.fn().mockResolvedValue(collection) },
+      items: { findByCollection: vi.fn().mockResolvedValue([item]) },
+      assets: { findByItem: vi.fn().mockResolvedValue([audioAsset]) },
+      notes: { findByItem: vi.fn().mockResolvedValue([]) },
+      extractions: { findByAsset: vi.fn().mockResolvedValue(null) },
+      annotations: { findByAsset: vi.fn().mockResolvedValue([]) },
+      transcriptions: {
+        findByAsset: vi.fn().mockResolvedValue({
+          id: 't1',
+          assetId: 'a1',
+          textContent: 'Buenos días, hoy vamos a hablar sobre la historia colonial',
+          language: 'es',
+          durationMs: 120000,
+          model: 'base',
+          segments: null,
+          confidence: 0.91,
+          createdAt: 8,
+        }),
+      },
+    }
+
+    await exportCollectionById(asExportStore(store), 'c1')
+
+    const writtenBytes = vi.mocked(writeFile).mock.calls[0]![1] as Uint8Array
+    const parsed = JSON.parse(new TextDecoder().decode(writtenBytes))
+
+    expect(parsed.items[0].assets[0].type).toBe('audio')
+    expect(parsed.items[0].assets[0].text).toBe(
+      'Buenos días, hoy vamos a hablar sobre la historia colonial'
+    )
+    expect(store.transcriptions.findByAsset).toHaveBeenCalledWith('a1')
   })
 })
