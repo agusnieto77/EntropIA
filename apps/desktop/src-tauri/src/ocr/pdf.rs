@@ -1,17 +1,85 @@
-/// PDF native text extraction and quality heuristic.
+//! PDF text extraction and page rendering for OCR fallback.
+//!
+//! Two extraction strategies:
+//! 1. **Native text** — `extract_pdf_text()` extracts embedded text via `pdf-extract`.
+//!    Fast and accurate for text-based PDFs. Quality-checked with `is_quality_text()`.
+//! 2. **Page rendering** — `render_pdf_page_to_image()` renders a PDF page as PNG
+//!    bitmap via `pdfium-render`, enabling OCR fallback for scanned/image-based PDFs.
 
-/// Extracts text from the native text layer of a PDF byte slice.
-/// Returns the extracted text or an error message.
+use pdfium_render::prelude::*;
+use std::io::Cursor;
+
+/// Extract text from the native text layer of a PDF byte slice.
+/// Returns the raw extracted text or an error message.
 pub fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     pdf_extract::extract_text_from_mem(bytes)
         .map_err(|e| format!("PDF text extraction failed: {e}"))
 }
 
-/// Returns `true` if the text contains at least 50 valid UTF-8 alphanumeric characters.
-/// Used to decide whether native PDF text is rich enough or we should fall back to OCR.
+/// Returns `true` if the text contains at least `MIN_ALPHANUM_CHARS` valid
+/// UTF-8 alphanumeric characters. Used to decide whether native PDF text is
+/// rich enough or we should fall back to OCR.
 pub fn is_quality_text(text: &str) -> bool {
-    let alphanum_count = text.chars().filter(|c| c.is_alphanumeric()).count();
-    alphanum_count >= 50
+    const MIN_ALPHANUM_CHARS: usize = 50;
+    text.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_ALPHANUM_CHARS
+}
+
+/// Render a single PDF page to PNG bytes, suitable for OCR processing.
+///
+/// Uses `pdfium-render` to rasterize the page at 300 DPI equivalent
+/// (target width ~2550px for letter-size). Returns raw PNG bytes that
+/// can be fed directly to `OcrProvider::recognize()`.
+///
+/// # Arguments
+/// * `bytes` — Raw PDF file bytes
+/// * `page_index` — Zero-based page index (0 = first page)
+///
+/// # Errors
+/// Returns `Err` if:
+/// - Pdfium fails to initialize
+/// - PDF cannot be loaded
+/// - Page index is out of bounds
+/// - Rendering or encoding fails
+pub fn render_pdf_page_to_image(bytes: &[u8], page_index: usize) -> Result<Vec<u8>, String> {
+    let pdfium = Pdfium::default();
+    let document = pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .map_err(|e| format!("Failed to load PDF: {e}"))?;
+
+    let pages = document.pages();
+    let page_count: usize = pages.len().into();
+
+    if page_index >= page_count {
+        return Err(format!(
+            "Page index {} out of bounds (PDF has {} pages)",
+            page_index, page_count
+        ));
+    }
+
+    let page_idx: PdfPageIndex = PdfPageIndex::from(page_index as u16);
+    let page = pages
+        .get(page_idx)
+        .map_err(|e| format!("Failed to get page {page_index} from PDF: {e}"))?;
+
+    // Render at 300 DPI equivalent. A typical letter-size page is 8.5" × 11"
+    // which at 300 DPI gives 2550 × 3300 pixels.
+    let render_config = PdfRenderConfig::new()
+        .set_target_width(2550)
+        .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
+
+    let bitmap = page
+        .render_with_config(&render_config)
+        .map_err(|e| format!("Failed to render PDF page {page_index}: {e}"))?;
+
+    // Convert to image::DynamicImage, then encode as PNG
+    let dynamic_image = bitmap.as_image();
+
+    let mut png_bytes = Vec::new();
+    dynamic_image
+        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode rendered page as PNG: {e}"))?;
+
+    Ok(png_bytes)
 }
 
 #[cfg(test)]
@@ -25,7 +93,6 @@ mod tests {
 
     #[test]
     fn short_garbled_text_is_not_quality() {
-        // Less than 50 alphanumeric characters — lots of symbols, few real chars
         let garbled = "!@#$%^&*()_+-=[]{}|;':\",./<>? abc 123";
         assert!(!is_quality_text(garbled));
     }

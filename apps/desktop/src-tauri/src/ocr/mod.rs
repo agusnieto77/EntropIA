@@ -381,7 +381,7 @@ async fn process_job(
 
 /// PDF pipeline: try native text first, fall back to OCR via the provider.
 async fn process_pdf(
-    _provider: &Arc<dyn OcrProvider>,
+    provider: &Arc<dyn OcrProvider>,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
@@ -409,12 +409,40 @@ async fn process_pdf(
             })
         }
         _ => {
-            // Fallback — render first page as image and OCR it.
-            // NOTE: Full PDF-to-image rendering requires a crate like `pdfium-render`.
-            // For Fase 2, we return an error explaining the limitation.
-            // A future phase (Fase 2.5) will add pdfium-render for scanned PDF → image.
-            // TODO: Implement PDF page rendering for OCR fallback (Fase 2.5)
-            Err("PDF native text extraction failed quality check and PDF-to-image rendering is not yet implemented (Fase 2.5)".to_string())
+            // Native text failed quality check — render first page as image and OCR it.
+            eprintln!("[pdf] Native text failed quality check, falling back to PDF→image→OCR");
+
+            // Stage 3 — rendering PDF page as image (75 %)
+            emit_progress(app_handle, asset_id, 75, "rendering_pdf_page");
+
+            let pdf_bytes = bytes.to_vec();
+            let page_image = tokio::task::spawn_blocking(move || {
+                pdf::render_pdf_page_to_image(&pdf_bytes, 0) // First page only
+            })
+            .await
+            .map_err(|e| format!("PDF render task panicked: {e}"))?
+            .map_err(|e| format!("PDF page rendering failed: {e}"))?;
+
+            // Stage 4 — OCR the rendered page image (85 %)
+            emit_progress(app_handle, asset_id, 85, "ocr_fallback");
+
+            let provider_clone = Arc::clone(provider);
+            let page_image_owned = page_image; // Move into the closure
+            let output = tokio::task::spawn_blocking(move || {
+                provider_clone.recognize(&page_image_owned)
+            })
+            .await
+            .map_err(|e| format!("OCR fallback task panicked: {e}"))?
+            .map_err(|e| format!("OCR fallback failed: {e}"))?;
+
+            // Override method to indicate this came from PDF→image→OCR
+            let result = provider::OcrOutput {
+                method: format!("pdf_{}", output.method),
+                ..output
+            };
+
+            emit_progress(app_handle, asset_id, 100, "done");
+            Ok(result)
         }
     }
 }
