@@ -1355,8 +1355,7 @@
                   disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
                   onclick={handleIndexFts}
                 >
-                  Full-Text Index
-                  <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
+                  INDEX <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
                 </button>
 
                 <button
@@ -1364,21 +1363,15 @@
                   disabled={nlp.embed === 'pending' || nlp.embed === 'running'}
                   onclick={handleEmbedItem}
                 >
-                  Generate Embeddings
-                  <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
+                  EMBED <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
                 </button>
-
-                {#if nlp.errors?.embed}
-                  <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
-                {/if}
 
                 <button
                   class="nlp-btn"
                   disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
                   onclick={handleExtractEntities}
                 >
-                  Extract Entities
-                  <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
+                  NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
                 </button>
 
                 <button
@@ -1386,10 +1379,13 @@
                   disabled={nlp.triples === 'pending' || nlp.triples === 'running'}
                   onclick={handleExtractTriples}
                 >
-                  Extract Triples
-                  <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                  TRIPLET <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
                 </button>
               </div>
+
+              {#if nlp.errors?.embed}
+                <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
+              {/if}
 
               <div class="entities-section">
                 <h4>Entities</h4>
@@ -1862,22 +1858,28 @@
 
   .nlp-actions {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: var(--space-2);
   }
 
   .nlp-btn {
-    display: flex;
+    display: inline-flex;
+    flex-direction: row;
     align-items: center;
-    justify-content: space-between;
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--font-size-sm);
+    justify-content: center;
+    gap: var(--space-1);
+    flex: 1 1 25%;
+    min-width: 0;
+    padding: var(--space-2) var(--space-1);
+    font-size: var(--font-size-xs);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface);
     cursor: pointer;
     color: var(--color-text-primary);
     font-family: var(--font-sans);
+    text-align: center;
+    white-space: nowrap;
   }
 
   .nlp-btn:hover:not(:disabled) {
@@ -1995,7 +1997,10 @@
 
   .entity-editor__create .nlp-btn {
     width: 100%;
+    flex-direction: row;
     justify-content: center;
+    font-size: var(--font-size-sm);
+    padding: var(--space-2) var(--space-3);
   }
 
   .entity-modal {
