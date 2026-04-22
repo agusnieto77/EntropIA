@@ -157,4 +157,69 @@ mod tests {
             "Error should mention missing model, got: {err}"
         );
     }
+
+    /// Integration test: load real PP-OCRv5 models and recognize text from an image.
+    /// This test is ignored by default because it requires:
+    /// 1. PP-OCRv5 model files in the resources directory
+    /// 2. A test image to process
+    /// Run with: cargo test --features paddle-ocr -- --ignored paddle_integration
+    #[test]
+    #[ignore]
+    fn test_paddle_provider_integration() {
+        // Resolve model directory — same logic as resolve_paddle_model_dir in mod.rs
+        let model_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("models")
+            .join("ocr");
+
+        let provider = PaddleOcrProvider::new(model_dir)
+            .expect("PaddleOCR init failed — are model files in resources/models/ocr/?");
+
+        eprintln!("[test] PaddleOCR provider initialized: {}", provider.name());
+
+        // Load a test image — use the project's existing test image
+        // CARGO_MANIFEST_DIR = .../apps/desktop/src-tauri
+        // We need workspace root which is 3 levels up
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()  // apps/desktop
+            .and_then(|p| p.parent()) // apps
+            .and_then(|p| p.parent()) // workspace root (POSITRON/EntropIA)
+            .expect("no workspace root");
+        let test_image_path = workspace_root.join("rust_style_binary.png");
+
+        if !test_image_path.exists() {
+            eprintln!("[test] Skipping — test image not found at {:?}", test_image_path);
+            return;
+        }
+
+        let image_bytes = std::fs::read(&test_image_path)
+            .expect("Failed to read test image");
+
+        eprintln!("[test] Running PaddleOCR on {:?} ({} bytes)...", test_image_path, image_bytes.len());
+
+        let output = provider.recognize(&image_bytes)
+            .expect("PaddleOCR recognition failed");
+
+        eprintln!("[test] Method: {}", output.method);
+        eprintln!("[test] Text length: {} chars", output.text.len());
+        eprintln!("[test] Regions: {}", output.regions.len());
+        eprintln!("[test] First 200 chars of text:\n{}", &output.text.chars().take(200).collect::<String>());
+
+        // Basic assertions — we just need SOME text back
+        assert!(!output.text.is_empty(), "OCR should produce non-empty text");
+        assert!(!output.regions.is_empty(), "OCR should produce at least one region");
+        assert_eq!(output.method, "paddle", "Method should be 'paddle'");
+
+        // Verify bounding boxes are present (PaddleOCR provides them)
+        let regions_with_bbox: Vec<_> = output.regions.iter()
+            .filter(|r| r.bbox.is_some())
+            .collect();
+        assert!(
+            !regions_with_bbox.is_empty(),
+            "PaddleOCR should provide bounding boxes for detected regions"
+        );
+
+        eprintln!("[test] ✅ PaddleOCR integration test passed!");
+    }
 }
