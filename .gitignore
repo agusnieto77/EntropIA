@@ -5,6 +5,11 @@ node_modules/
 .temporal/
 temporal/
 
+# pruebas
+results/
+output/
+salida_ne.*.json
+
 # mds
 openspec/
 AGENTS.md

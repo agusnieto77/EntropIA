@@ -5,6 +5,9 @@
 //!    Fast and accurate for text-based PDFs. Quality-checked with `is_quality_text()`.
 //! 2. **Page rendering** — `render_pdf_page_to_image()` renders a PDF page as PNG
 //!    bitmap via `pdfium-render`, enabling OCR fallback for scanned/image-based PDFs.
+//!
+//! For multi-page PDFs, `pdf_page_count()` returns the total number of pages,
+//! and `render_pdf_page_to_image()` accepts any page index (not just page 0).
 
 use pdfium_render::prelude::*;
 use std::io::Cursor;
@@ -22,6 +25,17 @@ pub fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
 pub fn is_quality_text(text: &str) -> bool {
     const MIN_ALPHANUM_CHARS: usize = 50;
     text.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_ALPHANUM_CHARS
+}
+
+/// Get the number of pages in a PDF document.
+///
+/// Used by the multi-page OCR pipeline to know how many pages to process.
+pub fn pdf_page_count(bytes: &[u8]) -> Result<usize, String> {
+    let pdfium = Pdfium::default();
+    let document = pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .map_err(|e| format!("Failed to load PDF for page count: {e}"))?;
+    Ok(document.pages().len().into())
 }
 
 /// Render a single PDF page to PNG bytes, suitable for OCR processing.
@@ -101,5 +115,15 @@ mod tests {
     fn normal_text_is_quality() {
         let text = "This is a perfectly normal paragraph of text that contains well over fifty alphanumeric characters and should pass the quality heuristic with ease.";
         assert!(is_quality_text(text));
+    }
+
+    /// pdf_page_count requires the pdfium native library which may not be
+    /// available in unit test environments. Marked as ignored.
+    #[test]
+    #[ignore]
+    fn pdf_page_count_invalid_bytes() {
+        // Invalid PDF bytes should return an error, not panic
+        let result = pdf_page_count(b"not a pdf");
+        assert!(result.is_err(), "Expected error for invalid PDF bytes");
     }
 }

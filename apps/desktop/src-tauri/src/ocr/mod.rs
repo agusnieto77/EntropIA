@@ -10,7 +10,7 @@ mod engine;
 mod pdf;
 
 use provider::OcrProvider;
-use pdf::{extract_pdf_text, is_quality_text};
+use pdf::{extract_pdf_text, is_quality_text, pdf_page_count};
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use serde::Serialize;
 use std::sync::Arc;
@@ -379,7 +379,11 @@ async fn process_job(
     }
 }
 
-/// PDF pipeline: try native text first, fall back to OCR via the provider.
+/// PDF pipeline: try native text first, fall back to page-by-page OCR.
+///
+/// For text-based PDFs, the native text layer is extracted and quality-checked.
+/// If it's insufficient (scanned PDFs, images), every page is rendered and OCR'd,
+/// then the results are concatenated with page separators.
 async fn process_pdf(
     provider: &Arc<dyn OcrProvider>,
     bytes: &[u8],
@@ -409,40 +413,67 @@ async fn process_pdf(
             })
         }
         _ => {
-            // Native text failed quality check — render first page as image and OCR it.
-            eprintln!("[pdf] Native text failed quality check, falling back to PDF→image→OCR");
+            // Native text failed quality check — render ALL pages and OCR them.
+            eprintln!("[pdf] Native text failed quality check, falling back to multi-page PDF→image→OCR");
 
-            // Stage 3 — rendering PDF page as image (75 %)
-            emit_progress(app_handle, asset_id, 75, "rendering_pdf_page");
-
-            let pdf_bytes = bytes.to_vec();
-            let page_image = tokio::task::spawn_blocking(move || {
-                pdf::render_pdf_page_to_image(&pdf_bytes, 0) // First page only
+            // Get page count in a blocking task (pdfium interaction)
+            let pdf_bytes_for_count = bytes.to_vec();
+            let page_count = tokio::task::spawn_blocking(move || {
+                pdf_page_count(&pdf_bytes_for_count)
             })
             .await
-            .map_err(|e| format!("PDF render task panicked: {e}"))?
-            .map_err(|e| format!("PDF page rendering failed: {e}"))?;
+            .map_err(|e| format!("PDF page count task panicked: {e}"))?
+            .map_err(|e| format!("Failed to get PDF page count: {e}"))?;
 
-            // Stage 4 — OCR the rendered page image (85 %)
-            emit_progress(app_handle, asset_id, 85, "ocr_fallback");
+            eprintln!("[pdf] Processing {page_count} page(s) via OCR fallback");
 
-            let provider_clone = Arc::clone(provider);
-            let page_image_owned = page_image; // Move into the closure
-            let output = tokio::task::spawn_blocking(move || {
-                provider_clone.recognize(&page_image_owned)
-            })
-            .await
-            .map_err(|e| format!("OCR fallback task panicked: {e}"))?
-            .map_err(|e| format!("OCR fallback failed: {e}"))?;
+            let mut all_text = String::new();
+            let mut all_regions: Vec<provider::OcrRegion> = Vec::new();
 
-            // Override method to indicate this came from PDF→image→OCR
-            let result = provider::OcrOutput {
-                method: format!("pdf_{}", output.method),
-                ..output
+            for page_idx in 0..page_count {
+                // Progress: 60% base + (page_idx / page_count) * 35% range
+                let pct = 60 + ((page_idx as u8 * 35) / page_count.max(1) as u8);
+                emit_progress(app_handle, asset_id, pct.min(95), &format!("ocr_page_{}", page_idx + 1));
+
+                // Render this page
+                let pdf_bytes_for_render = bytes.to_vec();
+                let page_image = tokio::task::spawn_blocking(move || {
+                    pdf::render_pdf_page_to_image(&pdf_bytes_for_render, page_idx)
+                })
+                .await
+                .map_err(|e| format!("PDF render task panicked: {e}"))?
+                .map_err(|e| format!("PDF page {} rendering failed: {e}", page_idx + 1))?;
+
+                // OCR this page
+                let provider_clone = Arc::clone(provider);
+                let output = tokio::task::spawn_blocking(move || {
+                    provider_clone.recognize(&page_image)
+                })
+                .await
+                .map_err(|e| format!("OCR page {} task panicked: {e}", page_idx + 1))?
+                .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))?;
+
+                // Accumulate results with page separators
+                if !all_text.is_empty() {
+                    all_text.push_str("\n\n---\n\n"); // Page separator
+                }
+                all_text.push_str(&output.text);
+                all_regions.extend(output.regions);
+            }
+
+            // Method is always the same provider for all pages
+            let method = if !all_text.is_empty() {
+                format!("pdf_{}", provider.name())
+            } else {
+                "pdf_unknown".to_string()
             };
 
             emit_progress(app_handle, asset_id, 100, "done");
-            Ok(result)
+            Ok(provider::OcrOutput {
+                text: all_text,
+                regions: all_regions,
+                method,
+            })
         }
     }
 }
