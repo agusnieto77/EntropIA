@@ -9,7 +9,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-fn apply_windows_no_window(cmd: &mut Command) {
+pub(crate) fn apply_windows_no_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -18,41 +18,41 @@ fn apply_windows_no_window(cmd: &mut Command) {
 
 /// 300 DPI expressed as pixels per meter (PNG pHYs unit specifier).
 /// 300 / 0.0254 = 11811.02… → 11811
-const PNG_PPM: u32 = 11811;
+pub(crate) const PNG_PPM: u32 = 11811;
 
-#[derive(Clone)]
-pub struct OcrEngine {
-    lang: String,
-    data_path: Option<String>,
+#[derive(Clone, Debug)]
+pub(crate) struct OcrEngine {
+    pub(crate) lang: String,
+    pub(crate) data_path: Option<String>,
 }
 
 // ── OCR quality thresholds ─────────────────────────────────────────────────────
 
 /// Images smaller than this on either axis are upscaled proportionally.
 /// At <1000px, characters don't have enough pixels for reliable OCR.
-const MIN_DIM_FOR_OCR: u32 = 1000;
+pub(crate) const MIN_DIM_FOR_OCR: u32 = 1000;
 
 /// Pixels lighter than this (0–255) on ALL channels are considered "background"
 /// during auto-crop. Handles JPEG compression artifacts and scanner bleed-through.
 /// Pure white (255) from eraser tools is well above this threshold.
-const WHITE_THRESHOLD: u8 = 245;
+pub(crate) const WHITE_THRESHOLD: u8 = 245;
 
 /// Small padding (px) added around the content bounding box so we don't clip
 /// characters sitting right at the edge of the detected content.
-const CROP_PADDING: u32 = 10;
+pub(crate) const CROP_PADDING: u32 = 10;
 
 /// DPI fallback used when the image has no valid resolution metadata.
 /// 300 DPI is standard for document OCR.
-const FALLBACK_DPI: i32 = 300;
+pub(crate) const FALLBACK_DPI: i32 = 300;
 
 /// Block size for adaptive thresholding (must be odd).
 /// 31 = 31×31 neighbourhood window. Matches OpenCV default for document OCR.
-const ADAPTIVE_BLOCK_SIZE: u32 = 31;
+pub(crate) const ADAPTIVE_BLOCK_SIZE: u32 = 31;
 
 /// Constant subtracted from mean in adaptive thresholding.
 /// Positive value makes thresholding more aggressive (more black).
 /// 10 is standard for document images.
-const ADAPTIVE_C: i32 = 10;
+pub(crate) const ADAPTIVE_C: i32 = 10;
 
 /// If the percentage of "white" pixels (luminance > 230) in the auto-cropped
 /// image is below this threshold, the image is considered a non-standard
@@ -61,12 +61,12 @@ const ADAPTIVE_C: i32 = 10;
 ///
 /// Typical scans have >70% white background. Photos of documents on
 /// colored/dark surfaces usually fall well below 40%.
-const WHITE_BG_THRESHOLD: f32 = 0.40;
+pub(crate) const WHITE_BG_THRESHOLD: f32 = 0.40;
 
 // ── Implementation ──────────────────────────────────────────────────────────────
 
 impl OcrEngine {
-    pub fn init(lang: &str, data_path: Option<&str>) -> Result<Self, String> {
+    pub(crate) fn init(lang: &str, data_path: Option<&str>) -> Result<Self, String> {
         leptess::LepTess::new(data_path, lang).map_err(|e| {
             format!(
                 "Failed to initialize Tesseract (lang={}, data_path={:?}): {e}",
@@ -80,7 +80,7 @@ impl OcrEngine {
         })
     }
 
-    pub fn run_ocr(&self, image_bytes: &[u8]) -> Result<String, String> {
+    pub(crate) fn run_ocr(&self, image_bytes: &[u8]) -> Result<String, String> {
         let preprocessed = preprocess_for_ocr(image_bytes)?;
 
         // Strategy: Try Tesseract CLI first.
@@ -161,7 +161,7 @@ impl OcrEngine {
 ///
 /// 4. **Upscale** — If the image is smaller than `MIN_DIM_FOR_OCR` on either
 ///    axis, scale it up proportionally.
-fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let img =
         image::load_from_memory(image_bytes).map_err(|e| format!("Failed to decode image: {e}"))?;
 
@@ -242,7 +242,7 @@ fn preprocess_for_ocr(image_bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// processing the image data.
 ///
 /// `ppm` = pixels per meter. For 300 DPI: 300 / 0.0254 ≈ 11811.
-fn inject_phys_chunk(png_data: &mut Vec<u8>, ppm: u32) {
+pub(crate) fn inject_phys_chunk(png_data: &mut Vec<u8>, ppm: u32) {
     // PNG signature is 8 bytes, then IHDR chunk follows.
     // IHDR chunk structure: 4 bytes length + 4 bytes "IHDR" + 13 bytes data + 4 bytes CRC
     // Total IHDR chunk = 4 + 4 + 13 + 4 = 25 bytes
@@ -274,7 +274,7 @@ fn inject_phys_chunk(png_data: &mut Vec<u8>, ppm: u32) {
 
 /// Simple CRC32 implementation for PNG chunk checksums.
 /// Uses the standard CRC-32 polynomial (0xEDB88320) with initial value 0xFFFFFFFF.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFFFFFF;
     for &byte in data {
         crc ^= byte as u32;
@@ -296,7 +296,7 @@ fn crc32(data: &[u8]) -> u32 {
 /// surface, or a yellowed/sepia document, the white-pixel ratio drops
 /// dramatically. When it falls below `WHITE_BG_THRESHOLD`, we treat the
 /// image as non-white-background and apply adaptive binarization.
-fn has_non_white_background(img: &image::DynamicImage) -> bool {
+pub(crate) fn has_non_white_background(img: &image::DynamicImage) -> bool {
     let gray = img.to_luma8();
     let total = gray.width() as u32 * gray.height() as u32;
 
@@ -315,7 +315,7 @@ fn has_non_white_background(img: &image::DynamicImage) -> bool {
 /// is detected (e.g. a solid-white image).
 ///
 /// Uses luminance (grayscale) to match OpenCV's behavior in Python tests.
-fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
+pub(crate) fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
     let (width, height) = (img.width(), img.height());
     let rgba = img.to_rgba8();
 
@@ -364,7 +364,7 @@ fn auto_crop_whitespace(img: &image::DynamicImage) -> image::DynamicImage {
 /// If the image is smaller than `MIN_DIM_FOR_OCR` on either axis, upscale it
 /// proportionally so Tesseract gets enough pixels per character. Uses Lanczos3
 /// resampling for high-quality upscaling.
-fn upscale_if_needed(img: &image::DynamicImage) -> image::DynamicImage {
+pub(crate) fn upscale_if_needed(img: &image::DynamicImage) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
 
     if w >= MIN_DIM_FOR_OCR && h >= MIN_DIM_FOR_OCR {
@@ -389,7 +389,7 @@ fn upscale_if_needed(img: &image::DynamicImage) -> image::DynamicImage {
 ///
 /// This preserves column gutters better than Sauvola, which is critical for
 /// Tesseract's layout detection (PSM 3). Block size must be odd.
-fn adaptive_threshold_gaussian(
+pub(crate) fn adaptive_threshold_gaussian(
     img: &image::GrayImage,
     block_size: u32,
     c: i32,
@@ -461,7 +461,7 @@ fn adaptive_threshold_gaussian(
 // ── Tesseract CLI Helper ───────────────────────────────────────────────────────────
 
 /// Find tesseract.exe in common installation paths.
-fn find_tesseract_exe() -> Option<PathBuf> {
+pub(crate) fn find_tesseract_exe() -> Option<PathBuf> {
     let candidates = [
         // vcpkg default location (EntropIA's setup)
         r"C:\vcpkg\installed\x64-windows-static-md\tools\tesseract\tesseract.exe",
@@ -488,7 +488,7 @@ fn find_tesseract_exe() -> Option<PathBuf> {
 /// CLI gives Tesseract full file metadata (DPI, color profile, etc.) which
 /// helps the layout detection engine. The in-memory API (`set_image_from_mem`)
 /// does not provide this metadata, which can cause column interleaving.
-fn run_tesseract_cli(
+pub(crate) fn run_tesseract_cli(
     tesseract_exe: &PathBuf,
     image_data: &[u8],
     lang: &str,

@@ -19,6 +19,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 thiserror = "1"
 leptess = "0.14"
+ocr-rs = { version = "2.2", optional = true, features = ["build-mnn-from-source"] }
 pdf-extract = "0.7"
 image = "0.25"
 imageproc = "0.25"
@@ -41,3 +42,11 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[features]
+default = ["paddle-ocr"]
+# The paddle-ocr feature requires MNN to be built from source on Windows
+# (prebuilt MNN libs have a linker issue: __std_min_4i/__std_max_4i unresolved).
+# The build-mnn-from-source flag in the ocr-rs dependency ensures MNN compiles
+# locally via CMake, which resolves the linker symbols correctly.
+paddle-ocr = ["dep:ocr-rs"]

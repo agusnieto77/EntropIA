@@ -1,11 +1,19 @@
 pub mod commands;
+pub mod postprocess;
+pub mod provider;
+pub mod tesseract;
+
+#[cfg(feature = "paddle-ocr")]
+pub mod paddle;
+
 mod engine;
 mod pdf;
 
-use engine::OcrEngine;
+use provider::OcrProvider;
 use pdf::{extract_pdf_text, is_quality_text};
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use serde::Serialize;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
@@ -70,7 +78,7 @@ impl OcrQueue {
     ///
     /// The worker:
     /// 1. Opens its own SQLite connection for persisting extractions.
-    /// 2. Loads `OcrEngine` once at startup.
+    /// 2. Loads the OCR provider once at startup (PaddleOCR → Tesseract fallback).
     /// 3. Drains jobs serially from the receiver.
     /// 4. Saves extracted text to DB, then emits events per job.
     pub fn start_worker(
@@ -79,60 +87,74 @@ impl OcrQueue {
         app_handle: AppHandle,
     ) {
         tauri::async_runtime::spawn(async move {
-            // Initialize Tesseract engine — if this fails, every job will get an error event.
-            let engine_result = {
-                // In Tesseract 5.x, the datapath is the tessdata directory ITSELF
-                // (the directory containing .traineddata files), NOT its parent.
-                // The old 3.x/4.x convention of passing the parent was changed.
-                //
-                // Tauri bundles "resources/tessdata/" under {exe_dir}/resources/tessdata/.
-                // BaseDirectory::Resource points to {exe_dir}, so we resolve the
-                // full relative path to get the actual tessdata directory.
-                let tesseract_datapath = app_handle
-                    .path()
-                    .resolve("resources/tessdata", BaseDirectory::Resource)
-                    .map(|p| {
-                        // Tauri on Windows may return paths with the \\?\ extended-length
-                        // prefix (e.g. \\?\C:\Users\…). Tesseract's C API does NOT
-                        // understand this prefix and fails with TessInitError{-1}.
-                        // Strip it so Tesseract gets a plain drive-letter path.
-                        let mut s = p.to_string_lossy().into_owned();
-                        if s.starts_with(r"\\?\") {
-                            s = s[4..].to_string();
-                        }
-                        s
-                    })
-                    .ok();
-                tokio::task::spawn_blocking(move || OcrEngine::init("spa+eng", tesseract_datapath.as_deref()))
-                    .await
-                    .map_err(|e| format!("Engine init task panicked: {e}"))
-                    .and_then(|r| r)
-            };
+            // ── Provider initialization with fallback chain ───────────────
+            //
+            // Try PaddleOCR first (if compiled with `paddle-ocr` feature).
+            // If PaddleOCR models are not found (e.g. first run without downloading),
+            // fall back to Tesseract. If both fail, drain the queue with errors.
+            let provider: Arc<dyn OcrProvider> = {
+                let mut chosen: Option<Arc<dyn OcrProvider>> = None;
 
-            let engine = match engine_result {
-                Ok(e) => e,
-                Err(load_err) => {
-                    // Cannot proceed — drain queue and report errors
-                    while let Some(job) = receiver.recv().await {
-                        let _ = app_handle.emit(
-                            "ocr:error",
-                            OcrErrorPayload {
-                                asset_id: job.asset_id,
-                                error: format!("OCR engine failed to load: {load_err}"),
-                            },
-                        );
+                // Step 1: Try PaddleOCR (primary engine)
+                #[cfg(feature = "paddle-ocr")]
+                {
+                    let model_dir = resolve_paddle_model_dir(&app_handle);
+                    eprintln!("[OCR] Attempting PaddleOCR init from: {}", model_dir.display());
+                    match paddle::PaddleOcrProvider::new(model_dir) {
+                        Ok(p) => {
+                            eprintln!("[OCR] ✅ PaddleOCR initialized successfully — using as primary engine");
+                            chosen = Some(Arc::new(p) as Arc<dyn OcrProvider>);
+                        }
+                        Err(e) => {
+                            eprintln!("[OCR] ❌ PaddleOCR unavailable ({e}), trying Tesseract fallback");
+                        }
                     }
-                    return;
+                }
+
+                // Step 2: Try Tesseract (fallback engine)
+                if chosen.is_none() {
+                    let tessdata_path = resolve_tessdata_dir(&app_handle);
+                    eprintln!("[OCR] Attempting Tesseract init with tessdata: {}", tessdata_path.as_deref().unwrap_or("(default)"));
+                    match tesseract::TesseractProvider::init("spa+eng", tessdata_path.as_deref()) {
+                        Ok(t) => {
+                            eprintln!("[OCR] ✅ Tesseract initialized — using as fallback engine");
+                            chosen = Some(Arc::new(t) as Arc<dyn OcrProvider>);
+                        }
+                        Err(e) => {
+                            eprintln!("[OCR] ❌ Tesseract also unavailable ({e})");
+                        }
+                    }
+                }
+
+                match chosen {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("[OCR] 🚨 No OCR provider available — draining queue with errors");
+                        while let Some(job) = receiver.recv().await {
+                            let _ = app_handle.emit(
+                                "ocr:error",
+                                OcrErrorPayload {
+                                    asset_id: job.asset_id,
+                                    error: "No OCR engine available (PaddleOCR and Tesseract both failed to load)".to_string(),
+                                },
+                            );
+                        }
+                        return;
+                    }
                 }
             };
+
+            eprintln!("[OCR] Using provider: {}", provider.name());
 
             // Main work loop — serial, one job at a time
             while let Some(job) = receiver.recv().await {
                 let asset_id = job.asset_id.clone();
-                let result = process_job(&engine, &job, &app_handle).await;
+                let result = process_job(&provider, &job, &app_handle).await;
 
                 match result {
-                    Ok((method, text_content)) => {
+                    Ok(output) => {
+                        let method = output.method.clone();
+                        let text_content = output.text.clone();
                         let aid = asset_id.clone();
                         let method_clone = method.clone();
                         let db_path_clone = db_path.clone();
@@ -190,6 +212,80 @@ impl OcrQueue {
             }
         });
     }
+}
+
+// ── Model directory resolution ──────────────────────────────────────────────
+
+/// Resolve the PaddleOCR model directory.
+///
+/// In production (bundled Tauri app), uses `BaseDirectory::Resource`.
+/// In dev mode, falls back to `CARGO_MANIFEST_DIR` so models can be loaded
+/// from the project's `resources/models/ocr/` directory.
+#[cfg(feature = "paddle-ocr")]
+fn resolve_paddle_model_dir(app_handle: &AppHandle) -> std::path::PathBuf {
+    // Try Tauri resource path first (production)
+    if let Ok(path) = app_handle
+        .path()
+        .resolve("resources/models/ocr", BaseDirectory::Resource)
+    {
+        // Strip Windows \\?\ prefix if present (Tesseract compatibility pattern)
+        let mut s = path.to_string_lossy().into_owned();
+        if s.starts_with(r"\\?\") {
+            s = s[4..].to_string();
+        }
+        let clean_path = std::path::PathBuf::from(s);
+        if clean_path.exists() {
+            return clean_path;
+        }
+    }
+
+    // Dev fallback: CARGO_MANIFEST_DIR/resources/models/ocr
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let dev_path = std::path::PathBuf::from(manifest_dir)
+            .join("resources")
+            .join("models")
+            .join("ocr");
+        if dev_path.exists() {
+            return dev_path;
+        }
+    }
+
+    // Last resort: relative path
+    std::path::PathBuf::from("resources/models/ocr")
+}
+
+/// Resolve the Tesseract tessdata directory.
+///
+/// Same pattern as PaddleOCR: Tauri resource path → CARGO_MANIFEST_DIR fallback.
+fn resolve_tessdata_dir(app_handle: &AppHandle) -> Option<String> {
+    // Try Tauri resource path first (production)
+    if let Ok(path) = app_handle
+        .path()
+        .resolve("resources/tessdata", BaseDirectory::Resource)
+    {
+        // Strip Windows \\?\ prefix — Tesseract's C API does NOT understand it
+        let mut s = path.to_string_lossy().into_owned();
+        if s.starts_with(r"\\?\") {
+            s = s[4..].to_string();
+        }
+        let clean_path = std::path::PathBuf::from(&s);
+        if clean_path.exists() {
+            return Some(s);
+        }
+    }
+
+    // Dev fallback: CARGO_MANIFEST_DIR/resources/tessdata
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let dev_path = std::path::PathBuf::from(manifest_dir)
+            .join("resources")
+            .join("tessdata");
+        if dev_path.exists() {
+            return Some(dev_path.to_string_lossy().into_owned());
+        }
+    }
+
+    // Fallback to vcpkg default (works on the dev machine)
+    Some(r"C:\vcpkg\installed\x64-windows-static-md\share\tessdata".to_string())
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -259,12 +355,15 @@ fn update_extraction_text(
 
 // ── Job Processing ──────────────────────────────────────────────────────────
 
-/// Process a single OCR job. Returns `(method, text_content)` on success.
+/// Process a single OCR job using any OcrProvider.
+///
+/// Returns `OcrOutput` on success, which includes the recognized text,
+/// structured regions (with bounding boxes for PaddleOCR), and the method name.
 async fn process_job(
-    engine: &OcrEngine,
+    provider: &Arc<dyn OcrProvider>,
     job: &OcrJob,
     app_handle: &AppHandle,
-) -> Result<(String, String), String> {
+) -> Result<provider::OcrOutput, String> {
     let asset_id = job.asset_id.clone();
 
     // Stage 1 — reading file (25 %)
@@ -275,18 +374,18 @@ async fn process_job(
         .map_err(|e| format!("Failed to read {}: {e}", job.asset_path))?;
 
     match job.asset_type.as_str() {
-        "pdf" => process_pdf(engine, &file_bytes, &asset_id, app_handle).await,
-        _ => process_image(engine, &file_bytes, &asset_id, app_handle).await,
+        "pdf" => process_pdf(provider, &file_bytes, &asset_id, app_handle).await,
+        _ => process_image(provider, &file_bytes, &asset_id, app_handle).await,
     }
 }
 
-/// PDF pipeline: try native text first, fall back to image OCR.
+/// PDF pipeline: try native text first, fall back to OCR via the provider.
 async fn process_pdf(
-    _engine: &OcrEngine,
+    _provider: &Arc<dyn OcrProvider>,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
-) -> Result<(String, String), String> {
+) -> Result<provider::OcrOutput, String> {
     // Stage 2 — extracting native text (50 %)
     emit_progress(app_handle, asset_id, 50, "extracting_native");
 
@@ -298,7 +397,16 @@ async fn process_pdf(
     match native_text {
         Ok(text) if is_quality_text(&text) => {
             emit_progress(app_handle, asset_id, 100, "done");
-            Ok(("native".to_string(), text))
+            Ok(provider::OcrOutput {
+                text: text.clone(),
+                regions: vec![provider::OcrRegion {
+                    text,
+                    confidence: 0.0,
+                    bbox: None,
+                    column: None,
+                }],
+                method: "native".to_string(),
+            })
         }
         _ => {
             // Fallback — render first page as image and OCR it.
@@ -311,25 +419,29 @@ async fn process_pdf(
     }
 }
 
-/// Image pipeline: OCR inference via Tesseract.
+/// Image pipeline: OCR inference via the active provider.
 async fn process_image(
-    engine: &OcrEngine,
+    provider: &Arc<dyn OcrProvider>,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
-) -> Result<(String, String), String> {
+) -> Result<provider::OcrOutput, String> {
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
-    let engine_clone = engine.clone();
+    // Clone the Arc so the closure owns its own reference.
+    // This avoids raw pointers and satisfies Send bounds.
+    let provider_clone = Arc::clone(provider);
     let bytes_owned = bytes.to_vec();
 
-    let text = tokio::task::spawn_blocking(move || engine_clone.run_ocr(&bytes_owned))
-        .await
-        .map_err(|e| format!("OCR task panicked: {e}"))?
-        .map_err(|e| format!("OCR inference failed: {e}"))?;
+    let output = tokio::task::spawn_blocking(move || {
+        provider_clone.recognize(&bytes_owned)
+    })
+    .await
+    .map_err(|e| format!("OCR task panicked: {e}"))?
+    .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     emit_progress(app_handle, asset_id, 100, "done");
-    Ok(("ocr".to_string(), text))
+    Ok(output)
 }
 
 /// Emit an `ocr:progress` event to the frontend.
