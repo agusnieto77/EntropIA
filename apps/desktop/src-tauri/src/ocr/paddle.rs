@@ -206,12 +206,12 @@ impl OcrProvider for PaddleOcrProvider {
                 let rect = r.bbox.rect;
                 OcrRegion {
                     text: r.text,
-                    confidence: r.confidence as f32,
+                    confidence: r.confidence,
                     bbox: Some(BoundingBox {
                         x: rect.left(),
                         y: rect.top(),
-                        width: rect.width() as u32,
-                        height: rect.height() as u32,
+                        width: rect.width(),
+                        height: rect.height(),
                     }),
                     column: None,
                 }
