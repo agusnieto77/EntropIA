@@ -15,13 +15,19 @@ PNPM 9.15.4 workspaces + Turborepo. Three layers:
 - **`packages/ui/`** — Svelte 5 component library (Button, Card, DocumentViewer, EntityViewer, SearchBar, etc.) + design tokens CSS.
 - **`packages/config-ts/`** — Shared tsconfig.
 
-The Rust backend (`apps/desktop/src-tauri/`) contains four modules:
+The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 - **`db/`** — SQLite state management, Tauri IPC commands (`db_execute`, `db_select`, `db_select_rows`)
-- **`ocr/`** — OCR engine (Tesseract via leptess), PDF text extraction, image preprocessing, async job queue
+- **`ocr/`** — OCR engine with provider chain (PaddleOCR primary → Tesseract fallback), PDF text extraction, layout-aware OCR, async job queue
 - **`nlp/`** — FTS5 indexing, embeddings (Python subprocess), hybrid NER (ONNX BERT + spaCy + rule-based), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`) with its own engine registry.
+- **`layout/`** — DocLayout-YOLO document structure analysis (Python subprocess), reading order algorithm, stores results in `layouts` table
 - **`transcription/`** — Audio transcription via Python faster-whisper subprocess, async job queue
 
+In-progress modules on `feat/gemma4-llm-nlp-v1` branch (not yet merged):
+- **`llm/`** — Local LLM via Gemma + llama.cpp (OCR correction, entity extraction, summarization, classification, Q&A)
+- **`geo/`** — Nominatim geocoding for place entities (populates latitude/longitude/geoStatus on entities)
+
 `openspec/` contains SDD (Specification-Driven Development) specs and change archives — not code.
+`AGENTS.md` contains detailed build prerequisites (Windows toolchain, vcpkg Tesseract, LLVM/Clang) and engine architecture notes.
 
 ## Common Commands
 
@@ -58,7 +64,7 @@ cargo fmt --check                     # check Rust formatting
 pnpm rust:quality:report
 ```
 
-**First-time setup**: Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded. Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
+**First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, vcpkg Tesseract, LLVM/Clang, CMake). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
 
 ## Testing
 
@@ -84,7 +90,7 @@ Views live in `src/views/`, layout in `src/layout/` (AppShell, TopBar).
 1. Svelte views call repos from `@entropia/store` (e.g., `item.repo.ts`)
 2. Repos use `client.ts` which wraps Tauri's `@tauri-apps/plugin-sql` for SQL operations, or calls `invoke()` for Rust commands
 3. Rust Tauri commands (`db_execute`, `db_select`) operate on shared `AppDbState` (rusqlite)
-4. AI commands (`extract_text`, `index_fts`, `embed_item`, `extract_entities`, `extract_triples`, `fts_search`, `similar_items`, `transcribe_audio`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`)
+4. AI commands (`extract_text`, `index_fts`, `embed_item`, `extract_entities`, `extract_triples`, `fts_search`, `similar_items`, `transcribe_audio`, `extract_layout`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`, `LayoutQueue`)
 
 ### SQLite Connections
 
@@ -95,19 +101,34 @@ The Rust backend manages multiple SQLite connections to `entropia.sqlite`:
 
 All connections use WAL mode + foreign keys enabled. Each queue worker opens its own connection independently.
 
-On startup, `lib.rs` runs a legacy migration that detects and migrates data from the old `com.entropia.app` app identifier directory to the current one, including SQLite bundle comparison by "richness score" (row counts) and asset path rewriting.
+On startup, `lib.rs` runs: (1) legacy migration from old `com.entropia.app` directory (SQLite bundle comparison by "richness score" + asset path rewriting), (2) `extractions.method` CHECK constraint migration (removes legacy `CHECK(method IN ('native','ocr'))` to allow PaddleOCR methods), (3) `layouts` table creation.
+
+### OCR Provider Chain
+
+OCR uses a fallback chain defined in `ocr/mod.rs`:
+- **PaddleOCR** (primary) — `ocr-rs` crate with MNN backend, feature-gated as `paddle-ocr`. PP-OCRv5 detection + latin recognition. PP-LCNet orientation model auto-corrects 0°/90°/180°/270° rotation. `OcrEngine` is `Send + Sync`.
+- **Tesseract** (fallback) — `leptess` crate, languages `spa+eng`. `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`.
+- **Layout-aware OCR** — When DocLayout-YOLO is available, OCR runs layout detection first, then OCR per text-bearing region in reading order. Method field: `"paddle+layout"` or `"tesseract+layout"`.
+- **PDF pipeline** — Native text extraction first (`pdf-extract`), quality-checked. Falls back to pdfium-render at 300 DPI + OCR per page.
+
+Postprocessing heuristics in `postprocess.rs` are **DISABLED** (mixed columns). Kept for reference only.
+
+### Layout Detection
+
+DocLayout-YOLO (Python subprocess) detects 10 region categories (title, plain_text, figure, table, formula, etc.). Reading order uses union-find column grouping: regions with ≥50% horizontal overlap → same column, columns left-to-right, regions within columns top-to-bottom. Results stored in `layouts` table (Rust-side, not yet in Drizzle schema). Auto-wired into OCR pipeline when available. See `AGENTS.md` for full architecture details.
 
 ### Python Subprocess Architecture
 
-Embeddings and transcription delegate to Python scripts instead of Rust crates (ORT/MSVC linker failures on Windows made native Rust fastembed unusable):
+Several features delegate to Python scripts (ORT/MSVC linker failures on Windows made native Rust unusable for some tasks):
 
 - **`scripts/embed.py`** — fastembed with `paraphrase-multilingual-MiniLM-L12-v2` (384 dims, 50+ languages). Returns JSON wrapped in `===EMBED_JSON_BEGIN===` / `===EMBED_JSON_END===` sentinels.
 - **`scripts/transcribe.py`** — faster-whisper with `base` model, `int8` compute, default language `es`. Same sentinel pattern.
 - **`scripts/spacy_ner.py`** — spaCy NER backend (optional, used by hybrid NER engine when spaCy is available).
+- **`scripts/layout_detect.py`** — DocLayout-YOLO layout detection. Same sentinel pattern (`===LAYOUT_JSON_BEGIN===` / `===LAYOUT_JSON_END===`).
 
-Rust spawns Python via `which_python()` (searches conda envs first, falls back to system Python). All Python-backed features degrade non-fatally if Python or dependencies are unavailable.
+Rust spawns Python via `which_python()` / `which_python_for_layout()` (searches conda envs first, falls back to system Python). All Python-backed features degrade non-fatally if Python or dependencies are unavailable.
 
-**Python deps required**: `fastembed`, `faster-whisper` (install via pip/conda). Optional: `spacy` + `es_core_news_sm` model for spaCy NER.
+**Python deps required**: `fastembed`, `faster-whisper`, `doclayout-yolo` (install via pip/conda). Optional: `spacy` + `es_core_news_sm` model for spaCy NER.
 
 ### Hybrid NER Architecture
 
@@ -119,6 +140,14 @@ NER uses a multi-engine approach (`nlp/ner/`):
 - **Hybrid** (`hybrid.rs`) — Orchestrates all three engines, merges results via `merge.rs`.
 
 Engine selection is configured via `NerConfig` with `NerEngineKind` (Onnx, Spacy, Hybrid, RuleBased). The `NerRegistry` initializes available engines at startup and logs preflight status.
+
+### Job Queue Pattern
+
+All background systems (OCR, NLP, Transcription, Layout) follow the same pattern:
+1. Frontend calls Tauri command → submits job to mpsc channel → returns "queued"
+2. Worker thread drains jobs serially, emits `progress/complete/error` events
+3. Frontend listens to events via reactive stores → updates UI
+4. DB stores results in `extractions`/`transcriptions`/`layouts` table for persistence
 
 ## CI
 

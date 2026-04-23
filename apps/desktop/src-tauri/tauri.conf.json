@@ -1,6 +1,6 @@
 {
   "productName": "EntropIA",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "identifier": "com.entropia.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @entropia/desktop dev",
@@ -33,6 +33,6 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "resources/models/ner/*", "scripts/*"]
+    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "resources/models/ner/*", "resources/models/ocr/*", "scripts/*"]
   }
 }

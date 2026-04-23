@@ -5,6 +5,11 @@ node_modules/
 .temporal/
 temporal/
 
+# pruebas
+results/
+output/
+salida_ne.*.json
+
 # mds
 openspec/
 AGENTS.md
@@ -96,6 +101,7 @@ auditorias/
 
 # Misc
 *.tsbuildinfo
+.tmp/
 
 # OCR models (rten format, no longer used)
 *.rten
