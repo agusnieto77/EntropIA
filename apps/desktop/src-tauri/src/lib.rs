@@ -1,9 +1,11 @@
 mod db;
+mod llm;
 mod nlp;
 mod ocr;
 mod transcription;
 
 use db::state::AppDbState;
+use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
 use rusqlite::Connection;
@@ -110,6 +112,16 @@ pub fn run() {
                 app.handle().clone(),
             );
 
+            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
+            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
+            let (llm_queue, llm_receiver) = LlmQueue::new();
+            app.manage(llm_queue);
+            LlmQueue::start_worker(
+                db_path.clone(),
+                llm_receiver,
+                app.handle().clone(),
+            );
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -128,6 +140,12 @@ pub fn run() {
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
+            llm::commands::llm_correct_ocr,
+            llm::commands::llm_extract_entities,
+            llm::commands::llm_extract_triples,
+            llm::commands::llm_summarize,
+            llm::commands::llm_classify,
+            llm::commands::llm_ask,
             open_external_url,
         ])
         .run(tauri::generate_context!())
