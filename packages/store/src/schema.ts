@@ -97,6 +97,9 @@ export const entities = sqliteTable('entities', {
   confidence: real('confidence').notNull().default(1.0),
   source: text('source'),
   modelName: text('model_name'),
+  latitude: real('latitude'),
+  longitude: real('longitude'),
+  geoStatus: text('geo_status').notNull().default('pending'),
   createdAt: integer('created_at').notNull(),
 })
 

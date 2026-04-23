@@ -19,6 +19,7 @@
     llmExtractEntities,
     llmExtractTriples,
   } from '$lib/llm'
+  import { GeoStore, geocodeItemEntities } from '$lib/geo'
   import {
     DocumentViewer,
     MetadataEditor,
@@ -26,7 +27,9 @@
     Button,
     Card,
     EntityViewer,
+    MapViewer,
   } from '@entropia/ui'
+  import type { MapMarker } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
@@ -280,6 +283,50 @@
       await llmExtractTriples(itemId)
     } catch (e) {
       console.error('[LLM] extract triples failed:', e)
+    }
+  }
+
+  // Geo state (OpenStreetMap)
+  const geoStore = new GeoStore({
+    onEntityComplete: () => {
+      loadGeoMarkers()
+    },
+    onItemComplete: () => {
+      loadGeoMarkers()
+    },
+  })
+  let geoMarkers = $state<MapMarker[]>([])
+  let geoLoading = $state(false)
+
+  async function loadGeoMarkers() {
+    try {
+      const rows = await invoke<
+        Array<{ id: string; value: string; latitude: number; longitude: number }>
+      >('db_select', {
+        sql: `SELECT id, value, latitude, longitude FROM entities
+              WHERE item_id = ? AND entity_type = 'place' AND geo_status = 'resolved'
+              AND latitude IS NOT NULL AND longitude IS NOT NULL`,
+        params: [itemId],
+      })
+      geoMarkers = rows.map((r) => ({
+        entityId: r.id,
+        label: r.value,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      }))
+    } catch (e) {
+      console.error('[geo] Failed to load markers:', e)
+    }
+  }
+
+  async function handleGeocodeItem() {
+    geoLoading = true
+    try {
+      await geocodeItemEntities(itemId)
+    } catch (e) {
+      console.error('[geo] geocode failed:', e)
+    } finally {
+      geoLoading = false
     }
   }
 
@@ -1038,6 +1085,8 @@
       })
     })
 
+    geoStore.startListening()
+
     return () => {
       if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     }
@@ -1048,6 +1097,7 @@
     nlpStore.stopListening()
     transcriptionStore.stopListening()
     llmStore.stopListening()
+    geoStore.stopListening()
     // Clear any pending debounce timers to avoid stale persist after unmount
     for (const timer of ocrPersistTimers.values()) {
       clearTimeout(timer)
@@ -1321,6 +1371,7 @@
                 loadSimilarItems()
                 loadTriples()
                 loadFtsStats()
+                loadGeoMarkers()
               }
             }}
           >
@@ -1510,6 +1561,21 @@
                     <pre class="llm-result-text">{getLlmState().result}</pre>
                   </div>
                 {/if}
+              </div>
+
+              <!-- Map section (OpenStreetMap) -->
+              <div class="geo-section">
+                <div class="geo-header">
+                  <h4>Mapa</h4>
+                  <button
+                    class="nlp-btn"
+                    disabled={geoLoading}
+                    onclick={handleGeocodeItem}
+                  >
+                    {geoLoading ? 'Georreferenciando...' : 'Georreferenciar'}
+                  </button>
+                </div>
+                <MapViewer markers={geoMarkers} height="280px" />
               </div>
 
               <div class="entities-section">
@@ -2349,6 +2415,26 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Geo Section */
+  .geo-section {
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .geo-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-3);
+  }
+
+  .geo-header h4 {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
   /* LLM Section */
   .llm-section {
     margin-top: var(--space-4);

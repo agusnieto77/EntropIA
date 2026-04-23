@@ -1,10 +1,12 @@
 mod db;
+mod geo;
 mod llm;
 mod nlp;
 mod ocr;
 mod transcription;
 
 use db::state::AppDbState;
+use geo::GeoQueue;
 use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
@@ -122,6 +124,15 @@ pub fn run() {
                 app.handle().clone(),
             );
 
+            // Geo queue: Nominatim geocoding for place entities.
+            let (geo_queue, geo_receiver) = GeoQueue::new();
+            app.manage(geo_queue);
+            GeoQueue::start_worker(
+                db_path.clone(),
+                geo_receiver,
+                app.handle().clone(),
+            );
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -146,6 +157,8 @@ pub fn run() {
             llm::commands::llm_summarize,
             llm::commands::llm_classify,
             llm::commands::llm_ask,
+            geo::commands::geocode_entity,
+            geo::commands::geocode_item_entities,
             open_external_url,
         ])
         .run(tauri::generate_context!())

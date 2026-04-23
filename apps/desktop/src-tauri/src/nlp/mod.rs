@@ -259,6 +259,13 @@ impl NlpQueue {
                             Ok(_) => {
                                 emit_progress(&app_handle, &item_id, "ner", 100);
                                 emit_complete(&app_handle, &item_id, "ner");
+                                // Auto-trigger geocoding for place entities
+                                if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                    &app_handle.state::<crate::geo::GeoQueue>(),
+                                    &item_id,
+                                ) {
+                                    eprintln!("[geo] Failed to auto-enqueue geocoding after NER: {e}");
+                                }
                             }
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
@@ -314,7 +321,19 @@ impl NlpQueue {
                             }))
                             .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
                         });
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "ner", 100); emit_complete(&app_handle, &item_id, "ner"); } Err(e) => emit_error(&app_handle, &item_id, "ner", &e), }
+                        match r {
+                            Ok(_) => {
+                                emit_progress(&app_handle, &item_id, "ner", 100);
+                                emit_complete(&app_handle, &item_id, "ner");
+                                if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                    &app_handle.state::<crate::geo::GeoQueue>(),
+                                    &item_id,
+                                ) {
+                                    eprintln!("[geo] Failed to auto-enqueue geocoding after NER (enrich): {e}");
+                                }
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                        }
 
                         emit_progress(&app_handle, &item_id, "triples", 10);
                         let r = tokio::task::block_in_place(|| triples::extract_and_store(&conn, &item_id));

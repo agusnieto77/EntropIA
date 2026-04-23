@@ -41,3 +41,6 @@ export type { NoteEditorProps } from './components/NoteEditor/index'
 // Components — Fase 3
 export { EntityViewer } from './components/EntityViewer/index'
 export type { Entity, EntityType, EntityViewerProps } from './components/EntityViewer/index'
+
+export { MapViewer } from './components/MapViewer/index'
+export type { MapViewerProps, MapMarker } from './components/MapViewer/index'
