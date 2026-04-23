@@ -67,7 +67,7 @@ pub fn run() {
             let db_path = app_dir.join("entropia.sqlite");
             eprintln!("[setup] db_path: {:?}", db_path);
 
-            migrate_legacy_asset_paths(&db_path, &app_dir)
+migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to migrate legacy asset paths in database");
 
             // UI connection — used by Tauri IPC commands
@@ -78,6 +78,12 @@ pub fn run() {
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (ui)");
             eprintln!("[setup] PRAGMA foreign_keys=ON");
+
+            // Migrate extractions.method CHECK constraint: remove the legacy
+            // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
+            // like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+            migrate_extractions_method_check(&ui_conn)
+                .expect("Failed to migrate extractions method CHECK constraint");
 
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
@@ -360,11 +366,57 @@ fn migrate_legacy_asset_paths(db_path: &Path, app_dir: &Path) -> Result<(), Stri
     let conn = Connection::open(db_path)
         .map_err(|error| format!("Failed to open database for asset-path migration: {error}"))?;
 
-    conn.execute(
+conn.execute(
         "UPDATE assets SET path = REPLACE(path, ?1, ?2) WHERE path LIKE ?3",
         rusqlite::params![legacy_prefix, current_prefix, format!("{}%", legacy_dir.to_string_lossy())],
     )
     .map_err(|error| format!("Failed to migrate asset paths from legacy app dir: {error}"))?;
 
+    Ok(())
+}
+
+/// Migrate the `extractions` table to remove the legacy CHECK constraint
+/// on the `method` column that only allowed 'native' and 'ocr'.
+/// PaddleOCR uses methods like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+/// SQLite doesn't support ALTER TABLE DROP CONSTRAINT, so we recreate the table.
+fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
+    // Check if the CHECK constraint exists by attempting an insert with a new method value.
+    // If it succeeds, no migration needed.
+    let has_check: bool = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='extractions'")
+        .and_then(|mut stmt| {
+            stmt.query_row([], |row| {
+                let sql: String = row.get(0)?;
+                Ok(sql.contains("CHECK(method IN"))
+            })
+        })
+        .unwrap_or(false);
+
+    if !has_check {
+        eprintln!("[setup] extractions.method: no legacy CHECK constraint found — skipping migration");
+        return Ok(());
+    }
+
+    eprintln!("[setup] Migrating extractions table to remove legacy method CHECK constraint...");
+
+    conn.execute_batch(
+        "BEGIN TRANSACTION;
+         CREATE TABLE extractions_new (
+           id TEXT PRIMARY KEY,
+           asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+           text_content TEXT NOT NULL,
+           method TEXT NOT NULL,
+           confidence REAL,
+           created_at INTEGER NOT NULL
+         );
+         INSERT INTO extractions_new SELECT * FROM extractions;
+         DROP TABLE extractions;
+         ALTER TABLE extractions_new RENAME TO extractions;
+         CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
+         COMMIT;"
+    )
+    .map_err(|e| format!("Failed to migrate extractions table: {e}"))?;
+
+    eprintln!("[setup] extractions.method CHECK constraint removed successfully");
     Ok(())
 }
