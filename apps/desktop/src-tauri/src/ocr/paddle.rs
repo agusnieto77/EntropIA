@@ -218,11 +218,12 @@ impl OcrProvider for PaddleOcrProvider {
             })
             .collect();
 
-        // 5. Post-process: column grouping, hyphen merge, paragraph detection
-        let processed = postprocess::postprocess(regions);
-
-        // 6. Assemble final text from processed regions
-        let full_text = processed
+        // 5. Assemble final text from regions in PaddleOCR's natural order
+        //    (top-to-bottom, left-to-right within rows).
+        //    Post-processing is bypassed — the heuristic column grouping was
+        //    mixing lines from different columns. PaddleOCR's detection model
+        //    already returns regions in correct reading order for typical documents.
+        let full_text = regions
             .iter()
             .map(|r| r.text.as_str())
             .collect::<Vec<_>>()
@@ -230,7 +231,7 @@ impl OcrProvider for PaddleOcrProvider {
 
         Ok(OcrOutput {
             text: full_text,
-            regions: processed,
+            regions,
             method: "paddle".to_string(),
         })
     }
