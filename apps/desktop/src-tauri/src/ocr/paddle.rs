@@ -22,7 +22,6 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use super::postprocess;
 use super::provider::{BoundingBox, OcrOutput, OcrProvider, OcrRegion};
 
 /// Filename for the PP-LCNet document orientation model.
@@ -232,6 +231,115 @@ impl OcrProvider for PaddleOcrProvider {
         Ok(OcrOutput {
             text: full_text,
             regions,
+            method: "paddle".to_string(),
+        })
+    }
+
+    /// Region-level OCR: decode image, apply orientation correction, crop to
+    /// the region's bounding box (with padding), then run detection+recognition
+    /// on just the crop. Adjusts OCR bbox coordinates back to full-image space.
+    fn recognize_region(
+        &self,
+        image_bytes: &[u8],
+        region: &crate::layout::region::LayoutRegion,
+    ) -> Result<OcrOutput, String> {
+        // 1. Decode image from raw bytes
+        let mut img = image::load_from_memory(image_bytes)
+            .map_err(|e| format!("Failed to decode image for PaddleOCR region: {e}"))?;
+
+        // 2. Orientation correction (if model is loaded) — same as recognize()
+        if let Some(ref ori) = self.ori_model {
+            match ori.classify(&img) {
+                Ok(result) => {
+                    if result.is_valid(ORI_CONFIDENCE_THRESHOLD) && result.angle != 0 {
+                        eprintln!(
+                            "[OCR] Orientation correction: rotating {}° (confidence: {:.2}%)",
+                            result.angle,
+                            result.confidence * 100.0
+                        );
+                        img = rotate_image(&img, result.angle);
+                    } else if result.angle != 0 {
+                        eprintln!(
+                            "[OCR] Orientation detected {}° but confidence too low — skipping rotation",
+                            result.angle,
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[OCR] Orientation classification failed: {e} — proceeding without rotation");
+                }
+            }
+        }
+
+        // 3. Crop to region bbox with proportional padding, clamped to image bounds.
+        //    3% horizontal padding (left/right) avoids cutting off characters at box edges.
+        //    3% vertical padding (top/bottom) provides similar margin proportionally.
+        let pad_x = (region.bbox.width as f32 * 0.03).ceil() as i32;
+        let pad_y = (region.bbox.height as f32 * 0.03).ceil() as i32;
+        let img_w = img.width() as i32;
+        let img_h = img.height() as i32;
+
+        let crop_x = (region.bbox.x - pad_x).max(0) as u32;
+        let crop_y = (region.bbox.y - pad_y).max(0) as u32;
+        let crop_right = (region.bbox.x + region.bbox.width + pad_x).min(img_w) as u32;
+        let crop_bottom = (region.bbox.y + region.bbox.height + pad_y).min(img_h) as u32;
+
+        let crop_w = crop_right.saturating_sub(crop_x);
+        let crop_h = crop_bottom.saturating_sub(crop_y);
+
+        if crop_w == 0 || crop_h == 0 {
+            // Region is out of bounds — fall back to full image recognition
+            eprintln!(
+                "[OCR] Region crop is empty (bbox {:?} on {}x{} image) — falling back to full image",
+                region.bbox,
+                img.width(),
+                img.height()
+            );
+            return self.recognize(image_bytes);
+        }
+
+        let crop = img.crop_imm(crop_x, crop_y, crop_w, crop_h);
+
+        // 4. Run detection + recognition directly on the DynamicImage crop
+        let results: Vec<ocr_rs::OcrResult_> = self
+            .engine
+            .recognize(&crop)
+            .map_err(|e| format!("PaddleOCR region inference failed: {e}"))?;
+
+        // 5. Adjust bbox coordinates back to original image space.
+        //    OCR output bboxes are relative to the crop; add the crop origin offset
+        //    to convert them to full-image coordinates.
+        let offset_x = crop_x as i32;
+        let offset_y = crop_y as i32;
+
+        let ocr_regions: Vec<OcrRegion> = results
+            .into_iter()
+            .map(|r| {
+                let rect = r.bbox.rect;
+                OcrRegion {
+                    text: r.text,
+                    confidence: r.confidence,
+                    bbox: Some(BoundingBox {
+                        x: rect.left() + offset_x,
+                        y: rect.top() + offset_y,
+                        width: rect.width(),
+                        height: rect.height(),
+                    }),
+                    column: None,
+                }
+            })
+            .collect();
+
+        // 6. Assemble text from OCR regions
+        let full_text = ocr_regions
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(OcrOutput {
+            text: full_text,
+            regions: ocr_regions,
             method: "paddle".to_string(),
         })
     }

@@ -1,9 +1,11 @@
 mod db;
+mod layout;
 mod nlp;
 mod ocr;
 mod transcription;
 
 use db::state::AppDbState;
+use layout::LayoutQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
 use rusqlite::Connection;
@@ -85,6 +87,24 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
 
+            // Create layouts table for DocLayout-YOLO results
+            ui_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS layouts (
+                        id TEXT PRIMARY KEY,
+                        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                        regions TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        image_width INTEGER NOT NULL,
+                        image_height INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_layouts_asset_id ON layouts(asset_id);",
+                )
+                .map_err(|e| format!("Failed to create layouts table: {e}"))
+                .expect("Failed to create layouts table");
+            eprintln!("[setup] layouts table ensured");
+
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
                 .expect("Failed to open SQLite database (worker)");
@@ -97,7 +117,11 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // OCR queue: create channel, manage the sender half, spawn worker with receiver
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
             app.manage(ocr_queue);
-            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
+
+            // Create DocLayoutEngine for OCR worker (optional — enables layout-aware OCR)
+            let layout_engine_for_ocr = layout::create_layout_engine(&app.handle());
+
+            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone(), layout_engine_for_ocr);
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
@@ -115,6 +139,11 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 transcription_receiver,
                 app.handle().clone(),
             );
+
+            // Layout detection queue: DocLayout-YOLO subprocess for document layout analysis.
+            let (layout_queue, layout_receiver) = LayoutQueue::new();
+            app.manage(layout_queue);
+            LayoutQueue::start_worker(db_path.clone(), layout_receiver, app.handle().clone());
 
             Ok(())
         })
@@ -134,6 +163,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
+            layout::commands::extract_layout,
             open_external_url,
         ])
         .run(tauri::generate_context!())

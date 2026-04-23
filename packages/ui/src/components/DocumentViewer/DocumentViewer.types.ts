@@ -15,6 +15,13 @@ export interface ViewerAnnotation {
   updatedAt: number
 }
 
+export interface LayoutRegion {
+  category: string
+  bbox: { x: number; y: number; width: number; height: number }
+  confidence: number
+  reading_order: number
+}
+
 export type ViewerType = 'image' | 'pdf' | 'audio'
 
 export interface DocumentViewerProps {
@@ -22,6 +29,7 @@ export interface DocumentViewerProps {
   type: ViewerType
   assetUrl: string
   annotations?: ViewerAnnotation[]
+  layoutRegions?: LayoutRegion[]
   selectedAnnotationId?: string | null
   annotationTool?: AnnotationTool
   annotationColor?: string

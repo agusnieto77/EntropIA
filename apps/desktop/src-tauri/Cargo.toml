@@ -1,6 +1,6 @@
 [package]
 name = "entropia-desktop"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 
 [lib]
@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["full"] }
 regex = "1"
 once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
 ndarray = "=0.16.1"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "load-dynamic"] }
 tokenizers = { version = "0.15", default-features = false, features = ["onig"] }

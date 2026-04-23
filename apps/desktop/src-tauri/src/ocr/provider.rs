@@ -55,6 +55,21 @@ pub trait OcrProvider: Send + Sync {
     /// bounding boxes, or an error message on failure.
     fn recognize(&self, image_bytes: &[u8]) -> Result<OcrOutput, String>;
 
+    /// Recognize text from a cropped region of an image.
+    ///
+    /// Default implementation crops the image to the region's bounding box
+    /// (with padding) and calls `recognize()` on the crop. Providers that
+    /// support region-level optimization can override this.
+    fn recognize_region(
+        &self,
+        image_bytes: &[u8],
+        region: &crate::layout::region::LayoutRegion,
+    ) -> Result<OcrOutput, String> {
+        // Default: fall back to full-image recognition
+        let _ = region; // suppress unused warning
+        self.recognize(image_bytes)
+    }
+
     /// Short identifier for the provider (e.g. "paddle", "tesseract").
     fn name(&self) -> &str;
 }

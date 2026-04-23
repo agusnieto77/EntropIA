@@ -12,6 +12,9 @@ mod pdf;
 use provider::OcrProvider;
 use pdf::{extract_pdf_text, is_quality_text, pdf_page_count};
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
+use crate::layout::engine::DocLayoutEngine;
+use crate::layout::reading_order;
+use crate::layout::region::{LayoutCategory, LayoutRegion, LayoutResult};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
@@ -85,6 +88,7 @@ impl OcrQueue {
         db_path: std::path::PathBuf,
         mut receiver: mpsc::Receiver<OcrJob>,
         app_handle: AppHandle,
+        layout_engine: Option<DocLayoutEngine>,
     ) {
         tauri::async_runtime::spawn(async move {
             // ── Provider initialization with fallback chain ───────────────
@@ -149,7 +153,7 @@ impl OcrQueue {
             // Main work loop — serial, one job at a time
             while let Some(job) = receiver.recv().await {
                 let asset_id = job.asset_id.clone();
-                let result = process_job(&provider, &job, &app_handle).await;
+                let result = process_job(&provider, &job, &app_handle, layout_engine.as_ref()).await;
 
                 match result {
                     Ok(output) => {
@@ -363,6 +367,7 @@ async fn process_job(
     provider: &Arc<dyn OcrProvider>,
     job: &OcrJob,
     app_handle: &AppHandle,
+    layout_engine: Option<&DocLayoutEngine>,
 ) -> Result<provider::OcrOutput, String> {
     let asset_id = job.asset_id.clone();
 
@@ -374,8 +379,8 @@ async fn process_job(
         .map_err(|e| format!("Failed to read {}: {e}", job.asset_path))?;
 
     match job.asset_type.as_str() {
-        "pdf" => process_pdf(provider, &file_bytes, &asset_id, app_handle).await,
-        _ => process_image(provider, &file_bytes, &asset_id, app_handle).await,
+        "pdf" => process_pdf(provider, &file_bytes, &asset_id, app_handle, layout_engine).await,
+        _ => process_image(provider, &file_bytes, &asset_id, app_handle, layout_engine).await,
     }
 }
 
@@ -389,6 +394,7 @@ async fn process_pdf(
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
+    layout_engine: Option<&DocLayoutEngine>,
 ) -> Result<provider::OcrOutput, String> {
     // Stage 2 — extracting native text (50 %)
     emit_progress(app_handle, asset_id, 50, "extracting_native");
@@ -429,6 +435,7 @@ async fn process_pdf(
 
             let mut all_text = String::new();
             let mut all_regions: Vec<provider::OcrRegion> = Vec::new();
+            let mut layout_used = false;
 
             for page_idx in 0..page_count {
                 // Progress: 60% base + (page_idx / page_count) * 35% range
@@ -444,14 +451,77 @@ async fn process_pdf(
                 .map_err(|e| format!("PDF render task panicked: {e}"))?
                 .map_err(|e| format!("PDF page {} rendering failed: {e}", page_idx + 1))?;
 
-                // OCR this page
+                // OCR this page (with optional layout detection)
                 let provider_clone = Arc::clone(provider);
+                let engine_clone = layout_engine.cloned();
+
                 let output = tokio::task::spawn_blocking(move || {
-                    provider_clone.recognize(&page_image)
+                    if let Some(engine) = engine_clone {
+                        // Try layout detection on this page
+                        let temp_path = std::env::temp_dir().join(format!(
+                            "entropia_layout_pdf_{}_{}.png",
+                            page_idx,
+                            uuid::Uuid::new_v4()
+                        ));
+
+                        if let Err(e) = std::fs::write(&temp_path, &page_image) {
+                            eprintln!(
+                                "[OCR] Failed to write temp file for layout detection on PDF page {}: {e}. Falling back.",
+                                page_idx + 1
+                            );
+                            return provider_clone
+                                .recognize(&page_image)
+                                .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
+                        }
+
+                        let temp_path_str = match temp_path.to_str() {
+                            Some(s) => s.to_string(),
+                            None => {
+                                eprintln!(
+                                    "[OCR] Invalid temp path for layout detection on PDF page {}. Falling back.",
+                                    page_idx + 1
+                                );
+                                return provider_clone
+                                    .recognize(&page_image)
+                                    .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
+                            }
+                        };
+
+                        let layout_result = engine.detect(&temp_path_str);
+                        let _ = std::fs::remove_file(&temp_path); // best-effort cleanup
+
+                        match layout_result {
+                            Ok(mut layout) => {
+                                reading_order::compute_reading_order(
+                                    &mut layout.regions,
+                                    layout.image_width,
+                                );
+                                Ok(layout_aware_ocr(&provider_clone, &layout, &page_image))
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[OCR] Layout detection failed for PDF page {}: {e}. Falling back.",
+                                    page_idx + 1
+                                );
+                                provider_clone
+                                    .recognize(&page_image)
+                                    .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                            }
+                        }
+                    } else {
+                        // No layout engine — plain OCR
+                        provider_clone
+                            .recognize(&page_image)
+                            .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                    }
                 })
                 .await
-                .map_err(|e| format!("OCR page {} task panicked: {e}", page_idx + 1))?
-                .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))?;
+                .map_err(|e| format!("OCR page {} task panicked: {e}", page_idx + 1))??;
+
+                // Track whether layout detection was used
+                if output.method.contains("+layout") {
+                    layout_used = true;
+                }
 
                 // Accumulate results with page separators
                 if !all_text.is_empty() {
@@ -461,9 +531,13 @@ async fn process_pdf(
                 all_regions.extend(output.regions);
             }
 
-            // Method is always the same provider for all pages
+            // Method reflects whether layout detection was used on any page
             let method = if !all_text.is_empty() {
-                format!("pdf_{}", provider.name())
+                if layout_used {
+                    format!("pdf_{}+layout", provider.name())
+                } else {
+                    format!("pdf_{}", provider.name())
+                }
             } else {
                 "pdf_unknown".to_string()
             };
@@ -479,16 +553,91 @@ async fn process_pdf(
 }
 
 /// Image pipeline: OCR inference via the active provider.
+///
+/// If a layout engine is available, this first attempts layout detection
+/// (write image to temp file → detect regions → compute reading order →
+/// layout-aware OCR). Falls back to full-image OCR if detection fails.
 async fn process_image(
     provider: &Arc<dyn OcrProvider>,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
+    layout_engine: Option<&DocLayoutEngine>,
 ) -> Result<provider::OcrOutput, String> {
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
-    // Clone the Arc so the closure owns its own reference.
-    // This avoids raw pointers and satisfies Send bounds.
+    if let Some(engine) = layout_engine {
+        emit_progress(app_handle, asset_id, 55, "layout_detection");
+
+        let engine_clone = engine.clone();
+        let provider_clone = Arc::clone(provider);
+        let bytes_owned = bytes.to_vec();
+        let asset_id_owned = asset_id.to_string();
+
+        let output = tokio::task::spawn_blocking(move || {
+            // Write bytes to a temp file for layout detection
+            let temp_path = std::env::temp_dir().join(format!(
+                "entropia_layout_{}.png",
+                uuid::Uuid::new_v4()
+            ));
+
+            if let Err(e) = std::fs::write(&temp_path, &bytes_owned) {
+                eprintln!(
+                    "[OCR] Failed to write temp file for layout detection for {asset_id_owned}: {e}. \
+                     Falling back to full-image OCR."
+                );
+                return provider_clone
+                    .recognize(&bytes_owned)
+                    .map_err(|e| format!("OCR inference failed: {e}"));
+            }
+
+            let temp_path_str = match temp_path.to_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    eprintln!(
+                        "[OCR] Invalid temp path for layout detection for {asset_id_owned}. \
+                         Falling back to full-image OCR."
+                    );
+                    return provider_clone
+                        .recognize(&bytes_owned)
+                        .map_err(|e| format!("OCR inference failed: {e}"));
+                }
+            };
+
+            // Run layout detection via Python subprocess
+            let layout_result = engine_clone.detect(&temp_path_str);
+            let _ = std::fs::remove_file(&temp_path); // best-effort cleanup
+
+            match layout_result {
+                Ok(mut layout) => {
+                    eprintln!("[OCR] Layout detection found {} regions for {asset_id_owned}", layout.regions.len());
+                    // Compute reading order for detected regions
+                    reading_order::compute_reading_order(
+                        &mut layout.regions,
+                        layout.image_width,
+                    );
+                    // Run layout-aware OCR (region-by-region recognition)
+                    Ok(layout_aware_ocr(&provider_clone, &layout, &bytes_owned))
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[OCR] Layout detection failed for {asset_id_owned}: {e}. \
+                         Falling back to full-image OCR."
+                    );
+                    provider_clone
+                        .recognize(&bytes_owned)
+                        .map_err(|e| format!("OCR inference failed: {e}"))
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("OCR task panicked: {e}"))??;
+
+        emit_progress(app_handle, asset_id, 100, "done");
+        return Ok(output);
+    }
+
+    // No layout engine available — plain OCR (original behavior)
     let provider_clone = Arc::clone(provider);
     let bytes_owned = bytes.to_vec();
 
@@ -513,4 +662,149 @@ fn emit_progress(app_handle: &AppHandle, asset_id: &str, pct: u8, stage: &str) {
             stage: stage.to_string(),
         },
     );
+}
+
+// ── Layout-aware OCR ─────────────────────────────────────────────────────────
+
+/// Run OCR using layout information for region-level recognition.
+///
+/// Takes a pre-computed `LayoutResult` (from DocLayout-YOLO), sorts regions by
+/// reading order, and runs `recognize_region` on each text-bearing region.
+/// Figure regions are skipped (no text to extract). Table regions are wrapped
+/// with horizontal-rule markers. Title regions are prefixed with `## `.
+///
+/// If a region's OCR fails, the error is logged and processing continues —
+/// one bad region does not fail the entire document.
+///
+/// Returns an `OcrOutput` with method `"paddle+layout"` (or `"tesseract+layout"`
+/// depending on the provider).
+pub fn layout_aware_ocr(
+    provider: &Arc<dyn OcrProvider>,
+    layout_result: &LayoutResult,
+    image_bytes: &[u8],
+) -> provider::OcrOutput {
+    // Sort regions by reading order
+    let mut sorted_regions: Vec<&LayoutRegion> = layout_result.regions.iter().collect();
+    sorted_regions.sort_by_key(|r| r.reading_order);
+
+    let mut text_blocks: Vec<String> = Vec::new();
+    let mut all_regions: Vec<provider::OcrRegion> = Vec::new();
+
+    for region in sorted_regions {
+        let category = &region.category;
+        let region_label = format!("{:?}", category);
+
+        match category {
+            // Skip figures — no text to extract
+            LayoutCategory::Figure => {
+                continue;
+            }
+
+            // Table regions: OCR and wrap with --- markers
+            LayoutCategory::Table => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            text_blocks.push(format!("---\n{}\n---", output.text.trim()));
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+
+            // Title regions: prefix with ## heading marker
+            LayoutCategory::Title => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            text_blocks.push(format!("## {}", output.text.trim()));
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+
+            // Captions and formula labels: prefix with label
+            LayoutCategory::FigureCaption | LayoutCategory::TableCaption | LayoutCategory::FormulaCaption => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            let label = match category {
+                                LayoutCategory::FigureCaption => "Figure",
+                                LayoutCategory::TableCaption => "Table",
+                                LayoutCategory::FormulaCaption => "Formula",
+                                _ => unreachable!(),
+                            };
+                            text_blocks.push(format!("{}: {}", label, output.text.trim()));
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+
+            // Table footnotes: prefix with "Note:"
+            LayoutCategory::TableFootnote => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            text_blocks.push(format!("Note: {}", output.text.trim()));
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+
+            // Abandoned (headers/footers): OCR but mark as low priority
+            LayoutCategory::Abandoned => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            // Mark abandoned content with a subtle prefix so consumers
+                            // can deprioritize or strip it
+                            text_blocks.push(format!("[marginalia] {}", output.text.trim()));
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+
+            // Plain text, isolate formula: OCR normally
+            LayoutCategory::PlainText | LayoutCategory::IsolateFormula => {
+                match provider.recognize_region(image_bytes, region) {
+                    Ok(output) => {
+                        if !output.text.trim().is_empty() {
+                            text_blocks.push(output.text.trim().to_string());
+                            all_regions.extend(output.regions);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Layout-aware OCR failed for {region_label} region: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    let full_text = text_blocks.join("\n\n");
+
+    provider::OcrOutput {
+        text: full_text,
+        regions: all_regions,
+        method: format!("{}+layout", provider.name()),
+    }
 }

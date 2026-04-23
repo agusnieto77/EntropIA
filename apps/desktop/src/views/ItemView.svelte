@@ -3,6 +3,7 @@
   import { getAssetUrl } from '$lib/file-import'
   import { OcrStore, extractText } from '$lib/ocr'
   import { TranscriptionStore, transcribeAudio } from '$lib/transcription'
+  import { LayoutStore } from '$lib/layout'
   import {
     NlpStore,
     indexFts,
@@ -148,6 +149,11 @@
     },
   })
   let transcriptionTick = $state(0)
+
+  // Layout detection state — receives layout regions from backend for visualization.
+  // Layout detection runs automatically as part of OCR when DocLayout-YOLO is available.
+  const layoutStore = new LayoutStore()
+  let layoutTick = $state(0)
   let transEditedText = $state(new Map<string, string>())
   let transPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
 
@@ -439,6 +445,11 @@
   function getTranscriptionState(assetId: string) {
     void transcriptionTick
     return transcriptionStore.getState(assetId)
+  }
+
+  function getLayoutState(assetId: string) {
+    void layoutTick
+    return layoutStore.getState(assetId)
   }
 
   function getNlpState() {
@@ -980,6 +991,18 @@
         }
       })
 
+    layoutStore
+      .startListening((eventName, callback) =>
+        listen(eventName, callback).then((unlisten) => () => unlisten())
+      )
+      .then(() => {
+        const origUpdate = layoutStore._updateState.bind(layoutStore)
+        layoutStore._updateState = (assetId, partial) => {
+          origUpdate(assetId, partial)
+          layoutTick++
+        }
+      })
+
     return () => {
       if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     }
@@ -989,6 +1012,7 @@
     ocrStore.stopListening()
     nlpStore.stopListening()
     transcriptionStore.stopListening()
+    layoutStore.stopListening()
     // Clear any pending debounce timers to avoid stale persist after unmount
     for (const timer of ocrPersistTimers.values()) {
       clearTimeout(timer)
@@ -1012,11 +1036,13 @@
   <div class="item-view" bind:this={itemViewEl} style="grid-template-columns: 1fr 6px {sidebarWidth}%">
     <div class="left-panel">
       {#if selectedAsset}
+        {@const layout = getLayoutState(selectedAsset.id)}
         <DocumentViewer
           path={selectedAsset.path}
           assetUrl={viewerSrc}
           type={viewerType}
           {annotations}
+          layoutRegions={layout.regions ?? []}
           {selectedAnnotationId}
           {annotationTool}
           {annotationColor}
