@@ -101,6 +101,7 @@ auditorias/
 
 # Misc
 *.tsbuildinfo
+.tmp/
 
 # OCR models (rten format, no longer used)
 *.rten
