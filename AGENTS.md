@@ -60,7 +60,7 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
 - **Primary engine**: PaddleOCR via `ocr-rs` crate (MNN backend, feature-gated as `paddle-ocr`)
   - PP-OCRv5 detection + latin recognition
   - `OcrEngine` is `Send + Sync` → held in worker thread, shared across `spawn_blocking`
-  - Optional PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`): auto-detects 0°/90°/180°/270° rotation and corrects before OCR. Skipped gracefully if model file is missing.
+  - PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`, bundled): auto-detects 0°/90°/180°/270° rotation and corrects before OCR. Confidence threshold 0.7. Skipped gracefully if model file is missing.
   - Bounding-box output → column grouping + hyphen merge + paragraph detection (postprocess.rs)
 - **Fallback engine**: Tesseract via `leptess` crate
   - Languages: `spa+eng` (Spanish primary, English fallback)
@@ -69,17 +69,18 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
 - **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle"` | `"pdf_tesseract"`.
 - **No preprocessing**: Tesseract handles its own binarization internally. PaddleOCR does its own internally.
 
-### Orientation Model (Optional)
+### Orientation Model (Included)
 
-The PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`) is **optional**. If present in `resources/models/ocr/`, it enables automatic 0°/90°/180°/270° rotation correction before OCR. If missing, a warning is logged and OCR proceeds without rotation correction.
+The PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`, ~6.4 MB) is **bundled** in `resources/models/ocr/`. It enables automatic 0°/90°/180°/270° rotation correction before OCR. If the file is missing, a warning is logged and OCR proceeds without rotation correction.
 
-To obtain the model:
-1. **Automated conversion script**: `python scripts/convert_ori_model.py`
-   - Downloads from PaddleOCR official repo automatically
-   - Requires: `pip install paddlepaddle paddle2onnx` + MNNConvert on PATH
-   - MNNConvert: build from https://github.com/alibaba/MNN (`cmake .. -DMNN_BUILD_CONVERTER=ON`)
-2. **Manual**: `paddleocr doc_img_orientation_classification -i test.jpg` → convert via MNNConvert
-3. Place as `PP-LCNet_x1_0_doc_ori.mnn` in `apps/desktop/src-tauri/resources/models/ocr/`
+Conversion pipeline used to generate the `.mnn` file (Linux-only, PaddlePaddle 2.5.2):
+1. `pip install paddlepaddle==2.5.2 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html`
+2. `pip install paddle2onnx paddleclas`
+3. `PaddleClas(model_name='text_image_orientation')` → downloads legacy `.pdmodel`/`.pdiparams` to `~/.paddleclas/`
+4. `paddle2onnx --model_filename inference.pdmodel --params_filename inference.pdiparams --save_file ori.onnx --opset_version 12`
+5. `pip install MNN && python -m MNN.tools.mnnconvert -f ONNX --modelFile ori.onnx --MNNModel PP-LCNet_x1_0_doc_ori.mnn --bizCode EntropIA`
+
+Note: Conversion does NOT work on Windows due to paddle2onnx incompatibility with PaddlePaddle ≥ 2.6. Use a Linux environment or Colab.
 
 ## Build Commands
 
