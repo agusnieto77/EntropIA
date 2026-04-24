@@ -1,18 +1,16 @@
 mod db;
 mod nlp;
 mod ocr;
+mod python_discovery;
 mod transcription;
 
 use db::state::AppDbState;
 use nlp::NlpQueue;
-use ocr::layout_onnx::create_layout_engine;
 use ocr::OcrQueue;
-use ocr::paddle_vl::create_paddle_vl_engine;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
 use tauri::Manager;
 use transcription::TranscriptionQueue;
 
@@ -119,20 +117,19 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
             app.manage(ocr_queue);
 
-            // Create PaddleVL engine for OCR worker (optional — enables layout-aware OCR via PaddleOCR-VL)
-            let paddle_vl_engine = create_paddle_vl_engine(&app.handle());
-
-            // Create native layout engine (optional — ONNX-based layout detection, faster than PaddleVL)
-            let layout_engine = create_layout_engine(&app.handle()).map(Arc::new);
-
-            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone(), paddle_vl_engine, layout_engine);
+            // PaddleVL and layout engine creation deferred to OCR worker (lazy init).
+            // This removes Python probing and ONNX model loading from the critical
+            // startup path, which previously blocked app window display by 3-15s.
+            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
             // embedding engine (Python subprocess) independently from OCR/UI connections.
             let (nlp_queue, nlp_receiver) = NlpQueue::new();
+            // Clone the dedup handle before moving nlp_queue into managed state
+            let ner_pending = nlp_queue.ner_pending_handle();
             app.manage(nlp_queue);
-            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone());
+            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone(), ner_pending);
 
             // Transcription queue: faster-whisper subprocess for audio transcription.
             // Each job spawns a Python process, no persistent state needed.

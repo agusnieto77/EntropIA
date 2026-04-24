@@ -10,19 +10,6 @@ use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-fn apply_windows_no_window(cmd: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
 // ── Event payloads ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
@@ -237,153 +224,14 @@ impl TranscriptionQueue {
 
 /// Find the Python interpreter on the system that has `faster_whisper` available.
 ///
-/// Discovery strategy:
-/// 1. If `CONDA_PREFIX` env var is set, prefer that Python (we're inside a conda env)
-/// 2. Use `where` (Windows) / `which` (Unix) to discover all Python executables on PATH
-/// 3. Try python3 explicitly on Unix
-/// 4. Scan common Conda/Python install locations not on PATH (Windows)
-/// 5. Return the first match with the required module, or None if nothing works
+/// Uses the shared Python candidate cache to avoid redundant filesystem scans
+/// and log noise. Probes each candidate for the `faster_whisper` module.
 fn which_python() -> Option<std::path::PathBuf> {
-    let module = "faster_whisper";
-    let mut candidates = Vec::new();
-
-    // 1. Conda environment — if CONDA_PREFIX is set, that Python is authoritative
-    if let Ok(conda_prefix) = std::env::var("CONDA_PREFIX") {
-        let conda_python = if cfg!(windows) {
-            std::path::PathBuf::from(&conda_prefix).join("python.exe")
-        } else {
-            std::path::PathBuf::from(&conda_prefix).join("bin").join("python")
-        };
-        eprintln!("[transcription] CONDA_PREFIX detected: {}", conda_python.display());
-        candidates.push(conda_python);
-    }
-
-    // 2. Discover Python executables on PATH via `where` (Windows) / `which` (Unix)
-    let finder_cmd = if cfg!(windows) { "where" } else { "which" };
-    let mut find_python_cmd = std::process::Command::new(finder_cmd);
-    apply_windows_no_window(&mut find_python_cmd);
-    if let Ok(output) = find_python_cmd
-        .arg("python")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let path = std::path::PathBuf::from(line.trim());
-                if path.is_file() && !candidates.contains(&path) {
-                    candidates.push(path);
-                }
-            }
-        }
-    }
-
-    // 3. Also try python3 explicitly (common on Linux/macOS)
-    if cfg!(unix) {
-        let mut find_python3_cmd = std::process::Command::new(finder_cmd);
-        apply_windows_no_window(&mut find_python3_cmd);
-        if let Ok(output) = find_python3_cmd
-            .arg("python3")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    let path = std::path::PathBuf::from(line.trim());
-                    if path.is_file() && !candidates.contains(&path) {
-                        candidates.push(path);
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. Scan common Conda/Python install locations not on PATH
-    //    (e.g. r-miniconda, miniconda3, anaconda3 under AppData or home)
-    if cfg!(windows) {
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            let home = std::path::PathBuf::from(&user_profile);
-            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                let lad = std::path::PathBuf::from(&local_app_data);
-                for dir in [
-                    lad.join("r-miniconda"),           // R's embedded Conda
-                    lad.join("miniconda3"),            // Miniconda in AppData\Local
-                    lad.join("anaconda3"),             // Anaconda in AppData\Local
-                    home.join("miniconda3"),            // Miniconda in user home
-                    home.join("anaconda3"),             // Anaconda in user home
-                    home.join(".conda"),                // .conda directory
-                ] {
-                    let python_exe = dir.join("python.exe");
-                    if python_exe.is_file() && !candidates.contains(&python_exe) {
-                        eprintln!("[transcription] Found Python at common location: {}", python_exe.display());
-                        candidates.push(python_exe);
-                    }
-                    // Also check envs/ subdirectories
-                    let envs_dir = dir.join("envs");
-                    if envs_dir.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&envs_dir) {
-                            for entry in entries.flatten() {
-                                let env_python = entry.path().join("python.exe");
-                                if env_python.is_file() && !candidates.contains(&env_python) {
-                                    eprintln!("[transcription] Found Python in Conda env: {}", env_python.display());
-                                    candidates.push(env_python);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        eprintln!("[transcription] ERROR: No Python interpreter found on this system!");
-        return None;
-    }
-
-    // 5. Probe each candidate for the required module
-    for candidate in &candidates {
-        let mut probe_cmd = std::process::Command::new(candidate);
-        apply_windows_no_window(&mut probe_cmd);
-        let import_ok = probe_cmd
-            .args(["-c", &format!("import {module}; print('ok')")])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
-        match import_ok {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if stdout.trim() == "ok" {
-                    eprintln!(
-                        "[transcription] Found Python with {module}: {}",
-                        candidate.display()
-                    );
-                    return Some(candidate.clone());
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                eprintln!(
-                    "[transcription] Python {} found but {module} not importable: {}",
-                    candidate.display(),
-                    stderr.trim()
-                );
-            }
-            Err(e) => {
-                eprintln!("[transcription] Failed to probe {}: {e}", candidate.display());
-            }
-        }
-    }
-
-    eprintln!(
-        "[transcription] WARNING: No Python with {module} found among {} candidates",
-        candidates.len()
-    );
-    None
+    crate::python_discovery::which_python_for_module(
+        "transcription",
+        "faster_whisper",
+        "import faster_whisper; print('ok')",
+    )
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────

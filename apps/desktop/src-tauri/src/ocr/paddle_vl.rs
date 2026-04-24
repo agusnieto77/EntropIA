@@ -77,38 +77,17 @@ pub struct PaddleVlEngine {
 
 impl PaddleVlEngine {
     /// Validate configuration and create the engine.
+    ///
+    /// NOTE: Python interpreter was already validated by `which_python_for_paddle_vl()`
+    /// which ran `from paddleocr import PaddleOCRVL; print('ok')` successfully.
+    /// Redundant verification (e.g., `python --version`) is skipped — the
+    /// discovery module already proved the interpreter works.
     pub fn init(config: PaddleVlConfig) -> Result<Self, String> {
         // Verify script exists
         if !config.script_path.exists() {
             return Err(format!(
                 "PaddleVL script not found: {}",
                 config.script_path.display()
-            ));
-        }
-
-        // Verify python — for bare command names, try --version instead of exists()
-        let python_is_valid = if config.python_path.is_absolute()
-            || config.python_path.parent().map_or(false, |p| p.exists())
-        {
-            config.python_path.exists()
-        } else {
-            let mut cmd = Command::new(&config.python_path);
-            #[cfg(windows)]
-            {
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-            cmd.arg("--version")
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-
-        if !python_is_valid {
-            return Err(format!(
-                "Python interpreter not found or not working: {}",
-                config.python_path.display()
             ));
         }
 
@@ -385,150 +364,20 @@ fn score_python_candidate(path: &Path) -> i32 {
 
 /// Find the Python interpreter on the system that has `PaddleOCRVL` available.
 ///
-/// Strategy:
-/// 1. Discover all Python interpreters (Conda envs + PATH + common install locations)
-/// 2. Score each candidate by name (dedicated envs preferred over base Conda)
-/// 3. Probe candidates in score order, looking for `from paddleocr import PaddleOCRVL`
-/// 4. Return the FIRST candidate that successfully imports PaddleOCRVL
+/// Uses the shared Python candidate cache to avoid redundant filesystem scans.
+/// Probes candidates sorted by their likelihood of being a dedicated PaddleOCR-VL
+/// environment (scored by path heuristics).
 ///
 /// CRITICAL: The probe verifies `PaddleOCRVL` specifically, not just `paddleocr`.
 /// The `paddleocr` package can be installed without the `[doc-parser]` extra,
 /// in which case `PaddleOCRVL` is missing and the subprocess would crash later.
 pub fn which_python_for_paddle_vl() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    // 1. Conda environment
-    if let Ok(conda_prefix) = std::env::var("CONDA_PREFIX") {
-        let conda_python = if cfg!(windows) {
-            PathBuf::from(&conda_prefix).join("python.exe")
-        } else {
-            PathBuf::from(&conda_prefix).join("bin").join("python")
-        };
-        eprintln!("[paddle_vl] CONDA_PREFIX detected: {}", conda_python.display());
-        candidates.push(conda_python);
-    }
-
-    // 2. Discover Python executables on PATH
-    let finder_cmd = if cfg!(windows) { "where" } else { "which" };
-    let mut find_python_cmd = Command::new(finder_cmd);
-    #[cfg(windows)]
-    {
-        find_python_cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    if let Ok(output) = find_python_cmd
-        .arg("python")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let path = PathBuf::from(line.trim());
-                if path.is_file() && !candidates.contains(&path) {
-                    candidates.push(path);
-                }
-            }
-        }
-    }
-
-    // 3. Scan common Conda/Python install locations (Windows)
-    if cfg!(windows) {
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            let home = PathBuf::from(&user_profile);
-            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                let lad = PathBuf::from(&local_app_data);
-                for dir in [
-                    lad.join("r-miniconda"),
-                    lad.join("miniconda3"),
-                    lad.join("anaconda3"),
-                    home.join("miniconda3"),
-                    home.join("anaconda3"),
-                    home.join(".conda"),
-                ] {
-                    let python_exe = dir.join("python.exe");
-                    if python_exe.is_file() && !candidates.contains(&python_exe) {
-                        candidates.push(python_exe);
-                    }
-                    // Also check envs/ subdirectories
-                    let envs_dir = dir.join("envs");
-                    if envs_dir.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&envs_dir) {
-                            for entry in entries.flatten() {
-                                let env_python = entry.path().join("python.exe");
-                                if env_python.is_file() && !candidates.contains(&env_python) {
-                                    candidates.push(env_python);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        eprintln!("[paddle_vl] ERROR: No Python interpreter found on this system!");
-        return None;
-    }
-
-    // 4. Sort candidates by score (descending) — dedicated envs first
-    candidates.sort_by_key(|c| -score_python_candidate(c));
-
-    eprintln!("[paddle_vl] Probing {} Python candidates (dedicated envs first):", candidates.len());
-    for c in &candidates {
-        eprintln!("[paddle_vl]   [{:>4}] {}", score_python_candidate(c), c.display());
-    }
-
-    // 5. Probe each candidate for `PaddleOCRVL` (not just `paddleocr` — we need the VL component)
-    let probe_code = "from paddleocr import PaddleOCRVL; print('ok')";
-
-    for candidate in &candidates {
-        let probe_start = std::time::Instant::now();
-        let mut probe_cmd = Command::new(candidate);
-        #[cfg(windows)]
-        {
-            probe_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let import_ok = probe_cmd
-            .args(["-c", probe_code])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
-        let elapsed_ms = probe_start.elapsed().as_millis();
-
-        match import_ok {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if stdout.trim() == "ok" {
-                    eprintln!(
-                        "[paddle_vl] ✅ Found Python with PaddleOCRVL ({}ms import): {}",
-                        elapsed_ms, candidate.display()
-                    );
-                    return Some(candidate.clone());
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let preview: String = stderr.lines().take(2).collect::<Vec<_>>().join(" | ");
-                eprintln!(
-                    "[paddle_vl]   ❌ {} ({}ms): {}",
-                    candidate.display(), elapsed_ms,
-                    if preview.len() > 200 { &preview[..200] } else { &preview }
-                );
-            }
-            Err(e) => {
-                eprintln!("[paddle_vl]   ❌ {} (failed to spawn): {e}", candidate.display());
-            }
-        }
-    }
-
-    eprintln!(
-        "[paddle_vl] WARNING: No Python with PaddleOCRVL found among {} candidates",
-        candidates.len()
-    );
-    None
+    crate::python_discovery::which_python_for_module_scored(
+        "paddle_vl",
+        "PaddleOCRVL",
+        "from paddleocr import PaddleOCRVL; print('ok')",
+        &score_python_candidate,
+    )
 }
 
 /// Create a PaddleVlEngine for use by the OCR worker.

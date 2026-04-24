@@ -1,11 +1,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
 use serde::Deserialize;
 
+use crate::python_discovery;
 use super::types::{sanitize_entity_value, Entity, EntitySource, EntityType, NerConfig, NerEngine};
 
 #[cfg(windows)]
@@ -264,101 +262,9 @@ fn extract_sentinel_json(output: &str) -> &str {
 }
 
 pub fn which_python() -> Option<PathBuf> {
-    let module_probe = "import spacy, es_core_news_lg; print('ok')";
-    let mut candidates = Vec::new();
-
-    if let Ok(conda_prefix) = std::env::var("CONDA_PREFIX") {
-        let conda_python = if cfg!(windows) {
-            PathBuf::from(&conda_prefix).join("python.exe")
-        } else {
-            PathBuf::from(&conda_prefix).join("bin").join("python")
-        };
-        eprintln!("[nlp/ner/spacy] CONDA_PREFIX detected: {}", conda_python.display());
-        candidates.push(conda_python);
-    }
-
-    let finder_cmd = if cfg!(windows) { "where" } else { "which" };
-    let mut find_python_cmd = Command::new(finder_cmd);
-    apply_windows_no_window(&mut find_python_cmd);
-    if let Ok(output) = find_python_cmd
-        .arg("python")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-    {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let path = PathBuf::from(line.trim());
-                if path.is_file() && !candidates.contains(&path) {
-                    candidates.push(path);
-                }
-            }
-        }
-    }
-
-    if cfg!(windows) {
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            let home = PathBuf::from(&user_profile);
-            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                let lad = PathBuf::from(&local_app_data);
-                for dir in [
-                    lad.join("r-miniconda"),
-                    lad.join("miniconda3"),
-                    lad.join("anaconda3"),
-                    home.join("miniconda3"),
-                    home.join("anaconda3"),
-                    home.join(".conda"),
-                ] {
-                    let python_exe = dir.join("python.exe");
-                    if python_exe.is_file() && !candidates.contains(&python_exe) {
-                        candidates.push(python_exe);
-                    }
-                    let envs_dir = dir.join("envs");
-                    if envs_dir.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&envs_dir) {
-                            for entry in entries.flatten() {
-                                let env_python = entry.path().join("python.exe");
-                                if env_python.is_file() && !candidates.contains(&env_python) {
-                                    eprintln!("[nlp/ner/spacy] Found Python in Conda env: {}", env_python.display());
-                                    candidates.push(env_python);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for candidate in &candidates {
-        let mut probe_cmd = Command::new(candidate);
-        apply_windows_no_window(&mut probe_cmd);
-        let import_ok = probe_cmd
-            .args(["-c", module_probe])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-
-        match import_ok {
-            Ok(output) if output.status.success() => {
-                if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
-                    eprintln!("[nlp/ner/spacy] Found Python with spaCy+model: {}", candidate.display());
-                    return Some(candidate.clone());
-                }
-            }
-            Ok(output) => {
-                eprintln!(
-                    "[nlp/ner/spacy] Python {} found but spaCy/model not importable: {}",
-                    candidate.display(),
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
-            Err(e) => {
-                eprintln!("[nlp/ner/spacy] Failed to probe {}: {e}", candidate.display());
-            }
-        }
-    }
-
-    eprintln!("[nlp/ner/spacy] WARNING: No Python with spaCy es_core_news_lg found");
-    None
+    python_discovery::which_python_for_module(
+        "nlp/ner/spacy",
+        "spacy+es_core_news_lg",
+        "import spacy, es_core_news_lg; print('ok')",
+    )
 }

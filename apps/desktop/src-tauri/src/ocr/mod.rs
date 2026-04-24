@@ -19,7 +19,7 @@ mod debug_viz;
 
 use provider::{LayoutCategory, OcrProvider};
 use pdf::{extract_pdf_text, is_quality_text, pdf_page_count};
-use paddle_vl::PaddleVlEngine;
+use paddle_vl::{PaddleVlEngine, create_paddle_vl_engine};
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use serde::Serialize;
 use std::sync::Arc;
@@ -99,15 +99,15 @@ impl OcrQueue {
     ///
     /// The worker:
     /// 1. Opens its own SQLite connection for persisting extractions.
-    /// 2. Loads the OCR provider once at startup (PaddleOCR → Tesseract fallback).
-    /// 3. Drains jobs serially from the receiver.
-    /// 4. Saves extracted text to DB, then emits events per job.
+    /// 2. Loads the OCR provider (PaddleOCR → Tesseract fallback).
+    /// 3. Lazily initializes PaddleVL engine and layout engine in the background
+    ///    (not on the startup critical path).
+    /// 4. Drains jobs serially from the receiver.
+    /// 5. Saves extracted text to DB, then emits events per job.
     pub fn start_worker(
         db_path: std::path::PathBuf,
         mut receiver: mpsc::Receiver<OcrJob>,
         app_handle: AppHandle,
-        paddle_vl_engine: Option<PaddleVlEngine>,
-        layout_engine: Option<Arc<layout_onnx::OnnxLayoutEngine>>,
     ) {
         tauri::async_runtime::spawn(async move {
             // ── Provider initialization with fallback chain ───────────────
@@ -168,19 +168,23 @@ impl OcrQueue {
             };
 
             eprintln!("[OCR] Using provider: {}", provider.name());
+
+            // Lazily initialize PaddleVL engine — Python probing happens here
+            // instead of blocking app startup. First OCR(H) job pays the one-time cost.
+            let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
             if paddle_vl_engine.is_some() {
                 eprintln!("[OCR] ✅ PaddleOCR-VL available — will use for OCRH (High mode)");
             } else {
                 eprintln!("[OCR] PaddleOCR-VL not available — OCRH will fall back to plain OCR");
             }
-            if layout_engine.is_some() {
-                eprintln!("[OCR] Native layout engine (ONNX) available — currently unused (OCRL is plain OCR)");
-            }
+
+            // Layout engine currently unused in production (OCRL uses plain OCR).
+            // Can be lazily created here if layout-aware light mode is re-enabled.
 
             // Main work loop — serial, one job at a time
             while let Some(job) = receiver.recv().await {
                 let asset_id = job.asset_id.clone();
-                let result = process_job(&provider, &job, &app_handle, paddle_vl_engine.as_ref(), layout_engine.as_ref()).await;
+                let result = process_job(&provider, &job, &app_handle, paddle_vl_engine.as_ref()).await;
 
                 match result {
                     Ok(output) => {
@@ -593,12 +597,14 @@ fn crop_region(
 ///
 /// Returns `OcrOutput` on success, which includes the recognized text,
 /// structured regions (with bounding boxes for PaddleOCR), and the method name.
+///
+/// Layout engine parameter removed — layout-aware Light mode is not used in
+/// production. PaddleVL handles layout in High mode.
 async fn process_job(
     provider: &Arc<dyn OcrProvider>,
     job: &OcrJob,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
-    _layout_engine: Option<&Arc<layout_onnx::OnnxLayoutEngine>>,
 ) -> Result<provider::OcrOutput, String> {
     let asset_id = job.asset_id.clone();
 

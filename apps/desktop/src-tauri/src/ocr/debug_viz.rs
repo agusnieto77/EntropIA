@@ -1,7 +1,12 @@
 //! Debug visualization helpers for the OCR pipeline.
 //!
-//! Only compiled into debug builds (`cfg!(debug_assertions)`). Writes
-//! artifacts per processed asset into the workspace root:
+//! Only compiled into debug builds (`cfg!(debug_assertions)`). Additionally
+//! gated by the `ENTROPIA_DEBUG_VIZ` environment variable — set it to any
+//! non-empty value to enable debug visualization output. Without the env var,
+//! debug visualization is a silent no-op even in debug builds, avoiding
+//! unnecessary file I/O and log noise during normal development.
+//!
+//! When enabled, writes artifacts per processed asset into the workspace root:
 //!
 //! **Layout detection** (legacy, currently unused):
 //!   - `tests_layouts/<asset_id>_<ts>.png` — image with layout bboxes
@@ -23,6 +28,17 @@ use super::provider::{BoundingBox, LayoutCategory, LayoutRegion, OcrRegion};
 
 /// Thickness of the rectangle outline in pixels.
 const RECT_THICKNESS: i32 = 4;
+
+/// Check if debug visualization is enabled.
+///
+/// Requires BOTH debug build AND `ENTROPIA_DEBUG_VIZ` env var set to a non-empty value.
+/// This prevents debug visualization from running unconditionally in dev builds,
+/// which creates unnecessary files and log noise for normal development.
+fn is_debug_viz_enabled() -> bool {
+    std::env::var("ENTROPIA_DEBUG_VIZ")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
 
 /// Inner corner offset (small solid square) to make region INDEX visible
 /// without needing a font. The square is drawn in the region's color at the
@@ -228,6 +244,11 @@ pub fn save_layout_debug(
     crops: &[(usize, Vec<u8>)],
     asset_id: &str,
 ) -> Result<(), String> {
+    // Gate behind ENTROPIA_DEBUG_VIZ env var — silent no-op if not set
+    if !is_debug_viz_enabled() {
+        return Ok(());
+    }
+
     let root = match workspace_root() {
         Some(r) => r,
         None => {
@@ -257,14 +278,14 @@ pub fn save_layout_debug(
     // ── Overlay image with bboxes (color-coded by column) ────────────────
     let mut overlay = decoded_image.to_rgba8();
 
-    eprintln!("[debug_viz] ─── Layout heuristic result for {asset_id} ({} regions, {} columns) ───", regions.len(), num_columns);
+    // Draw bboxes and build column legend (no per-region log dump)
+    let mut column_legend = String::new();
     for col_idx in 0..num_columns {
         let color = COLUMN_COLORS.get(col_idx % COLUMN_COLORS.len()).unwrap();
-        eprintln!(
-            "[debug_viz]   Column {} = RGBA({},{},{},{})",
-            col_idx, color[0], color[1], color[2], color[3]
-        );
+        if !column_legend.is_empty() { column_legend.push_str(", "); }
+        column_legend.push_str(&format!("col{}=RGBA({},{},{},{})", col_idx, color[0], color[1], color[2], color[3]));
     }
+    eprintln!("[debug_viz] Layout for {asset_id}: {} regions, {} columns ({})", regions.len(), num_columns, column_legend);
 
     // Sort regions by reading order for display
     let mut ordered_indices: Vec<usize> = (0..regions.len()).collect();
@@ -283,15 +304,6 @@ pub fn save_layout_debug(
             .of_size(region.bbox.width, region.bbox.height);
         draw_thick_rect(&mut overlay, rect, color, RECT_THICKNESS);
         draw_corner_marker(&mut overlay, &region.bbox, color);
-
-        eprintln!(
-            "[debug_viz]   [order={:>2}] col={} {:<10} bbox=({},{},{}x{}) conf={:.2}",
-            region.order,
-            col_idx,
-            format!("{:?}", region.label),
-            region.bbox.x, region.bbox.y, region.bbox.width, region.bbox.height,
-            region.confidence
-        );
     }
 
     let short_id: String = asset_id.chars().take(8).collect();
@@ -362,6 +374,11 @@ pub fn save_ocr_lines_debug(
     method: &str,
     asset_id: &str,
 ) -> Result<(), String> {
+    // Gate behind ENTROPIA_DEBUG_VIZ env var — silent no-op if not set
+    if !is_debug_viz_enabled() {
+        return Ok(());
+    }
+
     let root = match workspace_root() {
         Some(r) => r,
         None => {
@@ -396,7 +413,7 @@ pub fn save_ocr_lines_debug(
         .collect();
 
     eprintln!(
-        "[debug_viz] ─── OCR line detection result for {asset_id} ({} lines with bboxes, method={method}) ───",
+        "[debug_viz] ─── OCR line detection for {asset_id}: {} lines with bboxes (method={method}) ───",
         lines_with_bbox.len()
     );
 
@@ -428,13 +445,13 @@ pub fn save_ocr_lines_debug(
             height: bbox.height,
         };
         draw_corner_marker_sized(&mut overlay, &corner_bbox, OCR_LINE_COLOR, OCR_CORNER_SIZE);
+    }
 
-        // Log line details
-        let conf_pct = (region.confidence * 100.0).round() as u32;
-        let text_preview: String = region.text.chars().take(40).collect();
+    // Summary log only — no per-line text dump (reduces noise in normal flow)
+    if !lines_with_bbox.is_empty() {
         eprintln!(
-            "[debug_viz]   [{i:>3}] conf={conf_pct:>3}% bbox=({},{},{}x{}) text=\"{text_preview}…\"",
-            bbox.x, bbox.y, bbox.width, bbox.height
+            "[debug_viz]   Drew {} bounding boxes on overlay image",
+            lines_with_bbox.len()
         );
     }
 
