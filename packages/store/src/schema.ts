@@ -159,3 +159,20 @@ export const annotations = sqliteTable(
     assetPageIdx: index('annotations_asset_page_idx').on(table.assetId, table.page),
   })
 )
+
+// ---------------------------------------------------------------------------
+// LLM Results — persisted outputs from Gemma/local LLM jobs
+// ---------------------------------------------------------------------------
+export const llmResults = sqliteTable(
+  'llm_results',
+  {
+    id: text('id').primaryKey(),
+    targetId: text('target_id').notNull(),
+    jobType: text('job_type').notNull(),
+    result: text('result').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => ({
+    targetIdx: index('idx_llm_results_target').on(table.targetId),
+  })
+)

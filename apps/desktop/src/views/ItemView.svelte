@@ -1106,6 +1106,8 @@
       llmStore.onChange(() => {
         llmTick++
       })
+      // Load persisted LLM results so they survive page reloads
+      llmStore.loadPersistedResults(itemId)
     })
 
     geoStore.startListening()

@@ -3,10 +3,11 @@ pub mod engine;
 pub mod prompt;
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
 use crate::nlp::text_provider;
@@ -110,6 +111,133 @@ fn emit_error(app_handle: &AppHandle, id: &str, job: &str, error: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Result retrieval (for UI hydration after page reload)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct LlmResultEntry {
+    pub target_id: String,
+    pub job_type: String,
+    pub result: String,
+    pub created_at: i64,
+}
+
+/// Fetch the latest LLM result for a given target (item or collection) and
+/// optional job type. Returns `None` if no result is found.
+pub fn get_latest_result(
+    conn: &rusqlite::Connection,
+    target_id: &str,
+    job_type: Option<&str>,
+) -> Result<Option<LlmResultEntry>, String> {
+    let row = if let Some(jt) = job_type {
+        conn.query_row(
+            "SELECT target_id, job_type, result, created_at
+             FROM llm_results
+             WHERE target_id = ?1 AND job_type = ?2
+             ORDER BY created_at DESC LIMIT 1",
+            params![target_id, jt],
+            |row| {
+                Ok(LlmResultEntry {
+                    target_id: row.get(0)?,
+                    job_type: row.get(1)?,
+                    result: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+    } else {
+        conn.query_row(
+            "SELECT target_id, job_type, result, created_at
+             FROM llm_results
+             WHERE target_id = ?1
+             ORDER BY created_at DESC LIMIT 1",
+            params![target_id],
+            |row| {
+                Ok(LlmResultEntry {
+                    target_id: row.get(0)?,
+                    job_type: row.get(1)?,
+                    result: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+    };
+
+    match row {
+        Ok(entry) => Ok(Some(entry)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to query llm_results: {e}")),
+    }
+}
+
+/// Fetch all latest LLM results for a given target (one per job_type).
+pub fn get_all_results_for_target(
+    conn: &rusqlite::Connection,
+    target_id: &str,
+) -> Result<Vec<LlmResultEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT target_id, job_type, result, created_at
+             FROM llm_results
+             WHERE target_id = ?1
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare llm_results query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![target_id], |row| {
+            Ok(LlmResultEntry {
+                target_id: row.get(0)?,
+                job_type: row.get(1)?,
+                result: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query llm_results: {e}"))?;
+
+    let mut results = Vec::new();
+    let mut seen_job_types = std::collections::HashSet::new();
+    for row in rows {
+        if let Ok(entry) = row {
+            // Keep only the latest result per job_type (DESC order means first is latest)
+            if seen_job_types.insert(entry.job_type.clone()) {
+                results.push(entry);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+/// Persist an LLM result to the database. Uses INSERT OR REPLACE so the
+/// latest result per (target, job_type) pair is always kept.
+fn persist_result(
+    conn: &rusqlite::Connection,
+    target_id: &str,
+    job_type: &str,
+    result: &str,
+) -> Result<(), String> {
+    let id = format!("llr-{target_id}-{job_type}");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO llm_results (id, target_id, job_type, result, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, target_id, job_type, result, now],
+    )
+    .map_err(|e| format!("Failed to persist LLM result: {e}"))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
 
@@ -202,6 +330,20 @@ impl LlmQueue {
                 }
             };
 
+            // Ensure llm_results table exists (idempotent)
+            if let Err(e) = conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS llm_results (
+                    id TEXT PRIMARY KEY,
+                    target_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
+            ) {
+                eprintln!("[llm] Warning: could not create llm_results table: {e}");
+            }
+
             // Main worker loop
             while let Some(job) = receiver.recv().await {
                 let job_name = job.job_name();
@@ -228,6 +370,11 @@ impl LlmQueue {
 
                 match result {
                     Ok(output) => {
+                        // Persist result to database (non-fatal if it fails)
+                        if let Err(e) = persist_result(&conn, &id, job_name, &output) {
+                            eprintln!("[llm] Warning: failed to persist result for {id}/{job_name}: {e}");
+                        }
+
                         emit_progress(&app_handle, &id, job_name, 100);
                         emit_complete(&app_handle, &id, job_name, &output);
                     }
@@ -258,14 +405,65 @@ fn max_tokens_for(job: &LlmJob) -> i32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Text truncation for context safety
+// ---------------------------------------------------------------------------
+
+/// Conservative characters-per-token estimate for Latin-script text.
+/// Gemma tokenizer averages ~3.5 chars/token for English/Spanish; using 3.0
+/// provides a safety margin for multi-byte characters and template overhead.
+const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
+
+/// Tokens reserved for prompt template instructions and formatting.
+/// Each prompt wraps the text in instruction text (~50-150 tokens for Gemma
+/// chat format markers + task instructions).
+const TEMPLATE_OVERHEAD_TOKENS: i32 = 128;
+
+/// Truncate text so that the resulting prompt + max_tokens fits within n_ctx.
+/// Uses a conservative heuristic and cuts at sentence boundaries when possible.
+fn truncate_text_for_context(n_ctx: u32, max_tokens: i32, text: &str) -> String {
+    let budget_tokens = (n_ctx as i32) - max_tokens - TEMPLATE_OVERHEAD_TOKENS;
+    if budget_tokens <= 0 {
+        // Extremely small context — return first ~500 chars as a last resort
+        return text.chars().take(500).collect();
+    }
+    let budget_chars = budget_tokens as usize * CHARS_PER_TOKEN_ESTIMATE;
+    let text_chars = text.chars().count();
+    if text_chars <= budget_chars {
+        return text.to_string();
+    }
+
+    // Collect chars up to budget, then try to cut at the last sentence boundary
+    let truncated: String = text.chars().take(budget_chars).collect();
+    if let Some(pos) = truncated.rfind(|c: char| c == '.' || c == '\n' || c == '！' || c == '。') {
+        // Keep up to and including the sentence boundary char
+        truncated[..=pos].to_string()
+    } else {
+        truncated
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context gathering for Ask (FTS-based)
+// ---------------------------------------------------------------------------
+
+/// Maximum context size in characters for Ask queries (~2000 tokens budget).
+const MAX_ASK_CONTEXT_CHARS: usize = 6000;
+
+/// Maximum characters per individual document snippet (~400 tokens).
+const MAX_SNIPPET_CHARS: usize = 1200;
+
 fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
+    let n_ctx = engine.n_ctx();
+
     match job {
         LlmJob::CorrectOcr { item_id } => {
             let text = text_provider::get_item_text(conn, item_id)?;
             if text.is_empty() {
                 return Err("No text available for OCR correction".to_string());
             }
-            let p = prompt::ocr_correction(&text);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::ocr_correction(&truncated);
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -274,7 +472,8 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             if text.is_empty() {
                 return Err("No text available for entity extraction".to_string());
             }
-            let p = prompt::extract_entities(&text);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::extract_entities(&truncated);
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -283,7 +482,8 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             if text.is_empty() {
                 return Err("No text available for triple extraction".to_string());
             }
-            let p = prompt::extract_triples(&text);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::extract_triples(&truncated);
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -292,7 +492,8 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             if text.is_empty() {
                 return Err("No text available for summarization".to_string());
             }
-            let p = prompt::summarize(&text);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::summarize(&truncated);
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -301,7 +502,8 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             if text.is_empty() {
                 return Err("No text available for classification".to_string());
             }
-            let p = prompt::classify(&text, categories);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::classify(&truncated, categories);
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -311,45 +513,86 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             if context.is_empty() {
                 return Err("No relevant documents found for this question".to_string());
             }
-            let p = prompt::question_answer(question, &context);
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &context);
+            let p = prompt::question_answer(question, &truncated);
             engine.generate(&p, max_tokens_for(job))
         }
     }
 }
 
 /// Gathers relevant text snippets from a collection using FTS search.
+///
+/// Uses the existing `sanitize_fts5_query` to safely handle natural-language
+/// questions, and retrieves full text via `text_provider::get_item_text`
+/// instead of a broken LEFT JOIN on extrations.
 fn gather_collection_context(
     conn: &rusqlite::Connection,
     collection_id: &str,
     question: &str,
 ) -> Result<String, String> {
-    // Search FTS index for relevant items in this collection, take top 5
-    let mut stmt = conn
-        .prepare(
-            "SELECT i.title, e.text_content
-             FROM fts_items f
-             JOIN items i ON i.id = f.item_id
-             LEFT JOIN extractions e ON e.item_id = i.id
-             WHERE f.fts_items MATCH ?1 AND i.collection_id = ?2
-             ORDER BY rank
-             LIMIT 5",
-        )
-        .map_err(|e| format!("FTS query failed: {e}"))?;
+    // Sanitize the question for FTS5 — natural-language queries contain
+    // operators and noise that break FTS MATCH.
+    let fts_query = crate::nlp::fts::sanitize_fts5_query(question);
+    if fts_query.is_empty() {
+        return Ok(String::new());
+    }
 
-    let rows = stmt
-        .query_map(params![question, collection_id], |row| {
-            let title: String = row.get(0)?;
-            let text: Option<String> = row.get(1)?;
-            Ok((title, text.unwrap_or_default()))
-        })
-        .map_err(|e| format!("FTS query failed: {e}"))?;
+    // Find matching item IDs via FTS (top 5 by relevance)
+    let item_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.id
+                 FROM fts_items f
+                 JOIN items i ON i.rowid = f.rowid
+                 WHERE fts_items MATCH ?1 AND i.collection_id = ?2
+                 ORDER BY rank
+                 LIMIT 5",
+            )
+            .map_err(|e| format!("FTS query prepare failed: {e}"))?;
 
+        let rows = stmt
+            .query_map(params![fts_query, collection_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| format!("FTS query failed: {e}"))?;
+
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    if item_ids.is_empty() {
+        return Ok(String::new());
+    }
+
+    // For each matching item, retrieve full text via text_provider
     let mut context = String::new();
-    for row in rows {
-        if let Ok((title, text)) = row {
-            if !text.is_empty() {
-                context.push_str(&format!("--- {} ---\n{}\n\n", title, text));
+    for item_id in &item_ids {
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM items WHERE id = ?1",
+                params![item_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| "Unknown".to_string());
+
+        let text = text_provider::get_item_text(conn, item_id).unwrap_or_default();
+        if !text.is_empty() {
+            // Truncate each snippet to stay within budget
+            let display_text: String = if text.chars().count() > MAX_SNIPPET_CHARS {
+                text.chars().take(MAX_SNIPPET_CHARS).collect()
+            } else {
+                text.clone()
+            };
+
+            let snippet = format!("--- {} ---\n{}\n\n", title, display_text);
+            if context.len() + snippet.len() > MAX_ASK_CONTEXT_CHARS {
+                // Budget exceeded — add what fits and stop
+                let remaining = MAX_ASK_CONTEXT_CHARS.saturating_sub(context.len());
+                if remaining > 0 {
+                    context.push_str(&snippet[..remaining.min(snippet.len())]);
+                }
+                break;
             }
+            context.push_str(&snippet);
         }
     }
 

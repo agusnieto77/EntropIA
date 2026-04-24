@@ -109,6 +109,22 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to create layouts table");
             eprintln!("[setup] layouts table ensured");
 
+            // Create llm_results table for persisting LLM job results
+            ui_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS llm_results (
+                        id TEXT PRIMARY KEY,
+                        target_id TEXT NOT NULL,
+                        job_type TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        created_at INTEGER NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
+                )
+                .map_err(|e| format!("Failed to create llm_results table: {e}"))
+                .expect("Failed to create llm_results table");
+            eprintln!("[setup] llm_results table ensured");
+
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
                 .expect("Failed to open SQLite database (worker)");
@@ -193,6 +209,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_summarize,
             llm::commands::llm_classify,
             llm::commands::llm_ask,
+            llm::commands::llm_get_results,
+            llm::commands::llm_get_result,
             geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
             open_external_url,

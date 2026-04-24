@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 
 use llama_cpp_2::context::params::LlamaContextParams;
-use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
@@ -70,8 +69,17 @@ impl LlmEngine {
         &self.config.model_path
     }
 
+    /// Returns the configured context window size.
+    pub fn n_ctx(&self) -> u32 {
+        self.config.n_ctx
+    }
+
     /// Run text generation with the given prompt. Returns the generated text
     /// (excluding the prompt). `max_tokens` limits the output length.
+    ///
+    /// If the prompt tokens exceed the available context space, max_tokens is
+    /// automatically reduced to fit. If the prompt alone exceeds n_ctx, an
+    /// error is returned (callers should truncate input text beforehand).
     pub fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
         let mut ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(NonZeroU32::new(self.config.n_ctx).unwrap()));
@@ -92,14 +100,27 @@ impl LlmEngine {
             .map_err(|e| format!("Failed to tokenize prompt: {e}"))?;
 
         let n_prompt = tokens.len() as i32;
-        let n_len = n_prompt + max_tokens;
 
-        if n_len > self.config.n_ctx as i32 {
+        // Dynamically cap max_tokens to fit within the context window.
+        // If the prompt alone exceeds n_ctx, we can't generate anything.
+        let available = self.config.n_ctx as i32 - n_prompt;
+        if available <= 0 {
             return Err(format!(
-                "Prompt ({n_prompt} tokens) + max_tokens ({max_tokens}) exceeds context window ({})",
-                self.config.n_ctx
+                "Prompt ({} tokens) exceeds context window ({}). \
+                 Truncate input text before generating.",
+                n_prompt, self.config.n_ctx
             ));
         }
+        let effective_max_tokens = max_tokens.min(available);
+        if effective_max_tokens < max_tokens {
+            eprintln!(
+                "[llm] Reducing max_tokens from {} to {} \
+                 (prompt={}/n_ctx={})",
+                max_tokens, effective_max_tokens, n_prompt, self.config.n_ctx
+            );
+        }
+
+        let n_len = n_prompt + effective_max_tokens;
 
         // Feed prompt tokens
         let mut batch = LlamaBatch::new(512, 1);

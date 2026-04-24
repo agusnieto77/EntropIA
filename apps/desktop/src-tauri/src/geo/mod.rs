@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
+#[derive(Debug)]
+struct EntityGeoCandidate {
+    entity_id: String,
+    value: String,
+}
+
 // ---------------------------------------------------------------------------
 // Nominatim response
 // ---------------------------------------------------------------------------
@@ -120,20 +126,127 @@ impl GeoQueue {
             while let Some(job) = receiver.recv().await {
                 match job {
                     GeoJob::GeocodeEntity { entity_id } => {
-                        let result = geocode_single_entity(&conn, &client, &entity_id).await;
-                        match result {
-                            Ok(Some(payload)) => emit_entity_complete(&app_handle, &payload),
-                            Ok(None) => {} // not_found, already updated in DB
+                        match fetch_geocode_candidate(&conn, &entity_id) {
+                            Ok(Some(candidate)) => match nominatim_search(&client, &candidate.value).await {
+                                Ok(Some(result)) => {
+                                    let lat: f64 = match result.lat.parse() {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            emit_error(&app_handle, &entity_id, "Invalid latitude from Nominatim");
+                                            continue;
+                                        }
+                                    };
+                                    let lon: f64 = match result.lon.parse() {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            emit_error(&app_handle, &entity_id, "Invalid longitude from Nominatim");
+                                            continue;
+                                        }
+                                    };
+
+                                    match conn.execute(
+                                        "UPDATE entities SET latitude = ?1, longitude = ?2, geo_status = 'resolved' WHERE id = ?3",
+                                        params![lat, lon, &entity_id],
+                                    ) {
+                                        Ok(_) => emit_entity_complete(
+                                            &app_handle,
+                                            &GeoCompletePayload {
+                                                entity_id: entity_id.clone(),
+                                                latitude: lat,
+                                                longitude: lon,
+                                                display_name: result.display_name,
+                                            },
+                                        ),
+                                        Err(e) => emit_error(&app_handle, &entity_id, &format!("Failed to update entity coordinates: {e}")),
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = conn.execute(
+                                        "UPDATE entities SET geo_status = 'not_found' WHERE id = ?1",
+                                        params![&entity_id],
+                                    );
+                                }
+                                Err(e) => emit_error(&app_handle, &entity_id, &e),
+                            },
+                            Ok(None) => {}
                             Err(e) => emit_error(&app_handle, &entity_id, &e),
                         }
                     }
                     GeoJob::GeocodeItemEntities { item_id } => {
-                        let result =
-                            geocode_all_place_entities(&conn, &client, &item_id, &app_handle)
-                                .await;
-                        match result {
-                            Ok(payload) => emit_item_complete(&app_handle, &payload),
-                            Err(e) => emit_error(&app_handle, &item_id, &e),
+                        let candidates = match fetch_pending_place_candidates(&conn, &item_id) {
+                            Ok(candidates) => candidates,
+                            Err(e) => {
+                                emit_error(&app_handle, &item_id, &e);
+                                continue;
+                            }
+                        };
+
+                        let total = candidates.len();
+                        eprintln!("[geo] Geocoding {total} place entities for item {item_id}");
+
+                        let mut geocoded_count = 0usize;
+                        let mut not_found_count = 0usize;
+
+                        for (i, candidate) in candidates.iter().enumerate() {
+                            if i > 0 {
+                                tokio::time::sleep(Duration::from_millis(1100)).await;
+                            }
+
+                            match nominatim_search(&client, &candidate.value).await {
+                                Ok(Some(result)) => {
+                                    let lat: f64 = match result.lat.parse() {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            emit_error(&app_handle, &candidate.entity_id, "Invalid latitude from Nominatim");
+                                            continue;
+                                        }
+                                    };
+                                    let lon: f64 = match result.lon.parse() {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            emit_error(&app_handle, &candidate.entity_id, "Invalid longitude from Nominatim");
+                                            continue;
+                                        }
+                                    };
+
+                                    match conn.execute(
+                                        "UPDATE entities SET latitude = ?1, longitude = ?2, geo_status = 'resolved' WHERE id = ?3",
+                                        params![lat, lon, &candidate.entity_id],
+                                    ) {
+                                        Ok(_) => {
+                                            geocoded_count += 1;
+                                            emit_entity_complete(
+                                                &app_handle,
+                                                &GeoCompletePayload {
+                                                    entity_id: candidate.entity_id.clone(),
+                                                    latitude: lat,
+                                                    longitude: lon,
+                                                    display_name: result.display_name,
+                                                },
+                                            );
+                                        }
+                                        Err(e) => emit_error(&app_handle, &candidate.entity_id, &format!("Failed to update entity coordinates: {e}")),
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = conn.execute(
+                                        "UPDATE entities SET geo_status = 'not_found' WHERE id = ?1",
+                                        params![&candidate.entity_id],
+                                    );
+                                    not_found_count += 1;
+                                }
+                                Err(e) => emit_error(&app_handle, &candidate.entity_id, &e),
+                            }
+                        }
+
+                        emit_item_complete(
+                            &app_handle,
+                            &GeoItemCompletePayload {
+                                item_id,
+                                geocoded_count,
+                                not_found_count,
+                            },
+                        );
                         }
                     }
                 }
@@ -171,12 +284,10 @@ async fn nominatim_search(
     Ok(results.into_iter().next())
 }
 
-async fn geocode_single_entity(
+fn fetch_geocode_candidate(
     conn: &rusqlite::Connection,
-    client: &reqwest::Client,
     entity_id: &str,
-) -> Result<Option<GeoCompletePayload>, String> {
-    // Fetch entity value and type
+) -> Result<Option<EntityGeoCandidate>, String> {
     let (value, entity_type): (String, String) = conn
         .query_row(
             "SELECT value, entity_type FROM entities WHERE id = ?1",
@@ -185,7 +296,6 @@ async fn geocode_single_entity(
         )
         .map_err(|e| format!("Entity not found: {e}"))?;
 
-    // Only geocode place-type entities
     if entity_type != "place" {
         conn.execute(
             "UPDATE entities SET geo_status = 'skipped' WHERE id = ?1",
@@ -195,54 +305,19 @@ async fn geocode_single_entity(
         return Ok(None);
     }
 
-    match nominatim_search(client, &value).await? {
-        Some(result) => {
-            let lat: f64 = result
-                .lat
-                .parse()
-                .map_err(|_| "Invalid latitude from Nominatim".to_string())?;
-            let lon: f64 = result
-                .lon
-                .parse()
-                .map_err(|_| "Invalid longitude from Nominatim".to_string())?;
-
-            conn.execute(
-                "UPDATE entities SET latitude = ?1, longitude = ?2, geo_status = 'resolved' WHERE id = ?3",
-                params![lat, lon, entity_id],
-            )
-            .map_err(|e| format!("Failed to update entity coordinates: {e}"))?;
-
-            eprintln!("[geo] Resolved: '{}' → ({}, {})", value, lat, lon);
-
-            Ok(Some(GeoCompletePayload {
-                entity_id: entity_id.to_string(),
-                latitude: lat,
-                longitude: lon,
-                display_name: result.display_name,
-            }))
-        }
-        None => {
-            conn.execute(
-                "UPDATE entities SET geo_status = 'not_found' WHERE id = ?1",
-                params![entity_id],
-            )
-            .ok();
-            eprintln!("[geo] Not found: '{}'", value);
-            Ok(None)
-        }
-    }
+    Ok(Some(EntityGeoCandidate {
+        entity_id: entity_id.to_string(),
+        value,
+    }))
 }
 
-async fn geocode_all_place_entities(
+fn fetch_pending_place_candidates(
     conn: &rusqlite::Connection,
-    client: &reqwest::Client,
     item_id: &str,
-    app_handle: &AppHandle,
-) -> Result<GeoItemCompletePayload, String> {
-    // Find all place entities for this item that haven't been geocoded yet
+) -> Result<Vec<EntityGeoCandidate>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id FROM entities
+            "SELECT id, value FROM entities
              WHERE item_id = ?1
                AND entity_type = 'place'
                AND geo_status = 'pending'
@@ -250,44 +325,18 @@ async fn geocode_all_place_entities(
         )
         .map_err(|e| format!("Failed to query entities: {e}"))?;
 
-    let entity_ids: Vec<String> = stmt
-        .query_map(params![item_id], |row| row.get(0))
+    let candidates: Vec<EntityGeoCandidate> = stmt
+        .query_map(params![item_id], |row| {
+            Ok(EntityGeoCandidate {
+                entity_id: row.get(0)?,
+                value: row.get(1)?,
+            })
+        })
         .map_err(|e| format!("Failed to fetch entities: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
 
-    let total = entity_ids.len();
-    eprintln!("[geo] Geocoding {total} place entities for item {item_id}");
-
-    let mut geocoded_count = 0;
-    let mut not_found_count = 0;
-
-    for (i, entity_id) in entity_ids.iter().enumerate() {
-        // Rate limit: 1 request per second (Nominatim policy)
-        if i > 0 {
-            tokio::time::sleep(Duration::from_millis(1100)).await;
-        }
-
-        match geocode_single_entity(conn, client, entity_id).await {
-            Ok(Some(payload)) => {
-                geocoded_count += 1;
-                emit_entity_complete(app_handle, &payload);
-            }
-            Ok(None) => {
-                not_found_count += 1;
-            }
-            Err(e) => {
-                eprintln!("[geo] Error geocoding entity {entity_id}: {e}");
-                emit_error(app_handle, entity_id, &e);
-            }
-        }
-    }
-
-    Ok(GeoItemCompletePayload {
-        item_id: item_id.to_string(),
-        geocoded_count,
-        not_found_count,
-    })
+    Ok(candidates)
 }
 
 /// Auto-trigger: call this after NER completes for an item.

@@ -28,6 +28,13 @@ export interface ItemLlmState {
   error: string | null
 }
 
+export interface LlmResultEntry {
+  target_id: string
+  job_type: string
+  result: string
+  created_at: number
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Payload shapes emitted by the Rust backend
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,6 +83,27 @@ export class LlmStore {
     const current = this.getState(id)
     this.state.set(id, { ...current, ...patch })
     this.listeners.forEach((fn) => fn())
+  }
+
+  /**
+   * Hydrate the store from persisted results for a given target.
+   * Call this on mount to restore state after a page reload.
+   */
+  async loadPersistedResults(targetId: string): Promise<void> {
+    try {
+      const results: LlmResultEntry[] = await invoke('llm_get_results', { targetId })
+      for (const entry of results) {
+        this.update(entry.target_id, {
+          status: 'done',
+          activeJob: null,
+          result: entry.result,
+          error: null,
+        })
+      }
+    } catch (e) {
+      // Silently degrade — persisted results are optional
+      console.warn('[LlmStore] Failed to load persisted results:', e)
+    }
   }
 
   onChange(fn: () => void) {
@@ -144,4 +172,14 @@ export function llmClassify(itemId: string, categories: string[]): Promise<strin
 
 export function llmAsk(collectionId: string, question: string): Promise<string> {
   return invoke<string>('llm_ask', { collectionId, question })
+}
+
+/** Retrieve all latest LLM results for a target (item or collection). */
+export function llmGetResults(targetId: string): Promise<LlmResultEntry[]> {
+  return invoke<LlmResultEntry[]>('llm_get_results', { targetId })
+}
+
+/** Retrieve the latest single LLM result for a target + job type. */
+export function llmGetResult(targetId: string, jobType: string): Promise<LlmResultEntry | null> {
+  return invoke<LlmResultEntry | null>('llm_get_result', { targetId, jobType })
 }

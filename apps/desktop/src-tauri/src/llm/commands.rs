@@ -1,8 +1,9 @@
-use serde::Serialize;
 use tauri::State;
 
 use super::LlmQueue;
 use super::LlmJob;
+use super::LlmResultEntry;
+use crate::db::state::AppDbState;
 
 #[tauri::command]
 pub async fn llm_correct_ocr(
@@ -58,4 +59,26 @@ pub async fn llm_ask(
 ) -> Result<String, String> {
     llm_queue.submit(LlmJob::Ask { collection_id, question })?;
     Ok("queued".to_string())
+}
+
+/// Retrieve all latest LLM results for a given target (item or collection).
+/// Returns one result per job_type, ordered by most recent first.
+#[tauri::command]
+pub async fn llm_get_results(
+    target_id: String,
+    db: State<'_, AppDbState>,
+) -> Result<Vec<LlmResultEntry>, String> {
+    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    super::get_all_results_for_target(&conn, &target_id)
+}
+
+/// Retrieve the latest single LLM result for a target + job_type.
+#[tauri::command]
+pub async fn llm_get_result(
+    target_id: String,
+    job_type: String,
+    db: State<'_, AppDbState>,
+) -> Result<Option<LlmResultEntry>, String> {
+    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    super::get_latest_result(&conn, &target_id, Some(&job_type))
 }
