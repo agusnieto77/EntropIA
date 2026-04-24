@@ -1,5 +1,5 @@
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::pin;
 
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -62,11 +62,6 @@ impl LlmEngine {
         );
 
         Ok(Self { backend, model, config })
-    }
-
-    /// Returns the model file path.
-    pub fn model_path(&self) -> &Path {
-        &self.config.model_path
     }
 
     /// Returns the configured context window size.

@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::Deserialize;
 
 use crate::python_discovery;

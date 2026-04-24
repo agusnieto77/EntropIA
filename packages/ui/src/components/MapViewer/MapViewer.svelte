@@ -2,6 +2,7 @@
   import type { MapViewerProps, MapMarker } from './MapViewer.types'
   import { onMount, onDestroy } from 'svelte'
   import L from 'leaflet'
+  import 'leaflet/dist/leaflet.css'
 
   let { markers = [], height = '300px', onmarkerclick }: MapViewerProps = $props()
 
@@ -78,8 +79,6 @@
 </div>
 
 <style>
-  @import 'leaflet/dist/leaflet.css';
-
   .map-viewer {
     position: relative;
     border: 1px solid var(--color-border, #e2e8f0);

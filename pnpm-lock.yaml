@@ -68,6 +68,9 @@ importers:
       '@tauri-apps/plugin-sql':
         specifier: ^2
         version: 2.4.0
+      leaflet:
+        specifier: ^1.9.4
+        version: 1.9.4
     devDependencies:
       '@entropia/config-ts':
         specifier: workspace:*

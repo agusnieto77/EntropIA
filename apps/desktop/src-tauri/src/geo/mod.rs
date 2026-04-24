@@ -247,7 +247,6 @@ impl GeoQueue {
                                 not_found_count,
                             },
                         );
-                        }
                     }
                 }
             }

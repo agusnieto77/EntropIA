@@ -4,6 +4,13 @@ import { resolve } from 'path'
 
 export default defineConfig({
   plugins: [svelte()],
+  optimizeDeps: {
+    // Restrict dep-scan to the real frontend entry.
+    // Without this, Vite may crawl every HTML file under apps/desktop,
+    // including Rustdoc output under src-tauri/target/doc, which on Windows
+    // can trigger EMFILE loops during dependency re-optimization.
+    entries: ['index.html'],
+  },
   resolve: {
     alias: {
       $lib: resolve(__dirname, './src/lib'),

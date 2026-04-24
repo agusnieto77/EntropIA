@@ -417,7 +417,7 @@ pub fn save_ocr_lines_debug(
         lines_with_bbox.len()
     );
 
-    for (i, region) in lines_with_bbox.iter().enumerate() {
+    for region in lines_with_bbox.iter() {
         let bbox = region.bbox.as_ref().unwrap();
 
         if bbox.width == 0 || bbox.height == 0 {
