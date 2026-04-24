@@ -25,10 +25,6 @@ jobs:
             platform: macos-14
             build_args: '--target aarch64-apple-darwin'
             rust_target: 'aarch64-apple-darwin'
-          - name: macos-13 (x64)
-            platform: macos-13
-            build_args: '-- --no-default-features'
-            rust_target: ''
           - name: ubuntu-22.04
             platform: ubuntu-22.04
             build_args: '-- --no-default-features'
