@@ -1,6 +1,6 @@
 /// Tauri IPC commands for OCR operations.
 
-use super::{update_extraction_text, OcrJob, OcrQueue};
+use super::{update_extraction_text, OcrQueue};
 use crate::db::state::AppDbState;
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use tauri::State;
@@ -14,18 +14,26 @@ use tauri::State;
 /// * `asset_id`   — unique ID of the asset in the database
 /// * `asset_path` — absolute filesystem path to the asset file
 /// * `asset_type` — `"pdf"` or `"image"`
+/// * `mode`       — `"light"` (plain PaddleOCR/Tesseract, default) or `"high"` (PaddleVL)
 /// * `ocr_queue`  — managed state injected by Tauri
 #[tauri::command]
 pub async fn extract_text(
     asset_id: String,
     asset_path: String,
     asset_type: String,
+    mode: Option<String>,
     ocr_queue: State<'_, OcrQueue>,
 ) -> Result<String, String> {
-    let job = OcrJob {
+    let ocr_mode = match mode.as_deref() {
+        Some("high") => super::OcrMode::High,
+        _ => super::OcrMode::Light, // default to light
+    };
+
+    let job = super::OcrJob {
         asset_id,
         asset_path,
         asset_type,
+        mode: ocr_mode,
     };
 
     ocr_queue.submit(job)?;

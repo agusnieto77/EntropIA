@@ -1,9 +1,8 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { getAssetUrl } from '$lib/file-import'
-  import { OcrStore, extractText } from '$lib/ocr'
+  import { OcrStore, extractText, type OcrMode } from '$lib/ocr'
   import { TranscriptionStore, transcribeAudio } from '$lib/transcription'
-  import { LayoutStore } from '$lib/layout'
   import {
     NlpStore,
     indexFts,
@@ -150,10 +149,6 @@
   })
   let transcriptionTick = $state(0)
 
-  // Layout detection state — receives layout regions from backend for visualization.
-  // Layout detection runs automatically as part of OCR when DocLayout-YOLO is available.
-  const layoutStore = new LayoutStore()
-  let layoutTick = $state(0)
   let transEditedText = $state(new Map<string, string>())
   let transPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
 
@@ -368,11 +363,11 @@
 
   let metadataSaveTimer: ReturnType<typeof setTimeout> | null = null
 
-  async function handleExtractText(asset: Asset) {
+  async function handleExtractText(asset: Asset, mode: OcrMode = 'light') {
     ocrStore._updateState(asset.id, { status: 'pending', progress: 0 })
     ocrTick++
     try {
-      await extractText(asset.id, asset.path, asset.type)
+      await extractText(asset.id, asset.path, asset.type, mode)
     } catch (e) {
       ocrStore._updateState(asset.id, {
         status: 'error',
@@ -445,11 +440,6 @@
   function getTranscriptionState(assetId: string) {
     void transcriptionTick
     return transcriptionStore.getState(assetId)
-  }
-
-  function getLayoutState(assetId: string) {
-    void layoutTick
-    return layoutStore.getState(assetId)
   }
 
   function getNlpState() {
@@ -991,18 +981,6 @@
         }
       })
 
-    layoutStore
-      .startListening((eventName, callback) =>
-        listen(eventName, callback).then((unlisten) => () => unlisten())
-      )
-      .then(() => {
-        const origUpdate = layoutStore._updateState.bind(layoutStore)
-        layoutStore._updateState = (assetId, partial) => {
-          origUpdate(assetId, partial)
-          layoutTick++
-        }
-      })
-
     return () => {
       if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     }
@@ -1012,7 +990,6 @@
     ocrStore.stopListening()
     nlpStore.stopListening()
     transcriptionStore.stopListening()
-    layoutStore.stopListening()
     // Clear any pending debounce timers to avoid stale persist after unmount
     for (const timer of ocrPersistTimers.values()) {
       clearTimeout(timer)
@@ -1036,13 +1013,11 @@
   <div class="item-view" bind:this={itemViewEl} style="grid-template-columns: 1fr 6px {sidebarWidth}%">
     <div class="left-panel">
       {#if selectedAsset}
-        {@const layout = getLayoutState(selectedAsset.id)}
         <DocumentViewer
           path={selectedAsset.path}
           assetUrl={viewerSrc}
           type={viewerType}
           {annotations}
-          layoutRegions={layout.regions ?? []}
           {selectedAnnotationId}
           {annotationTool}
           {annotationColor}
@@ -1166,14 +1141,24 @@
                 <div class="ocr-item">
                   <div class="ocr-item-header">
                     <span class="ocr-filename">{filename}</span>
-                    <button
-                      class="ocr-btn"
-                      disabled={busy}
-                      onclick={() => handleExtractText(asset)}
-                      title={busy ? 'Extraction in progress…' : 'Extract text from this asset'}
-                    >
-                      {busy ? 'Extracting…' : 'Extract Text'}
-                    </button>
+                    <div class="ocr-btn-group">
+                      <button
+                        class="ocr-btn ocr-btn--light"
+                        disabled={busy}
+                        onclick={() => handleExtractText(asset, 'light')}
+                        title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
+                      >
+                        OCRL
+                      </button>
+                      <button
+                        class="ocr-btn ocr-btn--high"
+                        disabled={busy}
+                        onclick={() => handleExtractText(asset, 'high')}
+                        title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
+                      >
+                        OCRH
+                      </button>
+                    </div>
                   </div>
 
                   {#if ocr.status === 'running'}
@@ -1789,6 +1774,31 @@
   .ocr-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+  }
+  .ocr-btn-group {
+    display: flex;
+    gap: var(--space-1);
+    flex-shrink: 0;
+  }
+  .ocr-btn--light {
+    border-color: var(--color-success, #16a34a);
+    background: var(--color-success-subtle, #f0fdf4);
+    color: var(--color-success, #16a34a);
+  }
+  .ocr-btn--light:disabled {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+  }
+  .ocr-btn--high {
+    border-color: var(--color-info, #3b82f6);
+    background: var(--color-info-subtle, #eff6ff);
+    color: var(--color-info, #3b82f6);
+  }
+  .ocr-btn--high:disabled {
     border-color: var(--color-border);
     background: var(--color-surface);
     color: var(--color-text-muted);

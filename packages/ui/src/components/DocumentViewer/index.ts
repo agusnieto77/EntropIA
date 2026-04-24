@@ -5,5 +5,4 @@ export type {
   ViewerAnnotation,
   AnnotationKind,
   AnnotationTool,
-  LayoutRegion,
 } from './DocumentViewer.types'

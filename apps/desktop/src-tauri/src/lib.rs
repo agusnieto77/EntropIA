@@ -1,17 +1,18 @@
 mod db;
-mod layout;
 mod nlp;
 mod ocr;
 mod transcription;
 
 use db::state::AppDbState;
-use layout::LayoutQueue;
 use nlp::NlpQueue;
+use ocr::layout_onnx::create_layout_engine;
 use ocr::OcrQueue;
+use ocr::paddle_vl::create_paddle_vl_engine;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use tauri::Manager;
 use transcription::TranscriptionQueue;
 
@@ -87,7 +88,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
 
-            // Create layouts table for DocLayout-YOLO results
+// Create layouts table for PaddleVL region persistence
             ui_conn
                 .execute_batch(
                     "CREATE TABLE IF NOT EXISTS layouts (
@@ -118,10 +119,13 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
             app.manage(ocr_queue);
 
-            // Create DocLayoutEngine for OCR worker (optional — enables layout-aware OCR)
-            let layout_engine_for_ocr = layout::create_layout_engine(&app.handle());
+            // Create PaddleVL engine for OCR worker (optional — enables layout-aware OCR via PaddleOCR-VL)
+            let paddle_vl_engine = create_paddle_vl_engine(&app.handle());
 
-            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone(), layout_engine_for_ocr);
+            // Create native layout engine (optional — ONNX-based layout detection, faster than PaddleVL)
+            let layout_engine = create_layout_engine(&app.handle()).map(Arc::new);
+
+            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone(), paddle_vl_engine, layout_engine);
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
@@ -139,11 +143,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 transcription_receiver,
                 app.handle().clone(),
             );
-
-            // Layout detection queue: DocLayout-YOLO subprocess for document layout analysis.
-            let (layout_queue, layout_receiver) = LayoutQueue::new();
-            app.manage(layout_queue);
-            LayoutQueue::start_worker(db_path.clone(), layout_receiver, app.handle().clone());
 
             Ok(())
         })
@@ -163,7 +162,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
-            layout::commands::extract_layout,
             open_external_url,
         ])
         .run(tauri::generate_context!())
