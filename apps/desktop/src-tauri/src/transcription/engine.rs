@@ -74,37 +74,16 @@ pub struct WhisperEngine {
 
 impl WhisperEngine {
     /// Validate configuration. The model is loaded per-call by the Python process.
+    ///
+    /// NOTE: Python interpreter was already validated by `which_python_for_module()`
+    /// which ran `import faster_whisper; print('ok')` successfully. No redundant
+    /// verification needed — the discovery module already proved it works.
     pub fn init(config: WhisperConfig) -> Result<Self, String> {
         // Verify the script exists
         if !config.script_path.exists() {
             return Err(format!(
                 "Transcription script not found: {}",
                 config.script_path.display()
-            ));
-        }
-
-        // Verify python exists — for bare command names (e.g. "python" on PATH),
-        // we can't use exists(), so we verify by running --version instead.
-        let python_is_valid = if config.python_path.is_absolute()
-            || config.python_path.parent() != None && config.python_path.parent().unwrap().exists()
-        {
-            config.python_path.exists()
-        } else {
-            // Bare command name on PATH — verify by running it
-            let mut cmd = std::process::Command::new(&config.python_path);
-            apply_windows_no_window(&mut cmd);
-            cmd.arg("--version")
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-
-        if !python_is_valid {
-            return Err(format!(
-                "Python interpreter not found or not working: {}",
-                config.python_path.display()
             ));
         }
 

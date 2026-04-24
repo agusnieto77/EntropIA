@@ -233,7 +233,7 @@ describe('ItemView semantic triples panel', () => {
   it('transitions pending → running → done and supports retry after error for triples', async () => {
     await renderItemViewWith([])
 
-    const triplesBtn = await screen.findByRole('button', { name: /Extract Triples/i })
+    const triplesBtn = await screen.findByRole('button', { name: /TRIPLET/i })
 
     await fireEvent.click(triplesBtn)
     expect(extractTriplesMock).toHaveBeenCalledWith('item-1')

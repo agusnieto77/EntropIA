@@ -48,46 +48,67 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
 > **Note**: CMake and whisper-rs are no longer needed for transcription (migrated to faster-whisper Python subprocess).
 > The CMake prerequisite is kept for reference in case whisper-rs is ever re-enabled.
 
-### Python (required for Transcription and Layout Detection)
+### Python (required for Transcription and PaddleOCR-VL)
 
 - **Python 3.8+** with the following packages:
   - `faster-whisper` — for audio transcription
-  - `doclayout-yolo` — for document layout detection (DocLayout-YOLO model)
-- Install: `pip install faster-whisper doclayout-yolo`
+  - `paddleocr` (with `paddleocr[doc-parser]`) — for PaddleOCR-VL layout-aware OCR
+- Install: `pip install faster-whisper "paddleocr[doc-parser]"`
 - On first run:
   - `faster-whisper` downloads the Whisper model (~150MB for `base`) to `~/.cache/faster-whisper/`
-  - `doclayout-yolo` downloads the YOLOv10 model (~30-50MB) from HuggingFace to `~/.cache/huggingface/hub/`
+  - `paddleocr` downloads PP-DocLayoutV3 (~30MB) + PaddleOCR-VL-1.5-0.9B (~150MB) to `~/.paddlex/official_models/`
 - The Rust backend auto-detects Python by checking candidates (Conda first, then system Python) and verifying the respective module is importable
 
 ## OCR Engine Architecture
 
-- **Primary engine**: PaddleOCR via `ocr-rs` crate (MNN backend, feature-gated as `paddle-ocr`)
+- **Primary engine**: PaddleOCR-VL via Python subprocess (`paddle_vl.py`)
+  - PaddleOCRVL class does layout detection + OCR in a single pass
+  - Returns structured blocks with text content, labels, bounding boxes, and reading order
+  - Label mapping (paddle_vl.py → Rust): doc_title/paragraph_title → title, text → plain_text, image → figure, table → table, vision_footnote → abandoned
+  - Text formatting rules in paddle_vl.py: titles get `## ` prefix, tables get `---` wrapper, images skipped, vision_footnote gets `Note: ` prefix
+  - Method field: `"paddle_vl"` (when PaddleVL succeeds) or `"paddle"`/`"tesseract"` (fallback to plain OCR)
+- **Native OCR engine** (feature-gated as `paddle-ocr`): PaddleOCR via `ocr-rs` crate (MNN backend)
   - PP-OCRv5 detection + latin recognition
-  - `OcrEngine` is `Send + Sync` → held in worker thread, shared across `spawn_blocking`
-  - PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`, bundled): auto-detects 0°/90°/180°/270° rotation and corrects before OCR. Confidence threshold 0.7. Skipped gracefully if model file is missing.
-  - Postprocessing heuristics (`postprocess.rs`) are DISABLED — they mixed lines from different columns. The `postprocess()` function is kept for reference but not called.
+  - Used as fallback provider when PaddleVL is unavailable
+  - PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`, bundled): auto-detects rotation and corrects before OCR
+  - Postprocessing heuristics (`postprocess.rs`) are DISABLED — kept for reference only
 - **Fallback engine**: Tesseract via `leptess` crate
   - Languages: `spa+eng` (Spanish primary, English fallback)
   - `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`
-- **Provider chain**: PaddleOCR → Tesseract → Error (tried in order at worker startup)
-- **Region-level OCR**: `recognize_region()` on the `OcrProvider` trait crops the image to a layout region's bounding box before OCR. PaddleOCR overrides this for efficient crop-based recognition with 3% padding (proportional to bbox dimensions) on left/right to avoid cutting off characters at box edges. Tesseract uses the default (full-image fallback).
-- **Layout-aware OCR**: `layout_aware_ocr()` function in `ocr/mod.rs` takes a `LayoutResult` from DocLayout-YOLO, sorts regions by reading order, and runs OCR on each text-bearing region. Figures are skipped, tables are wrapped with `---` markers, titles get `## ` prefix. Method field: `"paddle+layout"` or `"tesseract+layout"`.
-- **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle"` | `"pdf_tesseract"`.
+- **Provider chain**: PaddleVL (layout-aware) → PaddleOCR (plain) → Tesseract (plain) → Error
+  - PaddleVL is tried first on every image; if it fails or is unavailable, plain OCR via the OcrProvider runs
+  - For PDFs: native text extraction first, then each page is rendered and PaddleVL is tried per page
+- **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"` | `"pdf_tesseract"`.
 - **No preprocessing**: Tesseract handles its own binarization internally. PaddleOCR does its own internally.
 
-## Layout Detection Architecture
+## PaddleOCR-VL Architecture (Primary OCR Engine)
 
-- **Engine**: DocLayout-YOLO (Python) spawned as subprocess via `std::process::Command`
-- **Model**: `juliozhao/DocLayout-YOLO-DocStructBench` — YOLO-v10 based, 10 categories (title, plain_text, abandoned, figure, figure_caption, table, table_caption, table_footnote, isolate_formula, formula_caption)
-- **Model loading**: `YOLOv10.from_pretrained()` is BROKEN — it internally creates `YOLOv10(model="yolov10n.pt")` which fails. Instead, we download the `.pt` file via `huggingface_hub.hf_hub_download()` and load directly with `YOLOv10(local_path)`. Strategy 1: search HF cache for the model file. Strategy 2: download from HuggingFace.
-- **Why subprocess**: Same pattern as transcription — isolates Python crashes, no native Rust bindings for DocLayout-YOLO
-- **Python auto-detection**: `which_python_for_layout()` probes for `doclayout_yolo` module (same strategy as transcription's `which_python()` for `faster_whisper`)
-- **Script path**: `scripts/layout_detect.py` → bundled via `tauri.conf.json` resources → resolved at runtime via `BaseDirectory::Resource` with `CARGO_MANIFEST_DIR` fallback. CRITICAL: Tauri's `resolve()` doesn't verify file existence — must check and fall back to dev path. Also strip Windows `\\?\` prefix.
-- **Script path resolution**: Both `create_layout_engine()` and `LayoutQueue::start_worker()` use identical 3-tier resolution: (1) `BaseDirectory::Resource` with existence check + `\\?\` prefix stripping, (2) `CARGO_MANIFEST_DIR/resources/scripts/layout_detect.py`, (3) `CARGO_MANIFEST_DIR/scripts/layout_detect.py`
-- **JSON output safety**: Same sentinel marker pattern (`===LAYOUT_JSON_BEGIN===` / `===LAYOUT_JSON_END===`)
-- **Reading order algorithm**: Union-find column grouping: regions with ≥50% horizontal overlap belong to the same column. Columns sorted left-to-right, regions within columns sorted top-to-bottom. Reading order = start at top-left column, go down, then move to next column right. Abandoned at page top → first, abandoned at bottom → last.
-- **DB persistence**: `layouts` table stores detection results (regions as JSON TEXT) keyed by `asset_id`
-- **Auto-wired pipeline**: Layout detection runs AUTOMATICALLY inside OCR worker when DocLayout-YOLO is available. `process_image()` and `process_pdf()` try layout detection first, fall back to plain OCR. Method field: `"paddle+layout"` or `"pdf_paddle+layout"`.
+- **Engine**: PaddleOCR-VL (`PaddleOCRVL` class from `paddleocr[doc-parser]`) spawned as Python subprocess via `std::process::Command`
+
+### ONNX Layout Detection Engine (Primary Layout Engine)
+
+- **Engine**: PP-DocLayout-S (PicoDet architecture) via `ort` crate ONNX Runtime
+- **Model**: `PP-DocLayout-S.onnx` (4.68 MB) in `resources/models/ocr/`
+- **Input**: 2 tensors — `image` [1,3,480,480] (resized, ImageNet normalized) + `scale_factor` [1,2] (scale_y, scale_x)
+- **Output**: 2 tensors — `fetch_name_0` [N,6] (class_id, score, x1, y1, x2, y2) + `fetch_name_1` [1] (int32 count)
+- **23 classes**: doc_title, paragraph_title, text, abandoned, figure_title, figure_note, text, page_header, page_footer, table, table_caption, table_note, image, chart, vision_footnote, formula, seal, paragraph_title, code, reference, abstract, page_number, text
+- **PicoDet applies NMS internally** — no separate NMS step needed
+- **Preprocessing**: Direct resize to 480×480 (no letterbox), scale_factor passed to model for coordinate remapping
+- **Coordinate mapping**: Output coords are in 480×480 space; scaled back to original via `scale_x = orig_w / 480`, `scale_y = orig_h / 480`
+- **ORT DLL resolution**: Scans `resources/models/ner/` sibling directory for `onnxruntime.dll` (shared with NER module)
+- **Feature-gated**: `paddle-ocr` feature for native PaddleOCR fallback; layout engine always available when model file exists
+- **Conversion note**: Paddle → ONNX is Linux-only (paddle2onnx DLL bug on Windows). Script: `scripts/convert_layout_to_onnx.py`
+
+## PaddleOCR-VL Architecture (Python Subprocess)
+- **Why subprocess**: Same pattern as transcription — isolates Python crashes, no native Rust bindings for PaddleOCR-VL
+- **Python auto-detection**: `which_python_for_paddle_vl()` probes for `paddleocr` module (same strategy as transcription's `which_python()` for `faster_whisper`)
+- **Script path**: `scripts/paddle_vl.py` → bundled via `tauri.conf.json` resources → resolved at runtime via `BaseDirectory::Resource` with `CARGO_MANIFEST_DIR` fallback. CRITICAL: Tauri's `resolve()` doesn't verify file existence — must check and fall back to dev path. Also strip Windows `\\?\` prefix.
+- **Script path resolution**: `create_paddle_vl_engine()` uses 3-tier resolution: (1) `BaseDirectory::Resource` with existence check + `\\?\` prefix stripping, (2) `CARGO_MANIFEST_DIR/resources/scripts/paddle_vl.py`, (3) `CARGO_MANIFEST_DIR/scripts/paddle_vl.py`
+- **JSON output safety**: Sentinel marker pattern (`===VL_JSON_BEGIN===` / `===VL_JSON_END===`) for reliable JSON extraction
+- **Output structure**: `PaddleVlOutput` with `text` (formatted plain text), `method`, `blocks` (parsed content blocks), `regions` (layout detection boxes), `image_width`, `image_height`
+- **PaddleVlOutput data model**: Each block has `label` (mapped category), `content` (text), `bbox` (x, y, width, height), `order` (reading order), `group_id`. Each region has `category`, `bbox`, `confidence`.
+- **No DB persistence**: PaddleVL results flow through the OCR pipeline but are not stored separately. The formatted text is saved in `extractions` table as usual.
+- **Auto-wired pipeline**: PaddleVL runs AUTOMATICALLY inside OCR worker when available. `process_image()` and `process_pdf()` try PaddleVL first, fall back to plain OCR.
 
 ### Orientation Model (Included)
 
@@ -118,26 +139,24 @@ cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 ## Key Files
 
-- `apps/desktop/src-tauri/src/ocr/provider.rs` - OcrProvider trait + OcrOutput/OcrRegion/BoundingBox types, recognize_region default method
+- `apps/desktop/src-tauri/src/ocr/provider.rs` - OcrProvider trait + OcrOutput/OcrRegion/BoundingBox types + LayoutCategory/LayoutRegion/LayoutOutput types
+- `apps/desktop/src-tauri/src/ocr/layout_onnx.rs` - OnnxLayoutEngine: PP-DocLayout-S ONNX inference, PicoDet output parsing, label mapping
 - `apps/desktop/src-tauri/src/ocr/tesseract.rs` - TesseractProvider (LepTess wrapper)
-- `apps/desktop/src-tauri/src/ocr/paddle.rs` - PaddleOcrProvider with ocr-rs, optional OriModel, Debug impl, recognize_region crop-based OCR, integration test
+- `apps/desktop/src-tauri/src/ocr/paddle.rs` - PaddleOcrProvider with ocr-rs, optional OriModel, Debug impl, integration test
+- `apps/desktop/src-tauri/src/ocr/paddle_vl.rs` - PaddleVlEngine, PaddleVlConfig, which_python_for_paddle_vl, create_paddle_vl_engine, sentinel JSON parsing
+- `apps/desktop/src-tauri/src/ocr/layout_onnx.rs` - OnnxLayoutEngine: PP-DocLayout-S (PicoDet) ONNX layout detection, scale_factor input, [N,6] output parsing
 - `apps/desktop/src-tauri/src/ocr/postprocess.rs` - Column grouping, hyphen merge, paragraph detection (DISABLED — kept for reference)
 - `apps/desktop/src-tauri/src/ocr/pdf.rs` - PDF text extraction + multi-page rendering with pdfium-render
-- `apps/desktop/src-tauri/src/ocr/mod.rs` - Worker refactor with Arc<dyn OcrProvider> fallback chain, multi-page PDF OCR, layout_aware_ocr function
+- `apps/desktop/src-tauri/src/ocr/mod.rs` - Worker with Arc<dyn OcrProvider> fallback chain, PaddleVL integration, multi-page PDF OCR
 - `apps/desktop/src-tauri/src/ocr/engine.rs` - Original Tesseract engine (pub(crate) fields, Debug derive)
-- `apps/desktop/src-tauri/src/layout/region.rs` - LayoutCategory enum (10 variants), LayoutRegion, LayoutResult, BoundingBox
-- `apps/desktop/src-tauri/src/layout/engine.rs` - DocLayoutEngine (Python subprocess), which_python_for_layout, sentinel JSON parsing
-- `apps/desktop/src-tauri/src/layout/mod.rs` - LayoutQueue, LayoutJob, worker loop, SQLite persistence, event payloads
-- `apps/desktop/src-tauri/src/layout/reading_order.rs` — Reading order: union-find column grouping (≥50% horizontal overlap = same column), columns sorted left-to-right, regions within columns sorted top-to-bottom
-- `apps/desktop/src-tauri/src/layout/commands.rs` - Tauri IPC command (extract_layout)
 - `apps/desktop/src-tauri/src/transcription/engine.rs` - Python subprocess adapter (spawns transcribe.py)
 - `apps/desktop/src-tauri/src/transcription/mod.rs` - Transcription job queue, worker loop, persistence, Python detection
 - `apps/desktop/src-tauri/src/transcription/commands.rs` - Tauri IPC commands for transcription
 - `apps/desktop/src-tauri/src/transcription/audio.rs` - Commented out (faster-whisper handles audio)
 - `apps/desktop/src-tauri/scripts/transcribe.py` - Python transcription script using faster-whisper
-- `apps/desktop/src-tauri/scripts/layout_detect.py` - Python layout detection script using DocLayout-YOLO
+- `apps/desktop/src-tauri/scripts/paddle_vl.py` - Python PaddleOCR-VL script (layout + OCR in one pass)
 - `apps/desktop/src-tauri/resources/scripts/transcribe.py` - Copy for Tauri resource bundling
-- `apps/desktop/src-tauri/resources/scripts/layout_detect.py` - Copy for Tauri resource bundling
+- `apps/desktop/src-tauri/resources/scripts/paddle_vl.py` - Copy for Tauri resource bundling
 
 ## Transcription Engine Architecture
 
@@ -155,8 +174,8 @@ cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 ## Job Queue Pattern
 
-All three background systems (OCR, Transcription, Layout Detection) follow the same pattern:
+Both background systems (OCR, Transcription) follow the same pattern:
 1. **Frontend** calls Tauri command → submits job to mpsc channel → returns "queued"
 2. **Worker thread** drains jobs serially, emits `progress/complete/error` events
-3. **Frontend** listens to events via `OcrStore`/`TranscriptionStore`/`LayoutStore` → updates UI reactively
-4. **DB** stores results in `extractions`/`transcriptions`/`layouts` table for persistence between sessions
+3. **Frontend** listens to events via `OcrStore`/`TranscriptionStore` → updates UI reactively
+4. **DB** stores results in `extractions`/`transcriptions` table for persistence between sessions

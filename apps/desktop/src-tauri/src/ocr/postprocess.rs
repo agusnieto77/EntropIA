@@ -8,6 +8,11 @@
 //!    a sentence ends and the next starts with an uppercase letter.
 //!
 //! Tesseract output (no bounding boxes) bypasses post-processing entirely.
+//!
+//! NOTE: Currently unused in production — was part of the layout-aware pipeline
+//! that is no longer active in OCRL mode. Kept for potential future re-enablement.
+
+#![allow(dead_code)]
 
 use super::provider::OcrRegion;
 

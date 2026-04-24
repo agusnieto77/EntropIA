@@ -1,127 +1,202 @@
 # EntropIA 🧠
 
-> ⚠️ **Software en desarrollo — versión beta.** EntropIA es una herramienta activa de investigación. Funcionalidades clave están operativas, pero la API, el modelo de datos y la interfaz pueden cambiar sin aviso previo. No se recomienda su uso en entornos de producción sin validación previa.
+> ⚠️ **Beta activa.** EntropIA está en desarrollo y el modelo de datos, la UX y algunos pipelines todavía pueden cambiar.
 
-## Herramienta para análisis computacional en Humanidades Digitales
+## Herramienta de escritorio para corpus, OCR y análisis asistido
 
 Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.com.ar/).
 
-**EntropIA** es una aplicación de escritorio open-source diseñada para investigadores en **ciencias sociales y humanidades**, con énfasis en **historia digital** y prácticas de archivo computacional. Orientada al trabajo con **fuentes primarias digitalizadas** (imágenes, PDFs escaneados, documentos fragmentarios), EntropIA media la **construcción de corpus, interpretación automatizada y producción de conocimiento estructurado**.
+**EntropIA** es una app de escritorio open-source orientada a investigación en humanidades y ciencias sociales. Está pensada para trabajar con **imágenes, PDFs y audio** de forma **local/offline-first**, construir corpus y sumar capas de análisis asistido sobre las fuentes.
 
-En el contexto de la investigación cualitativa a escala, donde las fuentes son inherentemente incompletas o degradadas, EntropIA genera **capas interpretativas** locales y offline:
+Hoy el foco del proyecto está en:
 
-- **Del caos al corpus estructurado**: Importación, organización y metadata enriquecida.
-- **Mediación computacional de la lectura**: OCR + NER para acceso textual.
-- **Análisis semántico exploratorio**: Triples S-P-O, embeddings, búsqueda híbrida.
-- **Hacia el conocimiento accionable**: Pipeline hacia grafos, RAG y exports DH.
+- **organización de corpus** en colecciones e ítems
+- **OCR** para imágenes y PDFs
+- **transcripción** de audio
+- **extracción de entidades** y **triples**
+- **FTS + embeddings** para búsqueda y similitud
+- **anotaciones, notas y edición manual** sobre los resultados
 
-**Posicionamiento único**:
+## Qué ofrece hoy
 
-- **Offline-first & Privado**: SQLite local, zero telemetry — ideal para archivos sensibles.
-- **Escalable a corpus grandes**: Job queues, FTS5 + vectores.
-- **Integrado con ecosistema DH**: Exports compatibles con Tropy, Recogito, Gephi, Voyant Tools.
-- **Extensible por investigadores**: Capabilities JSON para workflows custom (ej: NER domain-specific).
+### Ingesta y organización
 
-## Contexto de investigación
+- colecciones, ítems y assets locales
+- soporte para **imágenes, PDFs y audio**
+- persistencia local en **SQLite**
 
-- **Construcción de corpus reproducibles**.
-- **Análisis hermenéutico asistido** (entidades/relaciones automáticas).
-- **Colaboración edge** (sync roadmap).
+### OCR y transcripción
 
-## ✨ Capacidades Clave (framed for research)
+- **OCR Light (OCRL)**: OCR plano para imágenes/PDFs
+- **OCR High (OCRH)**: modo con **PaddleOCR-VL** para extracción más rica y sensible al layout
+- extracción de texto nativo desde PDF cuando la calidad lo permite
+- transcripción de audio con **faster-whisper** vía subprocess de Python
+- edición manual de OCR/transcripción con re-enriquecimiento posterior
 
-| Pipeline            | Funcionalidad                            | Output                                                 |
-| ------------------- | ---------------------------------------- | ------------------------------------------------------ |
-| **OCR**             | Texto de imágenes/PDFs degradados        | Transcripciones base para corpus                       |
-| **NER**             | Entidades (personas/lugares/fechas/orgs) | Índice onomástico automático                           |
-| **Semántica**       | Triples S-P-O rule-based                 | Base para knowledge graphs                             |
-| **Embeddings/FTS5** | Búsqueda híbrida semántica               | Queries contextuales ("conflictos 1930s Buenos Aires") |
-| **Jobs Queue**      | Procesamiento batch con progreso         | Escalabilidad a 1000s docs                             |
-| **Viewers**         | Entidades/triples por doc                | Exploración cualitativa asistida                       |
+### NLP y exploración
 
-## 🛠️ Stack Técnico
+- **NER** con pipeline híbrido (**ONNX + spaCy** cuando está disponible)
+- extracción de **triples S-P-O**
+- indexación **FTS**
+- **embeddings** y búsqueda de ítems similares
+- procesamiento en **background jobs** con eventos de progreso
 
-| Capa         | Tecnología                   | Razón                                        |
-| ------------ | ---------------------------- | -------------------------------------------- |
-| **Desktop**  | Tauri 2 (Rust/WebView)       | Nativo FS, ligero para laptops investigación |
-| **Frontend** | Svelte 5                     | Reactivo, bajo bundle para corpus grandes    |
-| **DB**       | SQLite + Drizzle             | Portable, FTS5/vec offline                   |
-| **AI Local** | Rust crates (OCRS/fastembed) | Sin APIs, reproducible                       |
-| **Estado**   | TS Repos (Drizzle) + Tests   | Typed safety para datos sensibles            |
+### Trabajo sobre documentos
 
-## 🚀 Instalación
+- visor de documento
+- panel de entidades y triples por ítem
+- **anotaciones** sobre assets
+- **notas** por ítem
+- edición de metadata
 
-### Descarga directa (recomendado)
+## Stack técnico real
 
-Descargá el instalador para tu sistema desde [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
+| Capa | Tecnología |
+| --- | --- |
+| Desktop | **Tauri 2** + Rust |
+| Frontend | **Svelte 5** + Vite |
+| DB local | **SQLite** |
+| Store/UI | workspace packages (`@entropia/store`, `@entropia/ui`) |
+| ORM cliente | **Drizzle ORM** |
+| OCR | **Tesseract**, `ocr-rs` (feature `paddle-ocr`), **PaddleOCR-VL** vía Python |
+| Transcripción | **faster-whisper** vía Python |
+| Embeddings | **fastembed** vía Python |
+| NER | ONNX local + **spaCy** opcional |
 
-| Sistema operativo                     | Instalador                         | Instrucciones                                                                                                                                          |
-| ------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Windows** 10/11 (x64)               | `EntropIA_x64_en-US.msi` o `.exe`  | Descargá y ejecutá. El instalador guía el proceso.                                                                                                     |
-| **macOS** Apple Silicon (M1/M2/M3/M4) | `EntropIA_aarch64.dmg`             | Abrí el `.dmg`, arrastrá EntropIA a Aplicaciones. En la primera apertura: clic derecho → Abrir (necesario porque no está firmado con Apple Developer). |
-| **macOS** Intel                       | `EntropIA_x64.dmg`                 | Mismo proceso que Apple Silicon.                                                                                                                       |
-| **Linux** (Ubuntu/Debian)             | `EntropIA_amd64.deb` o `.AppImage` | **.deb**: `sudo dpkg -i entropia_*.deb` · **.AppImage**: `chmod +x EntropIA_*.AppImage && ./EntropIA_*.AppImage`                                       |
+## Instalación
 
-> ⚠️ macOS: al abrir por primera vez vas a ver un warning de "desarrollador no identificado". Clic derecho → Abrir → Abrir de todos modos.
+### Descarga directa
 
-### Instalación desde código fuente (desarrollo)
+Podés bajar instaladores desde [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
 
-<details>
-<summary><strong>Prerrequisitos</strong></summary>
+| Sistema operativo | Instalador |
+| --- | --- |
+| Windows 10/11 (x64) | `.msi` o `.exe` |
+| macOS Apple Silicon | `.dmg` |
+| macOS Intel | `.dmg` |
+| Linux | `.deb` o `.AppImage` |
 
-Todos los sistemas necesitan:
+> En macOS, si aparece el warning de “desarrollador no identificado”, abrí con clic derecho → **Abrir**.
 
-- [Node.js](https://nodejs.org/) 22+
-- [pnpm](https://pnpm.io/) 9.x (`npm install -g pnpm@9`)
-- [Rust](https://rustup.rs/) toolchain 1.88+
+## Desarrollo desde código fuente
 
-Dependencias adicionales por sistema:
+### Requisitos generales
 
-**Linux** (Ubuntu/Debian):
+- **Node.js 22+**
+- **pnpm 9**
+- **Rust** (toolchain estable)
 
-```bash
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-```
+Dependencias base por sistema:
 
-**Windows**: WebView2 ya viene incluido en Windows 10 (1903+) y Windows 11.
+- **Linux (Ubuntu/Debian)**: `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`
+- **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+- **Windows**: WebView2 + toolchain MSVC
 
-**macOS**: Xcode Command Line Tools (`xcode-select --install`). WebKit es nativo del sistema.
-
-</details>
-
-<details>
-<summary><strong>Clonar, instalar y ejecutar</strong></summary>
+### Dependencias del frontend/desktop
 
 ```bash
 git clone https://github.com/agusnieto77/EntropIA.git
 cd EntropIA
 pnpm install
+```
 
-# Dev (hot reload)
+### Ejecutar en desarrollo
+
+```bash
 pnpm --filter @entropia/desktop tauri dev
+```
 
-# Build release (genera instalador en src-tauri/target/release/bundle/)
+### Build
+
+```bash
 pnpm --filter @entropia/desktop tauri build
 ```
 
-</details>
+## Requisitos adicionales para OCR/NLP local
 
-### Primeros pasos investigación
+La app puede **degradar con gracia** si faltan dependencias opcionales, pero para tener el stack completo de OCR/transcripción/NLP local necesitás herramientas adicionales.
 
-1. Importa corpus (drag/drop carpetas docs).
-2. Ejecuta OCR/NER batch.
-3. Explora triples/entidades en views.
-4. Query semántica → refine corpus.
+### Windows
 
-## 📊 Estado del Proyecto
+#### Toolchain nativo
 
-**Beta en desarrollo (Fases 0-3 completas)** — MVP funcional para corpus ~1000 docs. La aplicación es usable pero aún no se considera estable para producción.
+- Visual Studio Build Tools 2022 (MSVC)
+- LLVM/Clang para `bindgen`
+- Tesseract instalado vía `vcpkg`
 
-- ✅ Backend repos (assets/collections/items/jobs/entities/etc.) + tests.
-- ✅ UI Views (Collections/Item/Entity), Navigation/TopBar.
-- ✅ Pipeline completo OCR/NLP/FTS.
-- 🔄 Capabilities engine.
-- ⏳ Sync multi-dispositivo (Fase 4 próximo), KG/RAG (Fase 5).
+#### Tesseract (vcpkg)
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+C:\vcpkg\vcpkg install tesseract:x64-windows-static-md
+C:\vcpkg\vcpkg integrate install
+```
+
+#### LLVM
+
+```powershell
+choco install llvm -y
+```
+
+Variable recomendada:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
+```
+
+#### Python y paquetes
+
+Necesitás **Python 3.8+** con estos paquetes:
+
+- `faster-whisper`
+- `fastembed`
+- `paddleocr[doc-parser]`
+- `spacy`
+- `es_core_news_lg`
+
+Ejemplo:
+
+```powershell
+pip install faster-whisper fastembed "paddleocr[doc-parser]" spacy
+python -m spacy download es_core_news_lg
+```
+
+#### Variables útiles
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("TESSDATA_PREFIX", "C:\vcpkg\installed\x64-windows-static-md\share", "User")
+```
+
+## Scripts útiles del monorepo
+
+Desde la raíz:
+
+```bash
+pnpm dev
+pnpm build
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+## Estado del proyecto
+
+**Beta funcional**. Hoy ya existe un flujo usable para:
+
+- importar fuentes
+- correr OCR / transcripción
+- enriquecer con NER / triples / FTS / embeddings
+- navegar documentos y resultados
+- editar texto extraído, metadata, notas y anotaciones
+
+Todavía hay trabajo abierto en estabilidad, DX, roadmap de sync/export y refinamiento de algunos pipelines.
+
+## Notas
+
+- EntropIA privilegia **procesamiento local** y puede degradar algunas capacidades si faltan dependencias opcionales de Python o del toolchain nativo.
+- El stack de OCR/NLP más completo hoy está mejor documentado y verificado en **Windows**.
+- El roadmap sigue abierto para estabilidad, sync/export y refinamiento de pipelines.
 
 ---
 

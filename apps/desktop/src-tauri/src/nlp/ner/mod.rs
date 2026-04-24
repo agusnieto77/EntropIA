@@ -164,25 +164,29 @@ pub fn extract_and_store(
         .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
         .filter(|entity| !is_suppressed_by_protected(entity, &protected_entities))
         .collect::<Vec<_>>();
-    let (rule_based_count, onnx_count, spacy_count, model_name) = summarize_entities(&entities);
-    let entity_log = entities
+    let (_, _, _, model_name) = summarize_entities(&entities);
+
+    // Build a concise type-count summary instead of dumping all entity values.
+    // Example: "person:3,place:2,date:1" — much less noisy than listing every value.
+    let mut type_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for entity in &entities {
+        *type_counts.entry(entity.entity_type.as_str()).or_insert(0) += 1;
+    }
+    let mut type_pairs: Vec<_> = type_counts.into_iter().collect();
+    type_pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let type_summary: String = type_pairs
         .iter()
-        .map(|entity| format!("{}:{}", entity.entity_type.as_str().to_uppercase(), entity.value))
+        .map(|(t, c)| format!("{t}:{c}"))
         .collect::<Vec<_>>()
-        .join(" | ");
+        .join(", ");
 
     eprintln!(
-        "[nlp/ner] Extract result: item_id={}, total={}, rule_based={}, onnx={}, spacy={}, model={}",
+        "[nlp/ner] Extract result: item_id={}, total={}, breakdown=[{}], model={}",
         item_id,
         entities.len(),
-        rule_based_count,
-        onnx_count,
-        spacy_count,
+        type_summary,
         model_name.unwrap_or("<none>")
     );
-    if !entity_log.is_empty() {
-        eprintln!("[nlp/ner] Extract entities: {entity_log}");
-    }
 
     delete_automatic_entities(conn, item_id)?;
 

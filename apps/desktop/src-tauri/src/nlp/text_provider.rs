@@ -4,6 +4,10 @@
 /// for a given `item_id`, with graceful degradation if the transcriptions
 /// table doesn't exist (pre-migration databases).
 use rusqlite::{params, Connection};
+use std::sync::OnceLock;
+
+/// Log the "transcriptions table missing" warning only once, not per-item.
+static TRANSCRIPTIONS_TABLE_MISSING_LOGGED: OnceLock<()> = OnceLock::new();
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -34,8 +38,10 @@ pub fn get_item_text(conn: &Connection, item_id: &str) -> Result<String, String>
     let transcription_texts: Vec<String> = match try_query_transcriptions(conn, item_id) {
         Ok(texts) => texts,
         Err(e) if e.contains("no such table") => {
-            // Old DB without transcriptions table — log and degrade gracefully
-            eprintln!("[nlp/text_provider] transcriptions table not found, degrading to extraction-only text for item {item_id}: {e}");
+            // Old DB without transcriptions table — log once, not per-item
+            let _ = TRANSCRIPTIONS_TABLE_MISSING_LOGGED.get_or_init(|| {
+                eprintln!("[nlp/text_provider] transcriptions table not found — degrading to extraction-only text for all items");
+            });
             Vec::new() // No transcription text available
         }
         Err(e) => return Err(e), // Propagate other errors

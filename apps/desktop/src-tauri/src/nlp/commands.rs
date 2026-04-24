@@ -38,14 +38,14 @@ pub async fn embed_item(
 
 /// Submit a NER extraction job for `item_id`.
 ///
-/// The worker will run rule-based regex NER on the item's extracted text and
-/// persist results to the `entities` table.
+/// Uses the shared dedup gate so that a frontend-triggered request doesn't
+/// duplicate an auto-triggered NER job for the same item.
 #[tauri::command]
 pub async fn extract_entities(
     item_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ExtractEntities { item_id })
+    super::enqueue_entity_refresh_for_item(&nlp_queue, &item_id).map(|_| "queued".to_string())
 }
 
 /// Submit a semantic triples extraction job for `item_id`.

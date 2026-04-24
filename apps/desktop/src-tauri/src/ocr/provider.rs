@@ -10,7 +10,7 @@ use serde::Serialize;
 ///
 /// Represents a rectangle in pixel coordinates within the source image.
 /// Origin (0,0) is the top-left corner of the image.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BoundingBox {
     pub x: i32,
     pub y: i32,
@@ -42,6 +42,39 @@ pub struct OcrOutput {
     pub method: String,
 }
 
+/// Layout category from document layout detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum LayoutCategory {
+    Title,       // doc_title, paragraph_title → "## " prefix
+    PlainText,   // text, abstract → as-is
+    Table,       // table → "---\n...\n---" wrapper
+    Figure,      // image, chart → skip in text output
+    Caption,     // figure_title, table_caption → as-is
+    Footnote,    // vision_footnote, figure_note, table_note → "Note: " prefix
+    Header,      // page_header → skip
+    Footer,      // page_footer, page_number → skip
+    Code,        // code → code block markers
+    Reference,   // reference → as-is
+    Abandoned,   // abandoned, seal, formula → skip
+}
+
+/// A single layout region detected by the layout engine.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LayoutRegion {
+    pub label: LayoutCategory,
+    pub bbox: BoundingBox,
+    pub confidence: f32,
+    pub order: usize,
+}
+
+/// Output from the layout detection engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutOutput {
+    pub regions: Vec<LayoutRegion>,
+    pub image_width: u32,
+    pub image_height: u32,
+}
+
 /// Provider trait — sync, called inside `spawn_blocking`.
 ///
 /// Each OCR engine implements this trait. The worker holds a `Box<dyn OcrProvider>`
@@ -55,18 +88,20 @@ pub trait OcrProvider: Send + Sync {
     /// bounding boxes, or an error message on failure.
     fn recognize(&self, image_bytes: &[u8]) -> Result<OcrOutput, String>;
 
-    /// Recognize text from a cropped region of an image.
+    /// Recognize text without applying orientation correction.
     ///
-    /// Default implementation crops the image to the region's bounding box
-    /// (with padding) and calls `recognize()` on the crop. Providers that
-    /// support region-level optimization can override this.
-    fn recognize_region(
-        &self,
-        image_bytes: &[u8],
-        region: &crate::layout::region::LayoutRegion,
-    ) -> Result<OcrOutput, String> {
-        // Default: fall back to full-image recognition
-        let _ = region; // suppress unused warning
+    /// Used for per-region OCR after layout detection, where each crop is
+    /// expected to be already upright (inherited from the parent image's
+    /// orientation). The orientation classifier produces unreliable results
+    /// on small crops because it lacks document-level context.
+    ///
+    /// Default implementation falls back to `recognize` for providers that
+    /// do not implement orientation correction (e.g. Tesseract).
+    ///
+    /// NOTE: Currently unused in production — OCRL mode no longer crops regions.
+    /// Kept for potential future re-enablement.
+    #[allow(dead_code)]
+    fn recognize_no_ori(&self, image_bytes: &[u8]) -> Result<OcrOutput, String> {
         self.recognize(image_bytes)
     }
 

@@ -2,14 +2,13 @@
   import AnnotationToolbar from '../AnnotationToolbar/AnnotationToolbar.svelte'
   import AudioPlayer from '../AudioPlayer/AudioPlayer.svelte'
   import type { DocumentViewerProps } from './DocumentViewer.types'
-  import type { AnnotationTool, LayoutRegion, ViewerAnnotation } from './DocumentViewer.types'
+  import type { AnnotationTool, ViewerAnnotation } from './DocumentViewer.types'
 
   let {
     path: _path,
     type,
     assetUrl,
     annotations = [],
-    layoutRegions = [],
     selectedAnnotationId = null,
     annotationTool = 'select',
     annotationColor = 'var(--color-accent)',
@@ -18,19 +17,6 @@
     onAnnotationToolChange = () => {},
     onAnnotationColorChange = () => {},
   }: DocumentViewerProps = $props()
-
-  const LAYOUT_COLORS: Record<string, string> = {
-    title: '#3b82f6',
-    plain_text: '#10b981',
-    abandoned: '#9ca3af',
-    figure: '#f59e0b',
-    figure_caption: '#f97316',
-    table: '#8b5cf6',
-    table_caption: '#a78bfa',
-    table_footnote: '#c4b5fd',
-    isolate_formula: '#ec4899',
-    formula_caption: '#f472b6',
-  }
 
   const presetColors = [
     { value: 'var(--color-accent)', label: 'Accent' },
@@ -455,24 +441,6 @@
             onpointerup={finishDraft}
             onpointerleave={finishDraft}
           >
-            {#each layoutRegions as region (region.reading_order)}
-              <rect
-                data-testid={`layout-region-${region.category}-${region.reading_order}`}
-                x={region.bbox.x}
-                y={region.bbox.y}
-                width={region.bbox.width}
-                height={region.bbox.height}
-                fill={LAYOUT_COLORS[region.category] ?? '#6b7280'}
-                fill-opacity="0.15"
-                stroke={LAYOUT_COLORS[region.category] ?? '#6b7280'}
-                stroke-width="1.5"
-                stroke-dasharray="4 2"
-                vector-effect="non-scaling-stroke"
-              >
-                <title>{region.category} (confidence: {(region.confidence * 100).toFixed(1)}%)</title>
-              </rect>
-            {/each}
-
             {#each annotations as annotation (annotation.id)}
               {#if annotation.kind === 'rectangle'}
                 <rect

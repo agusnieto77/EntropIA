@@ -47,6 +47,7 @@ describe('OcrStore', () => {
       assetId: 'asset-1',
       assetPath: '/path/to/file.pdf',
       assetType: 'pdf',
+      mode: 'light',
     })
   })
 
@@ -59,6 +60,20 @@ describe('OcrStore', () => {
       assetId: 'asset-img',
       assetPath: '/images/photo.jpg',
       assetType: 'image',
+      mode: 'light',
+    })
+  })
+
+  it('extractText passes high mode when specified', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined)
+
+    await extractText('asset-1', '/path/to/file.pdf', 'pdf', 'high')
+
+    expect(invoke).toHaveBeenCalledWith('extract_text', {
+      assetId: 'asset-1',
+      assetPath: '/path/to/file.pdf',
+      assetType: 'pdf',
+      mode: 'high',
     })
   })
 

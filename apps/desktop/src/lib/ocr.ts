@@ -137,17 +137,26 @@ export class OcrStore {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// OCR Mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type OcrMode = 'light' | 'high'
+
+// ─────────────────────────────────────────────────────────────────────────────
 // extractText — triggers a backend OCR job
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Calls the Rust `extract_text` command to kick off an OCR job.
  * Sets the asset state to 'pending' before the invocation resolves.
+ *
+ * @param mode - 'light' for plain PaddleOCR/Tesseract (fast), 'high' for PaddleVL (layout-aware)
  */
 export async function extractText(
   assetId: string,
   assetPath: string,
-  assetType: string
+  assetType: string,
+  mode: OcrMode = 'light'
 ): Promise<void> {
-  await invoke('extract_text', { assetId, assetPath, assetType })
+  await invoke('extract_text', { assetId, assetPath, assetType, mode })
 }

@@ -1,14 +1,13 @@
 mod db;
 mod geo;
-mod layout;
 mod llm;
 mod nlp;
 mod ocr;
+mod python_discovery;
 mod transcription;
 
 use db::state::AppDbState;
 use geo::GeoQueue;
-use layout::LayoutQueue;
 use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
@@ -91,7 +90,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
 
-            // Create layouts table for DocLayout-YOLO results
+// Create layouts table for PaddleVL region persistence
             ui_conn
                 .execute_batch(
                     "CREATE TABLE IF NOT EXISTS layouts (
@@ -138,17 +137,19 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
             app.manage(ocr_queue);
 
-            // Create DocLayoutEngine for OCR worker (optional — enables layout-aware OCR)
-            let layout_engine_for_ocr = layout::create_layout_engine(&app.handle());
-
-            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone(), layout_engine_for_ocr);
+            // PaddleVL and layout engine creation deferred to OCR worker (lazy init).
+            // This removes Python probing and ONNX model loading from the critical
+            // startup path, which previously blocked app window display by 3-15s.
+            OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
             // embedding engine (Python subprocess) independently from OCR/UI connections.
             let (nlp_queue, nlp_receiver) = NlpQueue::new();
+            // Clone the dedup handle before moving nlp_queue into managed state
+            let ner_pending = nlp_queue.ner_pending_handle();
             app.manage(nlp_queue);
-            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone());
+            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone(), ner_pending);
 
             // Transcription queue: faster-whisper subprocess for audio transcription.
             // Each job spawns a Python process, no persistent state needed.
@@ -159,11 +160,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 transcription_receiver,
                 app.handle().clone(),
             );
-
-            // Layout detection queue: DocLayout-YOLO subprocess for document layout analysis.
-            let (layout_queue, layout_receiver) = LayoutQueue::new();
-            app.manage(layout_queue);
-            LayoutQueue::start_worker(db_path.clone(), layout_receiver, app.handle().clone());
 
             // LLM queue: local Gemma model via llama.cpp for NER, summarization,
             // OCR correction, Q&A, etc. Degrades gracefully if model not present.
@@ -183,7 +179,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 geo_receiver,
                 app.handle().clone(),
             );
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -202,7 +197,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
-            layout::commands::extract_layout,
             llm::commands::llm_correct_ocr,
             llm::commands::llm_extract_entities,
             llm::commands::llm_extract_triples,

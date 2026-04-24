@@ -7,8 +7,10 @@ pub mod triples;
 
 use serde::Serialize;
 use rusqlite::OptionalExtension;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
@@ -63,23 +65,45 @@ pub fn lookup_item_id_for_asset(
 }
 
 pub fn enqueue_entity_refresh_for_item(nlp_queue: &NlpQueue, item_id: &str) -> Result<(), String> {
-    nlp_queue.submit(NlpJob::ExtractEntities {
+    // Dedup: if this item is already pending or in-progress for NER, skip.
+    if let Ok(mut pending) = nlp_queue.ner_pending.lock() {
+        if pending.contains(item_id) {
+            eprintln!("[nlp/ner] Skipping duplicate ExtractEntities enqueue for item_id={item_id}");
+            return Ok(());
+        }
+        pending.insert(item_id.to_string());
+    }
+    let submit_result = nlp_queue.submit(NlpJob::ExtractEntities {
         item_id: item_id.to_string(),
-    })
+    });
+
+    if submit_result.is_err() {
+        if let Ok(mut pending) = nlp_queue.ner_pending.lock() {
+            pending.remove(item_id);
+        }
+    }
+
+    submit_result
 }
 
 /// Handle for submitting NLP jobs to the background worker.
 ///
 /// Managed as Tauri state — NLP commands grab this via `State<NlpQueue>`.
+/// Includes a dedup set for ExtractEntities jobs to avoid processing the
+/// same item_id twice in quick succession.
 pub struct NlpQueue {
     sender: mpsc::Sender<NlpJob>,
+    /// Set of item_ids currently pending or in-progress for ExtractEntities.
+    /// Prevents duplicate NER work when OCR and transcription both trigger
+    /// entity extraction for the same item.
+    ner_pending: Arc<Mutex<HashSet<String>>>,
 }
 
 impl NlpQueue {
     /// Create a new queue and return `(NlpQueue, Receiver)`.
     pub fn new() -> (Self, mpsc::Receiver<NlpJob>) {
         let (sender, receiver) = mpsc::channel::<NlpJob>(64);
-        (Self { sender }, receiver)
+        (Self { sender, ner_pending: Arc::new(Mutex::new(HashSet::new())) }, receiver)
     }
 
     /// Submit a job to the queue. Returns immediately.
@@ -87,6 +111,12 @@ impl NlpQueue {
         self.sender
             .try_send(job)
             .map_err(|e| format!("Failed to enqueue NLP job: {e}"))
+    }
+
+    /// Get a clone of the NER dedup set handle.
+    /// Used by the worker to remove item_ids after processing completes.
+    pub fn ner_pending_handle(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.ner_pending)
     }
 
     /// Spawn the background worker loop on the Tokio runtime.
@@ -97,6 +127,7 @@ impl NlpQueue {
         db_path: std::path::PathBuf,
         mut receiver: mpsc::Receiver<NlpJob>,
         app_handle: AppHandle,
+        ner_pending: Arc<Mutex<HashSet<String>>>,
     ) {
         tauri::async_runtime::spawn(async move {
             // Open a dedicated SQLite connection for the NLP worker.
@@ -153,15 +184,9 @@ impl NlpQueue {
                 embed_script_path.display()
             );
 
-            // Find Python interpreter with fastembed
-            let python_path = match embeddings::which_python() {
-                Some(p) => p,
-                None => {
-                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
-                    // Use a placeholder; the engine init will fail and degrade gracefully
-                    PathBuf::from("python")
-                }
-            };
+            // Find Python interpreter with fastembed — skip engine creation if unavailable.
+            // No fallback to bare "python" — if which_python() returned None,
+            // it already probed ALL candidates including system python.
 
             // Resolve model cache directory for HuggingFace (avoids broken symlinks on Windows)
             let embed_cache_dir = app_handle
@@ -170,19 +195,26 @@ impl NlpQueue {
                 .expect("Failed to get app data dir for NLP cache")
                 .join("hf_cache");
 
-            // Initialize embedding engine (non-fatal if unavailable)
-            let embed_engine = match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-                python_path: python_path.clone(),
-                script_path: embed_script_path,
-                model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                cache_dir: Some(embed_cache_dir),
-            }) {
-                Ok(engine) => {
-                    eprintln!("[nlp/embeddings] Engine ready.");
-                    Some(engine)
+            let embed_engine = match embeddings::which_python() {
+                Some(python_path) => {
+                    match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+                        python_path,
+                        script_path: embed_script_path,
+                        model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                        cache_dir: Some(embed_cache_dir),
+                    }) {
+                        Ok(engine) => {
+                            eprintln!("[nlp/embeddings] Engine ready.");
+                            Some(engine)
+                        }
+                        Err(e) => {
+                            eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                            None
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                None => {
+                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
                     None
                 }
             };
@@ -191,13 +223,15 @@ impl NlpQueue {
             let ner_tokenizer_path = resolve_ner_resource(&app_handle, "tokenizer.json");
             let ner_script_path = resolve_ner_script(&app_handle, "spacy_ner.py");
             let ner_engine = resolve_ner_engine_kind();
-            let ner_python_path = ner::spacy::which_python().unwrap_or_else(|| PathBuf::from("python"));
+            // No fallback to bare "python" — if which_python() returned None,
+            // it already probed ALL candidates including system python.
+            let ner_python_path = ner::spacy::which_python();
 
             let ner_config = NerConfig {
                 engine: ner_engine,
                 model_path: Some(ner_model_path),
                 tokenizer_path: Some(ner_tokenizer_path),
-                python_path: Some(ner_python_path),
+                python_path: ner_python_path,
                 script_path: Some(ner_script_path),
                 model_name: Some("es_core_news_lg".to_string()),
                 max_length: 256,
@@ -255,6 +289,10 @@ impl NlpQueue {
                             }))
                             .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
                         });
+                        // Remove from dedup set so future enqueues for this item are allowed
+                        if let Ok(mut pending) = ner_pending.lock() {
+                            pending.remove(&item_id);
+                        }
                         match result {
                             Ok(_) => {
                                 emit_progress(&app_handle, &item_id, "ner", 100);
@@ -314,25 +352,40 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
                         }
 
-                        emit_progress(&app_handle, &item_id, "ner", 10);
-                        let r = tokio::task::block_in_place(|| {
-                            catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_and_store(&conn, &item_id, &ner_registry)
-                            }))
-                            .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-                        });
-                        match r {
-                            Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "ner", 100);
-                                emit_complete(&app_handle, &item_id, "ner");
-                                if let Err(e) = crate::geo::enqueue_geocoding_for_item(
-                                    &app_handle.state::<crate::geo::GeoQueue>(),
-                                    &item_id,
-                                ) {
-                                    eprintln!("[geo] Failed to auto-enqueue geocoding after NER (enrich): {e}");
-                                }
+                        // NER sub-job: check dedup set — if ExtractEntities is already
+                        // handling this item, skip NER here to avoid duplicate work.
+                        let ner_already_pending = ner_pending.lock().map(|p| p.contains(&item_id)).unwrap_or(false);
+                        if ner_already_pending {
+                            eprintln!("[nlp/ner] Skipping NER in EnrichItem for item_id={item_id} — already queued or in progress");
+                        } else {
+                            // Register in dedup set before starting NER
+                            if let Ok(mut pending) = ner_pending.lock() {
+                                pending.insert(item_id.clone());
                             }
-                            Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                            emit_progress(&app_handle, &item_id, "ner", 10);
+                            let r = tokio::task::block_in_place(|| {
+                                catch_unwind(AssertUnwindSafe(|| {
+                                    ner::extract_and_store(&conn, &item_id, &ner_registry)
+                                }))
+                                .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
+                            });
+                            // Remove from dedup set after NER completes
+                            if let Ok(mut pending) = ner_pending.lock() {
+                                pending.remove(&item_id);
+                            }
+                            match r {
+                                Ok(_) => {
+                                    emit_progress(&app_handle, &item_id, "ner", 100);
+                                    emit_complete(&app_handle, &item_id, "ner");
+                                    if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                        &app_handle.state::<crate::geo::GeoQueue>(),
+                                        &item_id,
+                                    ) {
+                                        eprintln!("[geo] Failed to auto-enqueue geocoding after NER (enrich): {e}");
+                                    }
+                                }
+                                Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                            }
                         }
 
                         emit_progress(&app_handle, &item_id, "triples", 10);
