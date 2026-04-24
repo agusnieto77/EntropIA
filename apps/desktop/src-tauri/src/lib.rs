@@ -1,10 +1,14 @@
 mod db;
+mod geo;
+mod llm;
 mod nlp;
 mod ocr;
 mod python_discovery;
 mod transcription;
 
 use db::state::AppDbState;
+use geo::GeoQueue;
+use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
 use rusqlite::Connection;
@@ -104,6 +108,22 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to create layouts table");
             eprintln!("[setup] layouts table ensured");
 
+            // Create llm_results table for persisting LLM job results
+            ui_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS llm_results (
+                        id TEXT PRIMARY KEY,
+                        target_id TEXT NOT NULL,
+                        job_type TEXT NOT NULL,
+                        result TEXT NOT NULL,
+                        created_at INTEGER NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
+                )
+                .map_err(|e| format!("Failed to create llm_results table: {e}"))
+                .expect("Failed to create llm_results table");
+            eprintln!("[setup] llm_results table ensured");
+
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
                 .expect("Failed to open SQLite database (worker)");
@@ -141,6 +161,24 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 app.handle().clone(),
             );
 
+            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
+            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
+            let (llm_queue, llm_receiver) = LlmQueue::new();
+            app.manage(llm_queue);
+            LlmQueue::start_worker(
+                db_path.clone(),
+                llm_receiver,
+                app.handle().clone(),
+            );
+
+            // Geo queue: Nominatim geocoding for place entities.
+            let (geo_queue, geo_receiver) = GeoQueue::new();
+            app.manage(geo_queue);
+            GeoQueue::start_worker(
+                db_path.clone(),
+                geo_receiver,
+                app.handle().clone(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -159,6 +197,16 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             nlp::commands::similar_items,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
+            llm::commands::llm_correct_ocr,
+            llm::commands::llm_extract_entities,
+            llm::commands::llm_extract_triples,
+            llm::commands::llm_summarize,
+            llm::commands::llm_classify,
+            llm::commands::llm_ask,
+            llm::commands::llm_get_results,
+            llm::commands::llm_get_result,
+            geo::commands::geocode_entity,
+            geo::commands::geocode_item_entities,
             open_external_url,
         ])
         .run(tauri::generate_context!())

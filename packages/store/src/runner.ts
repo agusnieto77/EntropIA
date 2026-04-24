@@ -202,6 +202,24 @@ ALTER TABLE entities_v2 RENAME TO entities;
 CREATE INDEX IF NOT EXISTS idx_entities_item_id ON entities(item_id);
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type)
   `.trim(),
+
+  '0011_entities_geocoding': `
+ALTER TABLE entities ADD COLUMN latitude REAL;
+ALTER TABLE entities ADD COLUMN longitude REAL;
+ALTER TABLE entities ADD COLUMN geo_status TEXT NOT NULL DEFAULT 'pending';
+CREATE INDEX IF NOT EXISTS idx_entities_geo_status ON entities(geo_status)
+  `.trim(),
+
+  '0012_llm_results': `
+CREATE TABLE IF NOT EXISTS llm_results (
+  id TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL,
+  job_type TEXT NOT NULL,
+  result TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id)
+  `.trim(),
 }
 
 /**

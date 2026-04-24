@@ -297,6 +297,13 @@ impl NlpQueue {
                             Ok(_) => {
                                 emit_progress(&app_handle, &item_id, "ner", 100);
                                 emit_complete(&app_handle, &item_id, "ner");
+                                // Auto-trigger geocoding for place entities
+                                if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                    &app_handle.state::<crate::geo::GeoQueue>(),
+                                    &item_id,
+                                ) {
+                                    eprintln!("[geo] Failed to auto-enqueue geocoding after NER: {e}");
+                                }
                             }
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
@@ -366,7 +373,19 @@ impl NlpQueue {
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.remove(&item_id);
                             }
-                            match r { Ok(_) => { emit_progress(&app_handle, &item_id, "ner", 100); emit_complete(&app_handle, &item_id, "ner"); } Err(e) => emit_error(&app_handle, &item_id, "ner", &e), }
+                            match r {
+                                Ok(_) => {
+                                    emit_progress(&app_handle, &item_id, "ner", 100);
+                                    emit_complete(&app_handle, &item_id, "ner");
+                                    if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                        &app_handle.state::<crate::geo::GeoQueue>(),
+                                        &item_id,
+                                    ) {
+                                        eprintln!("[geo] Failed to auto-enqueue geocoding after NER (enrich): {e}");
+                                    }
+                                }
+                                Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                            }
                         }
 
                         emit_progress(&app_handle, &item_id, "triples", 10);

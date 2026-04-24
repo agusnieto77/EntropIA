@@ -13,13 +13,23 @@
     similarItems as fetchSimilarItems,
   } from '$lib/nlp'
   import {
+    LlmStore,
+    llmSummarize,
+    llmCorrectOcr,
+    llmExtractEntities,
+    llmExtractTriples,
+  } from '$lib/llm'
+  import { GeoStore, geocodeItemEntities } from '$lib/geo'
+  import {
     DocumentViewer,
     MetadataEditor,
     NoteEditor,
     Button,
     Card,
     EntityViewer,
+    MapViewer,
   } from '@entropia/ui'
+  import type { MapMarker } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { listen } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
@@ -231,6 +241,95 @@
   } | null>(null)
   let triples = $state<Array<{ subject: string; predicate: string; object: string }>>([])
   let analysisOpen = $state(false)
+
+  // LLM state (Gemma 4)
+  const llmStore = new LlmStore({
+    onComplete: (_id, _job, _result) => {
+      llmTick++
+    },
+  })
+  let llmTick = $state(0)
+
+  function getLlmState() {
+    void llmTick
+    return llmStore.getState(itemId)
+  }
+
+  async function handleLlmSummarize() {
+    try {
+      await llmSummarize(itemId)
+    } catch (e) {
+      console.error('[LLM] summarize failed:', e)
+    }
+  }
+
+  async function handleLlmCorrectOcr() {
+    try {
+      await llmCorrectOcr(itemId)
+    } catch (e) {
+      console.error('[LLM] correct OCR failed:', e)
+    }
+  }
+
+  async function handleLlmExtractEntities() {
+    try {
+      await llmExtractEntities(itemId)
+    } catch (e) {
+      console.error('[LLM] extract entities failed:', e)
+    }
+  }
+
+  async function handleLlmExtractTriples() {
+    try {
+      await llmExtractTriples(itemId)
+    } catch (e) {
+      console.error('[LLM] extract triples failed:', e)
+    }
+  }
+
+  // Geo state (OpenStreetMap)
+  const geoStore = new GeoStore({
+    onEntityComplete: () => {
+      loadGeoMarkers()
+    },
+    onItemComplete: () => {
+      loadGeoMarkers()
+    },
+  })
+  let geoMarkers = $state<MapMarker[]>([])
+  let geoLoading = $state(false)
+
+  async function loadGeoMarkers() {
+    try {
+      const rows = await invoke<
+        Array<{ id: string; value: string; latitude: number; longitude: number }>
+      >('db_select', {
+        sql: `SELECT id, value, latitude, longitude FROM entities
+              WHERE item_id = ? AND entity_type = 'place' AND geo_status = 'resolved'
+              AND latitude IS NOT NULL AND longitude IS NOT NULL`,
+        params: [itemId],
+      })
+      geoMarkers = rows.map((r) => ({
+        entityId: r.id,
+        label: r.value,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      }))
+    } catch (e) {
+      console.error('[geo] Failed to load markers:', e)
+    }
+  }
+
+  async function handleGeocodeItem() {
+    geoLoading = true
+    try {
+      await geocodeItemEntities(itemId)
+    } catch (e) {
+      console.error('[geo] geocode failed:', e)
+    } finally {
+      geoLoading = false
+    }
+  }
 
   let metadataValue = $derived<Record<string, string>>(
     item?.metadata ? parseMetadataRecord(item.metadata) : {}
@@ -981,6 +1080,15 @@
         }
       })
 
+    llmStore.startListening().then(() => {
+      llmStore.onChange(() => {
+        llmTick++
+      })
+      // Load persisted LLM results so they survive page reloads
+      llmStore.loadPersistedResults(itemId)
+    })
+
+    geoStore.startListening()
     return () => {
       if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     }
@@ -990,6 +1098,8 @@
     ocrStore.stopListening()
     nlpStore.stopListening()
     transcriptionStore.stopListening()
+    llmStore.stopListening()
+    geoStore.stopListening()
     // Clear any pending debounce timers to avoid stale persist after unmount
     for (const timer of ocrPersistTimers.values()) {
       clearTimeout(timer)
@@ -1273,6 +1383,7 @@
                 loadSimilarItems()
                 loadTriples()
                 loadFtsStats()
+                loadGeoMarkers()
               }
             }}
           >
@@ -1397,6 +1508,83 @@
               {#if nlp.errors?.embed}
                 <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
               {/if}
+
+              <!-- LLM section (Gemma 4) -->
+              <div class="llm-section">
+                <h4>IA Generativa (Gemma 4)</h4>
+
+                <div class="nlp-actions">
+                  <button
+                    class="nlp-btn llm-btn"
+                    disabled={getLlmState().status === 'running'}
+                    onclick={handleLlmSummarize}
+                  >
+                    Resumir
+                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
+                      <span class="nlp-badge nlp-badge--running">procesando...</span>
+                    {/if}
+                  </button>
+
+                  <button
+                    class="nlp-btn llm-btn"
+                    disabled={getLlmState().status === 'running'}
+                    onclick={handleLlmCorrectOcr}
+                  >
+                    Corregir OCR
+                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'correct_ocr'}
+                      <span class="nlp-badge nlp-badge--running">procesando...</span>
+                    {/if}
+                  </button>
+
+                  <button
+                    class="nlp-btn llm-btn"
+                    disabled={getLlmState().status === 'running'}
+                    onclick={handleLlmExtractEntities}
+                  >
+                    Entidades (LLM)
+                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'extract_entities'}
+                      <span class="nlp-badge nlp-badge--running">procesando...</span>
+                    {/if}
+                  </button>
+
+                  <button
+                    class="nlp-btn llm-btn"
+                    disabled={getLlmState().status === 'running'}
+                    onclick={handleLlmExtractTriples}
+                  >
+                    Triples (LLM)
+                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'extract_triples'}
+                      <span class="nlp-badge nlp-badge--running">procesando...</span>
+                    {/if}
+                  </button>
+                </div>
+
+                {#if getLlmState().error}
+                  <p class="ocr-error">{getLlmState().error}</p>
+                {/if}
+
+                {#if getLlmState().result}
+                  <div class="llm-result">
+                    <h5>Resultado LLM</h5>
+                    <pre class="llm-result-text">{getLlmState().result}</pre>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Map section (OpenStreetMap) -->
+              <div class="geo-section">
+                <div class="geo-header">
+                  <h4>Mapa</h4>
+                  <button
+                    class="nlp-btn"
+                    disabled={geoLoading}
+                    onclick={handleGeocodeItem}
+                  >
+                    {geoLoading ? 'Georreferenciando...' : 'Georreferenciar'}
+                  </button>
+                </div>
+                <MapViewer markers={geoMarkers} height="280px" />
+              </div>
 
               <div class="entities-section">
                 <h4>Entities</h4>
@@ -2268,5 +2456,65 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Geo Section */
+  .geo-section {
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .geo-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-3);
+  }
+
+  .geo-header h4 {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  /* LLM Section */
+  .llm-section {
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .llm-section h4 {
+    margin: 0 0 var(--space-2) 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .llm-btn {
+    border-left: 3px solid var(--color-accent, #6366f1);
+  }
+
+  .llm-result {
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
+
+  .llm-result h5 {
+    margin: 0 0 var(--space-2) 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .llm-result-text {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.5;
   }
 </style>
