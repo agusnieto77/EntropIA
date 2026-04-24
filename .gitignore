@@ -1,6 +1,12 @@
 # Dependencies
 node_modules/
 
+# scripts
+scripts/
+
+# Ignore
+.gitignore
+
 # temporal
 .temporal/
 temporal/
