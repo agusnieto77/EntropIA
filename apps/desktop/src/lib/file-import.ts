@@ -2,6 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { copyFile, mkdir, remove } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 
 const SUPPORTED_IMAGES = ['png', 'jpg', 'jpeg', 'webp', 'tiff', 'tif']
 const SUPPORTED_AUDIO = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg']
@@ -221,4 +222,38 @@ export async function deleteAssetFile(nativePath: string): Promise<void> {
     // Permission error or other FS error — abort
     throw new Error(`Failed to delete asset file: ${message}`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// PDF Thumbnails
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate or retrieve a cached thumbnail for the first page of a PDF.
+ *
+ * Calls the Rust `generate_pdf_thumbnail` command, which renders the first
+ * page at 400px width and caches the PNG at `{app_data_dir}/thumbnails/{asset_id}.png`.
+ * If a cached thumbnail already exists, the cached path is returned immediately.
+ *
+ * Returns a webview-accessible URL via `convertFileSrc`.
+ */
+export async function generatePdfThumbnail(
+  assetPath: string,
+  assetId: string
+): Promise<string> {
+  const nativePath: string = await invoke('generate_pdf_thumbnail', {
+    assetPath,
+    assetId,
+  })
+  return convertFileSrc(nativePath)
+}
+
+/**
+ * Delete a cached PDF thumbnail for an asset.
+ *
+ * Should be called when a PDF asset is deleted to clean up the thumbnail cache.
+ * Silently succeeds even if the thumbnail doesn't exist.
+ */
+export async function deletePdfThumbnail(assetId: string): Promise<void> {
+  await invoke('delete_pdf_thumbnail', { assetId })
 }

@@ -18,7 +18,7 @@ pub mod reading_order;
 mod debug_viz;
 
 use provider::{LayoutCategory, OcrProvider};
-use pdf::{extract_pdf_text, is_quality_text, pdf_page_count};
+use pdf::{extract_pdf_text, is_quality_text, pdf_page_count, init_pdfium_path};
 use paddle_vl::{PaddleVlEngine, create_paddle_vl_engine};
 use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
 use serde::Serialize;
@@ -110,6 +110,10 @@ impl OcrQueue {
         app_handle: AppHandle,
     ) {
         tauri::async_runtime::spawn(async move {
+            // Initialize Pdfium native library path resolution once.
+            // This caches the DLL search path for all subsequent PDF operations.
+            init_pdfium_path(&app_handle);
+
             // ── Provider initialization with fallback chain ───────────────
             //
             // Try PaddleOCR first (if compiled with `paddle-ocr` feature).

@@ -188,6 +188,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             db::commands::db_select_rows,
             ocr::commands::extract_text,
             ocr::commands::update_extraction_text_cmd,
+            ocr::commands::generate_pdf_thumbnail,
+            ocr::commands::delete_pdf_thumbnail,
             nlp::commands::index_fts,
             nlp::commands::embed_item,
             nlp::commands::extract_entities,

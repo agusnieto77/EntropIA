@@ -33,6 +33,6 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "resources/models/ner/*", "resources/models/ocr/*", "scripts/*"]
+    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "resources/models/ner/*", "resources/models/ocr/*", "resources/lib/*", "scripts/*"]
   }
 }

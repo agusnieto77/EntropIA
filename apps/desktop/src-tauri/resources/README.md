@@ -1,5 +1,12 @@
 This directory is reserved for bundled Tauri resources.
 
+## Native Libraries
+
+- `lib/pdfium.dll` — Pdfium native library for PDF rendering (Windows x86_64).
+  Download from [pdfium-render releases](https://github.com/ajrcarey/pdfium-render/releases).
+  The DLL is resolved at runtime with a 3-tier search (bundled → dev → system library).
+  See `resources/lib/.gitkeep` for details.
+
 ## OCR Models
 
 Runtime assets for the `ocrs` engine are downloaded automatically before each build:

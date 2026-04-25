@@ -8,6 +8,8 @@ import {
   importFilesFromPaths,
   importSingleFile,
   deleteAssetFile,
+  generatePdfThumbnail,
+  deletePdfThumbnail,
 } from './file-import'
 
 type OpenSelection = string[] | string | null
@@ -280,5 +282,62 @@ describe('deleteAssetFile', () => {
     await expect(deleteAssetFile('/path/to/file.pdf')).rejects.toThrow(
       'Failed to delete asset file: Unknown IO error'
     )
+  })
+})
+
+describe('generatePdfThumbnail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('calls invoke with correct arguments and converts path to URL', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const { convertFileSrc } = await import('@tauri-apps/api/core')
+
+    vi.mocked(invoke).mockResolvedValueOnce('C:\\app-data\\thumbnails\\asset-123.png')
+    vi.mocked(convertFileSrc).mockReturnValueOnce('https://asset.localhost/C:/app-data/thumbnails/asset-123.png')
+
+    const result = await generatePdfThumbnail('/path/to/document.pdf', 'asset-123')
+
+    expect(invoke).toHaveBeenCalledWith('generate_pdf_thumbnail', {
+      assetPath: '/path/to/document.pdf',
+      assetId: 'asset-123',
+    })
+    expect(convertFileSrc).toHaveBeenCalledWith('C:\\app-data\\thumbnails\\asset-123.png')
+    expect(result).toBe('https://asset.localhost/C:/app-data/thumbnails/asset-123.png')
+  })
+
+  it('returns cached thumbnail path when invoke returns it', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const { convertFileSrc } = await import('@tauri-apps/api/core')
+
+    vi.mocked(invoke).mockResolvedValueOnce('/cached/thumb.png')
+    vi.mocked(convertFileSrc).mockReturnValueOnce('https://asset.localhost/cached/thumb.png')
+
+    const result = await generatePdfThumbnail('/path/to/document.pdf', 'existing-asset')
+
+    expect(result).toBe('https://asset.localhost/cached/thumb.png')
+  })
+})
+
+describe('deletePdfThumbnail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('calls invoke with assetId', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockResolvedValueOnce(undefined)
+
+    await deletePdfThumbnail('asset-456')
+
+    expect(invoke).toHaveBeenCalledWith('delete_pdf_thumbnail', { assetId: 'asset-456' })
+  })
+
+  it('propagates errors from invoke', async () => {
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('Thumbnail deletion failed'))
+
+    await expect(deletePdfThumbnail('asset-789')).rejects.toThrow('Thumbnail deletion failed')
   })
 })

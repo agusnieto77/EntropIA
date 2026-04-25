@@ -56,6 +56,34 @@ describe('ItemCard', () => {
     expect(screen.getByTestId('item-audio')).toBeInTheDocument()
   })
 
+  it('renders PDF icon when primaryAssetType is pdf and no thumbnailPath', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'pdf' },
+    })
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByTestId('item-pdf-icon')).toBeInTheDocument()
+    expect(screen.queryByTestId('item-placeholder')).not.toBeInTheDocument()
+  })
+
+  it('renders image thumbnail when primaryAssetType is pdf with thumbnailPath', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'pdf', thumbnailPath: 'asset://localhost/thumb.png' },
+    })
+    const img = screen.getByRole('img')
+    expect(img).toBeInTheDocument()
+    expect(img).toHaveAttribute('src', 'asset://localhost/thumb.png')
+    expect(screen.queryByTestId('item-pdf-icon')).not.toBeInTheDocument()
+  })
+
+  it('renders placeholder icon when primaryAssetType is image but no thumbnailPath', () => {
+    render(ItemCard, {
+      props: { ...baseProps, primaryAssetType: 'image' },
+    })
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+    expect(screen.getByTestId('item-placeholder')).toBeInTheDocument()
+    expect(screen.queryByTestId('item-pdf-icon')).not.toBeInTheDocument()
+  })
+
   it('renders image thumbnail when primaryAssetType is image with thumbnailPath', () => {
     render(ItemCard, {
       props: { ...baseProps, primaryAssetType: 'image', thumbnailPath: 'asset://localhost/thumb.jpg' },

@@ -2,7 +2,7 @@
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
   import { pickFiles, classifyFiles, importSingleFile, type ImportedFile } from '$lib/file-import'
-  import { getAssetUrl, deleteAssetFile } from '$lib/file-import'
+  import { getAssetUrl, deleteAssetFile, generatePdfThumbnail, deletePdfThumbnail } from '$lib/file-import'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -69,16 +69,37 @@
       try {
         const assets: Asset[] = await store.assets.findByItem(itemId)
         const imageAsset = assets.find((a) => a.type === 'image')
-        // Use first asset as thumbnail if no image asset found (PDFs get preview too)
-        const thumbAsset = imageAsset ?? assets[0]
-        // Audio assets have no visual preview — skip thumbnail URL
-        const isAudio = thumbAsset?.type === 'audio'
+        // For PDFs, generate a thumbnail from the first page
+        const pdfAsset = assets.find((a) => a.type === 'pdf')
+
+        let thumbnailUrl: string | null = null
+        let primaryAssetType: string | null = null
+
+        if (imageAsset) {
+          thumbnailUrl = getAssetUrl(imageAsset.path)
+          primaryAssetType = imageAsset.type
+        } else if (pdfAsset) {
+          // Try to generate a PDF thumbnail; fall back to null (ItemCard shows PDF icon)
+          try {
+            thumbnailUrl = await generatePdfThumbnail(pdfAsset.path, pdfAsset.id)
+          } catch (e) {
+            console.warn('[CollectionView] Failed to generate PDF thumbnail for', pdfAsset.id, e)
+            thumbnailUrl = null
+          }
+          primaryAssetType = pdfAsset.type
+        } else {
+          const thumbAsset = assets[0]
+          const isAudio = thumbAsset?.type === 'audio'
+          thumbnailUrl = !isAudio && thumbAsset ? getAssetUrl(thumbAsset.path) : null
+          primaryAssetType = thumbAsset?.type ?? null
+        }
+
         newMeta.set(itemId, {
           assetCount: assets.length,
-          thumbnailUrl: !isAudio && thumbAsset ? getAssetUrl(thumbAsset.path) : null,
-          primaryAssetId: thumbAsset?.id ?? null,
-          primaryAssetPath: thumbAsset?.path ?? null,
-          primaryAssetType: thumbAsset?.type ?? null,
+          thumbnailUrl,
+          primaryAssetId: imageAsset?.id ?? pdfAsset?.id ?? assets[0]?.id ?? null,
+          primaryAssetPath: imageAsset?.path ?? pdfAsset?.path ?? assets[0]?.path ?? null,
+          primaryAssetType,
         })
       } catch (e) {
         console.error('[CollectionView] Failed to load assets for item', itemId, e)
@@ -434,6 +455,16 @@
       console.error('[CollectionView] DB cleanup failed (UI will still update):', message)
       // Show a subtle warning in the error field but still close the dialog
       deleteError = `File removed. DB cleanup failed: ${message}`
+    }
+
+    // Step 2b: Clean up cached PDF thumbnail if the asset was a PDF
+    if (meta.primaryAssetType === 'pdf' && pendingDeleteAssetId) {
+      try {
+        await deletePdfThumbnail(pendingDeleteAssetId)
+      } catch (e) {
+        console.warn('[CollectionView] Failed to delete PDF thumbnail:', e)
+        // Non-fatal: thumbnail cache cleanup is best-effort
+      }
     }
 
     // Step 3: Always update UI — remove card or refresh meta

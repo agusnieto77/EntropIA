@@ -79,6 +79,8 @@ vi.mock('$lib/file-import', () => ({
     .mockResolvedValue({ imported: [], rejected: [], skippedDuplicatePaths: 0 }),
   getAssetUrl: vi.fn().mockImplementation((p: string) => `asset://localhost${p}`),
   deleteAssetFile: vi.fn().mockResolvedValue(undefined),
+  generatePdfThumbnail: vi.fn().mockResolvedValue('asset://localhost/thumbnails/asset-1.png'),
+  deletePdfThumbnail: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('$lib/export', () => ({
@@ -286,6 +288,76 @@ describe('CollectionView asset deletion', () => {
       expect(deleteAssetFile).toHaveBeenCalled()
       // findById should NOT be called — path comes from cache
       expect(storeRef.current.assets.findById).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('CollectionView PDF thumbnail', () => {
+  const pdfAsset: AssetRow = {
+    id: 'asset-pdf-1',
+    itemId: 'item-1',
+    path: '/app-data/assets/col-1/item-1/uuid_doc.pdf',
+    type: 'pdf',
+    size: 2048,
+    createdAt: Date.now(),
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    navigationRef.navigate.mockReset()
+    storeRef.current = createStore(
+      [
+        {
+          id: 'item-1',
+          title: 'PDF Document',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          collectionId: 'col-1',
+          metadata: null,
+        },
+      ],
+      [pdfAsset]
+    )
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function renderAndWaitForItems() {
+    render(CollectionView, { collectionId: 'col-1' })
+
+    await waitFor(() => {
+      expect(storeRef.current.items.findByCollection).toHaveBeenCalled()
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  it('generates a thumbnail for PDF assets', async () => {
+    const { generatePdfThumbnail } = await import('$lib/file-import')
+
+    await renderAndWaitForItems()
+
+    await waitFor(() => {
+      expect(generatePdfThumbnail).toHaveBeenCalledWith(pdfAsset.path, pdfAsset.id)
+    })
+  })
+
+  it('cleans up PDF thumbnail when deleting a PDF asset', async () => {
+    const { deletePdfThumbnail } = await import('$lib/file-import')
+
+    await renderAndWaitForItems()
+
+    const deleteBtn = screen.getByRole('button', { name: 'Delete PDF Document' })
+    await fireEvent.click(deleteBtn)
+
+    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    await fireEvent.click(confirmBtn)
+
+    await waitFor(() => {
+      expect(deletePdfThumbnail).toHaveBeenCalledWith(pdfAsset.id)
     })
   })
 })
