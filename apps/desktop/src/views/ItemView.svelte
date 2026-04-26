@@ -25,7 +25,7 @@
     llmExtractEntitiesAsset,
     llmExtractTriplesAsset,
   } from '$lib/llm'
-  import { GeoStore, geocodeItemEntities } from '$lib/geo'
+  import { GeoStore } from '$lib/geo'
   import {
     DocumentViewer,
     MetadataEditor,
@@ -34,6 +34,7 @@
     Card,
     EntityViewer,
     MapViewer,
+    TopicEditor,
   } from '@entropia/ui'
   import type { MapMarker } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -382,7 +383,6 @@
     },
   })
   let geoMarkers = $state<MapMarker[]>([])
-  let geoLoading = $state(false)
 
   async function loadGeoMarkers() {
     try {
@@ -405,20 +405,59 @@
     }
   }
 
-  async function handleGeocodeItem() {
-    geoLoading = true
-    try {
-      await geocodeItemEntities(itemId)
-    } catch (e) {
-      console.error('[geo] geocode failed:', e)
-    } finally {
-      geoLoading = false
-    }
-  }
-
   let metadataValue = $derived<Record<string, string>>(
     item?.metadata ? parseMetadataRecord(item.metadata) : {}
   )
+
+  // Topic state
+  let itemTopics = $state<string[]>([])
+  let topicSuggestions = $state<string[]>([])
+
+  async function loadTopics() {
+    try {
+      const topics = await getStore().topics.findByItemId(itemId)
+      itemTopics = topics.map((t) => t.name)
+    } catch (e) {
+      console.error('[topics] Failed to load topics:', e)
+    }
+  }
+
+  async function loadTopicSuggestions() {
+    try {
+      topicSuggestions = await getStore().topics.allNames()
+    } catch (e) {
+      console.error('[topics] Failed to load suggestions:', e)
+    }
+  }
+
+  async function handleTopicsChange(newTopics: string[]) {
+    try {
+      const store = getStore()
+      // Find topics to add (in new but not in current)
+      const currentSet = new Set(itemTopics)
+      const newSet = new Set(newTopics)
+      // Add new topics
+      for (const name of newTopics) {
+        if (!currentSet.has(name)) {
+          await store.topics.addTopicToItem(itemId, name)
+        }
+      }
+      // Remove topics no longer present
+      for (const name of itemTopics) {
+        if (!newSet.has(name)) {
+          const topic = await store.topics.findByName(name)
+          if (topic) {
+            await store.topics.removeTopicFromItem(itemId, topic.id)
+          }
+        }
+      }
+      itemTopics = newTopics.map((t) => t.toUpperCase())
+      // Refresh suggestions to include any newly created topics
+      void loadTopicSuggestions()
+    } catch (e) {
+      console.error('[topics] Failed to save topics:', e)
+    }
+  }
 
   let selectedAsset = $derived(assets[selectedAssetIndex] ?? null)
 
@@ -1294,8 +1333,10 @@
       item = loadedItem
       assets = loadedAssets
       // Asset-scoped data (notes, entities, triples) will be loaded by the selectedAsset effect
-      // Load item-scoped data (similar items) - not asset-dependent
+      // Load item-scoped data (similar items, topics) - not asset-dependent
       void loadSimilarItems()
+      void loadTopics()
+      void loadTopicSuggestions()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load item'
     } finally {
@@ -1594,6 +1635,11 @@ path={selectedAsset.path}
           Metadata {#if savingMetadata}<span class="saving">Saving...</span>{/if}
         </h3>
         <MetadataEditor value={metadataValue} onchange={handleMetadataChange} />
+      </section>
+
+      <section class="section">
+        <h3>Tópicos</h3>
+        <TopicEditor topics={itemTopics} suggestions={topicSuggestions} onchange={handleTopicsChange} />
       </section>
 
       <section class="section">
@@ -1973,16 +2019,6 @@ path={selectedAsset.path}
 
               <!-- Map section (OpenStreetMap) -->
               <div class="geo-section">
-                <div class="geo-header">
-                  <h4>Mapa</h4>
-                  <button
-                    class="nlp-btn"
-                    disabled={geoLoading}
-                    onclick={handleGeocodeItem}
-                  >
-                    {geoLoading ? 'Georreferenciando...' : 'Georreferenciar'}
-                  </button>
-                </div>
                 <MapViewer markers={geoMarkers} height="280px" />
               </div>
 
@@ -2881,19 +2917,6 @@ path={selectedAsset.path}
     margin-top: var(--space-4);
     padding-top: var(--space-4);
     border-top: 1px solid var(--color-border);
-  }
-
-  .geo-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--space-3);
-  }
-
-  .geo-header h4 {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
   }
 
   /* LLM Section */

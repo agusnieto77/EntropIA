@@ -165,6 +165,36 @@ export const annotations = sqliteTable(
 )
 
 // ---------------------------------------------------------------------------
+// Topics — reusable tags for categorizing items
+// ---------------------------------------------------------------------------
+export const topics = sqliteTable('topics', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  createdAt: integer('created_at').notNull(),
+})
+
+// ---------------------------------------------------------------------------
+// Item Topics — many-to-many relationship between items and topics
+// ---------------------------------------------------------------------------
+export const itemTopics = sqliteTable(
+  'item_topics',
+  {
+    id: text('id').primaryKey(),
+    itemId: text('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+    topicId: text('topic_id')
+      .notNull()
+      .references(() => topics.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => ({
+    itemTopicIdx: index('idx_item_topics_item_topic').on(table.itemId, table.topicId),
+    topicIdx: index('idx_item_topics_topic_id').on(table.topicId),
+  })
+)
+
+// ---------------------------------------------------------------------------
 // LLM Results — persisted outputs from Gemma/local LLM jobs
 // ---------------------------------------------------------------------------
 export const llmResults = sqliteTable(

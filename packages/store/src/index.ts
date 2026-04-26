@@ -15,6 +15,8 @@ export {
   triples,
   annotations,
   transcriptions,
+  topics,
+  itemTopics,
 } from './schema'
 
 // Migration runner
@@ -34,6 +36,8 @@ export { EmbeddingRepo } from './repos/embedding.repo'
 export { TripleRepo } from './repos/triple.repo'
 export { TranscriptionRepo } from './repos/transcription.repo'
 export type { Transcription, TranscriptionSegment } from './repos/transcription.repo'
+export { TopicRepo } from './repos/topic.repo'
+export type { Topic, ItemTopic } from './repos/topic.repo'
 
 // Store API
 export { initStore } from './repos/store'
