@@ -21,6 +21,12 @@ export interface ImportFromPathsResult {
   skippedDuplicatePaths: number
 }
 
+/** A single rendered PDF page returned by the backend. */
+export interface RenderedPage {
+  page_number: number
+  png_path: string
+}
+
 /**
  * Classify a filename by its extension.
  * Returns 'image', 'pdf', 'audio', or null if unsupported.
@@ -256,4 +262,43 @@ export async function generatePdfThumbnail(
  */
 export async function deletePdfThumbnail(assetId: string): Promise<void> {
   await invoke('delete_pdf_thumbnail', { assetId })
+}
+
+// ---------------------------------------------------------------------------
+// Scanned PDF detection and page conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether a PDF file is scanned (image-only) by testing if its native
+ * text layer passes quality checks. Returns true if the PDF should be split
+ * into per-page image assets.
+ *
+ * Calls the Rust `is_scanned_pdf` command which reads the PDF, attempts native
+ * text extraction, and checks if the result has ≥50 alphanumeric characters.
+ */
+export async function isScannedPdf(assetPath: string): Promise<boolean> {
+  return invoke<boolean>('is_scanned_pdf', { assetPath })
+}
+
+/**
+ * Render all pages of a scanned PDF as individual PNG images.
+ *
+ * Calls the Rust `render_pdf_pages` command which renders each page at 300 DPI
+ * and saves them to the specified output directory.
+ *
+ * @param pdfPath Absolute path to the source PDF file on the filesystem
+ * @param outputDir Directory where PNG files will be saved
+ * @param filenamePrefix Prefix for output filenames (e.g. "document" → "document_page_1.png")
+ * @returns Array of {page_number, png_path} objects with absolute filesystem paths
+ */
+export async function renderPdfPages(
+  pdfPath: string,
+  outputDir: string,
+  filenamePrefix: string
+): Promise<RenderedPage[]> {
+  return invoke<RenderedPage[]>('render_pdf_pages', {
+    pdfPath,
+    outputDir,
+    filenamePrefix,
+  })
 }

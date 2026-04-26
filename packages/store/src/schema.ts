@@ -34,19 +34,21 @@ export const assets = sqliteTable('assets', {
     .notNull()
     .references(() => items.id),
   path: text('path').notNull(),
-  type: text('type').notNull(), // 'image' | 'pdf'
+  type: text('type').notNull(), // 'image' | 'pdf' | 'audio'
+  sortIndex: integer('sort_index').notNull().default(0),
   size: integer('size'),
   createdAt: integer('created_at').notNull(),
 })
 
 // ---------------------------------------------------------------------------
-// Notes — textual annotations on an item
+// Notes — textual annotations on an item (optionally scoped to an asset/page)
 // ---------------------------------------------------------------------------
 export const notes = sqliteTable('notes', {
   id: text('id').primaryKey(),
   itemId: text('item_id')
     .notNull()
     .references(() => items.id),
+  assetId: text('asset_id'),
   content: text('content').notNull(),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
@@ -83,13 +85,14 @@ export const extractions = sqliteTable('extractions', {
 })
 
 // ---------------------------------------------------------------------------
-// Entities — NER results linked to an item
+// Entities — NER results linked to an item (optionally scoped to an asset)
 // ---------------------------------------------------------------------------
 export const entities = sqliteTable('entities', {
   id: text('id').primaryKey().notNull(),
   itemId: text('item_id')
     .notNull()
     .references(() => items.id),
+  assetId: text('asset_id'),
   entityType: text('entity_type').notNull(), // 'person' | 'place' | 'date' | 'institution' | 'organization' | 'misc' | 'custom'
   value: text('value').notNull(),
   startOffset: integer('start_offset').notNull().default(0),
@@ -104,13 +107,14 @@ export const entities = sqliteTable('entities', {
 })
 
 // ---------------------------------------------------------------------------
-// Triples — semantic triples (S|P|O) linked to an item
+// Triples — semantic triples (S|P|O) linked to an item (optionally scoped to an asset)
 // ---------------------------------------------------------------------------
 export const triples = sqliteTable('triples', {
   id: text('id').primaryKey().notNull(),
   itemId: text('item_id')
     .notNull()
     .references(() => items.id),
+  assetId: text('asset_id'),
   subject: text('subject').notNull(),
   predicate: text('predicate').notNull(),
   object: text('object').notNull(),

@@ -6,10 +6,12 @@
   import {
     NlpStore,
     indexFts,
-    enrichItem,
     embedItem,
+    embedAsset,
     extractEntities,
+    extractEntitiesForAsset,
     extractTriples,
+    extractTriplesForAsset,
     similarItems as fetchSimilarItems,
   } from '$lib/nlp'
   import {
@@ -18,6 +20,10 @@
     llmCorrectOcr,
     llmExtractEntities,
     llmExtractTriples,
+    llmSummarizeAsset,
+    llmCorrectOcrAsset,
+    llmExtractEntitiesAsset,
+    llmExtractTriplesAsset,
   } from '$lib/llm'
   import { GeoStore, geocodeItemEntities } from '$lib/geo'
   import {
@@ -31,7 +37,7 @@
   } from '@entropia/ui'
   import type { MapMarker } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
-  import { listen } from '@tauri-apps/api/event'
+  import { listen, emit } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
   import { navigation } from '$lib/navigation'
   import type {
@@ -45,6 +51,8 @@
     Entity,
     ViewerAnnotation,
     AnnotationKind as ViewerAnnotationKind,
+    EditTool,
+    ImageEditResult,
   } from '@entropia/ui'
   import { TranscriptionRepo } from '@entropia/store'
 
@@ -132,14 +140,33 @@
     annotations: ViewerAnnotation[]
   } | null = null
 
+  // Image edit state
+  let editTool = $state<EditTool>('none')
+  let imageVersion = $state(0)
+
+  // Undo history: stack of { path, width, height, annotations } snapshots
+  // Each entry represents the state BEFORE an edit operation. Popping restores
+  // the asset to that state (the file is still on disk because edits create
+  // versioned files rather than overwriting in-place).
+  interface UndoEntry {
+    path: string
+    width: number
+    height: number
+    annotations: ViewerAnnotation[]
+  }
+  let undoStack = $state<UndoEntry[]>([])
+  let canUndo = $derived(undoStack.length > 0)
+  let lastSelectedAssetId = $state<string | null>(null)
+
   // OCR state — plain TS class, updated via Tauri events
   const ocrStore = new OcrStore({
     onComplete: (assetId) => {
-      // After OCR extraction completes, auto-trigger full enrichment for this item
-      void enrichItem(itemId).catch(() => {
-        // Non-fatal: enrichment failure doesn't block the UI
-      })
-      void assetId // suppress unused warning (assetId belongs to an asset of itemId)
+      // After OCR extraction completes on a specific asset, auto-trigger
+      // asset-level enrichment for that asset
+      if (selectedAsset && selectedAsset.id === assetId) {
+        void extractEntitiesForAsset(itemId, assetId).catch(() => {})
+        void extractTriplesForAsset(itemId, assetId).catch(() => {})
+      }
     },
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
@@ -148,13 +175,17 @@
   let ocrEditedText = $state(new Map<string, string>())
   // Debounce timers per asset for persisting edits to DB
   let ocrPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
+  // Debounce timers per asset for downstream NLP reprocessing after user inactivity
+  let assetReanalysisTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
 
   // Transcription state — mirrors OcrStore pattern for audio assets
   const transcriptionStore = new TranscriptionStore({
     onComplete: (assetId) => {
-      // After transcription completes, auto-trigger full enrichment
-      void enrichItem(itemId).catch(() => {})
-      void assetId
+      // After transcription completes, auto-trigger enrichment for that asset
+      if (selectedAsset && selectedAsset.id === assetId) {
+        void extractEntitiesForAsset(itemId, assetId).catch(() => {})
+        void extractTriplesForAsset(itemId, assetId).catch(() => {})
+      }
     },
   })
   let transcriptionTick = $state(0)
@@ -162,7 +193,40 @@
   let transEditedText = $state(new Map<string, string>())
   let transPersistTimers = $state(new Map<string, ReturnType<typeof setTimeout>>())
 
-  /** Schedule a debounced persist of edited text to the DB (500ms after last keystroke). */
+  const PERSIST_IDLE_MS = 500
+  const REANALYSIS_IDLE_MS = 1500
+
+  function scheduleAssetReanalysis(assetId: string) {
+    const existing = assetReanalysisTimers.get(assetId)
+    if (existing) clearTimeout(existing)
+
+    const timer = setTimeout(async () => {
+      const jobs = [
+        ['ner', () => extractEntitiesForAsset(itemId, assetId)],
+        ['triples', () => extractTriplesForAsset(itemId, assetId)],
+        ['fts', () => indexFts(itemId)],
+        ['embed', () => embedAsset(itemId, assetId)],
+      ] as const
+
+      try {
+        console.info('[ItemView] Re-running post-edit analysis', { itemId, assetId })
+
+        const results = await Promise.allSettled(jobs.map(([, run]) => run()))
+        results.forEach((result, index) => {
+          const [jobName] = jobs[index]
+          if (result.status === 'rejected') {
+            console.error(`[ItemView] Post-edit ${jobName} failed`, result.reason)
+          }
+        })
+      } finally {
+        assetReanalysisTimers.delete(assetId)
+      }
+    }, REANALYSIS_IDLE_MS)
+
+    assetReanalysisTimers.set(assetId, timer)
+  }
+
+  /** Save quickly, but only re-run expensive analysis after longer inactivity. */
   function schedulePersist(assetId: string, text: string) {
     // Cancel any pending timer for this asset
     const existing = ocrPersistTimers.get(assetId)
@@ -172,13 +236,12 @@
     const timer = setTimeout(async () => {
       try {
         await invoke('update_extraction_text_cmd', { assetId, textContent: text })
-        // Re-enrich so search reflects the corrected text
-        await enrichItem(itemId).catch(() => {})
+        scheduleAssetReanalysis(assetId)
       } catch (e) {
         console.error('[ItemView] Failed to persist OCR correction:', e)
       }
       ocrPersistTimers.delete(assetId)
-    }, 500)
+    }, PERSIST_IDLE_MS)
 
     ocrPersistTimers.set(assetId, timer)
   }
@@ -191,12 +254,12 @@
     const timer = setTimeout(async () => {
       try {
         await invoke('update_transcription_text_cmd', { assetId, textContent: text })
-        await enrichItem(itemId).catch(() => {})
+        scheduleAssetReanalysis(assetId)
       } catch (e) {
         console.error('[ItemView] Failed to persist transcription correction:', e)
       }
       transPersistTimers.delete(assetId)
-    }, 500)
+    }, PERSIST_IDLE_MS)
 
     transPersistTimers.set(assetId, timer)
   }
@@ -250,14 +313,24 @@
   })
   let llmTick = $state(0)
 
+  /**
+   * Get the LLM state for the currently active context.
+   * When a specific asset/page is selected (multipage), use the asset ID
+   * so LLM state is scoped per-page. Otherwise fall back to item ID.
+   */
   function getLlmState() {
     void llmTick
-    return llmStore.getState(itemId)
+    const targetId = selectedAsset ? selectedAsset.id : itemId
+    return llmStore.getState(targetId)
   }
 
   async function handleLlmSummarize() {
     try {
-      await llmSummarize(itemId)
+      if (selectedAsset) {
+        await llmSummarizeAsset(selectedAsset.id)
+      } else {
+        await llmSummarize(itemId)
+      }
     } catch (e) {
       console.error('[LLM] summarize failed:', e)
     }
@@ -265,7 +338,11 @@
 
   async function handleLlmCorrectOcr() {
     try {
-      await llmCorrectOcr(itemId)
+      if (selectedAsset) {
+        await llmCorrectOcrAsset(selectedAsset.id)
+      } else {
+        await llmCorrectOcr(itemId)
+      }
     } catch (e) {
       console.error('[LLM] correct OCR failed:', e)
     }
@@ -273,7 +350,11 @@
 
   async function handleLlmExtractEntities() {
     try {
-      await llmExtractEntities(itemId)
+      if (selectedAsset) {
+        await llmExtractEntitiesAsset(selectedAsset.id)
+      } else {
+        await llmExtractEntities(itemId)
+      }
     } catch (e) {
       console.error('[LLM] extract entities failed:', e)
     }
@@ -281,7 +362,11 @@
 
   async function handleLlmExtractTriples() {
     try {
-      await llmExtractTriples(itemId)
+      if (selectedAsset) {
+        await llmExtractTriplesAsset(selectedAsset.id)
+      } else {
+        await llmExtractTriples(itemId)
+      }
     } catch (e) {
       console.error('[LLM] extract triples failed:', e)
     }
@@ -337,7 +422,11 @@
 
   let selectedAsset = $derived(assets[selectedAssetIndex] ?? null)
 
-  let viewerSrc = $derived(selectedAsset ? getAssetUrl(selectedAsset.path) : '')
+  let viewerSrc = $derived(
+    selectedAsset
+      ? getAssetUrl(selectedAsset.path) + (imageVersion > 0 ? `?_t=${imageVersion}` : '')
+      : ''
+  )
 
   let viewerType = $derived<'image' | 'pdf' | 'audio'>(
     selectedAsset?.type === 'pdf' ? 'pdf' : selectedAsset?.type === 'audio' ? 'audio' : 'image'
@@ -447,6 +536,253 @@
     annotationColor = color
   }
 
+  // ── Image editing handlers ────────────────────────────────────────────
+
+  /** Convert normalized (0-1) region to pixel coordinates based on image dimensions */
+  function normalizedToPixels(
+    region: { x: number; y: number; width: number; height: number },
+    naturalW: number,
+    naturalH: number
+  ) {
+    return {
+      x: Math.round(region.x * naturalW),
+      y: Math.round(region.y * naturalH),
+      width: Math.round(region.width * naturalW),
+      height: Math.round(region.height * naturalH),
+    }
+  }
+
+  /** Adjust annotations after a rotation. Converted = new image dimensions. */
+  function adjustAnnotationsAfterRotation(
+    rotation: 'left' | 'right'
+  ) {
+    annotations = annotations.map((a) => {
+      if (rotation === 'right') {
+        // 90° CW: new_x = 1 - old_y - old_height, new_y = old_x
+        const nx = 1 - a.y - a.height
+        const ny = a.x
+        return { ...a, x: nx, y: ny, width: a.height, height: a.width }
+      } else {
+        // 90° CCW: new_x = old_y, new_y = 1 - old_x - old_width
+        const nx = a.y
+        const ny = 1 - a.x - a.width
+        return { ...a, x: nx, y: ny, width: a.height, height: a.width }
+      }
+    })
+  }
+
+  /** Adjust annotations after a crop. Region is the crop area in normalized coords. */
+  function adjustAnnotationsAfterCrop(
+    region: { x: number; y: number; width: number; height: number }
+  ) {
+    const { x: cx, y: cy, width: cw, height: ch } = region
+    annotations = annotations
+      .filter((a) => {
+        // Keep annotations that overlap with the crop region
+        const overlapsX = a.x < cx + cw && a.x + a.width > cx
+        const overlapsY = a.y < cy + ch && a.y + a.height > cy
+        return overlapsX && overlapsY
+      })
+      .map((a) => {
+        // Clamp to crop region
+        const clampedX = Math.max(a.x, cx)
+        const clampedY = Math.max(a.y, cy)
+        const clampedRight = Math.min(a.x + a.width, cx + cw)
+        const clampedBottom = Math.min(a.y + a.height, cy + ch)
+        const newWidth = clampedRight - clampedX
+        const newHeight = clampedBottom - clampedY
+        return {
+          ...a,
+          x: (clampedX - cx) / cw,
+          y: (clampedY - cy) / ch,
+          width: newWidth / cw,
+          height: newHeight / ch,
+        }
+      })
+  }
+
+  async function handleEditSelect(
+    region: { x: number; y: number; width: number; height: number }
+  ) {
+    if (!selectedAsset || selectedAsset.type !== 'image') return
+    if (imageNaturalW === 0 || imageNaturalH === 0) return
+
+    await flushPendingAnnotationSave()
+
+    const asset = selectedAsset
+    const pixelRegion = normalizedToPixels(region, imageNaturalW, imageNaturalH)
+
+    // Push current state onto undo stack before performing the edit
+    undoStack = [...undoStack, {
+      path: asset.path,
+      width: imageNaturalW,
+      height: imageNaturalH,
+      annotations: JSON.parse(JSON.stringify(annotations)),
+    }]
+
+    try {
+      if (editTool === 'crop') {
+        const result: ImageEditResult = await invoke('crop_image', {
+          path: asset.path,
+          x: pixelRegion.x,
+          y: pixelRegion.y,
+          width: pixelRegion.width,
+          height: pixelRegion.height,
+        })
+        adjustAnnotationsAfterCrop(region)
+        await handleImageEditResult(result, asset.id)
+      } else if (editTool === 'erase') {
+        const result: ImageEditResult = await invoke('erase_region', {
+          path: asset.path,
+          x: pixelRegion.x,
+          y: pixelRegion.y,
+          width: pixelRegion.width,
+          height: pixelRegion.height,
+          fill: 'white',
+        })
+        await handleImageEditResult(result, asset.id)
+      }
+    } catch (e) {
+      // On failure, pop the undo entry since the edit didn't succeed
+      undoStack = undoStack.slice(0, -1)
+      console.error('[ItemView] Image edit failed:', e)
+    } finally {
+      // Reset edit tool after operation
+      editTool = 'none'
+    }
+  }
+
+  async function handleRotateLeft() {
+    if (!selectedAsset || selectedAsset.type !== 'image') return
+    await flushPendingAnnotationSave()
+    const asset = selectedAsset
+
+    // Push current state onto undo stack before rotating
+    undoStack = [...undoStack, {
+      path: asset.path,
+      width: imageNaturalW,
+      height: imageNaturalH,
+      annotations: JSON.parse(JSON.stringify(annotations)),
+    }]
+
+    try {
+      const result: ImageEditResult = await invoke('rotate_image', {
+        path: asset.path,
+        direction: 'left',
+      })
+      adjustAnnotationsAfterRotation('left')
+      await handleImageEditResult(result, asset.id)
+    } catch (e) {
+      undoStack = undoStack.slice(0, -1)
+      console.error('[ItemView] Rotate left failed:', e)
+    }
+  }
+
+  async function handleRotateRight() {
+    if (!selectedAsset || selectedAsset.type !== 'image') return
+    await flushPendingAnnotationSave()
+    const asset = selectedAsset
+
+    // Push current state onto undo stack before rotating
+    undoStack = [...undoStack, {
+      path: asset.path,
+      width: imageNaturalW,
+      height: imageNaturalH,
+      annotations: JSON.parse(JSON.stringify(annotations)),
+    }]
+
+    try {
+      const result: ImageEditResult = await invoke('rotate_image', {
+        path: asset.path,
+        direction: 'right',
+      })
+      adjustAnnotationsAfterRotation('right')
+      await handleImageEditResult(result, asset.id)
+    } catch (e) {
+      undoStack = undoStack.slice(0, -1)
+      console.error('[ItemView] Rotate right failed:', e)
+    }
+  }
+
+  /** Undo the last image edit: restore the asset path, dimensions,
+   *  and annotations to the previous state. */
+  async function handleUndo() {
+    if (!selectedAsset || selectedAsset.type !== 'image') return
+    if (undoStack.length === 0) return
+
+    await flushPendingAnnotationSave()
+
+    const entry = undoStack[undoStack.length - 1]!
+    const assetId = selectedAsset.id
+
+    // Restore state from undo entry
+    const store = getStore()
+    await store.assets.updatePath(assetId, entry.path)
+    assets = assets.map((a) =>
+      a.id === assetId ? { ...a, path: entry.path } : a
+    )
+    annotations = entry.annotations
+    selectedAnnotationId = null
+    // Force image refresh
+    imageVersion++
+
+    // Persist the restored annotations
+    await persistAnnotations(assetId, annotations)
+
+    // Pop the undo stack
+    undoStack = undoStack.slice(0, -1)
+
+    // Notify other views
+    try {
+      await emit('asset:image-updated', {
+        itemId,
+        assetId,
+        path: entry.path,
+      })
+    } catch (e) {
+      console.warn('[ItemView] Failed to emit asset:image-updated event on undo:', e)
+    }
+  }
+
+  /** Post-edit: always update asset path in DB (even if format didn't change),
+   *  refresh image, persist annotations, push undo entry, and notify other views. */
+  async function handleImageEditResult(result: ImageEditResult, assetId: string) {
+    // Always update the asset path in DB — versioned paths change on every edit,
+    // and the DB must reflect the current file on disk.
+    const store = getStore()
+    await store.assets.updatePath(assetId, result.path)
+    // Update the local assets array with the new path
+    assets = assets.map((a) =>
+      a.id === assetId ? { ...a, path: result.path } : a
+    )
+
+    // Force image refresh: bump version counter so the browser fetches the
+    // new file (versioned paths already make the URL unique, but this helps
+    // if something caches at the protocol level).
+    imageVersion++
+
+    // Persist adjusted annotations
+    if (selectedAsset && selectedAsset.id === assetId) {
+      await persistAnnotations(assetId, annotations)
+    }
+
+    // Notify CollectionView (and any other listeners) that the asset path
+    // has changed, so they can invalidate their cached thumbnail URLs.
+    try {
+      await emit('asset:image-updated', {
+        itemId,
+        assetId,
+        path: result.path,
+      })
+    } catch (e) {
+      console.warn('[ItemView] Failed to emit asset:image-updated event:', e)
+    }
+  }
+
+  // Track natural image dimensions for pixel coordinate conversion
+  let imageNaturalW = $state(0)
+  let imageNaturalH = $state(0)
+
   function parseMetadataRecord(json: string): Record<string, string> {
     try {
       const obj = JSON.parse(json)
@@ -490,46 +826,6 @@
     }
   }
 
-  /** Load existing extraction text for all assets on mount (persistence between sessions). */
-  async function loadExistingExtractions() {
-    const store = getStore()
-    for (const asset of assets) {
-      const extraction = await store.extractions.findByAsset(asset.id)
-      if (extraction) {
-        ocrStore._updateState(asset.id, {
-          status: 'done',
-          progress: 100,
-          textLength: extraction.textContent.length,
-          method: extraction.method,
-          textContent: extraction.textContent,
-        })
-        ocrTick++
-      }
-    }
-  }
-
-  /** Load existing transcriptions for all audio assets on mount. */
-  async function loadExistingTranscriptions() {
-    const store = getStore()
-    for (const asset of assets) {
-      if (asset.type !== 'audio') continue
-      const transcription = await store.transcriptions.findByAsset(asset.id)
-      if (transcription) {
-        transcriptionStore._updateState(asset.id, {
-          status: 'done',
-          progress: 100,
-          text: transcription.textContent,
-          language: transcription.language ?? undefined,
-          durationMs: transcription.durationMs ?? undefined,
-          segmentsCount: transcription.segments
-            ? TranscriptionRepo.parseSegments(transcription.segments).length
-            : 0,
-        })
-        transcriptionTick++
-      }
-    }
-  }
-
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
@@ -561,7 +857,11 @@
     nlpStore._setJobStatus(itemId, 'embed', 'pending')
     nlpTick++
     try {
-      await embedItem(itemId)
+      if (selectedAsset) {
+        await embedAsset(itemId, selectedAsset.id)
+      } else {
+        await embedItem(itemId)
+      }
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'embed', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
@@ -572,7 +872,11 @@
     nlpStore._setJobStatus(itemId, 'ner', 'pending')
     nlpTick++
     try {
-      await extractEntities(itemId)
+      if (selectedAsset) {
+        await extractEntitiesForAsset(itemId, selectedAsset.id)
+      } else {
+        await extractEntities(itemId)
+      }
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'ner', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
@@ -583,7 +887,11 @@
     nlpStore._setJobStatus(itemId, 'triples', 'pending')
     nlpTick++
     try {
-      await extractTriples(itemId)
+      if (selectedAsset) {
+        await extractTriplesForAsset(itemId, selectedAsset.id)
+      } else {
+        await extractTriples(itemId)
+      }
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'triples', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
@@ -593,9 +901,15 @@
   async function loadEntities() {
     try {
       const store = getStore()
-      entities = ((await store.entities.findByItemId(itemId)) as Entity[]).filter(
-        (entity) => entity.confidence == null || entity.confidence > 0.89
-      )
+      if (selectedAsset) {
+        entities = ((await store.entities.findByAssetId(itemId, selectedAsset.id)) as Entity[]).filter(
+          (entity) => entity.confidence == null || entity.confidence > 0.89
+        )
+      } else {
+        entities = ((await store.entities.findByItemId(itemId)) as Entity[]).filter(
+          (entity) => entity.confidence == null || entity.confidence > 0.89
+        )
+      }
     } catch {
       // Non-fatal: entities panel shows empty state
     }
@@ -624,6 +938,7 @@
     try {
       await getStore().entities.create({
         itemId,
+        assetId: selectedAsset?.id ?? null,
         entityType: newEntityType,
         value,
         startOffset: 0,
@@ -880,7 +1195,11 @@
   async function loadTriples() {
     try {
       const store = getStore()
-      triples = await store.triples.findByItemId(itemId)
+      if (selectedAsset) {
+        triples = await store.triples.findByAssetId(itemId, selectedAsset.id)
+      } else {
+        triples = await store.triples.findByItemId(itemId)
+      }
     } catch {
       triples = []
     }
@@ -906,8 +1225,8 @@
     try {
       error = null
       const store = getStore()
-      await store.notes.create({ itemId, content })
-      notes = await store.notes.findByItem(itemId)
+      await store.notes.create({ itemId, assetId: selectedAsset?.id ?? null, content })
+      notes = await loadNotesForAsset()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to save note'
     }
@@ -918,7 +1237,7 @@
       error = null
       const store = getStore()
       await store.notes.delete(noteId)
-      notes = await store.notes.findByItem(itemId)
+      notes = await loadNotesForAsset()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to delete note'
     }
@@ -939,7 +1258,7 @@
       error = null
       const store = getStore()
       await store.notes.update(noteId, editContent)
-      notes = await store.notes.findByItem(itemId)
+      notes = await loadNotesForAsset()
       editingNoteId = null
       editContent = ''
     } catch (e) {
@@ -952,22 +1271,31 @@
     editContent = ''
   }
 
+  /** Load notes scoped to the current asset (plus item-level notes). */
+  async function loadNotesForAsset(): Promise<Note[]> {
+    if (!selectedAsset) {
+      const store = getStore()
+      return store.notes.findByItem(itemId)
+    }
+    const store = getStore()
+    return store.notes.findByAsset(itemId, selectedAsset.id)
+  }
+
   async function loadData() {
     try {
       loading = true
       error = null
+      selectedAssetIndex = 0 // Reset page selection on item change
       const store = getStore()
-      const [loadedItem, loadedAssets, loadedNotes] = await Promise.all([
+      const [loadedItem, loadedAssets] = await Promise.all([
         store.items.findById(itemId),
         store.assets.findByItem(itemId),
-        store.notes.findByItem(itemId),
       ])
       item = loadedItem
       assets = loadedAssets
-      notes = loadedNotes
-      // Load existing extraction text for persistence between sessions
-      await loadExistingExtractions()
-      await loadExistingTranscriptions()
+      // Asset-scoped data (notes, entities, triples) will be loaded by the selectedAsset effect
+      // Load item-scoped data (similar items) - not asset-dependent
+      void loadSimilarItems()
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load item'
     } finally {
@@ -978,9 +1306,19 @@
   $effect(() => {
     const asset = selectedAsset
     const currentAssetId = asset?.id ?? null
+    const switchedAsset = currentAssetId !== lastSelectedAssetId
 
-    selectedAnnotationId = null
-    annotationTool = 'select'
+    lastSelectedAssetId = currentAssetId
+
+    if (switchedAsset) {
+      selectedAnnotationId = null
+      annotationTool = 'select'
+      editTool = 'none'
+      // Reset undo stack only when switching to a DIFFERENT asset by id.
+      // Editing the same asset creates a new versioned path, which should NOT
+      // clear undo history.
+      undoStack = []
+    }
 
     if (pendingAnnotationSave && pendingAnnotationSave.assetId !== currentAssetId) {
       void flushPendingAnnotationSave()
@@ -1017,14 +1355,67 @@
     }
   })
 
+  // Reload asset-scoped data when the selected asset changes
+  $effect(() => {
+    const asset = selectedAsset
+    if (!asset) return
+
+    // Reload notes for this asset (plus item-level notes)
+    void loadNotesForAsset().then((loadedNotes) => {
+      notes = loadedNotes
+    })
+
+    // Load existing extraction text for this asset
+    const store = getStore()
+    void store.extractions.findByAsset(asset.id).then((extraction) => {
+      if (extraction) {
+        ocrStore._updateState(asset.id, {
+          status: 'done',
+          progress: 100,
+          textLength: extraction.textContent.length,
+          method: extraction.method,
+          textContent: extraction.textContent,
+        })
+        ocrTick++
+      }
+    })
+
+    // Load existing transcription for audio assets
+    if (asset.type === 'audio') {
+      void store.transcriptions.findByAsset(asset.id).then((transcription) => {
+        if (transcription) {
+          transcriptionStore._updateState(asset.id, {
+            status: 'done',
+            progress: 100,
+            text: transcription.textContent,
+            language: transcription.language ?? undefined,
+            durationMs: transcription.durationMs ?? undefined,
+            segmentsCount: transcription.segments
+              ? TranscriptionRepo.parseSegments(transcription.segments).length
+              : 0,
+          })
+          transcriptionTick++
+        }
+      })
+    }
+  })
+
+  // Reload analysis data when the selected asset changes
+  $effect(() => {
+    const asset = selectedAsset
+    if (!asset) return
+    void loadEntities()
+    void loadTriples()
+    // Load persisted LLM results for this asset so previous
+    // asset-level results (summarize, correct_ocr, etc.) are visible.
+    llmStore.loadPersistedResults(asset.id)
+  })
+
   $effect(() => {
     // Reload all data when navigating to a different item.
     // Reading itemId here ensures the effect re-runs when the prop changes.
     const _id = itemId
     void loadData()
-    void loadEntities()
-    void loadTriples()
-    void loadSimilarItems()
   })
 
   onMount(() => {
@@ -1055,7 +1446,7 @@
         nlpStore._setJobStatus = (id, job, status, err) => {
           origSet(id, job, status, err)
           nlpTick++
-          // After NER completes, reload entities from DB
+          // After NER completes, reload entities for the current context
           if (job === 'ner' && status === 'done' && id === itemId) {
             loadEntities()
           }
@@ -1084,7 +1475,8 @@
       llmStore.onChange(() => {
         llmTick++
       })
-      // Load persisted LLM results so they survive page reloads
+      // Load persisted LLM results for the item (legacy item-level results).
+      // Asset-level results are loaded in the selectedAsset effect below.
       llmStore.loadPersistedResults(itemId)
     })
 
@@ -1109,6 +1501,10 @@
       clearTimeout(timer)
     }
     transPersistTimers.clear()
+    for (const timer of assetReanalysisTimers.values()) {
+      clearTimeout(timer)
+    }
+    assetReanalysisTimers.clear()
     clearAnnotationSaveTimer()
     clearFtsSearchTimer()
     if (dragCleanup) dragCleanup()
@@ -1123,19 +1519,27 @@
   <div class="item-view" bind:this={itemViewEl} style="grid-template-columns: 1fr 6px {sidebarWidth}%">
     <div class="left-panel">
       {#if selectedAsset}
-        <DocumentViewer
-          path={selectedAsset.path}
-          assetUrl={viewerSrc}
-          type={viewerType}
-          {annotations}
-          {selectedAnnotationId}
-          {annotationTool}
-          {annotationColor}
-          onAnnotationsChange={handleAnnotationsChange}
-          onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
-          onAnnotationToolChange={handleAnnotationToolChange}
-          onAnnotationColorChange={handleAnnotationColorChange}
-        />
+<DocumentViewer
+path={selectedAsset.path}
+            assetUrl={viewerSrc}
+            type={viewerType}
+            {annotations}
+            {selectedAnnotationId}
+            {annotationTool}
+            {annotationColor}
+            {editTool}
+            canUndo={canUndo}
+            onAnnotationsChange={handleAnnotationsChange}
+            onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
+            onAnnotationToolChange={handleAnnotationToolChange}
+            onAnnotationColorChange={handleAnnotationColorChange}
+            onEditSelect={handleEditSelect}
+            onEditToolChange={(tool) => { editTool = tool; if (tool !== 'none') annotationTool = 'select' }}
+            onRotateLeft={handleRotateLeft}
+            onRotateRight={handleRotateRight}
+            onUndo={handleUndo}
+            onDimensionsChange={(dims) => { imageNaturalW = dims.width; imageNaturalH = dims.height }}
+          />
 
         {#if annotationSaveError}
           <p class="error">{annotationSaveError}</p>
@@ -1147,20 +1551,26 @@
       {/if}
 
       {#if assets.length > 1}
-        <div class="asset-list">
-          {#each assets as asset, i (asset.id)}
-            {@const ocr = getOcrState(asset.id)}
-            <button
-              class="asset-thumb"
-              class:active={i === selectedAssetIndex}
-              onclick={() => (selectedAssetIndex = i)}
-            >
-              {asset.path.split(/[/\\]/).pop() ?? 'Asset'}
-              {#if ocr.status !== 'idle'}
-                <span class="ocr-badge ocr-badge--{ocr.status}">{ocr.status}</span>
-              {/if}
-            </button>
-          {/each}
+        <div class="asset-pagination">
+          <button
+            class="pagination-btn"
+            disabled={selectedAssetIndex <= 0}
+            onclick={() => (selectedAssetIndex = Math.max(0, selectedAssetIndex - 1))}
+            aria-label="Previous page"
+          >
+            ‹
+          </button>
+          <span class="pagination-info">
+            {selectedAssetIndex + 1} / {assets.length}
+          </span>
+          <button
+            class="pagination-btn"
+            disabled={selectedAssetIndex >= assets.length - 1}
+            onclick={() => (selectedAssetIndex = Math.min(assets.length - 1, selectedAssetIndex + 1))}
+            aria-label="Next page"
+          >
+            ›
+          </button>
         </div>
       {/if}
     </div>
@@ -1187,12 +1597,12 @@
       </section>
 
       <section class="section">
-        <h3>Add Note</h3>
-        <NoteEditor onsave={handleSaveNote} />
-      </section>
+<h3>Add Note{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+          <NoteEditor onsave={handleSaveNote} />
+        </section>
 
-      <section class="section">
-        <h3>Notes ({notes.length})</h3>
+        <section class="section">
+          <h3>Notes ({notes.length}){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
         {#if notes.length === 0}
           <p class="empty-text">No notes yet.</p>
         {:else}
@@ -1237,137 +1647,127 @@
         {/if}
       </section>
 
-      {#if assets.some((a) => a.type !== 'audio')}
+      {#if selectedAsset && selectedAsset.type !== 'audio'}
+        {@const ocr = getOcrState(selectedAsset.id)}
+        {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
         <section class="section">
-          <h3>Text Extraction</h3>
-          {#if assets.filter((a) => a.type !== 'audio').length === 0}
-            <p class="empty-text">No assets to extract text from.</p>
-          {:else}
-            <div class="ocr-list">
-              {#each assets.filter((a) => a.type !== 'audio') as asset (asset.id)}
-                {@const ocr = getOcrState(asset.id)}
-                {@const filename = asset.path.split(/[/\\]/).pop() ?? 'Asset'}
-                {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
-                <div class="ocr-item">
-                  <div class="ocr-item-header">
-                    <span class="ocr-filename">{filename}</span>
-                    <div class="ocr-btn-group">
-                      <button
-                        class="ocr-btn ocr-btn--light"
-                        disabled={busy}
-                        onclick={() => handleExtractText(asset, 'light')}
-                        title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
-                      >
-                        OCRL
-                      </button>
-                      <button
-                        class="ocr-btn ocr-btn--high"
-                        disabled={busy}
-                        onclick={() => handleExtractText(asset, 'high')}
-                        title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
-                      >
-                        OCRH
-                      </button>
-                    </div>
-                  </div>
-
-                  {#if ocr.status === 'running'}
-                    <progress class="ocr-progress" value={ocr.progress} max="100">
-                      {ocr.progress}%
-                    </progress>
-                    <p class="ocr-status-text">Running… {ocr.progress}%</p>
-                  {:else if ocr.status === 'pending'}
-                    <p class="ocr-status-text">Starting extraction…</p>
-                  {:else if ocr.status === 'error'}
-                    <p class="ocr-error">Extraction failed: {ocr.error}</p>
-                  {:else if ocr.status === 'done'}
-                    {@const editedText = ocrEditedText.get(asset.id) ?? ocr.textContent ?? ''}
-                    {@const displayLength = editedText.length}
-                    <details class="ocr-result">
-                      <summary>
-                        Extracted text
-                        <span class="ocr-meta">
-                          via {ocr.method ?? 'unknown'} · {displayLength} chars
-                        </span>
-                      </summary>
-                      <textarea
-                        class="ocr-result-body ocr-textarea"
-                        rows="8"
-                        oninput={(e) => {
-                          const val = e.currentTarget.value
-                          ocrEditedText.set(asset.id, val)
-                          ocrStore.setTextContent(asset.id, val)
-                          schedulePersist(asset.id, val)
-                          ocrTick++
-                        }}>{editedText}</textarea
-                      >
-                    </details>
-                  {/if}
-                </div>
-              {/each}
+          <h3>Text Extraction{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+          <div class="ocr-item">
+            <div class="ocr-item-header">
+              <span class="ocr-filename">
+                {assets.length > 1 && assets.every(a => a.type === 'image')
+                  ? `Page ${selectedAssetIndex + 1}`
+                  : (selectedAsset.path.split(/[/\\]/).pop() ?? 'Asset')}
+              </span>
+              <div class="ocr-btn-group">
+                <button
+                  class="ocr-btn ocr-btn--light"
+                  disabled={busy}
+                  onclick={() => handleExtractText(selectedAsset, 'light')}
+                  title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
+                >
+                  OCRL
+                </button>
+                <button
+                  class="ocr-btn ocr-btn--high"
+                  disabled={busy}
+                  onclick={() => handleExtractText(selectedAsset, 'high')}
+                  title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
+                >
+                  OCRH
+                </button>
+              </div>
             </div>
-          {/if}
+
+            {#if ocr.status === 'running'}
+              <progress class="ocr-progress" value={ocr.progress} max="100">
+                {ocr.progress}%
+              </progress>
+              <p class="ocr-status-text">Running… {ocr.progress}%</p>
+            {:else if ocr.status === 'pending'}
+              <p class="ocr-status-text">Starting extraction…</p>
+            {:else if ocr.status === 'error'}
+              <p class="ocr-error">Extraction failed: {ocr.error}</p>
+            {:else if ocr.status === 'done'}
+              {@const editedText = ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''}
+              {@const displayLength = editedText.length}
+              <details class="ocr-result">
+                <summary>
+                  Extracted text
+                  <span class="ocr-meta">
+                    via {ocr.method ?? 'unknown'} · {displayLength} chars
+                  </span>
+                </summary>
+                <textarea
+                  class="ocr-result-body ocr-textarea"
+                  rows="8"
+                  oninput={(e) => {
+                    const val = e.currentTarget.value
+                    ocrEditedText.set(selectedAsset.id, val)
+                    ocrStore.setTextContent(selectedAsset.id, val)
+                    schedulePersist(selectedAsset.id, val)
+                    ocrTick++
+                  }}>{editedText}</textarea
+                >
+              </details>
+            {/if}
+          </div>
         </section>
       {/if}
 
-      {#if assets.some((a) => a.type === 'audio')}
+      {#if selectedAsset && selectedAsset.type === 'audio'}
+        {@const ts = getTranscriptionState(selectedAsset.id)}
+        {@const busy = ts.status === 'pending' || ts.status === 'running'}
         <section class="section">
-          <h3>Audio Transcription</h3>
-          <div class="ocr-list">
-            {#each assets.filter((a) => a.type === 'audio') as asset (asset.id)}
-              {@const ts = getTranscriptionState(asset.id)}
-              {@const filename = asset.path.split(/[/\\]/).pop() ?? 'Audio'}
-              {@const busy = ts.status === 'pending' || ts.status === 'running'}
-              <div class="ocr-item">
-                <div class="ocr-item-header">
-                  <span class="ocr-filename">&#x1f50a; {filename}</span>
-                  <button
-                    class="ocr-btn"
-                    disabled={busy}
-                    onclick={() => handleTranscribeAudio(asset)}
-                    title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
-                  >
-                    {busy ? 'Transcribing…' : 'Transcribe'}
-                  </button>
-                </div>
+          <h3>Audio Transcription{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+          <div class="ocr-item">
+            <div class="ocr-item-header">
+              <span class="ocr-filename">&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span>
+              <button
+                class="ocr-btn"
+                disabled={busy}
+                onclick={() => handleTranscribeAudio(selectedAsset)}
+                title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+              >
+                {busy ? 'Transcribing…' : 'Transcribe'}
+              </button>
+            </div>
 
-                {#if ts.status === 'running'}
-                  <progress class="ocr-progress" value={ts.progress} max="100">
-                    {ts.progress}%
-                  </progress>
-                  <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
-                {:else if ts.status === 'pending'}
-                  <p class="ocr-status-text">Starting transcription…</p>
-                {:else if ts.status === 'error'}
-                  <p class="ocr-error">Transcription failed: {ts.error}</p>
-                {:else if ts.status === 'done'}
-                  {@const editedText = transEditedText.get(asset.id) ?? ts.text ?? ''}
-                  {@const displayLength = editedText.length}
-                  <details class="ocr-result">
-                    <summary>
-                      Transcription
-                      <span class="ocr-meta">
-                        {#if ts.language}{ts.language} &middot;
-                        {/if}{displayLength} chars
-                        {#if ts.durationMs}
-                          &middot; {Math.round(ts.durationMs / 1000)}s{/if}
-                      </span>
-                    </summary>
-                    <textarea
-                      class="ocr-result-body ocr-textarea"
-                      rows="8"
-                      oninput={(e) => {
-                        const val = e.currentTarget.value
-                        transEditedText.set(asset.id, val)
-                        transcriptionStore.setTextContent(asset.id, val)
-                        scheduleTranscriptionPersist(asset.id, val)
-                        transcriptionTick++
-                      }}>{editedText}</textarea
-                    >
-                  </details>
-                {/if}
-              </div>
-            {/each}
+            {#if ts.status === 'running'}
+              <progress class="ocr-progress" value={ts.progress} max="100">
+                {ts.progress}%
+              </progress>
+              <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
+            {:else if ts.status === 'pending'}
+              <p class="ocr-status-text">Starting transcription…</p>
+            {:else if ts.status === 'error'}
+              <p class="ocr-error">Transcription failed: {ts.error}</p>
+            {:else if ts.status === 'done'}
+              {@const editedText = transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
+              {@const displayLength = editedText.length}
+              <details class="ocr-result">
+                <summary>
+                  Transcription
+                  <span class="ocr-meta">
+                    {#if ts.language}{ts.language} &middot;
+                    {/if}{displayLength} chars
+                    {#if ts.durationMs}
+                      &middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                  </span>
+                </summary>
+                <textarea
+                  class="ocr-result-body ocr-textarea"
+                  rows="8"
+                  oninput={(e) => {
+                    const val = e.currentTarget.value
+                    transEditedText.set(selectedAsset.id, val)
+                    transcriptionStore.setTextContent(selectedAsset.id, val)
+                    scheduleTranscriptionPersist(selectedAsset.id, val)
+                    transcriptionTick++
+                  }}>{editedText}</textarea
+                >
+              </details>
+            {/if}
           </div>
         </section>
       {/if}
@@ -1511,7 +1911,7 @@
 
               <!-- LLM section (Gemma 4) -->
               <div class="llm-section">
-                <h4>IA Generativa (Gemma 4)</h4>
+                <h4>IA Generativa (Gemma 4){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h4>
 
                 <div class="nlp-actions">
                   <button
@@ -1565,7 +1965,7 @@
 
                 {#if getLlmState().result}
                   <div class="llm-result">
-                    <h5>Resultado LLM</h5>
+                    <h5>Resultado LLM{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h5>
                     <pre class="llm-result-text">{getLlmState().result}</pre>
                   </div>
                 {/if}
@@ -1689,9 +2089,9 @@
               </div>
 
               <div class="triples-section">
-                <h4>Semantic Triples (S|P|O)</h4>
+                <h4>Semantic Triples (S|P|O){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h4>
                 {#if triples.length === 0}
-                  <p class="empty-text">No triples extracted yet for this item.</p>
+                  <p class="empty-text">No triples extracted yet{#if assets.length > 1} for this page{/if}.</p>
                 {:else}
                   <ul class="triples-list">
                     {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
@@ -1707,7 +2107,7 @@
 
               {#if similarItems.length > 0}
                 <div class="similar-section">
-                  <h4>Similar Items</h4>
+                  <h4>Similar Items{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
                   <ul class="similar-list">
                     {#each similarItems.slice(0, 5) as item (item.itemId)}
                       <li class="similar-item">
@@ -1724,7 +2124,7 @@
                 </div>
               {:else}
                 <div class="similar-section">
-                  <h4>Similar Items</h4>
+                  <h4>Similar Items{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
                   <p class="empty-text">
                     No embeddings yet. Generate embeddings to find similar items.
                   </p>
@@ -1800,22 +2200,41 @@
     display: flex;
     flex-direction: column;
   }
-  .asset-list {
+  .asset-pagination {
     display: flex;
+    align-items: center;
+    justify-content: center;
     gap: var(--space-2);
-    flex-wrap: wrap;
+    padding: var(--space-2) 0;
   }
-  .asset-thumb {
-    padding: var(--space-1) var(--space-2);
-    font-size: var(--font-size-xs);
+  .pagination-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-md);
     cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }
-  .asset-thumb.active {
+  .pagination-btn:hover:not(:disabled) {
     border-color: var(--color-primary);
     background: var(--color-primary-subtle);
+  }
+  .pagination-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .pagination-info {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    min-width: 60px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
   .empty-viewer {
     display: flex;

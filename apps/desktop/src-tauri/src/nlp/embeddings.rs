@@ -187,6 +187,46 @@ pub fn compute_and_store(
     upsert_vec_item(conn, item_id, &blob)
 }
 
+/// Compute embedding for a single asset's text and store it.
+///
+/// Uses only the extraction/transcription text for the given `asset_id`,
+/// not the entire item. The embedding is stored under the `item_id` key
+/// (same as item-level), so it replaces any previous item-level embedding
+/// with one based on just this asset's content.
+pub fn compute_and_store_for_asset(
+    engine: Option<&EmbeddingEngine>,
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+) -> Result<(), String> {
+    let text = text_provider::get_asset_text(conn, asset_id)?;
+    if text.trim().is_empty() {
+        return Err(format!(
+            "No source text available for asset '{asset_id}' (run OCR/transcription first)"
+        ));
+    }
+
+    let engine = match engine {
+        Some(e) => e,
+        None => {
+            return Err(embedding_degradation_log(
+                item_id,
+                "No embedding engine configured (Python with fastembed not found)",
+            ));
+        }
+    };
+
+    let vector = match engine.embed_text(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(embedding_degradation_log(item_id, &e));
+        }
+    };
+
+    let blob = floats_to_blob(&vector);
+    upsert_vec_item(conn, item_id, &blob)
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Serialize `Vec<f32>` to little-endian bytes for sqlite-vec BLOB storage.

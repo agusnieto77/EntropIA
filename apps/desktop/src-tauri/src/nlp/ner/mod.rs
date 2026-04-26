@@ -218,12 +218,91 @@ pub fn extract_and_store(
     Ok(())
 }
 
+/// Extract entities for a single asset/page (asset-level NER).
+///
+/// Similar to `extract_and_store`, but only processes the text for the given
+/// `asset_id` and stores entities with both `item_id` and `asset_id` for
+/// per-page filtering in the UI.
+pub fn extract_and_store_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    registry: &NerRegistry,
+) -> Result<(), String> {
+    let text = text_provider::get_asset_text(conn, asset_id)?;
+    let protected_entities = load_protected_entities(conn, item_id)?;
+    eprintln!(
+        "[nlp/ner] Asset-level extract start: item_id={}, asset_id={}, mode={}, engine_available={}, text_len={}",
+        item_id, asset_id, registry.configured_mode(), registry.engine_available(), text.len()
+    );
+
+    if text.trim().is_empty() {
+        delete_automatic_entities_for_asset(conn, item_id, asset_id)?;
+        eprintln!("[nlp/ner] Asset-level extract skipped: asset_id={}, no text available", asset_id);
+        return Ok(());
+    }
+
+    let entities = registry
+        .extract(&text)?
+        .into_iter()
+        .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
+        .filter(|entity| !is_suppressed_by_protected(entity, &protected_entities))
+        .collect::<Vec<_>>();
+
+    eprintln!(
+        "[nlp/ner] Asset-level extract result: item_id={}, asset_id={}, total={}",
+        item_id, asset_id, entities.len()
+    );
+
+    // Delete old automatic entities for this specific asset
+    delete_automatic_entities_for_asset(conn, item_id, asset_id)?;
+
+    for entity in &entities {
+        conn.execute(
+            r#"
+            INSERT INTO entities (
+                id, item_id, asset_id, entity_type, value, start_offset, end_offset,
+                confidence, source, model_name, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                item_id,
+                asset_id,
+                entity.entity_type.as_str(),
+                entity.value.as_str(),
+                entity.start_offset as i64,
+                entity.end_offset as i64,
+                entity.confidence as f64,
+                entity.source.as_str(),
+                entity.model_name.clone(),
+                now_millis(),
+            ],
+        )
+        .map_err(|e| format!("Failed to insert entity: {e}"))?;
+    }
+
+    Ok(())
+}
+
 fn delete_automatic_entities(conn: &Connection, item_id: &str) -> Result<(), String> {
     conn.execute(
         "DELETE FROM entities WHERE item_id = ?1 AND COALESCE(source, '') NOT IN ('manual', 'manual_deleted')",
         params![item_id],
     )
     .map_err(|e| format!("Failed to delete automatic entities: {e}"))?;
+    Ok(())
+}
+
+/// Delete automatic entities for a specific asset, preserving manual entities
+/// and entities that belong to other assets or the item level.
+fn delete_automatic_entities_for_asset(conn: &Connection, item_id: &str, asset_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM entities WHERE item_id = ?1 AND asset_id = ?2 AND COALESCE(source, '') NOT IN ('manual', 'manual_deleted')",
+        params![item_id, asset_id],
+    )
+    .map_err(|e| format!("Failed to delete automatic entities for asset: {e}"))?;
     Ok(())
 }
 

@@ -150,6 +150,10 @@ export class LlmStore {
 // Invoke helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoke helpers — item-level (legacy, concatenates all assets)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function llmCorrectOcr(itemId: string): Promise<string> {
   return invoke<string>('llm_correct_ocr', { itemId })
 }
@@ -172,6 +176,26 @@ export function llmClassify(itemId: string, categories: string[]): Promise<strin
 
 export function llmAsk(collectionId: string, question: string): Promise<string> {
   return invoke<string>('llm_ask', { collectionId, question })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoke helpers — asset-level (single page, avoids context overflow)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function llmCorrectOcrAsset(assetId: string): Promise<string> {
+  return invoke<string>('llm_correct_ocr_asset', { assetId })
+}
+
+export function llmExtractEntitiesAsset(assetId: string): Promise<string> {
+  return invoke<string>('llm_extract_entities_asset', { assetId })
+}
+
+export function llmExtractTriplesAsset(assetId: string): Promise<string> {
+  return invoke<string>('llm_extract_triples_asset', { assetId })
+}
+
+export function llmSummarizeAsset(assetId: string): Promise<string> {
+  return invoke<string>('llm_summarize_asset', { assetId })
 }
 
 /** Retrieve all latest LLM results for a target (item or collection). */

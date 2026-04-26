@@ -76,25 +76,13 @@ impl LlmEngine {
     /// automatically reduced to fit. If the prompt alone exceeds n_ctx, an
     /// error is returned (callers should truncate input text beforehand).
     pub fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
-        let mut ctx_params = LlamaContextParams::default()
-            .with_n_ctx(Some(NonZeroU32::new(self.config.n_ctx).unwrap()));
-
-        if let Some(threads) = self.config.n_threads {
-            ctx_params = ctx_params.with_n_threads(threads);
-            ctx_params = ctx_params.with_n_threads_batch(threads);
-        }
-
-        let mut ctx = self
-            .model
-            .new_context(&self.backend, ctx_params)
-            .map_err(|e| format!("Failed to create context: {e}"))?;
-
         let tokens = self
             .model
             .str_to_token(prompt, AddBos::Always)
             .map_err(|e| format!("Failed to tokenize prompt: {e}"))?;
 
         let n_prompt = tokens.len() as i32;
+        let prompt_chars = prompt.chars().count();
 
         // Dynamically cap max_tokens to fit within the context window.
         // If the prompt alone exceeds n_ctx, we can't generate anything.
@@ -115,10 +103,55 @@ impl LlmEngine {
             );
         }
 
+        // llama.cpp has an independent `n_batch` limit apart from `n_ctx`.
+        // If `n_batch` stays at the default 512 while the prompt is larger,
+        // llama.cpp can abort the entire process with:
+        // `GGML_ASSERT(n_tokens_all <= cparams.n_batch)`.
+        // To keep the app stable, size the context batch dynamically to the
+        // prompt token count (bounded by n_ctx) before creating the context.
+        let dynamic_batch = u32::try_from(tokens.len())
+            .unwrap_or(self.config.n_ctx)
+            .max(1)
+            .min(self.config.n_ctx);
+
+        let mut ctx_params = LlamaContextParams::default()
+            .with_n_ctx(Some(NonZeroU32::new(self.config.n_ctx).unwrap()))
+            .with_n_batch(dynamic_batch)
+            .with_n_ubatch(dynamic_batch);
+
+        if let Some(threads) = self.config.n_threads {
+            ctx_params = ctx_params.with_n_threads(threads);
+            ctx_params = ctx_params.with_n_threads_batch(threads);
+        }
+
+        let mut ctx = self
+            .model
+            .new_context(&self.backend, ctx_params)
+            .map_err(|e| format!("Failed to create context: {e}"))?;
+
+        let ctx_n_batch = ctx.n_batch();
+        let ctx_n_ubatch = ctx.n_ubatch();
+        let ctx_n_ctx = ctx.n_ctx();
+
+        eprintln!(
+            "[llm] generate request: prompt_chars={}, prompt_tokens={}, requested_max_tokens={}, effective_max_tokens={}, n_ctx={}, n_batch={}, n_ubatch={}",
+            prompt_chars, n_prompt, max_tokens, effective_max_tokens, ctx_n_ctx, ctx_n_batch, ctx_n_ubatch
+        );
+
+        if u32::try_from(n_prompt).unwrap_or(u32::MAX) > ctx_n_batch {
+            return Err(format!(
+                "Prompt token count ({}) exceeds llama batch size ({}). Request blocked before decode to avoid runtime abort.",
+                n_prompt, ctx_n_batch
+            ));
+        }
+
         let n_len = n_prompt + effective_max_tokens;
 
-        // Feed prompt tokens
-        let mut batch = LlamaBatch::new(512, 1);
+        // Feed prompt tokens.
+        // The batch capacity must fit the full prompt, otherwise llama.cpp
+        // fails with "Insufficient Space" even when the prompt still fits
+        // inside the model context window.
+        let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
         let last_index = (tokens.len() - 1) as i32;
         for (i, token) in (0_i32..).zip(tokens.into_iter()) {
             batch

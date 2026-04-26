@@ -1,5 +1,6 @@
 mod db;
 mod geo;
+mod image_edit;
 mod llm;
 mod nlp;
 mod ocr;
@@ -108,6 +109,30 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to create layouts table");
             eprintln!("[setup] layouts table ensured");
 
+            // Add sort_index column to assets if it doesn't exist (for pre-0013 databases)
+            // This column enables stable page ordering for multi-asset items (e.g. scanned PDFs)
+            let has_sort_index: bool = ui_conn
+                .prepare("SELECT sort_index FROM assets LIMIT 0")
+                .and_then(|mut stmt| {
+                    // If we can prepare this statement, the column exists
+                    let _ = stmt.query_map([], |_| Ok(()));
+                    Ok(true)
+                })
+                .unwrap_or(false);
+
+            if !has_sort_index {
+                ui_conn
+                    .execute_batch(
+                        "ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+                         CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);",
+                    )
+                    .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
+                    .expect("Failed to add sort_index column");
+                eprintln!("[setup] Added sort_index column to assets table");
+            } else {
+                eprintln!("[setup] sort_index column already exists in assets table");
+            }
+
             // Create llm_results table for persisting LLM job results
             ui_conn
                 .execute_batch(
@@ -123,6 +148,33 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .map_err(|e| format!("Failed to create llm_results table: {e}"))
                 .expect("Failed to create llm_results table");
             eprintln!("[setup] llm_results table ensured");
+
+            // Add asset_id columns to notes, entities, and triples for per-page scoping.
+            // These are nullable — legacy rows without asset_id are "item-level" (shown on all pages).
+            let has_notes_asset_id: bool = ui_conn
+                .prepare("SELECT asset_id FROM notes LIMIT 0")
+                .and_then(|mut stmt| {
+                    let _ = stmt.query_map([], |_| Ok(()));
+                    Ok(true)
+                })
+                .unwrap_or(false);
+
+            if !has_notes_asset_id {
+                ui_conn
+                    .execute_batch(
+                        "ALTER TABLE notes ADD COLUMN asset_id TEXT;
+                         ALTER TABLE entities ADD COLUMN asset_id TEXT;
+                         ALTER TABLE triples ADD COLUMN asset_id TEXT;
+                         CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
+                         CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
+                         CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);",
+                    )
+                    .map_err(|e| format!("Failed to add asset_id columns: {e}"))
+                    .expect("Failed to add asset_id columns");
+                eprintln!("[setup] Added asset_id columns to notes, entities, triples");
+            } else {
+                eprintln!("[setup] asset_id columns already exist in notes, entities, triples");
+            }
 
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
@@ -190,10 +242,15 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             ocr::commands::update_extraction_text_cmd,
             ocr::commands::generate_pdf_thumbnail,
             ocr::commands::delete_pdf_thumbnail,
+            ocr::commands::is_scanned_pdf,
+            ocr::commands::render_pdf_pages,
             nlp::commands::index_fts,
             nlp::commands::embed_item,
+            nlp::commands::embed_asset,
             nlp::commands::extract_entities,
+            nlp::commands::extract_entities_for_asset,
             nlp::commands::extract_triples,
+            nlp::commands::extract_triples_for_asset,
             nlp::commands::enrich_item,
             nlp::commands::fts_search,
             nlp::commands::similar_items,
@@ -205,10 +262,17 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_summarize,
             llm::commands::llm_classify,
             llm::commands::llm_ask,
+            llm::commands::llm_correct_ocr_asset,
+            llm::commands::llm_extract_entities_asset,
+            llm::commands::llm_extract_triples_asset,
+            llm::commands::llm_summarize_asset,
             llm::commands::llm_get_results,
             llm::commands::llm_get_result,
             geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
+            image_edit::crop_image,
+            image_edit::rotate_image,
+            image_edit::erase_region,
             open_external_url,
         ])
         .run(tauri::generate_context!())

@@ -2,8 +2,16 @@
 
 use super::{update_extraction_text, OcrQueue};
 use crate::db::state::AppDbState;
-use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
+use crate::nlp::NlpQueue;
+use serde::Serialize;
 use tauri::State;
+
+/// A single rendered PDF page returned by `render_pdf_pages_cmd`.
+#[derive(Clone, Serialize)]
+pub struct RenderedPage {
+    pub page_number: u32,
+    pub png_path: String,
+}
 
 /// Submit an OCR extraction job to the background worker queue.
 ///
@@ -49,19 +57,10 @@ pub async fn update_extraction_text_cmd(
     asset_id: String,
     text_content: String,
     db: State<'_, AppDbState>,
-    nlp_queue: State<'_, NlpQueue>,
+    _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<(), String> {
     let conn = db.ui_conn.lock().map_err(|e| format!("DB lock poisoned: {e}"))?;
     update_extraction_text(&conn, &asset_id, &text_content)?;
-
-    if let Some(item_id) = lookup_item_id_for_asset(&conn, &asset_id)? {
-        enqueue_entity_refresh_for_item(&nlp_queue, &item_id)?;
-        eprintln!(
-            "[nlp/ner] Auto-enqueued ExtractEntities after OCR text update: asset_id={}, item_id={}",
-            asset_id,
-            item_id
-        );
-    }
 
     Ok(())
 }
@@ -156,4 +155,119 @@ pub async fn delete_pdf_thumbnail(
     }
 
     Ok(())
+}
+
+/// Check whether a PDF is scanned (image-only) by testing if its native text
+/// layer passes quality checks.
+///
+/// Returns `true` if the PDF has insufficient native text (likely scanned/image-only)
+/// and should be split into per-page image assets during import.
+#[tauri::command]
+pub async fn is_scanned_pdf(asset_path: String, app_handle: tauri::AppHandle) -> Result<bool, String> {
+    // Ensure Pdfium is initialized
+    super::pdf::init_pdfium_path(&app_handle);
+
+    let bytes = tokio::task::spawn_blocking(move || {
+        std::fs::read(&asset_path)
+    })
+    .await
+    .map_err(|e| format!("Failed to read PDF file: {e}"))?
+    .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+
+    let is_scanned = tokio::task::spawn_blocking(move || {
+        // Try native text extraction first
+        let native_text = super::pdf::extract_pdf_text(&bytes);
+        match native_text {
+            Ok(text) => !super::pdf::is_quality_text(&text),
+            Err(_) => true, // If extraction itself fails, treat as scanned
+        }
+    })
+    .await
+    .map_err(|e| format!("PDF check task panicked: {e}"))?;
+
+    Ok(is_scanned)
+}
+
+/// Render all pages of a PDF as PNG images and save them to disk.
+///
+/// Used by the frontend import flow to convert scanned PDFs into per-page
+/// image assets. Each page is rendered at 300 DPI (target width 2550px),
+/// saved as a PNG file in the specified output directory.
+///
+/// # Arguments
+/// * `pdf_path` — Absolute filesystem path to the source PDF file
+/// * `output_dir` — Directory where PNG files will be saved (created if missing)
+/// * `filename_prefix` — Prefix for output filenames (e.g., "document" → "document_page_1.png")
+///
+/// # Returns
+/// A list of `RenderedPage` objects with page numbers and absolute file paths.
+#[tauri::command]
+pub async fn render_pdf_pages(
+    pdf_path: String,
+    output_dir: String,
+    filename_prefix: String,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<RenderedPage>, String> {
+    use std::io::Write;
+
+    // Ensure Pdfium is initialized
+    super::pdf::init_pdfium_path(&app_handle);
+
+    // Create output directory if it doesn't exist
+    let out_dir = std::path::PathBuf::from(&output_dir);
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+
+    // Read PDF and render pages in a blocking task
+    let pages = tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&pdf_path)
+            .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+
+        // Check if PDF has quality text (skip rendering if it's a text PDF)
+        // This is a safety check — the frontend should only call this for scanned PDFs
+        let native_text = super::pdf::extract_pdf_text(&bytes);
+        if let Ok(ref text) = native_text {
+            if super::pdf::is_quality_text(text) {
+                return Err("PDF has quality native text — not a scanned PDF. Use as PDF asset instead.".to_string());
+            }
+        }
+
+        let page_count = super::pdf::pdf_page_count(&bytes)
+            .map_err(|e| format!("Failed to get PDF page count: {e}"))?;
+
+        eprintln!("[render_pdf_pages] Rendering {page_count} pages from PDF");
+
+        let mut rendered_pages: Vec<RenderedPage> = Vec::with_capacity(page_count);
+
+        for page_idx in 0..page_count {
+            let png_data = super::pdf::render_pdf_page_to_image(&bytes, page_idx)
+                .map_err(|e| format!("Failed to render PDF page {}: {e}", page_idx + 1))?;
+
+            let page_number = (page_idx + 1) as u32;
+            let filename = format!("{filename_prefix}_page_{page_number}.png");
+            let file_path = out_dir.join(&filename);
+
+            let mut file = std::fs::File::create(&file_path)
+                .map_err(|e| format!("Failed to create PNG file for page {page_number}: {e}"))?;
+            file.write_all(&png_data)
+                .map_err(|e| format!("Failed to write PNG data for page {page_number}: {e}"))?;
+
+            // Strip Windows \\?\ prefix if present
+            let path_str = file_path.to_string_lossy().into_owned();
+            let clean = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
+
+            rendered_pages.push(RenderedPage {
+                page_number,
+                png_path: clean,
+            });
+
+            eprintln!("[render_pdf_pages] Rendered page {page_number}/{page_count}");
+        }
+
+        Ok(rendered_pages)
+    })
+    .await
+    .map_err(|e| format!("PDF render task panicked: {e}"))??;
+
+    Ok(pages)
 }

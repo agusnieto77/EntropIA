@@ -5,4 +5,6 @@ export type {
   ViewerAnnotation,
   AnnotationKind,
   AnnotationTool,
+  EditTool,
+  ImageEditResult,
 } from './DocumentViewer.types'

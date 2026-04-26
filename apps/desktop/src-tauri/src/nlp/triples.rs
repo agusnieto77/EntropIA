@@ -78,6 +78,47 @@ pub fn extract_and_store(conn: &Connection, item_id: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Extract triples for a single asset/page (asset-level processing).
+///
+/// Similar to `extract_and_store`, but only processes the text for the given
+/// `asset_id` and stores triples with both `item_id` and `asset_id` for
+/// per-page filtering in the UI.
+pub fn extract_and_store_for_asset(conn: &Connection, item_id: &str, asset_id: &str) -> Result<(), String> {
+    let text = text_provider::get_asset_text(conn, asset_id)?;
+    if text.trim().is_empty() {
+        conn.execute("DELETE FROM triples WHERE item_id = ?1 AND asset_id = ?2", params![item_id, asset_id])
+            .map_err(|e| format!("Failed to delete old triples for empty asset: {e}"))?;
+        return Ok(());
+    }
+
+    let triples = extract_triples(&text);
+
+    // Delete old triples for this specific asset only
+    conn.execute("DELETE FROM triples WHERE item_id = ?1 AND asset_id = ?2", params![item_id, asset_id])
+        .map_err(|e| format!("Failed to delete old triples for asset: {e}"))?;
+
+    for triple in triples {
+        conn.execute(
+            r#"
+            INSERT INTO triples (id, item_id, asset_id, subject, predicate, object, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                uuid_v4(),
+                item_id,
+                asset_id,
+                triple.subject,
+                triple.predicate,
+                triple.object,
+                now_millis(),
+            ],
+        )
+        .map_err(|e| format!("Failed to insert triple: {e}"))?;
+    }
+
+    Ok(())
+}
+
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()

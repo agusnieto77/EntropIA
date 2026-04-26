@@ -1,12 +1,14 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
-  import { pickFiles, classifyFiles, importSingleFile, type ImportedFile } from '$lib/file-import'
+  import { pickFiles, classifyFiles, importSingleFile, isScannedPdf, renderPdfPages, type ImportedFile } from '$lib/file-import'
   import { getAssetUrl, deleteAssetFile, generatePdfThumbnail, deletePdfThumbnail } from '$lib/file-import'
+  import { appDataDir, join } from '@tauri-apps/api/path'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import type { Item, Asset } from '@entropia/store'
 
   let { collectionId }: { collectionId: string } = $props()
@@ -20,6 +22,7 @@
   let importNotice = $state<string | null>(null)
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
+  let unlistenAssetUpdate: (() => void) | null = null
 
   // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath, primaryAssetType }
   let itemAssetMeta = $state<
@@ -147,12 +150,76 @@
       title: imported.originalName.replace(/\.[^.]+$/, ''),
     })
 
+    // For scanned PDFs, convert to per-page image assets instead of a single PDF asset
+    if (imported.type === 'pdf') {
+      try {
+        const isScanned = await isScannedPdf(imported.destPath)
+        if (isScanned) {
+          const pages = await convertScannedPdfToPages(imported, collectionId, itemId, store)
+          if (pages.length > 0) {
+            // Delete the original PDF file — we only keep the page images
+            try {
+              await deleteAssetFile(imported.destPath)
+            } catch (e) {
+              console.warn('[CollectionView] Failed to delete original scanned PDF:', e)
+            }
+            return // Pages created, no PDF asset needed
+          }
+          // If page conversion failed, fall through to create a regular PDF asset
+        }
+      } catch (e) {
+        console.warn('[CollectionView] Scanned PDF detection failed, treating as text PDF:', e)
+        // Fall through to create a regular PDF asset
+      }
+    }
+
+    // Default: create a single asset for the imported file
     await store.assets.create({
       itemId,
       path: imported.destPath,
       type: imported.type,
       size: imported.size,
+      sortIndex: 0,
     })
+  }
+
+  /**
+   * Convert a scanned PDF to per-page PNG image assets.
+   * Returns the list of created asset IDs, or empty array on failure.
+   */
+  async function convertScannedPdfToPages(
+    imported: ImportedFile,
+    collId: string,
+    itemId: string,
+    store: ReturnType<typeof getStore>
+  ): Promise<string[]> {
+    try {
+      const dataDir = await appDataDir()
+      const outputDir = await join(dataDir, 'assets', collId, itemId)
+
+      // Render all PDF pages as PNGs using the backend command
+      const baseName = imported.originalName.replace(/\.[^.]+$/, '')
+      const pages = await renderPdfPages(imported.destPath, outputDir, baseName)
+
+      // Create an image asset for each page, with sort_index for ordering
+      const assetIds: string[] = []
+      for (const page of pages) {
+        const asset = await store.assets.create({
+          itemId,
+          path: page.png_path,
+          type: 'image',
+          sortIndex: page.page_number - 1, // 0-indexed
+          size: null,
+        })
+        assetIds.push(asset.id)
+      }
+
+      console.log(`[CollectionView] Converted scanned PDF to ${pages.length} page assets`)
+      return assetIds
+    } catch (e) {
+      console.error('[CollectionView] Failed to convert scanned PDF to pages:', e)
+      return []
+    }
   }
 
   function getErrorDetails(e: unknown): string {
@@ -512,10 +579,32 @@
       .then((unlisten: () => void) => {
         unlistenDragDrop = unlisten
       })
+
+    // Listen for asset image updates from ItemView (crop, rotate, erase, undo).
+    // When an image is edited, the asset path changes to a new versioned file.
+    // We must invalidate the cached thumbnail URL so the card shows the latest
+    // version instead of a stale browser-cached image.
+    listen<{ itemId: string; assetId: string; path: string }>(
+      'asset:image-updated',
+      (event) => {
+        const { itemId: updatedItemId } = event.payload
+        // Invalidate the cached metadata for this item so the thumbnail
+        // is regenerated with the new path (which includes a cache-busting
+        // version number since edits create new files).
+        void loadItemAssets([updatedItemId])
+      }
+    )
+      .then((unlisten) => {
+        unlistenAssetUpdate = unlisten
+      })
+      .catch((e: unknown) => {
+        console.warn('[CollectionView] Failed to subscribe to asset:image-updated:', e)
+      })
   })
 
   onDestroy(() => {
     unlistenDragDrop?.()
+    unlistenAssetUpdate?.()
   })
 </script>
 

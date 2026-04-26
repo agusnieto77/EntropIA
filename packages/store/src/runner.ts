@@ -220,6 +220,23 @@ CREATE TABLE IF NOT EXISTS llm_results (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id)
   `.trim(),
+
+  '0013_assets_sort_index': `
+-- Add sort_index to assets for stable page ordering (e.g. scanned PDF pages)
+ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);
+  `.trim(),
+
+  '0014_asset_scoping': `
+-- Add asset_id to notes, entities, and triples for per-page scoping.
+-- Nullable: legacy rows without asset_id are considered "item-level" (shown on all pages).
+ALTER TABLE notes ADD COLUMN asset_id TEXT;
+ALTER TABLE entities ADD COLUMN asset_id TEXT;
+ALTER TABLE triples ADD COLUMN asset_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
+CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
+CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);
+  `.trim(),
 }
 
 /**

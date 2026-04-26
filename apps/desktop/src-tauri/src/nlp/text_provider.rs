@@ -3,7 +3,7 @@
 /// Concatenates text from both `extractions` and `transcriptions` tables
 /// for a given `item_id`, with graceful degradation if the transcriptions
 /// table doesn't exist (pre-migration databases).
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::OnceLock;
 
 /// Log the "transcriptions table missing" warning only once, not per-item.
@@ -20,10 +20,12 @@ static TRANSCRIPTIONS_TABLE_MISSING_LOGGED: OnceLock<()> = OnceLock::new();
 /// - Propagates non-"no such table" errors.
 pub fn get_item_text(conn: &Connection, item_id: &str) -> Result<String, String> {
     // Query 1: extractions text (always expected to exist)
+    // Order by asset sort_index first (for multi-page scanned PDFs page order),
+    // then by created_at for stable ordering within the same asset.
     let mut extraction_texts: Vec<String> = {
         let mut stmt = conn
             .prepare(
-                "SELECT COALESCE(e.text_content, '') FROM extractions e JOIN assets a ON e.asset_id = a.id WHERE a.item_id = ?1 ORDER BY e.created_at ASC",
+                "SELECT COALESCE(e.text_content, '') FROM extractions e JOIN assets a ON e.asset_id = a.id WHERE a.item_id = ?1 ORDER BY a.sort_index ASC, e.created_at ASC",
             )
             .map_err(|e| format!("Failed to prepare extractions query: {e}"))?;
 
@@ -35,6 +37,7 @@ pub fn get_item_text(conn: &Connection, item_id: &str) -> Result<String, String>
     };
 
     // Query 2: transcriptions text (graceful degradation if table missing)
+    // Also ordered by sort_index for consistent multi-asset aggregation.
     let transcription_texts: Vec<String> = match try_query_transcriptions(conn, item_id) {
         Ok(texts) => texts,
         Err(e) if e.contains("no such table") => {
@@ -44,7 +47,7 @@ pub fn get_item_text(conn: &Connection, item_id: &str) -> Result<String, String>
             });
             Vec::new() // No transcription text available
         }
-        Err(e) => return Err(e), // Propagate other errors
+        Err(e) => return Err(e),
     };
 
     extraction_texts.extend(transcription_texts);
@@ -53,12 +56,59 @@ pub fn get_item_text(conn: &Connection, item_id: &str) -> Result<String, String>
     Ok(combined)
 }
 
+/// Retrieve extraction text for a single `asset_id`.
+///
+/// Returns `Ok("")` if no extraction exists for the asset.
+/// This is used for asset-level NLP processing (NER, embeddings, triples)
+/// where we only want to analyze the currently selected page/asset.
+pub fn get_asset_text(conn: &Connection, asset_id: &str) -> Result<String, String> {
+    // 1. Check for extraction text from the extractions table
+    let extraction_text: String = conn
+        .query_row(
+            "SELECT COALESCE(text_content, '') FROM extractions WHERE asset_id = ?1 ORDER BY created_at ASC LIMIT 1",
+            params![asset_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query extraction for asset {asset_id}: {e}"))?
+        .unwrap_or_default();
+
+    // 2. Check for transcription text (audio assets)
+    let transcription_text: String = match conn
+        .query_row(
+            "SELECT COALESCE(text_content, '') FROM transcriptions WHERE asset_id = ?1 ORDER BY created_at ASC LIMIT 1",
+            params![asset_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    {
+        Ok(Some(text)) => text,
+        Ok(None) => String::new(),
+        Err(e) if e.to_string().contains("no such table") => {
+            let _ = TRANSCRIPTIONS_TABLE_MISSING_LOGGED.get_or_init(|| {
+                eprintln!("[nlp/text_provider] transcriptions table not found — degrading to extraction-only text");
+            });
+            String::new()
+        }
+        Err(e) => return Err(format!("Failed to query transcription for asset {asset_id}: {e}")),
+    };
+
+    // Combine: extraction text first, then transcription
+    let parts: Vec<&str> = [&extraction_text, &transcription_text]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_str())
+        .collect();
+
+    Ok(parts.join(" "))
+}
+
 /// Attempt to query transcriptions text for an item.
 /// Returns `Ok(texts)` on success, or `Err` with the rusqlite error message.
 fn try_query_transcriptions(conn: &Connection, item_id: &str) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT COALESCE(t.text_content, '') FROM transcriptions t JOIN assets a ON t.asset_id = a.id WHERE a.item_id = ?1 ORDER BY t.created_at ASC",
+            "SELECT COALESCE(t.text_content, '') FROM transcriptions t JOIN assets a ON t.asset_id = a.id WHERE a.item_id = ?1 ORDER BY a.sort_index ASC, t.created_at ASC",
         )
         .map_err(|e| format!("{e}"))?;
 
@@ -92,6 +142,7 @@ mod tests {
               item_id TEXT NOT NULL,
               path TEXT NOT NULL,
               type TEXT NOT NULL,
+              sort_index INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
 
@@ -136,6 +187,7 @@ mod tests {
               item_id TEXT NOT NULL,
               path TEXT NOT NULL,
               type TEXT NOT NULL,
+              sort_index INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
 
@@ -159,8 +211,8 @@ mod tests {
         .expect("item insert should succeed");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![asset_id, item_id, "asset.txt", "txt", 1_i64],
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+            params![asset_id, item_id, "asset.txt", 1_i64],
         )
         .expect("asset insert should succeed");
     }
@@ -386,6 +438,64 @@ mod tests {
         assert_eq!(
             result, "",
             "NULL text_content should be treated as empty string"
+        );
+    }
+
+    // ── Scenario: Multi-asset text aggregation respects sort_index ──────────
+
+    #[test]
+    fn get_item_text_orders_by_sort_index_then_created_at() {
+        let conn = setup_full_db();
+
+        // Item with 3 assets, sort_index determines order
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params!["item-multi", "col-1", "Multi", "{}"],
+        )
+        .expect("item insert");
+
+        // Assets in "wrong" chronological order but correct sort_index
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, 'image', 2, 100)",
+            params!["asset-page3", "item-multi", "page3.png"],
+        )
+        .expect("asset page3 insert");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, 'image', 0, 300)",
+            params!["asset-page1", "item-multi", "page1.png"],
+        )
+        .expect("asset page1 insert");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, 'image', 1, 200)",
+            params!["asset-page2", "item-multi", "page2.png"],
+        )
+        .expect("asset page2 insert");
+
+        // Extractions for each asset
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["ext-3", "asset-page3", "third page", 300],
+        )
+        .expect("extraction page3");
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["ext-1", "asset-page1", "first page", 100],
+        )
+        .expect("extraction page1");
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["ext-2", "asset-page2", "second page", 200],
+        )
+        .expect("extraction page2");
+
+        let result = get_item_text(&conn, "item-multi").expect("should succeed");
+        assert_eq!(
+            result, "first page second page third page",
+            "text should be aggregated in sort_index order, not created_at order"
         );
     }
 }

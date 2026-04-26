@@ -81,6 +81,18 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
 - **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"` | `"pdf_tesseract"`.
 - **No preprocessing**: Tesseract handles its own binarization internally. PaddleOCR does its own internally.
 
+## Pdfium Native Library Resolution
+
+- **Library**: `pdfium.dll` (Windows) / `libpdfium.so` (Linux) / `libpdfium.dylib` (macOS)
+- **Resolution order** (3-tier, matching ONNX/Tesseract patterns):
+  1. **Bundled resource**: `resources/lib/` via Tauri's `BaseDirectory::Resource` (production builds)
+  2. **Dev fallback**: `CARGO_MANIFEST_DIR/resources/lib/` (development)
+  3. **System library**: OS default search paths (PATH, /usr/lib, etc.)
+- **Initialization**: `pdf::init_pdfium_path(&app_handle)` is called once from OCR worker startup and also from `generate_pdf_thumbnail` command. Uses `OnceLock` for thread-safe caching.
+- **Error handling**: `pdf::get_pdfium()` never panics — returns `Result< Pdfium, String>` with a detailed error message listing all paths tried.
+- **Windows prefix stripping**: Tauri's `resolve()` on Windows returns `\\?\` prefixed paths which some native APIs reject; stripped in `strip_windows_prefix()`.
+- **Where to get `pdfium.dll`**: Download from [pdfium-render releases](https://github.com/ajrcarey/pdfium-render/releases). DLL version must match the `pdfium-render` crate version in `Cargo.toml`.
+
 ## PaddleOCR-VL Architecture (Primary OCR Engine)
 
 - **Engine**: PaddleOCR-VL (`PaddleOCRVL` class from `paddleocr[doc-parser]`) spawned as Python subprocess via `std::process::Command`
@@ -146,7 +158,7 @@ cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 - `apps/desktop/src-tauri/src/ocr/paddle_vl.rs` - PaddleVlEngine, PaddleVlConfig, which_python_for_paddle_vl, create_paddle_vl_engine, sentinel JSON parsing
 - `apps/desktop/src-tauri/src/ocr/layout_onnx.rs` - OnnxLayoutEngine: PP-DocLayout-S (PicoDet) ONNX layout detection, scale_factor input, [N,6] output parsing
 - `apps/desktop/src-tauri/src/ocr/postprocess.rs` - Column grouping, hyphen merge, paragraph detection (DISABLED — kept for reference)
-- `apps/desktop/src-tauri/src/ocr/pdf.rs` - PDF text extraction + multi-page rendering with pdfium-render
+- `apps/desktop/src-tauri/src/ocr/pdf.rs` - PDF text extraction, page rendering via pdfium-render, and Pdfium DLL resolution (3-tier: bundled → dev → system)
 - `apps/desktop/src-tauri/src/ocr/mod.rs` - Worker with Arc<dyn OcrProvider> fallback chain, PaddleVL integration, multi-page PDF OCR
 - `apps/desktop/src-tauri/src/ocr/engine.rs` - Original Tesseract engine (pub(crate) fields, Debug derive)
 - `apps/desktop/src-tauri/src/transcription/engine.rs` - Python subprocess adapter (spawns transcribe.py)

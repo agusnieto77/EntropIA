@@ -2,6 +2,7 @@
 
 use super::{TranscriptionJob, TranscriptionQueue};
 use crate::db::state::AppDbState;
+use crate::nlp::NlpQueue;
 use tauri::State;
 
 /// Submit a transcription job to the background worker queue.
@@ -32,11 +33,14 @@ pub async fn transcribe_audio(
 /// Update the text_content of the latest transcription for an asset.
 ///
 /// This allows users to manually correct transcription output.
+/// Downstream NLP refresh is debounced in the frontend after a period of
+/// user inactivity, so this command only persists the edited text.
 #[tauri::command]
 pub async fn update_transcription_text_cmd(
     asset_id: String,
     text_content: String,
     db: State<'_, AppDbState>,
+    _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<(), String> {
     let conn = db
         .ui_conn
@@ -61,8 +65,9 @@ pub async fn update_transcription_text_cmd(
                 rusqlite::params![text_content, id],
             )
             .map_err(|e| format!("Failed to update transcription text: {e}"))?;
-            Ok(())
         }
-        Err(_) => Ok(()), // no transcription exists — no-op
+        Err(_) => {} // no transcription exists — no-op
     }
+
+    Ok(())
 }

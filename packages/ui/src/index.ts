@@ -25,6 +25,8 @@ export type {
   ViewerAnnotation,
   AnnotationKind,
   AnnotationTool,
+  EditTool,
+  ImageEditResult,
 } from './components/DocumentViewer/index'
 
 export { AudioPlayer } from './components/AudioPlayer/index'

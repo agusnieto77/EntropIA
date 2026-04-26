@@ -2,7 +2,7 @@
   import AnnotationToolbar from '../AnnotationToolbar/AnnotationToolbar.svelte'
   import AudioPlayer from '../AudioPlayer/AudioPlayer.svelte'
   import type { DocumentViewerProps } from './DocumentViewer.types'
-  import type { AnnotationTool, ViewerAnnotation } from './DocumentViewer.types'
+  import type { AnnotationTool, EditTool, ViewerAnnotation } from './DocumentViewer.types'
 
   let {
     path: _path,
@@ -12,10 +12,18 @@
     selectedAnnotationId = null,
     annotationTool = 'select',
     annotationColor = 'var(--color-accent)',
+    editTool = 'none',
+    canUndo = false,
     onAnnotationsChange = () => {},
     onSelectedAnnotationIdChange = () => {},
     onAnnotationToolChange = () => {},
     onAnnotationColorChange = () => {},
+    onEditSelect = () => {},
+    onEditToolChange = () => {},
+    onRotateLeft = () => {},
+    onRotateRight = () => {},
+    onUndo = () => {},
+    onDimensionsChange = () => {},
   }: DocumentViewerProps = $props()
 
   const presetColors = [
@@ -62,6 +70,14 @@
     kind: Exclude<AnnotationTool, 'select'>
   } | null>(null)
 
+  // Edit draft: temporary rectangle drawn while crop/erase is active
+  let editDraft = $state<{
+    startX: number
+    startY: number
+    currentX: number
+    currentY: number
+  } | null>(null)
+
   // ── Derived geometry ──────────────────────────────────────────────
   // fitScale: the scale that makes the image fit inside the container
   const fitScale = $derived(
@@ -84,7 +100,13 @@
   const canPdfZoomIn = $derived(pdfZoom < 3.0)
   const canPdfZoomOut = $derived(pdfZoom > 0.5)
 
-  const overlayCursor = $derived(annotationTool === 'select' ? 'default' : 'crosshair')
+  const overlayCursor = $derived(
+    editTool !== 'none'
+      ? 'crosshair'
+      : annotationTool === 'select'
+        ? 'default'
+        : 'crosshair'
+  )
 
   // ── Helpers ────────────────────────────────────────────────────────
   function clamp01(value: number) {
@@ -159,11 +181,28 @@
     return box.width >= minNormW && box.height >= minNormH
   }
 
+  // ── Edit draft helpers ───────────────────────────────────────────────
+  function toEditBox(d: NonNullable<typeof editDraft>) {
+    const x = Math.min(d.startX, d.currentX)
+    const y = Math.min(d.startY, d.currentY)
+    return {
+      x: round(x),
+      y: round(y),
+      width: round(Math.abs(d.currentX - d.startX)),
+      height: round(Math.abs(d.currentY - d.startY)),
+    }
+  }
+
   // ── Measurement ────────────────────────────────────────────────────
   function measureImage() {
     if (!imgEl) return
+    // Skip measurement if the image hasn't loaded yet (e.g. after {#key} re-creation).
+    // This preserves the previous dimensions until onload fires, avoiding a flash
+    // where the overlay disappears because naturalWidth/naturalHeight are 0.
+    if (!imgEl.complete || imgEl.naturalWidth === 0) return
     naturalW = imgEl.naturalWidth
     naturalH = imgEl.naturalHeight
+    onDimensionsChange({ width: naturalW, height: naturalH })
   }
 
   function measureContainer() {
@@ -178,6 +217,10 @@
   // ── Handlers ────────────────────────────────────────────────────────
   function handleToolbarToolChange(tool: AnnotationTool) {
     onAnnotationToolChange(tool)
+    // Reset edit tool when switching to annotation mode
+    if (tool !== 'select') {
+      onEditToolChange('none')
+    }
     if (tool !== annotationTool) {
       draft = null
     }
@@ -204,6 +247,17 @@
     const point = getNormalizedPoint(event)
     if (!point) return
 
+    // Edit mode: start drawing an edit selection rectangle
+    if (editTool !== 'none') {
+      editDraft = {
+        startX: point.x,
+        startY: point.y,
+        currentX: point.x,
+        currentY: point.y,
+      }
+      return
+    }
+
     if (annotationTool === 'select') {
       onSelectedAnnotationIdChange(null)
       return
@@ -219,6 +273,17 @@
   }
 
   function handleOverlayPointerMove(event: PointerEvent) {
+    if (editDraft) {
+      const point = getNormalizedPoint(event)
+      if (!point) return
+      editDraft = {
+        ...editDraft,
+        currentX: point.x,
+        currentY: point.y,
+      }
+      return
+    }
+
     if (!draft) return
     const point = getNormalizedPoint(event)
     if (!point) return
@@ -230,6 +295,17 @@
   }
 
   function finishDraft() {
+    // Handle edit draft completion
+    if (editDraft) {
+      const box = toEditBox(editDraft)
+      editDraft = null
+      const minSize = MIN_DRAW_PX / Math.max(displayW, 1)
+      const minHeight = MIN_DRAW_PX / Math.max(displayH, 1)
+      if (box.width < minSize || box.height < minHeight) return
+      onEditSelect({ x: box.x, y: box.y, width: box.width, height: box.height })
+      return
+    }
+
     if (!draft) return
     const kind = draft.kind
 
@@ -358,12 +434,22 @@
   }
 
   // ── Effects ────────────────────────────────────────────────────────
+  // Reset image zoom when the asset URL changes (crop, rotate, erase)
   $effect(() => {
-    if (type !== 'image' || !imgEl) {
+    // Depend on assetUrl so zoom resets on every edit
+    const _url = assetUrl
+    if (type === 'image') {
+      imageZoom = 1.0
+    }
+  })
+
+  $effect(() => {
+    if (type !== 'image') {
       naturalW = 0
       naturalH = 0
       return
     }
+    if (!imgEl) return // Image element not mounted yet; don't zero dimensions
     measureImage()
     const obs = new ResizeObserver(() => measureImage())
     obs.observe(imgEl)
@@ -407,16 +493,23 @@
       <div class="document-viewer__toolbar-anchor">
         <AnnotationToolbar
           tool={annotationTool}
+          editTool={editTool}
           color={annotationColor}
           hasSelection={selectedAnnotationId !== null}
+          canUndo={canUndo}
           colors={presetColors}
           onToolChange={handleToolbarToolChange}
+          onEditToolChange={onEditToolChange}
           onColorChange={handleToolbarColorChange}
           onDeleteSelected={handleDeleteSelected}
+          onRotateLeft={onRotateLeft}
+          onRotateRight={onRotateRight}
+          onUndo={onUndo}
         />
       </div>
 
       <div class="document-viewer__image-stage">
+        {#key assetUrl}
         <img
           bind:this={imgEl}
           src={assetUrl}
@@ -425,6 +518,7 @@
           style={`width:${displayW}px;height:${displayH}px;`}
           onload={measureImage}
         />
+      {/key}
 
         {#if hasRenderableBounds}
           <svg
@@ -456,6 +550,7 @@
                     : annotation.color}
                   stroke-width={annotation.id === selectedAnnotationId ? 2 : 1.5}
                   vector-effect="non-scaling-stroke"
+                  style={editTool !== 'none' ? 'pointer-events:none' : ''}
                   role="button"
                   tabindex="-1"
                   aria-label={`Select annotation ${annotation.id}`}
@@ -467,7 +562,7 @@
                   onpointerdown={(event) => handleShapePointerDown(event, annotation.id)}
                 />
               {:else}
-                <g>
+                <g style={editTool !== 'none' ? 'pointer-events:none' : ''}>
                   <rect
                     data-testid={`annotation-hitbox-${annotation.id}`}
                     x={px(annotation.x, 'x')}
@@ -537,6 +632,58 @@
                 stroke-dasharray="6 4"
                 stroke-linecap="round"
                 vector-effect="non-scaling-stroke"
+              />
+            {/if}
+
+            {#if editDraft}
+              {@const ebox = toEditBox(editDraft)}
+              {@const isCrop = editTool === 'crop'}
+              {@const editColor = isCrop ? 'var(--color-success, #16a34a)' : 'var(--color-danger, #dc2626)'}
+              {@const editLabel = isCrop ? 'Crop region' : 'Erase region'}
+              <!-- Dim area outside selection -->
+              {#if ebox.width > 0.001 && ebox.height > 0.001}
+                <rect
+                  x={0}
+                  y={0}
+                  width={naturalW}
+                  height={px(ebox.y, 'y')}
+                  fill="rgba(0,0,0,0.35)"
+                />
+                <rect
+                  x={0}
+                  y={px(ebox.y, 'y')}
+                  width={px(ebox.x, 'x')}
+                  height={px(ebox.height, 'y')}
+                  fill="rgba(0,0,0,0.35)"
+                />
+                <rect
+                  x={px(ebox.x + ebox.width, 'x')}
+                  y={px(ebox.y, 'y')}
+                  width={naturalW - px(ebox.x + ebox.width, 'x')}
+                  height={px(ebox.height, 'y')}
+                  fill="rgba(0,0,0,0.35)"
+                />
+                <rect
+                  x={0}
+                  y={px(ebox.y + ebox.height, 'y')}
+                  width={naturalW}
+                  height={naturalH - px(ebox.y + ebox.height, 'y')}
+                  fill="rgba(0,0,0,0.35)"
+                />
+              {/if}
+              <rect
+                data-testid="edit-selection-rect"
+                x={px(ebox.x, 'x')}
+                y={px(ebox.y, 'y')}
+                width={px(ebox.width, 'x')}
+                height={px(ebox.height, 'y')}
+                fill={isCrop ? 'rgba(22,163,74,0.08)' : 'rgba(220,38,38,0.08)'}
+                stroke={editColor}
+                stroke-width="2"
+                stroke-dasharray="8 4"
+                vector-effect="non-scaling-stroke"
+                role="img"
+                aria-label={editLabel}
               />
             {/if}
           </svg>
@@ -655,6 +802,8 @@
     z-index: 3;
     display: flex;
     justify-content: flex-end;
+    align-items: flex-start;
+    gap: var(--space-2);
     pointer-events: none;
     padding: 0 var(--space-2) var(--space-2) 0;
   }

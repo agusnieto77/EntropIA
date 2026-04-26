@@ -135,7 +135,7 @@ export async function embedItem(itemId: string): Promise<void> {
   await invoke('embed_item', { itemId })
 }
 
-/** Submit a NER extraction job for `itemId`. */
+/** Submit an NER extraction job for `itemId`. */
 export async function extractEntities(itemId: string): Promise<void> {
   await invoke('extract_entities', { itemId })
 }
@@ -148,6 +148,25 @@ export async function extractTriples(itemId: string): Promise<void> {
 /** Submit a full enrichment pipeline job (FTS + embed + NER + triples) for `itemId`. */
 export async function enrichItem(itemId: string): Promise<void> {
   await invoke('enrich_item', { itemId })
+}
+
+// ── Asset-level NLP commands ─────────────────────────────────────────────────
+// These process only the selected asset's text, not the entire item.
+// Results are stored with both itemId (ownership) and assetId (filtering).
+
+/** Submit an embedding computation job for a specific asset. */
+export async function embedAsset(itemId: string, assetId: string): Promise<void> {
+  await invoke('embed_asset', { itemId, assetId })
+}
+
+/** Submit a NER extraction job for a specific asset. */
+export async function extractEntitiesForAsset(itemId: string, assetId: string): Promise<void> {
+  await invoke('extract_entities_for_asset', { itemId, assetId })
+}
+
+/** Submit a semantic triples extraction job for a specific asset. */
+export async function extractTriplesForAsset(itemId: string, assetId: string): Promise<void> {
+  await invoke('extract_triples_for_asset', { itemId, assetId })
 }
 
 /** Search items using FTS5. Returns results ordered by BM25 relevance. */

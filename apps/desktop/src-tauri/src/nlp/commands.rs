@@ -69,6 +69,50 @@ pub async fn enrich_item(
     enqueue(&nlp_queue, NlpJob::EnrichItem { item_id })
 }
 
+// ── Asset-level commands ────────────────────────────────────────────────────
+// These process only the selected asset/page text, not the entire item.
+// Results are stored with both item_id (ownership) and asset_id (filtering).
+
+/// Submit an embedding computation job for a specific asset.
+///
+/// The worker will extract the asset's text, compute a 384-dim vector,
+/// and upsert into `vec_items` using the parent item_id as the key.
+/// Only the selected asset's text is embedded.
+#[tauri::command]
+pub async fn embed_asset(
+    item_id: String,
+    asset_id: String,
+    nlp_queue: State<'_, NlpQueue>,
+) -> Result<String, String> {
+    enqueue(&nlp_queue, NlpJob::ComputeAssetEmbedding { item_id, asset_id })
+}
+
+/// Submit a NER extraction job for a specific asset.
+///
+/// The worker will extract entities from only the selected asset's text.
+/// Entities are stored with both `item_id` and `asset_id` for filtering.
+#[tauri::command]
+pub async fn extract_entities_for_asset(
+    item_id: String,
+    asset_id: String,
+    nlp_queue: State<'_, NlpQueue>,
+) -> Result<String, String> {
+    enqueue(&nlp_queue, NlpJob::ExtractEntitiesForAsset { item_id, asset_id })
+}
+
+/// Submit a semantic triples extraction job for a specific asset.
+///
+/// The worker will extract triples from only the selected asset's text.
+/// Triples are stored with both `item_id` and `asset_id` for filtering.
+#[tauri::command]
+pub async fn extract_triples_for_asset(
+    item_id: String,
+    asset_id: String,
+    nlp_queue: State<'_, NlpQueue>,
+) -> Result<String, String> {
+    enqueue(&nlp_queue, NlpJob::ExtractTriplesForAsset { item_id, asset_id })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

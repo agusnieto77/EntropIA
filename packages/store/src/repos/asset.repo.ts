@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, asc } from 'drizzle-orm'
 import type { DrizzleClient, DbClient } from '../types'
 import { assets } from '../schema'
 
@@ -17,6 +17,7 @@ export class AssetRepo {
       itemId: data.itemId,
       path: data.path,
       type: data.type,
+      sortIndex: data.sortIndex ?? 0,
       size: data.size ?? null,
       createdAt: Date.now(),
     }
@@ -31,12 +32,13 @@ export class AssetRepo {
       }
 
       await this.rawClient.execute(
-        'INSERT INTO assets (id, item_id, path, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO assets (id, item_id, path, type, sort_index, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
           createdAsset.id,
           createdAsset.itemId,
           createdAsset.path,
           createdAsset.type,
+          createdAsset.sortIndex,
           createdAsset.size,
           createdAsset.createdAt,
         ]
@@ -49,7 +51,7 @@ export class AssetRepo {
   }
 
   async findByItem(itemId: string): Promise<Asset[]> {
-    return this.db.select().from(assets).where(eq(assets.itemId, itemId))
+    return this.db.select().from(assets).where(eq(assets.itemId, itemId)).orderBy(asc(assets.sortIndex))
   }
 
   async findById(id: string): Promise<Asset | null> {
@@ -60,6 +62,20 @@ export class AssetRepo {
 
   async delete(id: string): Promise<void> {
     await this.db.delete(assets).where(eq(assets.id, id))
+  }
+
+  /**
+   * Update the path of an asset (e.g. after JPEG → PNG conversion).
+   */
+  async updatePath(id: string, newPath: string): Promise<void> {
+    if (this.rawClient) {
+      await this.rawClient.execute('UPDATE assets SET path = ? WHERE id = ?', [
+        newPath,
+        id,
+      ])
+    } else {
+      await this.db.update(assets).set({ path: newPath }).where(eq(assets.id, id))
+    }
   }
 
   /**

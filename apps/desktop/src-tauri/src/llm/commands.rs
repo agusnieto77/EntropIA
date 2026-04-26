@@ -61,6 +61,46 @@ pub async fn llm_ask(
     Ok("queued".to_string())
 }
 
+// ── Asset-level LLM commands ──────────────────────────────────────────────────
+// These operate on a single asset/page, using get_asset_text() which avoids
+// concatenating all pages and prevents context-window overflow on multi-page docs.
+
+#[tauri::command]
+pub async fn llm_correct_ocr_asset(
+    asset_id: String,
+    llm_queue: State<'_, LlmQueue>,
+) -> Result<String, String> {
+    llm_queue.submit(LlmJob::CorrectOcrAsset { asset_id })?;
+    Ok("queued".to_string())
+}
+
+#[tauri::command]
+pub async fn llm_extract_entities_asset(
+    asset_id: String,
+    llm_queue: State<'_, LlmQueue>,
+) -> Result<String, String> {
+    llm_queue.submit(LlmJob::ExtractEntitiesAsset { asset_id })?;
+    Ok("queued".to_string())
+}
+
+#[tauri::command]
+pub async fn llm_extract_triples_asset(
+    asset_id: String,
+    llm_queue: State<'_, LlmQueue>,
+) -> Result<String, String> {
+    llm_queue.submit(LlmJob::ExtractTriplesAsset { asset_id })?;
+    Ok("queued".to_string())
+}
+
+#[tauri::command]
+pub async fn llm_summarize_asset(
+    asset_id: String,
+    llm_queue: State<'_, LlmQueue>,
+) -> Result<String, String> {
+    llm_queue.submit(LlmJob::SummarizeAsset { asset_id })?;
+    Ok("queued".to_string())
+}
+
 /// Retrieve all latest LLM results for a given target (item or collection).
 /// Returns one result per job_type, ordered by most recent first.
 #[tauri::command]

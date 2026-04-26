@@ -20,7 +20,7 @@ mod debug_viz;
 use provider::{LayoutCategory, OcrProvider};
 use pdf::{extract_pdf_text, is_quality_text, pdf_page_count, init_pdfium_path};
 use paddle_vl::{PaddleVlEngine, create_paddle_vl_engine};
-use crate::nlp::{enqueue_entity_refresh_for_item, lookup_item_id_for_asset, NlpQueue};
+use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
@@ -217,14 +217,26 @@ impl OcrQueue {
                             eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
                             // Still emit complete — text is in memory even if DB save failed
                         } else if let Ok(Some(item_id)) = &save_result {
-                            if let Err(e) = enqueue_entity_refresh_for_item(&app_handle.state::<NlpQueue>(), item_id) {
-                                eprintln!("[nlp/ner] Failed to auto-enqueue ExtractEntities after OCR save for item {item_id}: {e}");
+                            // Asset-level NER + triples: only re-extract for the
+                            // completed asset, not the entire item. Avoids reprocessing
+                            // unchanged pages on multi-asset documents.
+                            let nlp_queue = app_handle.state::<NlpQueue>();
+                            if let Err(e) = nlp_queue.submit(NlpJob::ExtractEntitiesForAsset {
+                                item_id: item_id.clone(),
+                                asset_id: asset_id.clone(),
+                            }) {
+                                eprintln!("[nlp] Failed to auto-enqueue ExtractEntitiesForAsset after OCR save: {e}");
                             } else {
                                 eprintln!(
-                                    "[nlp/ner] Auto-enqueued ExtractEntities after OCR save: asset_id={}, item_id={}",
-                                    asset_id,
-                                    item_id
+                                    "[nlp] Auto-enqueued ExtractEntitiesForAsset after OCR save: asset_id={}, item_id={}",
+                                    asset_id, item_id
                                 );
+                            }
+                            if let Err(e) = nlp_queue.submit(NlpJob::ExtractTriplesForAsset {
+                                item_id: item_id.clone(),
+                                asset_id: asset_id.clone(),
+                            }) {
+                                eprintln!("[nlp] Failed to auto-enqueue ExtractTriplesForAsset after OCR save: {e}");
                             }
                         }
 

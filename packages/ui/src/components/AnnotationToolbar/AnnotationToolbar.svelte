@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AnnotationTool } from '../DocumentViewer/DocumentViewer.types'
+  import type { AnnotationTool, EditTool } from '../DocumentViewer/DocumentViewer.types'
 
   export interface AnnotationColorOption {
     value: string
@@ -8,22 +8,34 @@
 
   interface AnnotationToolbarProps {
     tool: AnnotationTool
+    editTool: EditTool
     color: string
     hasSelection: boolean
+    canUndo?: boolean
     colors: AnnotationColorOption[]
     onToolChange?: (tool: AnnotationTool) => void
+    onEditToolChange?: (tool: EditTool) => void
     onColorChange?: (color: string) => void
     onDeleteSelected?: () => void
+    onRotateLeft?: () => void
+    onRotateRight?: () => void
+    onUndo?: () => void
   }
 
   let {
     tool,
+    editTool,
     color,
     hasSelection,
+    canUndo = false,
     colors,
     onToolChange = () => {},
+    onEditToolChange = () => {},
     onColorChange = () => {},
     onDeleteSelected = () => {},
+    onRotateLeft = () => {},
+    onRotateRight = () => {},
+    onUndo = () => {},
   }: AnnotationToolbarProps = $props()
 
   let collapsed = $state(false)
@@ -37,11 +49,28 @@
     { value: 'underline', label: 'Underline annotation tool', short: '▁' },
   ]
 
+  const editToolOptions: Array<{
+    value: Exclude<EditTool, 'none'>
+    label: string
+    short?: string
+  }> = [
+    { value: 'crop', label: 'Crop to selection', short: '✂' },
+    { value: 'erase', label: 'Erase region (white fill)' },
+  ]
+
   function handleToolClick(option: (typeof toolOptions)[number]) {
     if (tool === option.value) {
       onToolChange('select')
     } else {
       onToolChange(option.value)
+    }
+  }
+
+  function handleEditToolClick(option: (typeof editToolOptions)[number]) {
+    if (editTool === option.value) {
+      onEditToolChange('none')
+    } else {
+      onEditToolChange(option.value)
     }
   }
 </script>
@@ -62,9 +91,22 @@
     class="annotation-toolbar"
     data-testid="annotation-toolbar"
     role="toolbar"
-    aria-label="Image annotations"
+    aria-label="Image editing tools"
   >
     <div class="annotation-toolbar__group">
+      <button
+        type="button"
+        class="annotation-toolbar__button"
+        aria-label="Undo last edit"
+        title="Undo"
+        disabled={!canUndo}
+        onclick={onUndo}
+      >
+        ↶
+      </button>
+
+      <span class="annotation-toolbar__separator"></span>
+
       {#each toolOptions as option (option.value)}
         <button
           type="button"
@@ -72,11 +114,81 @@
           class:annotation-toolbar__button--active={tool === option.value}
           aria-label={option.label}
           aria-pressed={tool === option.value}
+          title={option.label}
           onclick={() => handleToolClick(option)}
         >
           {option.short}
         </button>
       {/each}
+
+      <span class="annotation-toolbar__separator"></span>
+
+      {#each editToolOptions as option (option.value)}
+        <button
+          type="button"
+          class="annotation-toolbar__button"
+          class:annotation-toolbar__button--active={editTool === option.value}
+          aria-label={option.label}
+          aria-pressed={editTool === option.value}
+          title={option.label}
+          onclick={() => handleEditToolClick(option)}
+        >
+          {#if option.value === 'erase'}
+            <svg
+              class="annotation-toolbar__icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M3 15.5 12.5 6a2 2 0 0 1 2.8 0l4.7 4.7a2 2 0 0 1 0 2.8L13.5 20H8z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M11 19.5h10"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+              <path
+                d="m9 18 7-7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+              />
+            </svg>
+          {:else}
+            {option.short}
+          {/if}
+        </button>
+      {/each}
+
+      <span class="annotation-toolbar__separator"></span>
+
+      <button
+        type="button"
+        class="annotation-toolbar__button"
+        aria-label="Rotate 90° left"
+        title="Rotate 90° left"
+        onclick={onRotateLeft}
+      >
+        ↺
+      </button>
+
+      <button
+        type="button"
+        class="annotation-toolbar__button"
+        aria-label="Rotate 90° right"
+        title="Rotate 90° right"
+        onclick={onRotateRight}
+      >
+        ↻
+      </button>
     </div>
 
     <div class="annotation-toolbar__group">
@@ -164,6 +276,13 @@
     gap: var(--space-1);
   }
 
+  .annotation-toolbar__separator {
+    width: 1px;
+    height: 20px;
+    background-color: var(--color-border);
+    margin: 0 var(--space-1);
+  }
+
   .annotation-toolbar__button,
   .annotation-toolbar__swatch {
     display: inline-flex;
@@ -187,6 +306,12 @@
   .annotation-toolbar__swatch:hover:not(:disabled) {
     background: var(--color-surface-raised);
     border-color: var(--color-text-secondary);
+  }
+
+  .annotation-toolbar__icon {
+    width: 18px;
+    height: 18px;
+    display: block;
   }
 
   .annotation-toolbar__button:disabled,
@@ -227,7 +352,6 @@
 
   @media (max-width: 720px) {
     .annotation-toolbar {
-      justify-content: space-between;
       flex-wrap: wrap;
     }
   }

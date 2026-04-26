@@ -5,6 +5,7 @@ import { entities } from '../schema'
 export type Entity = typeof entities.$inferSelect
 export type NewEntity = {
   itemId: string
+  assetId?: string | null
   entityType: string
   value: string
   startOffset?: number
@@ -35,6 +36,21 @@ export class EntityRepo {
       .orderBy(asc(entities.createdAt), asc(entities.startOffset), asc(entities.value))
   }
 
+  /** Find entities scoped to a specific asset, plus item-level entities (assetId = null). */
+  async findByAssetId(itemId: string, assetId: string): Promise<Entity[]> {
+    return this.db
+      .select()
+      .from(entities)
+      .where(
+        and(
+          eq(entities.itemId, itemId),
+          or(eq(entities.assetId, assetId), isNull(entities.assetId)),
+          or(isNull(entities.source), ne(entities.source, 'manual_deleted'))
+        )
+      )
+      .orderBy(asc(entities.createdAt), asc(entities.startOffset), asc(entities.value))
+  }
+
   async findByItemIdAndType(itemId: string, type: EntityType): Promise<Entity[]> {
     return this.db
       .select()
@@ -54,6 +70,7 @@ export class EntityRepo {
       .values({
         id: crypto.randomUUID(),
         itemId: data.itemId,
+        assetId: data.assetId ?? null,
         entityType: data.entityType,
         value: data.value,
         startOffset: data.startOffset ?? 0,

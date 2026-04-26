@@ -49,6 +49,10 @@ pub enum NlpJob {
     ExtractEntities { item_id: String },
     ExtractTriples { item_id: String },
     EnrichItem { item_id: String },
+    // Asset-level variants: process only the selected asset/page
+    ComputeAssetEmbedding { item_id: String, asset_id: String },
+    ExtractEntitiesForAsset { item_id: String, asset_id: String },
+    ExtractTriplesForAsset { item_id: String, asset_id: String },
 }
 
 pub fn lookup_item_id_for_asset(
@@ -244,12 +248,14 @@ impl NlpQueue {
             while let Some(job) = receiver.recv().await {
                 match job {
                     NlpJob::IndexFts { item_id } => {
+                        eprintln!("[nlp/fts] Reindex start: item_id={}", item_id);
                         emit_progress(&app_handle, &item_id, "fts", 10);
                         let result = tokio::task::block_in_place(|| {
                             fts::index_item_from_db(&conn, &item_id)
                         });
                         match result {
                             Ok(_) => {
+                                eprintln!("[nlp/fts] Reindex complete: item_id={}", item_id);
                                 emit_progress(&app_handle, &item_id, "fts", 100);
                                 emit_complete(&app_handle, &item_id, "fts");
                             }
@@ -391,6 +397,86 @@ impl NlpQueue {
                         emit_progress(&app_handle, &item_id, "triples", 10);
                         let r = tokio::task::block_in_place(|| triples::extract_and_store(&conn, &item_id));
                         match r { Ok(_) => { emit_progress(&app_handle, &item_id, "triples", 100); emit_complete(&app_handle, &item_id, "triples"); } Err(e) => emit_error(&app_handle, &item_id, "triples", &e), }
+                    }
+
+                    // ── Asset-level processing ─────────────────────────────────────
+                    // These variants process only the selected asset/page text,
+                    // not the entire item. Results are stored with both item_id
+                    // (for ownership/cascade) and asset_id (for filtering).
+
+                    NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
+                        eprintln!(
+                            "[nlp/embeddings] Asset embedding start: item_id={}, asset_id={}",
+                            item_id, asset_id
+                        );
+                        emit_progress(&app_handle, &item_id, "embed", 10);
+                        let engine_ref = embed_engine.as_ref();
+                        let result = tokio::task::block_in_place(|| {
+                            embeddings::compute_and_store_for_asset(engine_ref, &conn, &item_id, &asset_id)
+                        });
+                        match result {
+                            Ok(_) => {
+                                match embedding_exists(&conn, &item_id) {
+                                    Ok(true) => {
+                                        eprintln!(
+                                            "[nlp/embeddings] Asset embedding complete: item_id={}, asset_id={}",
+                                            item_id, asset_id
+                                        );
+                                        emit_progress(&app_handle, &item_id, "embed", 100);
+                                        emit_complete(&app_handle, &item_id, "embed");
+                                    }
+                                    Ok(false) => emit_error(
+                                        &app_handle,
+                                        &item_id,
+                                        "embed",
+                                        "Asset embedding job completed but no vector was persisted",
+                                    ),
+                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                                }
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                        }
+                    }
+
+                    NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
+                        emit_progress(&app_handle, &item_id, "ner", 10);
+                        let result = tokio::task::block_in_place(|| {
+                            catch_unwind(AssertUnwindSafe(|| {
+                                ner::extract_and_store_for_asset(&conn, &item_id, &asset_id, &ner_registry)
+                            }))
+                            .map_err(|panic| format_panic_payload("NER extraction for asset panicked", panic))?
+                        });
+                        // Remove from dedup set if present
+                        if let Ok(mut pending) = ner_pending.lock() {
+                            pending.remove(&item_id);
+                        }
+                        match result {
+                            Ok(_) => {
+                                emit_progress(&app_handle, &item_id, "ner", 100);
+                                emit_complete(&app_handle, &item_id, "ner");
+                                if let Err(e) = crate::geo::enqueue_geocoding_for_item(
+                                    &app_handle.state::<crate::geo::GeoQueue>(),
+                                    &item_id,
+                                ) {
+                                    eprintln!("[geo] Failed to auto-enqueue geocoding after asset NER: {e}");
+                                }
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
+                        }
+                    }
+
+                    NlpJob::ExtractTriplesForAsset { item_id, asset_id } => {
+                        emit_progress(&app_handle, &item_id, "triples", 10);
+                        let result = tokio::task::block_in_place(|| {
+                            triples::extract_and_store_for_asset(&conn, &item_id, &asset_id)
+                        });
+                        match result {
+                            Ok(_) => {
+                                emit_progress(&app_handle, &item_id, "triples", 100);
+                                emit_complete(&app_handle, &item_id, "triples");
+                            }
+                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
+                        }
                     }
                 }
             }

@@ -26,6 +26,13 @@ pub enum LlmJob {
     Summarize { item_id: String },
     Classify { item_id: String, categories: Vec<String> },
     Ask { collection_id: String, question: String },
+    // Asset-level variants — operate on a single asset/page instead of the whole item.
+    // These use get_asset_text() which only fetches text for the specified asset,
+    // avoiding context-window overflow on multi-page documents.
+    CorrectOcrAsset { asset_id: String },
+    ExtractEntitiesAsset { asset_id: String },
+    ExtractTriplesAsset { asset_id: String },
+    SummarizeAsset { asset_id: String },
 }
 
 impl LlmJob {
@@ -37,10 +44,16 @@ impl LlmJob {
             LlmJob::Summarize { .. } => "summarize",
             LlmJob::Classify { .. } => "classify",
             LlmJob::Ask { .. } => "ask",
+            LlmJob::CorrectOcrAsset { .. } => "correct_ocr",
+            LlmJob::ExtractEntitiesAsset { .. } => "extract_entities",
+            LlmJob::ExtractTriplesAsset { .. } => "extract_triples",
+            LlmJob::SummarizeAsset { .. } => "summarize",
         }
     }
 
-    fn item_or_collection_id(&self) -> &str {
+    /// Returns the ID used as the event/persistence target.
+    /// For asset-level jobs, this is the asset_id; for item-level, the item_id.
+    fn target_id(&self) -> &str {
         match self {
             LlmJob::CorrectOcr { item_id }
             | LlmJob::ExtractEntities { item_id }
@@ -48,8 +61,13 @@ impl LlmJob {
             | LlmJob::Summarize { item_id }
             | LlmJob::Classify { item_id, .. } => item_id,
             LlmJob::Ask { collection_id, .. } => collection_id,
+            LlmJob::CorrectOcrAsset { asset_id }
+            | LlmJob::ExtractEntitiesAsset { asset_id }
+            | LlmJob::ExtractTriplesAsset { asset_id }
+            | LlmJob::SummarizeAsset { asset_id } => asset_id,
         }
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +365,7 @@ impl LlmQueue {
             // Main worker loop
             while let Some(job) = receiver.recv().await {
                 let job_name = job.job_name();
-                let id = job.item_or_collection_id().to_string();
+                let id = job.target_id().to_string();
 
                 let engine = match &engine {
                     Some(e) => e,
@@ -396,10 +414,10 @@ impl LlmQueue {
 /// Max tokens for generation per job type.
 fn max_tokens_for(job: &LlmJob) -> i32 {
     match job {
-        LlmJob::CorrectOcr { .. } => 2048,
-        LlmJob::ExtractEntities { .. } => 1024,
-        LlmJob::ExtractTriples { .. } => 1024,
-        LlmJob::Summarize { .. } => 512,
+        LlmJob::CorrectOcr { .. } | LlmJob::CorrectOcrAsset { .. } => 2048,
+        LlmJob::ExtractEntities { .. } | LlmJob::ExtractEntitiesAsset { .. } => 1024,
+        LlmJob::ExtractTriples { .. } | LlmJob::ExtractTriplesAsset { .. } => 1024,
+        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 512,
         LlmJob::Classify { .. } => 256,
         LlmJob::Ask { .. } => 512,
     }
@@ -515,6 +533,48 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &context);
             let p = prompt::question_answer(question, &truncated);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
+        // ── Asset-level variants (single page/asset, avoids context overflow) ──
+
+        LlmJob::CorrectOcrAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for OCR correction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::ocr_correction(&truncated);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
+        LlmJob::ExtractEntitiesAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for entity extraction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::extract_entities(&truncated);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
+        LlmJob::ExtractTriplesAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for triple extraction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::extract_triples(&truncated);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
+        LlmJob::SummarizeAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for summarization on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::summarize(&truncated);
             engine.generate(&p, max_tokens_for(job))
         }
     }
