@@ -6,6 +6,9 @@ scripts/
 
 # Ignore
 .gitignore
+.gga
+gga.cmd
+gentleman-guardian-angel/
 
 # temporal
 .temporal/
