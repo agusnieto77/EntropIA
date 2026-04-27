@@ -170,3 +170,11 @@ prueba_*.txt
 test_paddleocr/
 test_manual*.txt
 check_error.txt
+
+# OCR correction test artifacts (root level)
+ocr_correct_*.py
+pagina_*.corregido.txt
+pagina_*.ocr.txt
+pagina_*.png
+llm-diag-output.txt
+logss.md
