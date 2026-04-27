@@ -51,7 +51,13 @@ Text:
 
 pub fn summarize(text: &str) -> String {
     gemma_prompt(&format!(
-        r#"Summarize this historical document text in a single concise paragraph of 10-15 lines. Preserve key names, dates, places, and events. Write the summary in the same language as the source text. Do NOT exceed 15 lines.
+        r#"Summarize this historical document text in a SINGLE concise paragraph. The summary must:
+- Be 10-15 lines long
+- Preserve key names, dates, places, and events
+- Be written in the same language as the source text
+- ALWAYS end with a complete sentence ending in a period
+
+Do NOT exceed 15 lines. Do NOT cut off mid-sentence.
 
 Text:
 {text}"#

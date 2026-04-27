@@ -526,10 +526,35 @@ fn max_tokens_for(job: &LlmJob) -> i32 {
         LlmJob::CorrectOcr { .. } | LlmJob::CorrectOcrAsset { .. } => 2048,
         LlmJob::ExtractEntities { .. } | LlmJob::ExtractEntitiesAsset { .. } => 1024,
         LlmJob::ExtractTriples { .. } | LlmJob::ExtractTriplesAsset { .. } => 1024,
-        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 256,
+        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 512,
         LlmJob::Classify { .. } => 256,
         LlmJob::Ask { .. } => 512,
     }
+}
+
+/// Truncate text to the last sentence boundary (period, exclamation, question mark)
+/// so it doesn't cut mid-sentence. Used for summaries that get truncated by token limits.
+fn truncate_to_sentence_boundary(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // If the text already ends with a sentence-ending punctuation, it's fine.
+    if trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?') || trimmed.ends_with('。') || trimmed.ends_with('！') {
+        return trimmed.to_string();
+    }
+
+    // Find the last sentence-ending punctuation and truncate there.
+    // Search backwards for . ! ? 。 ！
+    let sentence_enders = ['.', '!', '?', '。', '！'];
+    if let Some(pos) = trimmed.rfind(sentence_enders) {
+        // Include the punctuation character
+        trimmed[..=pos].to_string()
+    } else {
+        // No sentence boundary found at all — return as-is (better than nothing)
+        trimmed.to_string()
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +646,8 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::summarize(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            let result = engine.generate(&p, max_tokens_for(job))?;
+            Ok(truncate_to_sentence_boundary(&result))
         }
 
         LlmJob::Classify { item_id, categories } => {
@@ -707,7 +733,8 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::summarize(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            let result = engine.generate(&p, max_tokens_for(job))?;
+            Ok(truncate_to_sentence_boundary(&result))
         }
     }
 }
