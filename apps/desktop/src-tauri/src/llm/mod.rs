@@ -1,11 +1,15 @@
 pub mod commands;
 pub mod engine;
 pub mod prompt;
+pub mod sidecar;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -13,6 +17,7 @@ use tokio::sync::mpsc;
 use crate::nlp::text_provider;
 
 use self::engine::{LlmConfig, LlmEngine};
+use self::sidecar::{SidecarManager, SidecarHandle};
 
 // ---------------------------------------------------------------------------
 // Job definition
@@ -261,12 +266,25 @@ fn persist_result(
 
 pub struct LlmQueue {
     sender: mpsc::Sender<LlmJob>,
+    /// Shared flag set to `true` after the LLM engine initializes successfully.
+    available: Arc<AtomicBool>,
+    /// Shared flag set to `true` after multimodal (vision) support is confirmed.
+    multimodal: Arc<AtomicBool>,
 }
 
 impl LlmQueue {
     pub fn new() -> (Self, mpsc::Receiver<LlmJob>) {
         let (sender, receiver) = mpsc::channel::<LlmJob>(64);
-        (Self { sender }, receiver)
+        let available = Arc::new(AtomicBool::new(false));
+        let multimodal = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                sender,
+                available: available.clone(),
+                multimodal: multimodal.clone(),
+            },
+            receiver,
+        )
     }
 
     pub fn submit(&self, job: LlmJob) -> Result<(), String> {
@@ -275,13 +293,38 @@ impl LlmQueue {
             .map_err(|e| format!("LLM queue full or closed: {e}"))
     }
 
+    /// Returns `true` if the LLM engine has been loaded successfully.
+    pub fn is_available(&self) -> bool {
+        self.available.load(Ordering::Relaxed)
+    }
+
+    /// Returns `true` if the LLM engine supports multimodal (vision) input.
+    pub fn is_multimodal(&self) -> bool {
+        self.multimodal.load(Ordering::Relaxed)
+    }
+
+    /// Returns a clone of the availability flag for sharing with the worker.
+    /// Used to signal engine readiness from the worker back to the main state.
+    pub fn available_flag(&self) -> Arc<AtomicBool> {
+        self.available.clone()
+    }
+
+    /// Returns a clone of the multimodal flag for sharing with the worker.
+    pub fn multimodal_flag(&self) -> Arc<AtomicBool> {
+        self.multimodal.clone()
+    }
+
     pub fn start_worker(
         db_path: PathBuf,
         mut receiver: mpsc::Receiver<LlmJob>,
         app_handle: AppHandle,
+        available: Arc<AtomicBool>,
+        multimodal: Arc<AtomicBool>,
     ) {
         tauri::async_runtime::spawn(async move {
             const MODEL_FILENAME: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
+            // Common mmproj filenames — first match wins
+            const MMPROJ_FILENAME: &str = "mmproj-BF16.gguf";
 
             // Search for model in multiple locations (first match wins)
             let app_models_dir = db_path
@@ -308,17 +351,43 @@ impl LlmQueue {
                 .cloned()
                 .unwrap_or_else(|| app_models_dir.join(MODEL_FILENAME));
 
+            // Search for mmproj (multimodal projection) — DISABLED in-process due to
+            // STATUS_STACK_BUFFER_OVERRUN conflict with pdfium/ort/tesseract.
+            // Kept for detection/logging; sidecar approach will use this path.
+            let mmproj_search_paths = [
+                app_models_dir.join(MMPROJ_FILENAME),
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join(MMPROJ_FILENAME),
+            ];
+
+            let mmproj_path = mmproj_search_paths
+                .iter()
+                .find(|p| p.exists())
+                .cloned();
+
+            if let Some(ref mmp) = mmproj_path {
+                eprintln!(
+                    "[llm] Found mmproj: {} — vision DISABLED in-process (sidecar needed)",
+                    mmp.display()
+                );
+            } else {
+                eprintln!("[llm] No mmproj found — vision not available");
+            }
+
             let config = LlmConfig {
                 model_path: model_path.clone(),
                 n_ctx: 4096,
                 n_threads: None,
                 seed: 1234,
+                mmproj_path: mmproj_path.clone(),
             };
 
             // Initialize engine (optional — degrades gracefully)
             let engine = match tokio::task::spawn_blocking(move || LlmEngine::init(config)).await {
                 Ok(Ok(engine)) => {
                     eprintln!("[llm] Engine ready: {}", model_path.display());
+                    available.store(true, Ordering::Relaxed);
                     Some(engine)
                 }
                 Ok(Err(e)) => {
@@ -334,6 +403,46 @@ impl LlmQueue {
                     None
                 }
             };
+
+            // Start sidecar for vision (multimodal) support.
+            // The sidecar loads Gemma + mmproj in an isolated process, avoiding the
+            // STATUS_STACK_BUFFER_OVERRUN crash that mmproj causes inside Tauri's
+            // process (conflict with pdfium/ort/tesseract).
+            let mut sidecar: Option<SidecarHandle> = None;
+            if engine.is_some() {
+                let sidecar_bin = sidecar::find_sidecar_binary();
+                match sidecar_bin {
+                    Some(bin) => {
+                        if let Some(ref mmp) = mmproj_path {
+                            if mmp.exists() {
+                                eprintln!("[llm] Starting sidecar for vision support...");
+                                let model = model_path.clone();
+                                let mmproj = mmp.clone();
+                                match tokio::task::block_in_place(|| {
+                                    let manager = SidecarManager::new(bin, model, Some(mmproj));
+                                    manager.start()
+                                }) {
+                                    Ok(handle) => {
+                                        eprintln!("[llm] Sidecar ready — vision enabled");
+                                        sidecar = Some(handle);
+                                        multimodal.store(true, Ordering::Relaxed);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[llm] Sidecar failed: {e} — text-only mode");
+                                    }
+                                }
+                            } else {
+                                eprintln!("[llm] mmproj file missing — vision not available");
+                            }
+                        } else {
+                            eprintln!("[llm] No mmproj configured — vision not available");
+                        }
+                    }
+                    None => {
+                        eprintln!("[llm] No sidecar binary found — vision not available");
+                    }
+                }
+            }
 
             // Open dedicated DB connection for the worker
             let conn = match rusqlite::Connection::open(&db_path) {
@@ -383,7 +492,7 @@ impl LlmQueue {
                 emit_progress(&app_handle, &id, job_name, 10);
 
                 let result = tokio::task::block_in_place(|| {
-                    process_job(engine, &conn, &job)
+                    process_job(engine, sidecar.as_mut(), &conn, &job)
                 });
 
                 match result {
@@ -417,7 +526,7 @@ fn max_tokens_for(job: &LlmJob) -> i32 {
         LlmJob::CorrectOcr { .. } | LlmJob::CorrectOcrAsset { .. } => 2048,
         LlmJob::ExtractEntities { .. } | LlmJob::ExtractEntitiesAsset { .. } => 1024,
         LlmJob::ExtractTriples { .. } | LlmJob::ExtractTriplesAsset { .. } => 1024,
-        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 512,
+        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 256,
         LlmJob::Classify { .. } => 256,
         LlmJob::Ask { .. } => 512,
     }
@@ -471,7 +580,7 @@ const MAX_ASK_CONTEXT_CHARS: usize = 6000;
 /// Maximum characters per individual document snippet (~400 tokens).
 const MAX_SNIPPET_CHARS: usize = 1200;
 
-fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
+fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
     let n_ctx = engine.n_ctx();
 
     match job {
@@ -545,6 +654,29 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::ocr_correction(&truncated);
+
+            // Try vision via sidecar if available and image exists.
+            // Falls back to text-only if sidecar fails or no image path.
+            if let Some(sc) = sidecar {
+                match get_asset_image_path(conn, asset_id) {
+                    Ok(Some(image_path)) => {
+                        match sc.generate_with_image(&image_path.to_string_lossy(), &p, max_tokens_for(job)) {
+                            Ok(result) => return Ok(result),
+                            Err(e) => {
+                                eprintln!("[llm] Sidecar vision failed, falling back to text-only: {e}");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // No image path (e.g. audio/PDF) — use text-only
+                    }
+                    Err(e) => {
+                        eprintln!("[llm] Could not resolve image path for {asset_id}: {e}");
+                    }
+                }
+            }
+
+            // Text-only fallback (no sidecar, no image, or sidecar failure)
             engine.generate(&p, max_tokens_for(job))
         }
 
@@ -657,4 +789,51 @@ fn gather_collection_context(
     }
 
     Ok(context)
+}
+
+/// Look up the image/pdf file path for an asset from the database.
+/// Returns Ok(Some(path)) if the asset exists and is an image type,
+/// Ok(None) if the asset exists but is audio/PDF (no direct image),
+/// Err if the asset doesn't exist or the query fails.
+fn get_asset_image_path(conn: &rusqlite::Connection, asset_id: &str) -> Result<Option<PathBuf>, String> {
+    let path_str: String = conn
+        .query_row(
+            "SELECT path FROM assets WHERE id = ?1",
+            params![asset_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query asset path: {e}"))?
+        .unwrap_or_default();
+
+    if path_str.is_empty() {
+        return Ok(None);
+    }
+
+    let path = PathBuf::from(&path_str);
+
+    // Only return path for visual assets (image/pdf). Audio has no image.
+    let asset_type: String = conn
+        .query_row(
+            "SELECT type FROM assets WHERE id = ?1",
+            params![asset_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query asset type: {e}"))?
+        .unwrap_or_default();
+
+    if asset_type == "audio" {
+        return Ok(None);
+    }
+
+    // For PDFs, we'd need to render a page — not supported yet.
+    // Only serve direct image files for now.
+    if asset_type == "pdf" {
+        // PDFs need page rendering which we don't do here yet.
+        // Return None to fall back to text-only correction.
+        return Ok(None);
+    }
+
+    Ok(Some(path))
 }

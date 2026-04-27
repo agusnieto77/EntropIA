@@ -66,9 +66,14 @@ export class LlmStore {
   private listeners: Array<() => void> = []
   private unlisteners: UnlistenFn[] = []
   private onComplete?: (id: string, job: string, result: string) => void
+  private onCorrectOcr?: (id: string, result: string) => void
 
-  constructor(opts?: { onComplete?: (id: string, job: string, result: string) => void }) {
+  constructor(opts?: {
+    onComplete?: (id: string, job: string, result: string) => void
+    onCorrectOcr?: (id: string, result: string) => void
+  }) {
     this.onComplete = opts?.onComplete
+    this.onCorrectOcr = opts?.onCorrectOcr
   }
 
   private defaultState(): ItemLlmState {
@@ -99,6 +104,11 @@ export class LlmStore {
           result: entry.result,
           error: null,
         })
+        // Notify about persisted OCRC results — the text was already replaced
+        // in a previous session, so we just need to track that OCRC was done.
+        if (entry.job_type === 'correct_ocr') {
+          this.onCorrectOcr?.(entry.target_id, entry.result)
+        }
       }
     } catch (e) {
       // Silently degrade — persisted results are optional
@@ -128,6 +138,10 @@ export class LlmStore {
           error: null,
         })
         this.onComplete?.(id, job, result)
+        // Notify about OCRC completion — caller needs to replace OCR text
+        if (job === 'correct_ocr') {
+          this.onCorrectOcr?.(id, result)
+        }
       }),
       await listen<LlmErrorPayload>('llm:error', (event) => {
         const { id, job, error } = event.payload
@@ -206,4 +220,14 @@ export function llmGetResults(targetId: string): Promise<LlmResultEntry[]> {
 /** Retrieve the latest single LLM result for a target + job type. */
 export function llmGetResult(targetId: string, jobType: string): Promise<LlmResultEntry | null> {
   return invoke<LlmResultEntry | null>('llm_get_result', { targetId, jobType })
+}
+
+/** Check if the LLM engine (Gemma 4) is available and ready to accept jobs. */
+export function llmIsAvailable(): Promise<boolean> {
+  return invoke<boolean>('llm_is_available')
+}
+
+/** Check if the LLM engine supports multimodal (vision) input. */
+export function llmIsMultimodal(): Promise<boolean> {
+  return invoke<boolean>('llm_is_multimodal')
 }

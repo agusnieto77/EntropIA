@@ -134,6 +134,11 @@ export class OcrStore {
     if (!current) return
     this.states.set(assetId, { ...current, textContent: text, textLength: text.length })
   }
+
+  /** Returns the extracted text content for an asset, or undefined if not available. */
+  getTextContent(assetId: string): string | undefined {
+    return this.states.get(assetId)?.textContent
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -8,11 +8,15 @@ fn gemma_prompt(instruction: &str) -> String {
 
 pub fn ocr_correction(text: &str) -> String {
     gemma_prompt(&format!(
-        r#"You are a specialist in historical document transcription. The following text was extracted via OCR from a degraded historical document and contains errors.
+        r#"You are a specialist in historical document transcription. The following text was extracted via OCR from a printed document and contains errors.
 
-Correct the OCR errors while preserving the original language, style, and historical terminology. Do not modernize or interpret the text. Only fix clear OCR mistakes (character substitutions, missing spaces, garbled words).
+Your task:
+1. Fix OCR errors: character substitutions, missing spaces, garbled words, misread letters.
+2. Unify broken lines: merge lines that were split by column layout or hyphenation into complete sentences and paragraphs. Do NOT preserve line breaks that come from column or page layout — reconstruct the natural reading flow.
+3. Ignore print column breaks: the source text comes from multi-column print layouts. Merge text from different columns into a single coherent reading order.
+4. Preserve the original language, style, and historical terminology. Do not modernize or interpret.
 
-Return ONLY the corrected text, nothing else.
+Return ONLY the corrected, unified text with proper paragraph breaks. Do not add explanations.
 
 OCR text:
 {text}"#
@@ -47,7 +51,7 @@ Text:
 
 pub fn summarize(text: &str) -> String {
     gemma_prompt(&format!(
-        r#"Summarize this historical document text in 2-3 paragraphs. Preserve key names, dates, places, and events. Write the summary in the same language as the source text.
+        r#"Summarize this historical document text in a single concise paragraph of 10-15 lines. Preserve key names, dates, places, and events. Write the summary in the same language as the source text. Do NOT exceed 15 lines.
 
 Text:
 {text}"#

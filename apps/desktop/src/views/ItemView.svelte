@@ -24,6 +24,9 @@
     llmCorrectOcrAsset,
     llmExtractEntitiesAsset,
     llmExtractTriplesAsset,
+    llmIsAvailable,
+    llmIsMultimodal,
+    llmGetResult,
   } from '$lib/llm'
   import { GeoStore } from '$lib/geo'
   import {
@@ -168,6 +171,8 @@
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
         void extractTriplesForAsset(itemId, assetId).catch(() => {})
       }
+      // Auto-summarize: OCR completed → text is now available
+      void autoSummarizeIfNeeded(assetId)
     },
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
@@ -187,6 +192,8 @@
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
         void extractTriplesForAsset(itemId, assetId).catch(() => {})
       }
+      // Auto-summarize: transcription completed → text is now available
+      void autoSummarizeIfNeeded(assetId)
     },
   })
   let transcriptionTick = $state(0)
@@ -308,11 +315,50 @@
 
   // LLM state (Gemma 4)
   const llmStore = new LlmStore({
-    onComplete: (_id, _job, _result) => {
+    onComplete: (id, job, result) => {
       llmTick++
+      // Track summary results in the dedicated map
+      if (job === 'summarize') {
+        summaryTexts.set(id, result)
+        summaryTick++
+      }
+      // When OCRC completes, replace the OCR extracted text with the corrected text
+      if (job === 'correct_ocr') {
+        ocrCorrectedAssets.add(id)
+        ocrTick++ // Force Svelte reactivity for the textarea
+        const assetId = selectedAsset?.id === id ? id : null
+        if (assetId) {
+          ocrEditedText.set(assetId, result)
+          ocrStore.setTextContent(assetId, result)
+          schedulePersist(assetId, result)
+        } else {
+          // Item-level (legacy): update the first asset's text or whichever asset has OCR text
+          const asset = assets.find((a: Asset) => ocrStore.getTextContent(a.id))
+          if (asset) {
+            ocrEditedText.set(asset.id, result)
+            ocrStore.setTextContent(asset.id, result)
+            schedulePersist(asset.id, result)
+          }
+        }
+      }
+    },
+    onCorrectOcr: (id, _result) => {
+      // Track that OCRC already ran for this asset (from persisted results or live)
+      ocrCorrectedAssets.add(id)
     },
   })
   let llmTick = $state(0)
+
+  // OCRC tracking: once OCRC is done for an asset, hide the button and show
+  // only Embedding + Triple buttons in the LLM section.
+  let ocrCorrectedAssets = $state(new Set<string>()) // asset IDs that have been OCRC'd
+
+  // Auto-summary: tracks whether LLM is available and per-asset summary text
+  let llmAvailable = $state(false)
+  let llmMultimodal = $state(false)
+  let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
+  let summaryTick = $state(0) // reactivity trigger for summary display
+  let autoSummarizeTriggered = $state(new Set<string>()) // asset IDs we've already queued
 
   /**
    * Get the LLM state for the currently active context.
@@ -370,6 +416,36 @@
       }
     } catch (e) {
       console.error('[LLM] extract triples failed:', e)
+    }
+  }
+
+  /**
+   * Auto-trigger summarization for a given asset.
+   * Only fires if: (a) the LLM engine is available, (b) the asset hasn't
+   * been queued already, and (c) no existing summary is stored in the DB.
+   */
+  async function autoSummarizeIfNeeded(assetId: string) {
+    if (!llmAvailable) return
+    if (autoSummarizeTriggered.has(assetId)) return
+
+    // Check if a summary already exists for this asset
+    try {
+      const existing = await llmGetResult(assetId, 'summarize')
+      if (existing) {
+        // Already have a summary — just populate the display
+        summaryTexts.set(assetId, existing.result)
+        summaryTick++
+        return
+      }
+    } catch {
+      // DB query failed — continue to try auto-summarize anyway
+    }
+
+    autoSummarizeTriggered.add(assetId)
+    try {
+      await llmSummarizeAsset(assetId)
+    } catch (e) {
+      console.error('[LLM] auto-summarize failed:', e)
     }
   }
 
@@ -1418,6 +1494,8 @@
           textContent: extraction.textContent,
         })
         ocrTick++
+        // Auto-trigger summary if text exists and LLM is available
+        void autoSummarizeIfNeeded(asset.id)
       }
     })
 
@@ -1436,6 +1514,8 @@
               : 0,
           })
           transcriptionTick++
+          // Auto-trigger summary for transcribed audio if LLM is available
+          void autoSummarizeIfNeeded(asset.id)
         }
       })
     }
@@ -1456,6 +1536,8 @@
     // Reload all data when navigating to a different item.
     // Reading itemId here ensures the effect re-runs when the prop changes.
     const _id = itemId
+    // Reset auto-summarize tracking for the new item
+    autoSummarizeTriggered = new Set()
     void loadData()
   })
 
@@ -1519,6 +1601,20 @@
       // Load persisted LLM results for the item (legacy item-level results).
       // Asset-level results are loaded in the selectedAsset effect below.
       llmStore.loadPersistedResults(itemId)
+    })
+
+    // Check if the LLM engine (Gemma 4) is available for auto-summarize
+    llmIsAvailable().then((available) => {
+      llmAvailable = available
+    }).catch(() => {
+      llmAvailable = false
+    })
+
+    // Check if the LLM engine supports multimodal (vision) for OCRC
+    llmIsMultimodal().then((multimodal) => {
+      llmMultimodal = multimodal
+    }).catch(() => {
+      llmMultimodal = false
     })
 
     geoStore.startListening()
@@ -1722,6 +1818,16 @@ path={selectedAsset.path}
                 >
                   OCRH
                 </button>
+                {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
+                  <button
+                    class="ocr-btn ocr-btn--correct"
+                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                    onclick={handleLlmCorrectOcr}
+                    title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : llmMultimodal ? 'LLM OCR correction with image + text (Gemma 4)' : 'LLM OCR correction, text only (Gemma 4)'}
+                  >
+                    OCRC{#if llmMultimodal} 👁{/if}
+                  </button>
+                {/if}
               </div>
             </div>
 
@@ -1735,7 +1841,7 @@ path={selectedAsset.path}
             {:else if ocr.status === 'error'}
               <p class="ocr-error">Extraction failed: {ocr.error}</p>
             {:else if ocr.status === 'done'}
-              {@const editedText = ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''}
+              {@const editedText = (() => { void ocrTick; return ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? '' })()}
               {@const displayLength = editedText.length}
               <details class="ocr-result">
                 <summary>
@@ -1816,6 +1922,23 @@ path={selectedAsset.path}
             {/if}
           </div>
         </section>
+      {/if}
+
+      {#if selectedAsset}
+        {@const currentSummary = (() => { void summaryTick; return summaryTexts.get(selectedAsset.id) ?? null })()}
+        {@const isSummarizing = getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
+        {#if currentSummary || isSummarizing}
+          <section class="section">
+            <h3>Resumen{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+            {#if isSummarizing}
+              <p class="summary-status">Generando resumen…</p>
+            {:else if currentSummary}
+              <div class="summary-result">
+                <pre class="summary-text">{currentSummary}</pre>
+              </div>
+            {/if}
+          </section>
+        {/if}
       {/if}
 
       {#if assets.length > 0}
@@ -1960,27 +2083,18 @@ path={selectedAsset.path}
                 <h4>IA Generativa (Gemma 4){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h4>
 
                 <div class="nlp-actions">
-                  <button
-                    class="nlp-btn llm-btn"
-                    disabled={getLlmState().status === 'running'}
-                    onclick={handleLlmSummarize}
-                  >
-                    Resumir
-                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
-                      <span class="nlp-badge nlp-badge--running">procesando...</span>
-                    {/if}
-                  </button>
-
-                  <button
-                    class="nlp-btn llm-btn"
-                    disabled={getLlmState().status === 'running'}
-                    onclick={handleLlmCorrectOcr}
-                  >
-                    Corregir OCR
-                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'correct_ocr'}
-                      <span class="nlp-badge nlp-badge--running">procesando...</span>
-                    {/if}
-                  </button>
+                  {#if !ocrCorrectedAssets.has(selectedAsset?.id ?? '')}
+                    <button
+                      class="nlp-btn llm-btn"
+                      disabled={getLlmState().status === 'running'}
+                      onclick={handleLlmCorrectOcr}
+                    >
+                      Corregir OCR
+                      {#if getLlmState().status === 'running' && getLlmState().activeJob === 'correct_ocr'}
+                        <span class="nlp-badge nlp-badge--running">procesando...</span>
+                      {/if}
+                    </button>
+                  {/if}
 
                   <button
                     class="nlp-btn llm-btn"
@@ -2009,7 +2123,7 @@ path={selectedAsset.path}
                   <p class="ocr-error">{getLlmState().error}</p>
                 {/if}
 
-                {#if getLlmState().result}
+                {#if getLlmState().result && !ocrCorrectedAssets.has(selectedAsset?.id ?? itemId)}
                   <div class="llm-result">
                     <h5>Resultado LLM{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h5>
                     <pre class="llm-result-text">{getLlmState().result}</pre>
@@ -2281,6 +2395,33 @@ path={selectedAsset.path}
     border: 1px dashed var(--color-border);
     border-radius: var(--radius-md);
   }
+
+  /* ── Summary (auto-generated by Gemma 4) ── */
+  .summary-result {
+    margin-top: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
+
+  .summary-status {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+
+  .summary-text {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    font-family: var(--font-sans);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.6;
+    color: var(--color-text-secondary);
+  }
   .notes-list {
     display: flex;
     flex-direction: column;
@@ -2442,6 +2583,16 @@ path={selectedAsset.path}
     color: var(--color-info, #3b82f6);
   }
   .ocr-btn--high:disabled {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+  }
+  .ocr-btn--correct {
+    border-color: var(--color-accent, #6366f1);
+    background: color-mix(in srgb, var(--color-accent, #6366f1) 10%, transparent);
+    color: var(--color-accent, #6366f1);
+  }
+  .ocr-btn--correct:disabled {
     border-color: var(--color-border);
     background: var(--color-surface);
     color: var(--color-text-muted);

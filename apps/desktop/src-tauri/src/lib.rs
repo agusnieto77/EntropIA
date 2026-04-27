@@ -216,11 +216,15 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // LLM queue: local Gemma model via llama.cpp for NER, summarization,
             // OCR correction, Q&A, etc. Degrades gracefully if model not present.
             let (llm_queue, llm_receiver) = LlmQueue::new();
+            let llm_available = llm_queue.available_flag();
+            let llm_multimodal = llm_queue.multimodal_flag();
             app.manage(llm_queue);
             LlmQueue::start_worker(
                 db_path.clone(),
                 llm_receiver,
                 app.handle().clone(),
+                llm_available,
+                llm_multimodal,
             );
 
             // Geo queue: Nominatim geocoding for place entities.
@@ -268,6 +272,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_summarize_asset,
             llm::commands::llm_get_results,
             llm::commands::llm_get_result,
+            llm::commands::llm_is_available,
+            llm::commands::llm_is_multimodal,
             geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
             image_edit::crop_image,

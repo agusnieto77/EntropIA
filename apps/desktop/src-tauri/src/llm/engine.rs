@@ -15,6 +15,11 @@ pub struct LlmConfig {
     pub n_ctx: u32,
     pub n_threads: Option<i32>,
     pub seed: u32,
+    /// Optional path to the multimodal projection file (mmproj).
+    /// Currently DISABLED — mmproj crashes with STATUS_STACK_BUFFER_OVERRUN
+    /// when loaded inside the Tauri process (conflict with pdfium/ort/tesseract).
+    /// Kept for sidecar/subprocess implementation.
+    pub mmproj_path: Option<PathBuf>,
 }
 
 impl Default for LlmConfig {
@@ -24,21 +29,35 @@ impl Default for LlmConfig {
             n_ctx: 4096,
             n_threads: None,
             seed: 1234,
+            mmproj_path: None,
         }
     }
 }
 
 /// Wraps llama.cpp via llama-cpp-2 crate. Loads a GGUF model once and runs
-/// inference on demand. NOT Send — must live inside a single worker thread.
+/// inference on demand. Multimodal (vision) is DISABLED because mmproj causes
+/// STATUS_STACK_BUFFER_OVERRUN when loaded inside the Tauri process.
+///
+/// Diagnostic testing proved mmproj loads fine in isolation (tools/llm-diag/),
+/// so the crash is caused by a conflict with another native library in the
+/// Tauri process (pdfium, onnxruntime, or tesseract).
+///
+/// TODO: Implement sidecar/subprocess approach for vision (Option C).
 pub struct LlmEngine {
     backend: LlamaBackend,
     model: LlamaModel,
     config: LlmConfig,
+    /// Multimodal context — disabled until sidecar approach is implemented.
+    _mtmd: Option<()>,
 }
 
 impl LlmEngine {
-    /// Load a GGUF model from disk. Returns an error if the file is missing or
-    /// the model cannot be loaded.
+    /// Load a GGUF model from disk.
+    ///
+    /// Multimodal (mmproj) loading is INTENTIONALLY DISABLED because it causes
+    /// STATUS_STACK_BUFFER_OVERRUN inside the Tauri process. A standalone test
+    /// (tools/llm-diag/) proved mmproj works fine in isolation — the crash is
+    /// caused by a conflict with another native library (pdfium/ort/tesseract).
     pub fn init(config: LlmConfig) -> Result<Self, String> {
         if !config.model_path.exists() {
             return Err(format!(
@@ -61,7 +80,29 @@ impl LlmEngine {
             config.n_ctx
         );
 
-        Ok(Self { backend, model, config })
+        // Multimodal DISABLED in-process — mmproj crashes with STATUS_STACK_BUFFER_OVERRUN
+        // in the Tauri process (conflict with pdfium/ort/tesseract).
+        // Vision inference is handled by the sidecar subprocess (llm-sidecar).
+        // The engine still receives mmproj_path for detection/logging only.
+        if let Some(ref path) = config.mmproj_path {
+            if path.exists() {
+                eprintln!(
+                    "[llm] mmproj found at {} — vision handled by sidecar (in-process disabled)",
+                    path.display()
+                );
+            } else {
+                eprintln!("[llm] No mmproj found, running text-only");
+            }
+        } else {
+            eprintln!("[llm] No mmproj configured, running text-only");
+        }
+
+        Ok(Self {
+            backend,
+            model,
+            config,
+            _mtmd: None,
+        })
     }
 
     /// Returns the configured context window size.
@@ -69,12 +110,14 @@ impl LlmEngine {
         self.config.n_ctx
     }
 
+    /// Returns `true` if multimodal (vision) capabilities are available.
+    /// Currently always returns false — vision disabled pending sidecar.
+    pub fn is_multimodal(&self) -> bool {
+        false
+    }
+
     /// Run text generation with the given prompt. Returns the generated text
     /// (excluding the prompt). `max_tokens` limits the output length.
-    ///
-    /// If the prompt tokens exceed the available context space, max_tokens is
-    /// automatically reduced to fit. If the prompt alone exceeds n_ctx, an
-    /// error is returned (callers should truncate input text beforehand).
     pub fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
         let tokens = self
             .model
@@ -84,8 +127,6 @@ impl LlmEngine {
         let n_prompt = tokens.len() as i32;
         let prompt_chars = prompt.chars().count();
 
-        // Dynamically cap max_tokens to fit within the context window.
-        // If the prompt alone exceeds n_ctx, we can't generate anything.
         let available = self.config.n_ctx as i32 - n_prompt;
         if available <= 0 {
             return Err(format!(
@@ -103,12 +144,6 @@ impl LlmEngine {
             );
         }
 
-        // llama.cpp has an independent `n_batch` limit apart from `n_ctx`.
-        // If `n_batch` stays at the default 512 while the prompt is larger,
-        // llama.cpp can abort the entire process with:
-        // `GGML_ASSERT(n_tokens_all <= cparams.n_batch)`.
-        // To keep the app stable, size the context batch dynamically to the
-        // prompt token count (bounded by n_ctx) before creating the context.
         let dynamic_batch = u32::try_from(tokens.len())
             .unwrap_or(self.config.n_ctx)
             .max(1)
@@ -147,10 +182,6 @@ impl LlmEngine {
 
         let n_len = n_prompt + effective_max_tokens;
 
-        // Feed prompt tokens.
-        // The batch capacity must fit the full prompt, otherwise llama.cpp
-        // fails with "Insufficient Space" even when the prompt still fits
-        // inside the model context window.
         let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
         let last_index = (tokens.len() - 1) as i32;
         for (i, token) in (0_i32..).zip(tokens.into_iter()) {
@@ -162,7 +193,6 @@ impl LlmEngine {
         ctx.decode(&mut batch)
             .map_err(|e| format!("Failed to decode prompt: {e}"))?;
 
-        // Generation loop
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::dist(self.config.seed),
             LlamaSampler::greedy(),
@@ -198,5 +228,19 @@ impl LlmEngine {
         }
 
         Ok(output.trim().to_string())
+    }
+
+    /// Run generation with an image + text prompt.
+    /// Currently DISABLED — falls back to text-only.
+    /// TODO: Re-enable via sidecar subprocess (Option C).
+    #[allow(dead_code)]
+    pub fn generate_with_image(
+        &self,
+        _image_path: &str,
+        text_prompt: &str,
+        max_tokens: i32,
+    ) -> Result<String, String> {
+        eprintln!("[llm] Vision disabled — falling back to text-only generation");
+        self.generate(text_prompt, max_tokens)
     }
 }

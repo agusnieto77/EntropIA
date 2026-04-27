@@ -34,7 +34,7 @@ ndarray = "=0.16.1"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["ndarray", "load-dynamic"] }
 tokenizers = { version = "0.15", default-features = false, features = ["onig"] }
 encoding_rs = "0.8"
-llama-cpp-2 = "0.1"
+llama-cpp-2 = { version = "0.1", features = ["mtmd"] }
 reqwest = { version = "0.12", features = ["json"] }
 urlencoding = "2"
 # Embeddings now use Python fastembed subprocess (scripts/embed.py) instead of
