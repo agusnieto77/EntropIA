@@ -76,8 +76,8 @@ pub async fn enrich_item(
 /// Submit an embedding computation job for a specific asset.
 ///
 /// The worker will extract the asset's text, compute a 384-dim vector,
-/// and upsert into `vec_items` using the parent item_id as the key.
-/// Only the selected asset's text is embedded.
+/// and upsert into `vec_assets` keyed by `asset_id`.
+/// This preserves the item-level vector in `vec_items`.
 #[tauri::command]
 pub async fn embed_asset(
     item_id: String,
@@ -322,8 +322,17 @@ pub async fn similar_items(
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(5) as usize;
+    const MAX_CANDIDATES: usize = 2000;
 
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
+
+    let target_collection_id: String = conn
+        .query_row(
+            "SELECT collection_id FROM items WHERE id = ?1",
+            rusqlite::params![item_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to resolve target collection: {e}"))?;
 
     // Read the target item's embedding (stored as little-endian f32 blob)
     let target_blob: Vec<u8> = conn
@@ -352,24 +361,30 @@ pub async fn similar_items(
         .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
         .collect();
 
-    // Read all other embeddings with their titles and collection_id via JOIN
+    // Read candidate embeddings with their titles and collection_id via JOIN.
+    // Limit scan to same collection and cap candidates to keep latency bounded.
     let mut stmt = conn
         .prepare(
             "SELECT v.item_id, i.title, i.collection_id, v.embedding
              FROM vec_items v
              LEFT JOIN items i ON i.id = v.item_id
-             WHERE v.item_id != ?1",
+             WHERE v.item_id != ?1
+               AND i.collection_id = ?2
+             LIMIT ?3",
         )
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![item_id], |row| {
+        .query_map(
+            rusqlite::params![item_id, target_collection_id, MAX_CANDIDATES as i64],
+            |row| {
             let id: String = row.get(0)?;
             let title: Option<String> = row.get(1)?;
             let collection_id: Option<String> = row.get(2)?;
             let blob: Vec<u8> = row.get(3)?;
             Ok((id, title.unwrap_or_default(), collection_id.unwrap_or_default(), blob))
-        })
+        },
+        )
         .map_err(|e| format!("Failed to execute query: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read rows: {e}"))?;

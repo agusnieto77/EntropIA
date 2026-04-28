@@ -1,6 +1,10 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rusqlite::{params, Connection};
+use serde::Deserialize;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 use super::text_provider;
 
@@ -9,6 +13,13 @@ pub struct Triple {
     pub subject: String,
     pub predicate: String,
     pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TriplePayload {
+    subject: String,
+    predicate: String,
+    object: String,
 }
 
 static TRIPLE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -44,6 +55,93 @@ pub fn extract_triples(text: &str) -> Vec<Triple> {
         .collect()
 }
 
+fn extract_triples_with_spacy(text: &str) -> Result<Vec<Triple>, String> {
+    let python = crate::python_discovery::which_python_for_module(
+        "nlp/triples",
+        "spacy+es_core_news_lg",
+        "import spacy, es_core_news_lg; print('ok')",
+    )
+    .ok_or_else(|| "No Python with spaCy/es_core_news_lg found".to_string())?;
+
+    let script_path = resolve_spacy_triples_script();
+    if !script_path.exists() {
+        return Err(format!(
+            "spaCy triples script not found: {}",
+            script_path.display()
+        ));
+    }
+
+    let mut cmd = Command::new(&python);
+    crate::python_discovery::apply_windows_no_window(&mut cmd);
+    cmd.arg(&script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn spaCy triples script: {e}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("Failed to send text to spaCy triples script: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed waiting for spaCy triples script: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(format!(
+            "spaCy triples script failed (python={}, script={}): {}",
+            python.display(),
+            script_path.display(),
+            stderr.trim()
+        ));
+    }
+
+    let json = extract_sentinel_json(&stdout);
+    let parsed: Vec<TriplePayload> = serde_json::from_str(json).map_err(|e| {
+        format!(
+            "Failed to parse spaCy triples JSON: {e}; stdout={}, stderr={}",
+            stdout.trim(),
+            stderr.trim()
+        )
+    })?;
+
+    Ok(parsed
+        .into_iter()
+        .filter_map(|t| {
+            let subject = t.subject.trim().to_string();
+            let predicate = t.predicate.trim().to_string();
+            let object = t.object.trim().to_string();
+            if subject.is_empty() || predicate.is_empty() || object.is_empty() {
+                return None;
+            }
+            Some(Triple {
+                subject,
+                predicate,
+                object,
+            })
+        })
+        .collect())
+}
+
+fn extract_triples_best_effort(text: &str) -> Vec<Triple> {
+    match extract_triples_with_spacy(text) {
+        Ok(triples) if !triples.is_empty() => triples,
+        Ok(_) => extract_triples(text),
+        Err(e) => {
+            eprintln!("[nlp/triples] spaCy unavailable, falling back to regex triples: {e}");
+            extract_triples(text)
+        }
+    }
+}
+
 pub fn extract_and_store(conn: &Connection, item_id: &str) -> Result<(), String> {
     let text = text_provider::get_item_text(conn, item_id)?;
     if text.trim().is_empty() {
@@ -52,7 +150,7 @@ pub fn extract_and_store(conn: &Connection, item_id: &str) -> Result<(), String>
         return Ok(());
     }
 
-    let triples = extract_triples(&text);
+    let triples = extract_triples_best_effort(&text);
 
     conn.execute("DELETE FROM triples WHERE item_id = ?1", params![item_id])
         .map_err(|e| format!("Failed to delete old triples: {e}"))?;
@@ -91,7 +189,7 @@ pub fn extract_and_store_for_asset(conn: &Connection, item_id: &str, asset_id: &
         return Ok(());
     }
 
-    let triples = extract_triples(&text);
+    let triples = extract_triples_best_effort(&text);
 
     // Delete old triples for this specific asset only
     conn.execute("DELETE FROM triples WHERE item_id = ?1 AND asset_id = ?2", params![item_id, asset_id])
@@ -141,6 +239,28 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn resolve_spacy_triples_script() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let base = PathBuf::from(manifest_dir);
+    let direct = base.join("scripts").join("spacy_triples.py");
+    if direct.exists() {
+        return direct;
+    }
+    base.join("resources").join("scripts").join("spacy_triples.py")
+}
+
+fn extract_sentinel_json(output: &str) -> &str {
+    const BEGIN: &str = "===TRIPLES_JSON_BEGIN===";
+    const END: &str = "===TRIPLES_JSON_END===";
+    if let Some(start_idx) = output.find(BEGIN) {
+        let content_start = start_idx + BEGIN.len();
+        if let Some(end_idx) = output[content_start..].find(END) {
+            return output[content_start..content_start + end_idx].trim();
+        }
+    }
+    output.trim()
 }
 
 #[cfg(test)]

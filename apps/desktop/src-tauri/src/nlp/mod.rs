@@ -11,11 +11,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
-use crate::llm::{self, LlmJob as GemmaJob, LlmQueue};
+use crate::llm::LlmQueue;
 use embeddings::EmbeddingEngine;
 use ner::{NerRegistry, types::{NerConfig, NerEngineKind}};
 
@@ -134,7 +133,7 @@ impl NlpQueue {
         mut receiver: mpsc::Receiver<NlpJob>,
         app_handle: AppHandle,
         ner_pending: Arc<Mutex<HashSet<String>>>,
-        llm_queue: LlmQueue,
+        _llm_queue: LlmQueue,
     ) {
         tauri::async_runtime::spawn(async move {
             // Open a dedicated SQLite connection for the NLP worker.
@@ -166,9 +165,15 @@ impl NlpQueue {
                 "CREATE TABLE IF NOT EXISTS vec_items(
                     item_id TEXT PRIMARY KEY,
                     embedding BLOB NOT NULL
-                )",
+                );
+                CREATE TABLE IF NOT EXISTS vec_assets(
+                    asset_id TEXT PRIMARY KEY,
+                    item_id TEXT NOT NULL,
+                    embedding BLOB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_vec_assets_item_id ON vec_assets(item_id)",
             ) {
-                eprintln!("[nlp] Failed to create vec_items table: {e} — embedding storage will be unavailable");
+                eprintln!("[nlp] Failed to create embedding tables: {e} — embedding storage will be unavailable");
             }
 
             // Resolve embedding script path: try Resource directory first (production),
@@ -205,7 +210,7 @@ impl NlpQueue {
                         model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
                         cache_dir: Some(embed_cache_dir),
                     }) {
-                        Ok(engine) => Some(engine),
+                        Ok(engine) => Some(Arc::new(engine)),
                         Err(e) => {
                             eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
                             None
@@ -259,7 +264,7 @@ impl NlpQueue {
                     }
                     NlpJob::ComputeEmbedding { item_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let engine_ref = embed_engine.as_ref();
+                        let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store(engine_ref, &conn, &item_id)
                         });
@@ -284,49 +289,13 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_candidates_for_item(&conn, &item_id, &ner_registry)
-                            }))
-                            .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-                        });
+                        let result = run_ner_for_item(&conn, &item_id, &ner_registry);
                         // Remove from dedup set so future enqueues for this item are allowed
                         if let Ok(mut pending) = ner_pending.lock() {
                             pending.remove(&item_id);
                         }
                         match result {
-                            Ok(batch) => {
-                                let final_entities = if batch.text.trim().is_empty() {
-                                    Vec::new()
-                                } else {
-                                    let candidate_json = match ner::serialize_review_candidates(&batch.entities) {
-                                        Ok(json) => json,
-                                        Err(e) => {
-                                            emit_error(&app_handle, &item_id, "ner", &e);
-                                            continue;
-                                        }
-                                    };
-                                    match consolidate_entities_with_gemma(
-                                        &db_path,
-                                        &llm_queue,
-                                        &item_id,
-                                        GemmaJob::ConsolidateEntities {
-                                            item_id: item_id.clone(),
-                                            candidate_entities_json: candidate_json,
-                                        },
-                                        &batch.text,
-                                        &batch.protected_entities,
-                                        &batch.entities,
-                                    )
-                                    .await {
-                                        Ok(entities) => entities,
-                                        Err(e) => {
-                                            emit_error(&app_handle, &item_id, "ner", &e);
-                                            continue;
-                                        }
-                                    }
-                                };
-
+                            Ok(final_entities) => {
                                 if let Err(e) = tokio::task::block_in_place(|| {
                                     ner::persist_entities_for_item(&conn, &item_id, &final_entities)
                                 }) {
@@ -360,34 +329,55 @@ impl NlpQueue {
                         }
                     }
                     NlpJob::EnrichItem { item_id } => {
-                        // Run all 4 sub-jobs sequentially; errors don't short-circuit.
-                        // Embedding uses engine (may be None → graceful degradation).
-                        // FTS, NER, Triples are pure Rust and always available.
-                        let engine_ref = embed_engine.as_ref();
-
+                        // Run FTS + embedding in parallel (independent tasks), then continue
+                        // with NER/triples in the same order as before.
                         emit_progress(&app_handle, &item_id, "fts", 10);
-                        let r = tokio::task::block_in_place(|| fts::index_item_from_db(&conn, &item_id));
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "fts", 100); emit_complete(&app_handle, &item_id, "fts"); } Err(e) => emit_error(&app_handle, &item_id, "fts", &e), }
-
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let r = tokio::task::block_in_place(|| embeddings::compute_and_store(engine_ref, &conn, &item_id));
-                        match r {
-                            Ok(_) => {
-                                match embedding_exists(&conn, &item_id) {
-                                    Ok(true) => {
-                                        emit_progress(&app_handle, &item_id, "embed", 100);
-                                        emit_complete(&app_handle, &item_id, "embed");
-                                    }
-                                    Ok(false) => emit_error(
-                                        &app_handle,
-                                        &item_id,
-                                        "embed",
-                                        "Embedding job completed but no vector was persisted",
-                                    ),
-                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
-                                }
+
+                        let db_for_fts = db_path.clone();
+                        let item_for_fts = item_id.clone();
+                        let fts_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let c = rusqlite::Connection::open(&db_for_fts)
+                                .map_err(|e| format!("Failed to open FTS connection: {e}"))?;
+                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                            fts::index_item_from_db(&c, &item_for_fts)
+                        });
+
+                        let db_for_embed = db_path.clone();
+                        let item_for_embed = item_id.clone();
+                        let embed_engine_for_task = embed_engine.clone();
+                        let embed_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let c = rusqlite::Connection::open(&db_for_embed)
+                                .map_err(|e| format!("Failed to open embed connection: {e}"))?;
+                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                            embeddings::compute_and_store(embed_engine_for_task.as_deref(), &c, &item_for_embed)
+                        });
+
+                        match fts_handle.await {
+                            Ok(Ok(())) => {
+                                emit_progress(&app_handle, &item_id, "fts", 100);
+                                emit_complete(&app_handle, &item_id, "fts");
                             }
-                            Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            Ok(Err(e)) => emit_error(&app_handle, &item_id, "fts", &e),
+                            Err(e) => emit_error(&app_handle, &item_id, "fts", &format!("FTS task panicked: {e}")),
+                        }
+
+                        match embed_handle.await {
+                            Ok(Ok(())) => match embedding_exists(&conn, &item_id) {
+                                Ok(true) => {
+                                    emit_progress(&app_handle, &item_id, "embed", 100);
+                                    emit_complete(&app_handle, &item_id, "embed");
+                                }
+                                Ok(false) => emit_error(
+                                    &app_handle,
+                                    &item_id,
+                                    "embed",
+                                    "Embedding job completed but no vector was persisted",
+                                ),
+                                Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            },
+                            Ok(Err(e)) => emit_error(&app_handle, &item_id, "embed", &e),
+                            Err(e) => emit_error(&app_handle, &item_id, "embed", &format!("Embed task panicked: {e}")),
                         }
 
                         // NER sub-job: check dedup set — if ExtractEntities is already
@@ -401,49 +391,13 @@ impl NlpQueue {
                                 pending.insert(item_id.clone());
                             }
                             emit_progress(&app_handle, &item_id, "ner", 10);
-                            let r = tokio::task::block_in_place(|| {
-                                catch_unwind(AssertUnwindSafe(|| {
-                                    ner::extract_candidates_for_item(&conn, &item_id, &ner_registry)
-                                }))
-                                .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-                            });
+                            let r = run_ner_for_item(&conn, &item_id, &ner_registry);
                             // Remove from dedup set after NER completes
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.remove(&item_id);
                             }
                             match r {
-                                Ok(batch) => {
-                                    let final_entities = if batch.text.trim().is_empty() {
-                                        Vec::new()
-                                    } else {
-                                        let candidate_json = match ner::serialize_review_candidates(&batch.entities) {
-                                            Ok(json) => json,
-                                            Err(e) => {
-                                                emit_error(&app_handle, &item_id, "ner", &e);
-                                                continue;
-                                            }
-                                        };
-                                        match consolidate_entities_with_gemma(
-                                            &db_path,
-                                            &llm_queue,
-                                            &item_id,
-                                            GemmaJob::ConsolidateEntities {
-                                                item_id: item_id.clone(),
-                                                candidate_entities_json: candidate_json,
-                                            },
-                                            &batch.text,
-                                            &batch.protected_entities,
-                                            &batch.entities,
-                                        )
-                                        .await {
-                                            Ok(entities) => entities,
-                                            Err(e) => {
-                                                emit_error(&app_handle, &item_id, "ner", &e);
-                                                continue;
-                                            }
-                                        }
-                                    };
-
+                                Ok(final_entities) => {
                                     if let Err(e) = tokio::task::block_in_place(|| {
                                         ner::persist_entities_for_item(&conn, &item_id, &final_entities)
                                     }) {
@@ -475,13 +429,13 @@ impl NlpQueue {
 
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let engine_ref = embed_engine.as_ref();
+                        let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store_for_asset(engine_ref, &conn, &item_id, &asset_id)
                         });
                         match result {
                             Ok(_) => {
-                                match embedding_exists(&conn, &item_id) {
+                                match asset_embedding_exists(&conn, &asset_id) {
                                     Ok(true) => {
                                         emit_progress(&app_handle, &item_id, "embed", 100);
                                         emit_complete(&app_handle, &item_id, "embed");
@@ -513,35 +467,12 @@ impl NlpQueue {
                         }
                         match result {
                             Ok(batch) => {
+                                // NER now runs only hybrid extraction (RegEx + BERT/ONNX + spaCy).
+                                // LLM consolidation with Gemma is intentionally disabled for speed.
                                 let final_entities = if batch.text.trim().is_empty() {
                                     Vec::new()
                                 } else {
-                                    let candidate_json = match ner::serialize_review_candidates(&batch.entities) {
-                                        Ok(json) => json,
-                                        Err(e) => {
-                                            emit_error(&app_handle, &item_id, "ner", &e);
-                                            continue;
-                                        }
-                                    };
-                                    match consolidate_entities_with_gemma(
-                                        &db_path,
-                                        &llm_queue,
-                                        &asset_id,
-                                        GemmaJob::ConsolidateEntitiesAsset {
-                                            asset_id: asset_id.clone(),
-                                            candidate_entities_json: candidate_json,
-                                        },
-                                        &batch.text,
-                                        &batch.protected_entities,
-                                        &batch.entities,
-                                    )
-                                    .await {
-                                        Ok(entities) => entities,
-                                        Err(e) => {
-                                            emit_error(&app_handle, &item_id, "ner", &e);
-                                            continue;
-                                        }
-                                    }
+                                    batch.entities
                                 };
 
                                 if let Err(e) = tokio::task::block_in_place(|| {
@@ -616,78 +547,23 @@ fn emit_error(app_handle: &AppHandle, item_id: &str, job: &str, error: &str) {
     );
 }
 
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-async fn await_llm_result(
-    db_path: &std::path::Path,
-    target_id: &str,
-    job_type: &str,
-    started_after_ms: i64,
-    timeout: Duration,
-) -> Result<Option<String>, String> {
-    let started = std::time::Instant::now();
-    while started.elapsed() < timeout {
-        let conn = rusqlite::Connection::open(db_path)
-            .map_err(|e| format!("Failed to open DB while waiting for LLM result: {e}"))?;
-        if let Some(entry) = llm::get_latest_result(&conn, target_id, Some(job_type))? {
-            if entry.created_at >= started_after_ms {
-                return Ok(Some(entry.result));
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    Ok(None)
-}
-
-async fn consolidate_entities_with_gemma(
-    db_path: &std::path::Path,
-    llm_queue: &LlmQueue,
-    target_id: &str,
-    llm_job: GemmaJob,
-    text: &str,
-    protected_entities: &[ner::types::Entity],
-    candidate_entities: &[ner::types::Entity],
+fn run_ner_for_item(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    ner_registry: &NerRegistry,
 ) -> Result<Vec<ner::types::Entity>, String> {
-    if !llm_queue.is_available() {
-        return Ok(candidate_entities.to_vec());
+    let batch = tokio::task::block_in_place(|| {
+        catch_unwind(AssertUnwindSafe(|| {
+            ner::extract_candidates_for_item(conn, item_id, ner_registry)
+        }))
+        .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
+    })?;
+
+    if batch.text.trim().is_empty() {
+        return Ok(Vec::new());
     }
 
-    let started_after_ms = now_millis();
-    if let Err(e) = llm_queue.submit(llm_job) {
-        eprintln!("[nlp/ner] Gemma consolidation unavailable — keeping hybrid entities: {e}");
-        return Ok(candidate_entities.to_vec());
-    }
-
-    match await_llm_result(
-        db_path,
-        target_id,
-        "consolidate_entities",
-        started_after_ms,
-        Duration::from_secs(30),
-    )
-    .await
-    {
-        Ok(Some(raw_review)) => match ner::apply_llm_review(text, candidate_entities, protected_entities, &raw_review) {
-            Ok(entities) => Ok(entities),
-            Err(e) => {
-                eprintln!("[nlp/ner] Gemma consolidation parse failed — keeping hybrid entities: {e}");
-                Ok(candidate_entities.to_vec())
-            }
-        },
-        Ok(None) => {
-            eprintln!("[nlp/ner] Gemma consolidation timed out — keeping hybrid entities");
-            Ok(candidate_entities.to_vec())
-        }
-        Err(e) => {
-            eprintln!("[nlp/ner] Gemma consolidation lookup failed — keeping hybrid entities: {e}");
-            Ok(candidate_entities.to_vec())
-        }
-    }
+    Ok(batch.entities)
 }
 
 fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, String> {
@@ -699,6 +575,19 @@ fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, 
         )
         .optional()
         .map_err(|e| format!("Failed to verify persisted embedding: {e}"))?;
+
+    Ok(found.is_some())
+}
+
+fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result<bool, String> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM vec_assets WHERE asset_id = ?1 LIMIT 1",
+            rusqlite::params![asset_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to verify persisted asset embedding: {e}"))?;
 
     Ok(found.is_some())
 }

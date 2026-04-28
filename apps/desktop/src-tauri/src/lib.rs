@@ -12,6 +12,7 @@ use geo::GeoQueue;
 use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
+use rusqlite::OptionalExtension;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
@@ -106,6 +107,25 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (ui)");
 
+            // Normalize legacy duplicates and enforce one-row-per-asset semantics
+            // for extractions/transcriptions so Rust workers can use real UPSERT.
+            ui_conn
+                .execute_batch(
+                    "DELETE FROM extractions
+                     WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM extractions GROUP BY asset_id
+                     );
+                     DELETE FROM transcriptions
+                     WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM transcriptions GROUP BY asset_id
+                     );
+                     CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+                     ON extractions(asset_id);
+                     CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_asset_id_unique
+                     ON transcriptions(asset_id);",
+                )
+                .expect("Failed to enforce unique asset_id indexes for extraction/transcription");
+
             // Migrate extractions.method CHECK constraint: remove the legacy
             // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
             // like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
@@ -128,65 +148,66 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 )
                 .map_err(|e| format!("Failed to create layouts table: {e}"))
                 .expect("Failed to create layouts table");
-            // Add sort_index column to assets if it doesn't exist (for pre-0013 databases)
-            // This column enables stable page ordering for multi-asset items (e.g. scanned PDFs)
-            let has_sort_index: bool = ui_conn
-                .prepare("SELECT sort_index FROM assets LIMIT 0")
-                .and_then(|mut stmt| {
-                    // If we can prepare this statement, the column exists
-                    let _ = stmt.query_map([], |_| Ok(()));
-                    Ok(true)
-                })
-                .unwrap_or(false);
+            let modern_schema_bootstrapped =
+                migration_applied(&ui_conn, "0017_vec_assets").unwrap_or(false);
 
-            if !has_sort_index {
+            if !modern_schema_bootstrapped {
+                // Legacy fallback for databases that haven't run JS migrations yet.
+                let has_sort_index: bool = ui_conn
+                    .prepare("SELECT sort_index FROM assets LIMIT 0")
+                    .and_then(|mut stmt| {
+                        let _ = stmt.query_map([], |_| Ok(()));
+                        Ok(true)
+                    })
+                    .unwrap_or(false);
+
+                if !has_sort_index {
+                    ui_conn
+                        .execute_batch(
+                            "ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+                             CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);",
+                        )
+                        .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
+                        .expect("Failed to add sort_index column");
+                    eprintln!("[setup] Added sort_index column to assets table");
+                }
+
                 ui_conn
                     .execute_batch(
-                        "ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
-                         CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);",
+                        "CREATE TABLE IF NOT EXISTS llm_results (
+                            id TEXT PRIMARY KEY,
+                            target_id TEXT NOT NULL,
+                            job_type TEXT NOT NULL,
+                            result TEXT NOT NULL,
+                            created_at INTEGER NOT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
                     )
-                    .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
-                    .expect("Failed to add sort_index column");
-                eprintln!("[setup] Added sort_index column to assets table");
-            }
+                    .map_err(|e| format!("Failed to create llm_results table: {e}"))
+                    .expect("Failed to create llm_results table");
 
-            // Create llm_results table for persisting LLM job results
-            ui_conn
-                .execute_batch(
-                    "CREATE TABLE IF NOT EXISTS llm_results (
-                        id TEXT PRIMARY KEY,
-                        target_id TEXT NOT NULL,
-                        job_type TEXT NOT NULL,
-                        result TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
-                )
-                .map_err(|e| format!("Failed to create llm_results table: {e}"))
-                .expect("Failed to create llm_results table");
-            // Add asset_id columns to notes, entities, and triples for per-page scoping.
-            // These are nullable — legacy rows without asset_id are "item-level" (shown on all pages).
-            let has_notes_asset_id: bool = ui_conn
-                .prepare("SELECT asset_id FROM notes LIMIT 0")
-                .and_then(|mut stmt| {
-                    let _ = stmt.query_map([], |_| Ok(()));
-                    Ok(true)
-                })
-                .unwrap_or(false);
+                let has_notes_asset_id: bool = ui_conn
+                    .prepare("SELECT asset_id FROM notes LIMIT 0")
+                    .and_then(|mut stmt| {
+                        let _ = stmt.query_map([], |_| Ok(()));
+                        Ok(true)
+                    })
+                    .unwrap_or(false);
 
-            if !has_notes_asset_id {
-                ui_conn
-                    .execute_batch(
-                        "ALTER TABLE notes ADD COLUMN asset_id TEXT;
-                         ALTER TABLE entities ADD COLUMN asset_id TEXT;
-                         ALTER TABLE triples ADD COLUMN asset_id TEXT;
-                         CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
-                         CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
-                         CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);",
-                    )
-                    .map_err(|e| format!("Failed to add asset_id columns: {e}"))
-                    .expect("Failed to add asset_id columns");
-                eprintln!("[setup] Added asset_id columns to notes, entities, triples");
+                if !has_notes_asset_id {
+                    ui_conn
+                        .execute_batch(
+                            "ALTER TABLE notes ADD COLUMN asset_id TEXT;
+                             ALTER TABLE entities ADD COLUMN asset_id TEXT;
+                             ALTER TABLE triples ADD COLUMN asset_id TEXT;
+                             CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
+                             CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
+                             CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);",
+                        )
+                        .map_err(|e| format!("Failed to add asset_id columns: {e}"))
+                        .expect("Failed to add asset_id columns");
+                    eprintln!("[setup] Added asset_id columns to notes, entities, triples");
+                }
             }
 
             // OCR worker connection
@@ -528,13 +549,38 @@ fn migrate_legacy_asset_paths(db_path: &Path, app_dir: &Path) -> Result<(), Stri
     let conn = Connection::open(db_path)
         .map_err(|error| format!("Failed to open database for asset-path migration: {error}"))?;
 
-conn.execute(
+    conn.execute(
         "UPDATE assets SET path = REPLACE(path, ?1, ?2) WHERE path LIKE ?3",
         rusqlite::params![legacy_prefix, current_prefix, format!("{}%", legacy_dir.to_string_lossy())],
     )
     .map_err(|error| format!("Failed to migrate asset paths from legacy app dir: {error}"))?;
 
     Ok(())
+}
+
+fn migration_applied(conn: &Connection, name: &str) -> Result<bool, String> {
+    let has_migrations_table: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_migrations' LIMIT 1",
+            [],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !has_migrations_table {
+        return Ok(false);
+    }
+
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM _migrations WHERE name = ?1 LIMIT 1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to check migration '{name}': {e}"))?;
+
+    Ok(found.is_some())
 }
 
 /// Migrate the `extractions` table to remove the legacy CHECK constraint

@@ -15,8 +15,10 @@
 /// - Output wrapped in sentinel markers for reliable JSON extraction
 use rusqlite::{params, Connection};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 
 use crate::python_discovery::apply_windows_no_window;
 use super::text_provider;
@@ -39,6 +41,7 @@ pub struct EmbeddingConfig {
 /// Embedding engine — spawns Python as a child process.
 pub struct EmbeddingEngine {
     config: EmbeddingConfig,
+    cache: Mutex<HashMap<u64, Vec<f32>>>,
 }
 
 /// JSON output from the Python `embed.py` script.
@@ -69,7 +72,10 @@ impl EmbeddingEngine {
             config.model_name,
         );
 
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            cache: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Compute embedding for a single text string via Python subprocess.
@@ -77,6 +83,13 @@ impl EmbeddingEngine {
     /// Returns a 384-dimensional float vector. Errors are non-fatal —
     /// callers should treat them as degradation.
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        let key = rolling_hash64(text.as_bytes());
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(hit) = cache.get(&key) {
+                return Ok(hit.clone());
+            }
+        }
+
         let mut cmd = Command::new(&self.config.python_path);
         apply_windows_no_window(&mut cmd);
         cmd.arg(&self.config.script_path)
@@ -133,6 +146,16 @@ impl EmbeddingEngine {
             )
         })?;
 
+        if let Ok(mut cache) = self.cache.lock() {
+            // Tiny bounded cache to avoid re-spawning Python for repeated text.
+            if cache.len() >= 128 {
+                if let Some(first_key) = cache.keys().next().copied() {
+                    cache.remove(&first_key);
+                }
+            }
+            cache.insert(key, embed_output.vector.clone());
+        }
+
         Ok(embed_output.vector)
     }
 }
@@ -183,9 +206,8 @@ pub fn compute_and_store(
 /// Compute embedding for a single asset's text and store it.
 ///
 /// Uses only the extraction/transcription text for the given `asset_id`,
-/// not the entire item. The embedding is stored under the `item_id` key
-/// (same as item-level), so it replaces any previous item-level embedding
-/// with one based on just this asset's content.
+/// not the entire item. The embedding is stored under `asset_id` in
+/// `vec_assets`, preserving the item-level vector in `vec_items`.
 pub fn compute_and_store_for_asset(
     engine: Option<&EmbeddingEngine>,
     conn: &Connection,
@@ -217,7 +239,7 @@ pub fn compute_and_store_for_asset(
     };
 
     let blob = floats_to_blob(&vector);
-    upsert_vec_item(conn, item_id, &blob)
+    upsert_vec_asset(conn, item_id, asset_id, &blob)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -243,6 +265,36 @@ fn upsert_vec_item(conn: &Connection, item_id: &str, blob: &[u8]) -> Result<(), 
             "[nlp/embeddings] Failed to persist embedding for {item_id}: {e}"
         )),
     }
+}
+
+fn upsert_vec_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    blob: &[u8],
+) -> Result<(), String> {
+    let result = conn.execute(
+        "INSERT OR REPLACE INTO vec_assets(asset_id, item_id, embedding) VALUES (?1, ?2, ?3)",
+        params![asset_id, item_id, blob],
+    );
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "[nlp/embeddings] Failed to persist asset embedding for {asset_id}: {e}"
+        )),
+    }
+}
+
+fn rolling_hash64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
 }
 
 /// Extract JSON content between `===EMBED_JSON_BEGIN===` and
@@ -458,5 +510,35 @@ mod tests {
             error.contains("Skipping embedding for item-1"),
             "degradation error should include item id"
         );
+    }
+
+    #[test]
+    fn upsert_vec_asset_writes_when_vec_assets_table_exists() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute(
+            "CREATE TABLE vec_assets(asset_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, embedding BLOB NOT NULL)",
+            [],
+        )
+        .expect("vec_assets table should be created");
+
+        upsert_vec_asset(&conn, "item-1", "asset-1", &[9, 8, 7, 6]).expect("upsert should succeed");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vec_assets WHERE asset_id = 'asset-1' AND item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count query should succeed");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn rolling_hash64_is_stable_for_same_input() {
+        let a = rolling_hash64(b"hola");
+        let b = rolling_hash64(b"hola");
+        let c = rolling_hash64(b"adios");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

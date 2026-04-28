@@ -235,13 +235,6 @@ fn save_transcription(
     let segments_json = serde_json::to_string(&result.segments)
         .map_err(|e| format!("Failed to serialize segments: {e}"))?;
 
-    // Delete existing transcription for this asset (upsert semantics)
-    conn.execute(
-        "DELETE FROM transcriptions WHERE asset_id = ?1",
-        [asset_id],
-    )
-    .map_err(|e| format!("Failed to delete existing transcription: {e}"))?;
-
     let id = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -249,7 +242,16 @@ fn save_transcription(
         .unwrap_or(0);
 
     conn.execute(
-        "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           text_content = excluded.text_content,
+           language = excluded.language,
+           duration_ms = excluded.duration_ms,
+           model = excluded.model,
+           segments = excluded.segments,
+           confidence = excluded.confidence,
+           created_at = excluded.created_at",
         rusqlite::params![
             id,
             asset_id,
@@ -262,7 +264,7 @@ fn save_transcription(
             now,
         ],
     )
-    .map_err(|e| format!("Failed to insert transcription: {e}"))?;
+    .map_err(|e| format!("Failed to upsert transcription: {e}"))?;
 
     lookup_item_id_for_asset(conn, asset_id)
 }

@@ -109,155 +109,164 @@ impl OcrQueue {
         mut receiver: mpsc::Receiver<OcrJob>,
         app_handle: AppHandle,
     ) {
-        tauri::async_runtime::spawn(async move {
-            // Initialize Pdfium native library path resolution once.
-            // This caches the DLL search path for all subsequent PDF operations.
-            init_pdfium_path(&app_handle);
+        std::thread::Builder::new()
+            .name("ocr-worker".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                // Initialize Pdfium native library path resolution once.
+                // This caches the DLL search path for all subsequent PDF operations.
+                init_pdfium_path(&app_handle);
 
-            // ── Provider initialization with fallback chain ───────────────
-            //
-            // Try PaddleOCR first (if compiled with `paddle-ocr` feature).
-            // If PaddleOCR models are not found (e.g. first run without downloading),
-            // fall back to Tesseract. If both fail, drain the queue with errors.
-            let provider: Arc<dyn OcrProvider> = {
-                let mut chosen: Option<Arc<dyn OcrProvider>> = None;
+                // ── Provider initialization with fallback chain ───────────────
+                let provider: Arc<dyn OcrProvider> = {
+                    let mut chosen: Option<Arc<dyn OcrProvider>> = None;
 
-                // Step 1: Try PaddleOCR (primary engine)
-                #[cfg(feature = "paddle-ocr")]
-                {
-                    let model_dir = resolve_paddle_model_dir(&app_handle);
-                    match paddle::PaddleOcrProvider::new(model_dir) {
-                        Ok(p) => {
-                            chosen = Some(Arc::new(p) as Arc<dyn OcrProvider>);
-                        }
-                        Err(e) => {
-                            eprintln!("[OCR] ❌ PaddleOCR unavailable ({e}), trying Tesseract fallback");
-                        }
-                    }
-                }
-
-                // Step 2: Try Tesseract (fallback engine)
-                if chosen.is_none() {
-                    let tessdata_path = resolve_tessdata_dir(&app_handle);
-                    match tesseract::TesseractProvider::init("spa+eng", tessdata_path.as_deref()) {
-                        Ok(t) => {
-                            chosen = Some(Arc::new(t) as Arc<dyn OcrProvider>);
-                        }
-                        Err(e) => {
-                            eprintln!("[OCR] ❌ Tesseract also unavailable ({e})");
+                    #[cfg(feature = "paddle-ocr")]
+                    {
+                        let model_dir = resolve_paddle_model_dir(&app_handle);
+                        match paddle::PaddleOcrProvider::new(model_dir) {
+                            Ok(p) => {
+                                chosen = Some(Arc::new(p) as Arc<dyn OcrProvider>);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[OCR] ❌ PaddleOCR unavailable ({e}), trying Tesseract fallback"
+                                );
+                            }
                         }
                     }
+
+                    if chosen.is_none() {
+                        let tessdata_path = resolve_tessdata_dir(&app_handle);
+                        match tesseract::TesseractProvider::init("spa+eng", tessdata_path.as_deref())
+                        {
+                            Ok(t) => {
+                                chosen = Some(Arc::new(t) as Arc<dyn OcrProvider>);
+                            }
+                            Err(e) => {
+                                eprintln!("[OCR] ❌ Tesseract also unavailable ({e})");
+                            }
+                        }
+                    }
+
+                    match chosen {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("[OCR] 🚨 No OCR provider available — draining queue with errors");
+                            while let Some(job) = receiver.blocking_recv() {
+                                let _ = app_handle.emit(
+                                    "ocr:error",
+                                    OcrErrorPayload {
+                                        asset_id: job.asset_id,
+                                        error: "No OCR engine available (PaddleOCR and Tesseract both failed to load)".to_string(),
+                                    },
+                                );
+                            }
+                            return;
+                        }
+                    }
+                };
+
+                eprintln!("[OCR] Provider ready: {}", provider.name());
+
+                let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
+                if paddle_vl_engine.is_some() {
+                    eprintln!("[OCR] OCRH available via PaddleOCR-VL");
+                } else {
+                    eprintln!("[OCR] OCRH unavailable — falling back to plain OCR");
                 }
 
-                match chosen {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("[OCR] 🚨 No OCR provider available — draining queue with errors");
-                        while let Some(job) = receiver.recv().await {
+                // Dedicated DB connection for this worker (avoids open/close per job).
+                let conn = match rusqlite::Connection::open(&db_path) {
+                    Ok(c) => {
+                        if let Err(e) =
+                            c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                        {
+                            eprintln!("[OCR] Failed to configure DB pragmas: {e}");
+                        }
+                        c
+                    }
+                    Err(e) => {
+                        eprintln!("[OCR] Failed to open worker DB connection: {e}");
+                        while let Some(job) = receiver.blocking_recv() {
                             let _ = app_handle.emit(
                                 "ocr:error",
                                 OcrErrorPayload {
                                     asset_id: job.asset_id,
-                                    error: "No OCR engine available (PaddleOCR and Tesseract both failed to load)".to_string(),
+                                    error: format!("Failed to open OCR DB connection: {e}"),
                                 },
                             );
                         }
                         return;
                     }
-                }
-            };
+                };
 
-            eprintln!("[OCR] Provider ready: {}", provider.name());
+                while let Some(job) = receiver.blocking_recv() {
+                    let asset_id = job.asset_id.clone();
+                    let result = tauri::async_runtime::block_on(process_job(
+                        &provider,
+                        &job,
+                        &app_handle,
+                        paddle_vl_engine.as_ref(),
+                    ));
 
-            // Lazily initialize PaddleVL engine — Python probing happens here
-            // instead of blocking app startup. First OCR(H) job pays the one-time cost.
-            let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
-            if paddle_vl_engine.is_some() {
-                eprintln!("[OCR] OCRH available via PaddleOCR-VL");
-            } else {
-                eprintln!("[OCR] OCRH unavailable — falling back to plain OCR");
-            }
+                    match result {
+                        Ok(output) => {
+                            let method = output.method.clone();
+                            let text_content = output.text.clone();
+                            let save_result = save_extraction(&conn, &asset_id, &text_content, &method)
+                                .and_then(|_| lookup_item_id_for_asset(&conn, &asset_id));
 
-            // Layout engine currently unused in production (OCRL uses plain OCR).
-            // Can be lazily created here if layout-aware light mode is re-enabled.
-
-            // Main work loop — serial, one job at a time
-            while let Some(job) = receiver.recv().await {
-                let asset_id = job.asset_id.clone();
-                let result = process_job(&provider, &job, &app_handle, paddle_vl_engine.as_ref()).await;
-
-                match result {
-                    Ok(output) => {
-                        let method = output.method.clone();
-                        let text_content = output.text.clone();
-                        let aid = asset_id.clone();
-                        let method_clone = method.clone();
-                        let db_path_clone = db_path.clone();
-                        let text_for_save = text_content.clone();
-
-                        // Persist extraction to SQLite — open a fresh connection inside
-                        // spawn_blocking because rusqlite::Connection is not Send.
-                        let save_result = tokio::task::spawn_blocking(move || {
-                            let conn = rusqlite::Connection::open(&db_path_clone)
-                                .map_err(|e| format!("Failed to open save connection: {e}"))?;
-                            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-                                .map_err(|e| format!("Failed to configure pragmas: {e}"))?;
-                            save_extraction(&conn, &aid, &text_for_save, &method_clone)?;
-                            lookup_item_id_for_asset(&conn, &aid)
-                        })
-                        .await
-                        .map_err(|e| format!("Save task panicked: {e}"))
-                        .and_then(|r| r);
-
-                        if let Err(e) = &save_result {
-                            eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
-                            // Still emit complete — text is in memory even if DB save failed
-                        } else if let Ok(Some(item_id)) = &save_result {
-                            // Asset-level NER + triples: only re-extract for the
-                            // completed asset, not the entire item. Avoids reprocessing
-                            // unchanged pages on multi-asset documents.
-                            let nlp_queue = app_handle.state::<NlpQueue>();
-                            if let Err(e) = nlp_queue.submit(NlpJob::ExtractEntitiesForAsset {
-                                item_id: item_id.clone(),
-                                asset_id: asset_id.clone(),
-                            }) {
-                                eprintln!("[nlp] Failed to auto-enqueue ExtractEntitiesForAsset after OCR save: {e}");
-                            } else {
-                                eprintln!(
-                                    "[nlp] Auto-enqueued ExtractEntitiesForAsset after OCR save: asset_id={}, item_id={}",
-                                    asset_id, item_id
-                                );
+                            if let Err(e) = &save_result {
+                                eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
+                            } else if let Ok(Some(item_id)) = &save_result {
+                                let nlp_queue = app_handle.state::<NlpQueue>();
+                                if let Err(e) = nlp_queue.submit(NlpJob::ExtractEntitiesForAsset {
+                                    item_id: item_id.clone(),
+                                    asset_id: asset_id.clone(),
+                                }) {
+                                    eprintln!(
+                                        "[nlp] Failed to auto-enqueue ExtractEntitiesForAsset after OCR save: {e}"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[nlp] Auto-enqueued ExtractEntitiesForAsset after OCR save: asset_id={}, item_id={}",
+                                        asset_id, item_id
+                                    );
+                                }
+                                if let Err(e) = nlp_queue.submit(NlpJob::ExtractTriplesForAsset {
+                                    item_id: item_id.clone(),
+                                    asset_id: asset_id.clone(),
+                                }) {
+                                    eprintln!(
+                                        "[nlp] Failed to auto-enqueue ExtractTriplesForAsset after OCR save: {e}"
+                                    );
+                                }
                             }
-                            if let Err(e) = nlp_queue.submit(NlpJob::ExtractTriplesForAsset {
-                                item_id: item_id.clone(),
-                                asset_id: asset_id.clone(),
-                            }) {
-                                eprintln!("[nlp] Failed to auto-enqueue ExtractTriplesForAsset after OCR save: {e}");
-                            }
+
+                            let _ = app_handle.emit(
+                                "ocr:complete",
+                                OcrCompletePayload {
+                                    asset_id,
+                                    method,
+                                    text_length: text_content.len(),
+                                    text_content,
+                                },
+                            );
                         }
-
-                        let _ = app_handle.emit(
-                            "ocr:complete",
-                            OcrCompletePayload {
-                                asset_id,
-                                method,
-                                text_length: text_content.len(),
-                                text_content,
-                            },
-                        );
-                    }
-                    Err(err) => {
-                        let _ = app_handle.emit(
-                            "ocr:error",
-                            OcrErrorPayload {
-                                asset_id,
-                                error: err,
-                            },
-                        );
+                        Err(err) => {
+                            let _ = app_handle.emit(
+                                "ocr:error",
+                                OcrErrorPayload {
+                                    asset_id,
+                                    error: err,
+                                },
+                            );
+                        }
                     }
                 }
-            }
-        });
+            })
+            .expect("Failed to spawn OCR worker thread");
     }
 }
 
@@ -339,22 +348,15 @@ fn resolve_tessdata_dir(app_handle: &AppHandle) -> Option<String> {
 
 /// Upsert an extraction row for the given asset_id.
 ///
-/// Deletes any existing extractions for the asset, then inserts a new row.
-/// This matches the frontend `ExtractionRepo.upsert` semantics.
+/// Uses SQLite `ON CONFLICT(asset_id) DO UPDATE` semantics.
 fn save_extraction(
     conn: &rusqlite::Connection,
     asset_id: &str,
     text_content: &str,
     method: &str,
 ) -> Result<(), String> {
-    // Delete existing extractions for this asset
-    conn.execute(
-        "DELETE FROM extractions WHERE asset_id = ?1",
-        [asset_id],
-    )
-    .map_err(|e| format!("Failed to delete existing extractions: {e}"))?;
-
-    // Insert new extraction
+    // True UPSERT keyed by `asset_id` (requires UNIQUE index on extractions.asset_id).
+    // This avoids DELETE+INSERT churn and keeps writes atomic.
     let id = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -362,10 +364,16 @@ fn save_extraction(
         .unwrap_or(0);
 
     conn.execute(
-        "INSERT INTO extractions(id, asset_id, text_content, method, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO extractions(id, asset_id, text_content, method, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           text_content = excluded.text_content,
+           method = excluded.method,
+           confidence = excluded.confidence,
+           created_at = excluded.created_at",
         rusqlite::params![id, asset_id, text_content, method, None::<f64>, now],
     )
-    .map_err(|e| format!("Failed to insert extraction: {e}"))?;
+    .map_err(|e| format!("Failed to upsert extraction: {e}"))?;
 
     Ok(())
 }
