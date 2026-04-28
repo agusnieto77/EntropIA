@@ -27,6 +27,7 @@ use self::engine::{LlmConfig, LlmEngine};
 pub enum LlmJob {
     CorrectOcr { item_id: String },
     ExtractEntities { item_id: String },
+    #[allow(dead_code)] // Future: entity consolidation via LLM review (not yet wired)
     ConsolidateEntities {
         item_id: String,
         candidate_entities_json: String,
@@ -40,6 +41,7 @@ pub enum LlmJob {
     // avoiding context-window overflow on multi-page documents.
     CorrectOcrAsset { asset_id: String },
     ExtractEntitiesAsset { asset_id: String },
+    #[allow(dead_code)] // Future: entity consolidation via LLM review (not yet wired)
     ConsolidateEntitiesAsset {
         asset_id: String,
         candidate_entities_json: String,

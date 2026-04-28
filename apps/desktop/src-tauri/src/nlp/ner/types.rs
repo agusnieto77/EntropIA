@@ -69,6 +69,7 @@ pub enum EntitySource {
     RuleBased,
     Onnx,
     Spacy,
+    #[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
     Llm,
 }
 

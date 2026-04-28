@@ -3000,12 +3000,6 @@ path={selectedAsset.path}
     border-top: 1px solid var(--color-border);
   }
 
-  .llm-section h4 {
-    margin: 0 0 var(--space-2) 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-  }
-
   .llm-btn {
     border-left: 3px solid var(--color-accent, #6366f1);
   }
@@ -3016,12 +3010,6 @@ path={selectedAsset.path}
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface);
-  }
-
-  .llm-result h5 {
-    margin: 0 0 var(--space-2) 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
   }
 
   .llm-result-text {

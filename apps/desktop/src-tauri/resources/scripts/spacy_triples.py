@@ -3,6 +3,17 @@ import json
 import sys
 
 
+def sanitize_surrogates(text: str) -> str:
+    """Remove lone surrogates that crash spaCy's tokenizer.
+
+    OCR-extracted text from corrupted PDFs/images may contain lone surrogates
+    (e.g., \\udc9d) which cause UnicodeEncodeError: 'utf-8' codec can't encode
+    character: surrogates not allowed.  Replacing with '?' preserves text length
+    so character offsets remain stable for downstream processing.
+    """
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def expandir(token):
     hijos = [h for h in token.children if h.dep_ in ["amod", "det", "compound", "flat"]]
     frase = sorted(hijos + [token], key=lambda x: x.i)
@@ -39,6 +50,9 @@ def main():
         print("[]")
         print("===TRIPLES_JSON_END===")
         return
+
+    # Sanitize lone surrogates before tokenizing — see sanitize_surrogates()
+    text = sanitize_surrogates(text)
 
     import spacy
 

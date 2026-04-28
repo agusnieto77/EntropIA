@@ -125,10 +125,12 @@ pub fn extract_entities(text: &str) -> Vec<Entity> {
 #[derive(Clone)]
 pub struct EntityExtractionBatch {
     pub text: String,
+    #[allow(dead_code)] // Future: will be used for entity consolidation/review pipeline
     pub protected_entities: Vec<Entity>,
     pub entities: Vec<Entity>,
 }
 
+#[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
 #[derive(Serialize)]
 struct EntityReviewCandidate<'a> {
     value: &'a str,
@@ -137,6 +139,7 @@ struct EntityReviewCandidate<'a> {
     confidence: f32,
 }
 
+#[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
 #[derive(Deserialize)]
 struct ReviewedEntity {
     #[serde(default, alias = "entity", alias = "text")]
@@ -181,6 +184,7 @@ pub fn extract_candidates_for_asset(
     })
 }
 
+#[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
 pub fn serialize_review_candidates(entities: &[Entity]) -> Result<String, String> {
     let payload = entities
         .iter()
@@ -195,6 +199,7 @@ pub fn serialize_review_candidates(entities: &[Entity]) -> Result<String, String
         .map_err(|e| format!("Failed to serialize entity review candidates: {e}"))
 }
 
+#[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
 pub fn apply_llm_review(
     text: &str,
     candidate_entities: &[Entity],
@@ -472,6 +477,7 @@ fn load_protected_entities(conn: &Connection, item_id: &str) -> Result<Vec<Entit
         .map_err(|e| format!("Failed to collect protected entities: {e}"))
 }
 
+#[allow(dead_code)] // Future: used by apply_llm_review (not yet wired)
 fn strip_markdown_fences(text: &str) -> String {
     let trimmed = text.trim();
     if !trimmed.starts_with("```") {
@@ -504,6 +510,7 @@ fn parse_entity_type(value: &str) -> Option<EntityType> {
     }
 }
 
+#[allow(dead_code)] // Future: used by apply_llm_review (not yet wired)
 fn parse_entity_type_alias(value: &str) -> Option<EntityType> {
     match value.trim().to_lowercase().as_str() {
         "person" | "persona" => Some(EntityType::Person),
@@ -516,6 +523,7 @@ fn parse_entity_type_alias(value: &str) -> Option<EntityType> {
     }
 }
 
+#[allow(dead_code)] // Future: used by apply_llm_review (not yet wired)
 fn find_entity_span(text: &str, value: &str) -> Option<(usize, usize)> {
     let needle = value.trim();
     if needle.is_empty() {
