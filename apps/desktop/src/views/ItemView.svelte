@@ -160,10 +160,9 @@ llmExtractTriplesAsset,
   const ocrStore = new OcrStore({
     onComplete: (assetId) => {
       // After OCR extraction completes on a specific asset, auto-trigger
-      // asset-level enrichment for that asset
+      // asset-level entity extraction only.
       if (selectedAsset && selectedAsset.id === assetId) {
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
-        void llmExtractTriplesAsset(assetId).catch(() => {})
       }
     },
   })
@@ -179,10 +178,9 @@ llmExtractTriplesAsset,
   // Transcription state — mirrors OcrStore pattern for audio assets
   const transcriptionStore = new TranscriptionStore({
     onComplete: (assetId) => {
-      // After transcription completes, auto-trigger enrichment for that asset
+      // After transcription completes, auto-trigger entity extraction only.
       if (selectedAsset && selectedAsset.id === assetId) {
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
-        void llmExtractTriplesAsset(assetId).catch(() => {})
       }
     },
   })
@@ -201,7 +199,6 @@ llmExtractTriplesAsset,
     const timer = setTimeout(async () => {
       const jobs: Array<[string, () => Promise<unknown>]> = [
         ['ner', () => extractEntitiesForAsset(itemId, assetId)],
-        ['triples', () => llmExtractTriplesAsset(assetId)],
         ['fts', () => indexFts(itemId)],
         // Item-level embedding: similar_items reads from vec_items, not vec_assets.
         // Using embedItem ensures Similar Items refreshes after text correction.

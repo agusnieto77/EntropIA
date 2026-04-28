@@ -305,12 +305,6 @@ fn process_job(
                 job.asset_id, item_id
             );
         }
-        if let Err(e) = nlp_queue.submit(NlpJob::ExtractTriplesForAsset {
-            item_id: item_id.clone(),
-            asset_id: job.asset_id.clone(),
-        }) {
-            eprintln!("[nlp] Failed to auto-enqueue ExtractTriplesForAsset after transcription save: {e}");
-        }
         // FTS indexing: ensures the new transcript is searchable immediately.
         if let Err(e) = nlp_queue.submit(NlpJob::IndexFts {
             item_id: item_id.clone(),
