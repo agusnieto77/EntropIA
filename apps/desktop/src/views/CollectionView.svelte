@@ -146,10 +146,6 @@
   async function finalizeImportedItem(itemId: string, imported: ImportedFile) {
     const store = getStore()
 
-    await store.items.update(itemId, {
-      title: imported.originalName.replace(/\.[^.]+$/, ''),
-    })
-
     // For scanned PDFs, convert to per-page image assets instead of a single PDF asset
     if (imported.type === 'pdf') {
       try {
