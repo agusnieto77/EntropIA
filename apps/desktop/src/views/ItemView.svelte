@@ -2190,7 +2190,8 @@ OCRC
                     No embeddings yet. Generate embeddings to find similar items.
                   </p>
                 </div>
-{/if}
+              {/if}
+            </div>
           {/if}
         </section>
       {/if}
