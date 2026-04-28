@@ -7,7 +7,6 @@ import {
   indexFts,
   embedItem,
   extractEntities,
-  extractTriples,
   enrichItem,
   ftsSearch,
   similarItems,
@@ -82,12 +81,6 @@ describe('NlpStore', () => {
     vi.mocked(invoke).mockResolvedValueOnce('queued')
     await extractEntities('item-3')
     expect(invoke).toHaveBeenCalledWith('extract_entities', { itemId: 'item-3' })
-  })
-
-  it('extractTriples calls invoke with correct command and itemId', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce('queued')
-    await extractTriples('item-7')
-    expect(invoke).toHaveBeenCalledWith('extract_triples', { itemId: 'item-7' })
   })
 
   it('enrichItem calls invoke with correct command and itemId', async () => {

@@ -3,7 +3,9 @@ pub mod embeddings;
 pub mod fts;
 pub mod ner;
 pub mod text_provider;
-pub mod triples;
+// NOTE: `triples` module removed — semantic triples are now Gemma-only via the LLM pipeline
+// (see llm::LlmJob::ExtractTriples / ExtractTriplesAsset). The old NLP regex+spaCy route has
+// been retired to prevent low-quality triples from overwriting LLM results in the `triples` table.
 
 use serde::Serialize;
 use rusqlite::OptionalExtension;
@@ -48,12 +50,10 @@ pub enum NlpJob {
     IndexFts { item_id: String },
     ComputeEmbedding { item_id: String },
     ExtractEntities { item_id: String },
-    ExtractTriples { item_id: String },
     EnrichItem { item_id: String },
     // Asset-level variants: process only the selected asset/page
     ComputeAssetEmbedding { item_id: String, asset_id: String },
     ExtractEntitiesForAsset { item_id: String, asset_id: String },
-    ExtractTriplesForAsset { item_id: String, asset_id: String },
 }
 
 pub fn lookup_item_id_for_asset(
@@ -315,22 +315,9 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
                     }
-                    NlpJob::ExtractTriples { item_id } => {
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            triples::extract_and_store(&conn, &item_id)
-                        });
-                        match result {
-                            Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "triples", 100);
-                                emit_complete(&app_handle, &item_id, "triples");
-                            }
-                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
-                        }
-                    }
                     NlpJob::EnrichItem { item_id } => {
                         // Run FTS + embedding in parallel (independent tasks), then continue
-                        // with NER/triples in the same order as before.
+                        // with NER. Semantic triples are Gemma-only via the LLM pipeline.
                         emit_progress(&app_handle, &item_id, "fts", 10);
                         emit_progress(&app_handle, &item_id, "embed", 10);
 
@@ -416,10 +403,6 @@ impl NlpQueue {
                                 Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                             }
                         }
-
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let r = tokio::task::block_in_place(|| triples::extract_and_store(&conn, &item_id));
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "triples", 100); emit_complete(&app_handle, &item_id, "triples"); } Err(e) => emit_error(&app_handle, &item_id, "triples", &e), }
                     }
 
                     // ── Asset-level processing ─────────────────────────────────────
@@ -494,19 +477,6 @@ impl NlpQueue {
                         }
                     }
 
-                    NlpJob::ExtractTriplesForAsset { item_id, asset_id } => {
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            triples::extract_and_store_for_asset(&conn, &item_id, &asset_id)
-                        });
-                        match result {
-                            Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "triples", 100);
-                                emit_complete(&app_handle, &item_id, "triples");
-                            }
-                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
-                        }
-                    }
                 }
             }
         });
@@ -727,13 +697,11 @@ mod tests {
                 embeddings::compute_and_store(None, conn, item_id)
             }
             NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id, &rule_based_registry()),
-            NlpJob::ExtractTriples { item_id } => triples::extract_and_store(conn, item_id),
             NlpJob::EnrichItem { item_id } => {
-                // Run all 4 sub-jobs sequentially; errors don't short-circuit
+                // Run all 3 NLP sub-jobs sequentially; errors don't short-circuit
                 let _ = fts::index_item_from_db(conn, item_id);
                 let _ = embeddings::compute_and_store(None, conn, item_id);
                 let _ = ner::extract_and_store(conn, item_id, &rule_based_registry());
-                let _ = triples::extract_and_store(conn, item_id);
                 Ok(())
             }
         }
@@ -879,13 +847,6 @@ mod tests {
                 item_id: "item-1".to_string(),
             },
         );
-        let triples = run_job_without_events(
-            &conn,
-            &NlpJob::ExtractTriples {
-                item_id: "item-1".to_string(),
-            },
-        );
-
         assert!(
             embed.is_err(),
             "embedding job should report degradation as an error result"
@@ -900,10 +861,6 @@ mod tests {
         );
         assert!(fts.is_ok(), "FTS job should still run after embedding degradation");
         assert!(ner.is_ok(), "NER job should still run after embedding degradation");
-        assert!(
-            triples.is_ok(),
-            "Triples job should still run after embedding degradation"
-        );
 
         let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
