@@ -242,6 +242,33 @@ impl OcrQueue {
                                         "[nlp] Failed to auto-enqueue ExtractTriplesForAsset after OCR save: {e}"
                                     );
                                 }
+                                // FTS indexing: ensures the new text is searchable immediately.
+                                if let Err(e) = nlp_queue.submit(NlpJob::IndexFts {
+                                    item_id: item_id.clone(),
+                                }) {
+                                    eprintln!(
+                                        "[nlp] Failed to auto-enqueue IndexFts after OCR save: {e}"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[nlp] Auto-enqueued IndexFts after OCR save: item_id={}",
+                                        item_id
+                                    );
+                                }
+                                // Item-level embedding: powers Similar Items (vec_items).
+                                // Without this, similar_items returns empty results.
+                                if let Err(e) = nlp_queue.submit(NlpJob::ComputeEmbedding {
+                                    item_id: item_id.clone(),
+                                }) {
+                                    eprintln!(
+                                        "[nlp] Failed to auto-enqueue ComputeEmbedding after OCR save: {e}"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[nlp] Auto-enqueued ComputeEmbedding after OCR save: item_id={}",
+                                        item_id
+                                    );
+                                }
                             }
 
                             let _ = app_handle.emit(

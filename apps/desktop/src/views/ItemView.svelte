@@ -7,7 +7,6 @@
     NlpStore,
     indexFts,
     embedItem,
-    embedAsset,
     extractEntities,
     extractEntitiesForAsset,
     similarItems as fetchSimilarItems,
@@ -166,8 +165,6 @@ llmExtractTriplesAsset,
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
         void llmExtractTriplesAsset(assetId).catch(() => {})
       }
-      // Auto-summarize: OCR completed → text is now available
-      void autoSummarizeIfNeeded(assetId)
     },
   })
   // Reactive tick counter: incremented on every OCR event to force Svelte re-evaluation
@@ -187,8 +184,6 @@ llmExtractTriplesAsset,
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
         void llmExtractTriplesAsset(assetId).catch(() => {})
       }
-      // Auto-summarize: transcription completed → text is now available
-      void autoSummarizeIfNeeded(assetId)
     },
   })
   let transcriptionTick = $state(0)
@@ -204,17 +199,19 @@ llmExtractTriplesAsset,
     if (existing) clearTimeout(existing)
 
     const timer = setTimeout(async () => {
-const jobs: Array<[string, () => Promise<unknown>]> = [
+      const jobs: Array<[string, () => Promise<unknown>]> = [
         ['ner', () => extractEntitiesForAsset(itemId, assetId)],
         ['triples', () => llmExtractTriplesAsset(assetId)],
         ['fts', () => indexFts(itemId)],
-        ['embed', () => embedAsset(itemId, assetId)],
+        // Item-level embedding: similar_items reads from vec_items, not vec_assets.
+        // Using embedItem ensures Similar Items refreshes after text correction.
+        ['embed', () => embedItem(itemId)],
       ]
 
       try {
         console.info('[ItemView] Re-running post-edit analysis', { itemId, assetId })
 
-const results = await Promise.allSettled(jobs.map(([, run]) => run()))
+        const results = await Promise.allSettled(jobs.map(([, run]) => run()))
         results.forEach((result, index) => {
           const jobName = jobs[index]?.[0] ?? 'unknown'
           if (result.status === 'rejected') {
@@ -360,11 +357,9 @@ const results = await Promise.allSettled(jobs.map(([, run]) => run()))
   // only Embedding + Triple buttons in the LLM section.
   let ocrCorrectedAssets = $state(new Set<string>()) // asset IDs that have been OCRC'd
 
-  // Auto-summary: tracks whether LLM is available and per-asset summary text
-let llmAvailable = $state(false)
-let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
+  let llmAvailable = $state(false)
+  let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
   let summaryTick = $state(0) // reactivity trigger for summary display
-  let autoSummarizeTriggered = $state(new Set<string>()) // asset IDs we've already queued
 
   /**
    * Get the LLM state for the currently active context.
@@ -414,36 +409,6 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
       console.error('[LLM] extract triples failed:', e)
       nlpStore._setJobStatus(itemId, 'triples', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
-    }
-  }
-
-  /**
-   * Auto-trigger summarization for a given asset.
-   * Only fires if: (a) the LLM engine is available, (b) the asset hasn't
-   * been queued already, and (c) no existing summary is stored in the DB.
-   */
-  async function autoSummarizeIfNeeded(assetId: string) {
-    if (!llmAvailable) return
-    if (autoSummarizeTriggered.has(assetId)) return
-
-    // Check if a summary already exists for this asset
-    try {
-      const existing = await llmGetResult(assetId, 'summarize')
-      if (existing) {
-        // Already have a summary — just populate the display
-        summaryTexts.set(assetId, existing.result)
-        summaryTick++
-        return
-      }
-    } catch {
-      // DB query failed — continue to try auto-summarize anyway
-    }
-
-    autoSummarizeTriggered.add(assetId)
-    try {
-      await llmSummarizeAsset(assetId)
-    } catch (e) {
-      console.error('[LLM] auto-summarize failed:', e)
     }
   }
 
@@ -970,11 +935,7 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
     nlpStore._setJobStatus(itemId, 'embed', 'pending')
     nlpTick++
     try {
-      if (selectedAsset) {
-        await embedAsset(itemId, selectedAsset.id)
-      } else {
-        await embedItem(itemId)
-      }
+      await embedItem(itemId)
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'embed', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
@@ -1477,8 +1438,6 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
           textContent: extraction.textContent,
         })
         ocrTick++
-        // Auto-trigger summary if text exists and LLM is available
-        void autoSummarizeIfNeeded(asset.id)
       }
     })
 
@@ -1497,8 +1456,6 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
               : 0,
           })
           transcriptionTick++
-          // Auto-trigger summary for transcribed audio if LLM is available
-          void autoSummarizeIfNeeded(asset.id)
         }
       })
     }
@@ -1513,14 +1470,22 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
     // Load persisted LLM results for this asset so previous
     // asset-level results (summarize, correct_ocr, etc.) are visible.
     llmStore.loadPersistedResults(asset.id)
+    llmGetResult(asset.id, 'summarize')
+      .then((result) => {
+        if (result) {
+          summaryTexts.set(asset.id, result.result)
+          summaryTick++
+        }
+      })
+      .catch(() => {
+        // Silently degrade — persisted summaries are optional
+      })
   })
 
   $effect(() => {
     // Reload all data when navigating to a different item.
     // Reading itemId here ensures the effect re-runs when the prop changes.
     const _id = itemId
-    // Reset auto-summarize tracking for the new item
-    autoSummarizeTriggered = new Set()
     void loadData()
   })
 
@@ -1586,12 +1551,13 @@ let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
       llmStore.loadPersistedResults(itemId)
     })
 
-// Check if the LLM engine (Gemma 4) is available for auto-summarize
-llmIsAvailable().then((available) => {
-  llmAvailable = available
-}).catch(() => {
-  llmAvailable = false
-})
+    llmIsAvailable()
+      .then((available) => {
+        llmAvailable = available
+      })
+      .catch(() => {
+        llmAvailable = false
+      })
 
     geoStore.startListening()
     return () => {
@@ -1801,8 +1767,18 @@ path={selectedAsset.path}
   onclick={handleLlmCorrectOcr}
   title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : 'LLM OCR correction (Gemma 4)'}
 >
-  OCRC
+OCRC
 </button>
+                {/if}
+                {#if llmAvailable}
+                <button
+                  class="ocr-btn ocr-btn--summarize"
+                  disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                  onclick={handleLlmSummarize}
+                  title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : 'Generate summary (Gemma 4)'}
+                >
+                  OCRR
+                </button>
                 {/if}
               </div>
             </div>
@@ -1851,14 +1827,26 @@ path={selectedAsset.path}
           <div class="ocr-item">
             <div class="ocr-item-header">
               <span class="ocr-filename">&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span>
-              <button
-                class="ocr-btn"
-                disabled={busy}
-                onclick={() => handleTranscribeAudio(selectedAsset)}
-                title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
-              >
-                {busy ? 'Transcribing…' : 'Transcribe'}
-              </button>
+              <div class="ocr-btn-group">
+                <button
+                  class="ocr-btn"
+                  disabled={busy}
+                  onclick={() => handleTranscribeAudio(selectedAsset)}
+                  title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+                >
+                  {busy ? 'Transcribing…' : 'Transcribe'}
+                </button>
+                {#if llmAvailable}
+                <button
+                  class="ocr-btn ocr-btn--summarize"
+                  disabled={getLlmState().status === 'running' || ts.status !== 'done'}
+                  onclick={handleLlmSummarize}
+                  title={!llmAvailable ? 'Gemma 4 not available' : ts.status !== 'done' ? 'Transcribe first' : 'Generate summary (Gemma 4)'}
+                >
+                  OCRR
+                </button>
+                {/if}
+              </div>
             </div>
 
             {#if ts.status === 'running'}
@@ -2202,8 +2190,7 @@ path={selectedAsset.path}
                     No embeddings yet. Generate embeddings to find similar items.
                   </p>
                 </div>
-              {/if}
-            </div>
+{/if}
           {/if}
         </section>
       {/if}
@@ -2516,6 +2503,16 @@ path={selectedAsset.path}
     color: var(--color-accent, #6366f1);
   }
   .ocr-btn--correct:disabled {
+    border-color: var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+  }
+  .ocr-btn--summarize {
+    border-color: var(--color-warning, #f59e0b);
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 10%, transparent);
+    color: var(--color-warning, #f59e0b);
+  }
+  .ocr-btn--summarize:disabled {
     border-color: var(--color-border);
     background: var(--color-surface);
     color: var(--color-text-muted);

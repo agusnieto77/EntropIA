@@ -311,6 +311,29 @@ fn process_job(
         }) {
             eprintln!("[nlp] Failed to auto-enqueue ExtractTriplesForAsset after transcription save: {e}");
         }
+        // FTS indexing: ensures the new transcript is searchable immediately.
+        if let Err(e) = nlp_queue.submit(NlpJob::IndexFts {
+            item_id: item_id.clone(),
+        }) {
+            eprintln!("[nlp] Failed to auto-enqueue IndexFts after transcription save: {e}");
+        } else {
+            eprintln!(
+                "[nlp] Auto-enqueued IndexFts after transcription save: item_id={}",
+                item_id
+            );
+        }
+        // Item-level embedding: powers Similar Items (vec_items).
+        // Without this, similar_items returns empty results for transcribed items.
+        if let Err(e) = nlp_queue.submit(NlpJob::ComputeEmbedding {
+            item_id: item_id.clone(),
+        }) {
+            eprintln!("[nlp] Failed to auto-enqueue ComputeEmbedding after transcription save: {e}");
+        } else {
+            eprintln!(
+                "[nlp] Auto-enqueued ComputeEmbedding after transcription save: item_id={}",
+                item_id
+            );
+        }
     }
 
     emit_progress(app_handle, &job.asset_id, 100, "done");
