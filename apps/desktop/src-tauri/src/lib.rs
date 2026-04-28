@@ -58,6 +58,32 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Suppress Windows error dialogs and CRT debug assertions that block the
+    // process when native libraries crash.
+    // This must run before any other initialization.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+        const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
+        const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+        extern "system" { fn SetErrorMode(uMode: u32) -> u32; }
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+
+        // Suppress CRT debug assertions in debug builds.
+        // Routes assertion output to stderr instead of a blocking dialog.
+        #[cfg(debug_assertions)]
+        {
+            extern "C" {
+                fn _CrtSetReportMode(reportType: i32, reportMode: i32) -> i32;
+            }
+            const _CRT_ASSERT: i32 = 2;
+            const _CRTDBG_MODE_FILE: i32 = 4;
+            const _CRTDBG_FILE_STDERR: i32 = 2;
+            _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+            _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -68,10 +94,7 @@ pub fn run() {
                 .expect("Failed to get app data dir");
             migrate_legacy_app_dir(&app_dir).expect("Failed to migrate legacy app data dir");
             std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
-            eprintln!("[setup] app_dir: {:?}", app_dir);
-
             let db_path = app_dir.join("entropia.sqlite");
-            eprintln!("[setup] db_path: {:?}", db_path);
 
 migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to migrate legacy asset paths in database");
@@ -79,11 +102,9 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // UI connection — used by Tauri IPC commands
             let ui_conn =
                 rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database (ui)");
-            eprintln!("[setup] DB opened");
             ui_conn
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (ui)");
-            eprintln!("[setup] PRAGMA foreign_keys=ON");
 
             // Migrate extractions.method CHECK constraint: remove the legacy
             // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
@@ -107,8 +128,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 )
                 .map_err(|e| format!("Failed to create layouts table: {e}"))
                 .expect("Failed to create layouts table");
-            eprintln!("[setup] layouts table ensured");
-
             // Add sort_index column to assets if it doesn't exist (for pre-0013 databases)
             // This column enables stable page ordering for multi-asset items (e.g. scanned PDFs)
             let has_sort_index: bool = ui_conn
@@ -129,8 +148,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                     .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
                     .expect("Failed to add sort_index column");
                 eprintln!("[setup] Added sort_index column to assets table");
-            } else {
-                eprintln!("[setup] sort_index column already exists in assets table");
             }
 
             // Create llm_results table for persisting LLM job results
@@ -147,8 +164,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 )
                 .map_err(|e| format!("Failed to create llm_results table: {e}"))
                 .expect("Failed to create llm_results table");
-            eprintln!("[setup] llm_results table ensured");
-
             // Add asset_id columns to notes, entities, and triples for per-page scoping.
             // These are nullable — legacy rows without asset_id are "item-level" (shown on all pages).
             let has_notes_asset_id: bool = ui_conn
@@ -172,8 +187,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                     .map_err(|e| format!("Failed to add asset_id columns: {e}"))
                     .expect("Failed to add asset_id columns");
                 eprintln!("[setup] Added asset_id columns to notes, entities, triples");
-            } else {
-                eprintln!("[setup] asset_id columns already exist in notes, entities, triples");
             }
 
             // OCR worker connection
@@ -194,6 +207,19 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // startup path, which previously blocked app window display by 3-15s.
             OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
+            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
+            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
+            let (llm_queue, llm_receiver) = LlmQueue::new();
+            let llm_available = llm_queue.available_flag();
+            let nlp_llm_queue = llm_queue.clone();
+            app.manage(llm_queue);
+            LlmQueue::start_worker(
+                db_path.clone(),
+                llm_receiver,
+                app.handle().clone(),
+                llm_available,
+            );
+
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
             // embedding engine (Python subprocess) independently from OCR/UI connections.
@@ -201,7 +227,13 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // Clone the dedup handle before moving nlp_queue into managed state
             let ner_pending = nlp_queue.ner_pending_handle();
             app.manage(nlp_queue);
-            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone(), ner_pending);
+            NlpQueue::start_worker(
+                db_path.clone(),
+                nlp_receiver,
+                app.handle().clone(),
+                ner_pending,
+                nlp_llm_queue,
+            );
 
             // Transcription queue: faster-whisper subprocess for audio transcription.
             // Each job spawns a Python process, no persistent state needed.
@@ -211,20 +243,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 db_path.clone(),
                 transcription_receiver,
                 app.handle().clone(),
-            );
-
-            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
-            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
-            let (llm_queue, llm_receiver) = LlmQueue::new();
-            let llm_available = llm_queue.available_flag();
-            let llm_multimodal = llm_queue.multimodal_flag();
-            app.manage(llm_queue);
-            LlmQueue::start_worker(
-                db_path.clone(),
-                llm_receiver,
-                app.handle().clone(),
-                llm_available,
-                llm_multimodal,
             );
 
             // Geo queue: Nominatim geocoding for place entities.
@@ -270,11 +288,10 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_extract_entities_asset,
             llm::commands::llm_extract_triples_asset,
             llm::commands::llm_summarize_asset,
-            llm::commands::llm_get_results,
-            llm::commands::llm_get_result,
-            llm::commands::llm_is_available,
-            llm::commands::llm_is_multimodal,
-            geo::commands::geocode_entity,
+llm::commands::llm_get_results,
+        llm::commands::llm_get_result,
+        llm::commands::llm_is_available,
+        geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
             image_edit::crop_image,
             image_edit::rotate_image,

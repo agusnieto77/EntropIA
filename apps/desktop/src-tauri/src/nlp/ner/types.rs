@@ -69,6 +69,7 @@ pub enum EntitySource {
     RuleBased,
     Onnx,
     Spacy,
+    Llm,
 }
 
 impl EntitySource {
@@ -77,6 +78,7 @@ impl EntitySource {
             Self::RuleBased => "rule_based",
             Self::Onnx => "onnx",
             Self::Spacy => "spacy",
+            Self::Llm => "llm",
         }
     }
 }

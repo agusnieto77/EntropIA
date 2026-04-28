@@ -15,11 +15,6 @@ pub struct LlmConfig {
     pub n_ctx: u32,
     pub n_threads: Option<i32>,
     pub seed: u32,
-    /// Optional path to the multimodal projection file (mmproj).
-    /// Currently DISABLED — mmproj crashes with STATUS_STACK_BUFFER_OVERRUN
-    /// when loaded inside the Tauri process (conflict with pdfium/ort/tesseract).
-    /// Kept for sidecar/subprocess implementation.
-    pub mmproj_path: Option<PathBuf>,
 }
 
 impl Default for LlmConfig {
@@ -29,35 +24,96 @@ impl Default for LlmConfig {
             n_ctx: 4096,
             n_threads: None,
             seed: 1234,
-            mmproj_path: None,
         }
     }
 }
 
 /// Wraps llama.cpp via llama-cpp-2 crate. Loads a GGUF model once and runs
-/// inference on demand. Multimodal (vision) is DISABLED because mmproj causes
-/// STATUS_STACK_BUFFER_OVERRUN when loaded inside the Tauri process.
-///
-/// Diagnostic testing proved mmproj loads fine in isolation (tools/llm-diag/),
-/// so the crash is caused by a conflict with another native library in the
-/// Tauri process (pdfium, onnxruntime, or tesseract).
-///
-/// TODO: Implement sidecar/subprocess approach for vision (Option C).
+/// inference on demand. Text-only only.
 pub struct LlmEngine {
     backend: LlamaBackend,
     model: LlamaModel,
     config: LlmConfig,
-    /// Multimodal context — disabled until sidecar approach is implemented.
-    _mtmd: Option<()>,
 }
 
 impl LlmEngine {
-    /// Load a GGUF model from disk.
-    ///
-    /// Multimodal (mmproj) loading is INTENTIONALLY DISABLED because it causes
-    /// STATUS_STACK_BUFFER_OVERRUN inside the Tauri process. A standalone test
-    /// (tools/llm-diag/) proved mmproj works fine in isolation — the crash is
-    /// caused by a conflict with another native library (pdfium/ort/tesseract).
+    fn preview_for_log(text: &str, max_chars: usize) -> String {
+        let sanitized = text.replace('\r', "\\r").replace('\n', "\\n");
+        let mut chars = sanitized.chars();
+        let preview: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            format!("{preview}…")
+        } else {
+            preview
+        }
+    }
+
+    pub(crate) fn sanitize_text_output(raw: &str) -> String {
+        let mut text = raw.trim();
+
+        for marker in ["<end_of_turn>", "<start_of_turn>", "<eos>"] {
+            if let Some(idx) = text.find(marker) {
+                text = &text[..idx];
+            }
+        }
+
+        text = text.trim();
+
+        if text.starts_with("```") {
+            let without_opening = text
+                .strip_prefix("```")
+                .unwrap_or(text)
+                .trim_start_matches("text")
+                .trim_start_matches("txt")
+                .trim_start_matches("markdown")
+                .trim_start_matches("json")
+                .trim_start_matches("JSON")
+                .trim();
+            text = without_opening.strip_suffix("```").unwrap_or(without_opening).trim();
+        }
+
+        let lower = text.to_lowercase();
+        for prefix in [
+            "texto corregido:",
+            "texto corregido y unificado:",
+            "corrección ocr:",
+            "correccion ocr:",
+            "resultado corregido:",
+        ] {
+            if lower.starts_with(prefix) {
+                text = text[prefix.len()..].trim();
+                break;
+            }
+        }
+
+        if text.len() >= 2 {
+            let first = text.chars().next().unwrap_or_default();
+            let last = text.chars().last().unwrap_or_default();
+            let quoted = matches!((first, last), ('"', '"') | ('\'', '\''));
+            if quoted {
+                let inner = &text[1..text.len() - 1];
+                if inner.contains('\n') || inner.len() > 80 {
+                    text = inner.trim();
+                }
+            }
+        }
+
+        text.trim().to_string()
+    }
+
+    fn sanitize_json_array_output(raw: &str) -> String {
+        let text = Self::sanitize_text_output(raw);
+
+        if let Some(start) = text.find('[') {
+            if let Some(end_rel) = text[start..].rfind(']') {
+                return text[start..=start + end_rel].trim().to_string();
+            }
+        }
+
+        text
+    }
+
+    /// Load a GGUF model from disk in text-only mode.
     pub fn init(config: LlmConfig) -> Result<Self, String> {
         if !config.model_path.exists() {
             return Err(format!(
@@ -66,8 +122,12 @@ impl LlmEngine {
             ));
         }
 
-        let backend = LlamaBackend::init()
+        let mut backend = LlamaBackend::init()
             .map_err(|e| format!("Failed to init llama backend: {e}"))?;
+
+        // Silence verbose llama.cpp / ggml native logs (tensor loading, KV cache,
+        // reserve spam, etc.). We keep our own `[llm] ...` diagnostics.
+        backend.void_logs();
 
         let model_params = pin!(LlamaModelParams::default());
 
@@ -79,29 +139,12 @@ impl LlmEngine {
             config.model_path.display(),
             config.n_ctx
         );
-
-        // Multimodal DISABLED in-process — mmproj crashes with STATUS_STACK_BUFFER_OVERRUN
-        // in the Tauri process (conflict with pdfium/ort/tesseract).
-        // Vision inference is handled by the sidecar subprocess (llm-sidecar).
-        // The engine still receives mmproj_path for detection/logging only.
-        if let Some(ref path) = config.mmproj_path {
-            if path.exists() {
-                eprintln!(
-                    "[llm] mmproj found at {} — vision handled by sidecar (in-process disabled)",
-                    path.display()
-                );
-            } else {
-                eprintln!("[llm] No mmproj found, running text-only");
-            }
-        } else {
-            eprintln!("[llm] No mmproj configured, running text-only");
-        }
+        eprintln!("[llm] Running in text-only mode");
 
         Ok(Self {
             backend,
             model,
             config,
-            _mtmd: None,
         })
     }
 
@@ -110,15 +153,9 @@ impl LlmEngine {
         self.config.n_ctx
     }
 
-    /// Returns `true` if multimodal (vision) capabilities are available.
-    /// Currently always returns false — vision disabled pending sidecar.
-    pub fn is_multimodal(&self) -> bool {
-        false
-    }
-
-    /// Run text generation with the given prompt. Returns the generated text
-    /// (excluding the prompt). `max_tokens` limits the output length.
-    pub fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
+    /// Run raw text generation with the given prompt. Returns the generated text
+    /// exactly as decoded from llama.cpp (minus surrounding trim only).
+    fn generate_raw(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
         let tokens = self
             .model
             .str_to_token(prompt, AddBos::Always)
@@ -230,17 +267,53 @@ impl LlmEngine {
         Ok(output.trim().to_string())
     }
 
-    /// Run generation with an image + text prompt.
-    /// Currently DISABLED — falls back to text-only.
-    /// TODO: Re-enable via sidecar subprocess (Option C).
-    #[allow(dead_code)]
-    pub fn generate_with_image(
-        &self,
-        _image_path: &str,
-        text_prompt: &str,
-        max_tokens: i32,
-    ) -> Result<String, String> {
-        eprintln!("[llm] Vision disabled — falling back to text-only generation");
-        self.generate(text_prompt, max_tokens)
+    /// Run text generation with the given prompt. Returns the sanitized generated text
+    /// (excluding the prompt). `max_tokens` limits the output length.
+    pub fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
+        let raw = self.generate_raw(prompt, max_tokens)?;
+        Ok(Self::sanitize_text_output(&raw))
+    }
+
+    /// Generate OCR-corrected text and log raw vs sanitized output when the
+    /// sanitization pass materially changes the model response.
+    pub fn generate_ocr_correction(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
+        let raw = self.generate_raw(prompt, max_tokens)?;
+        let sanitized = Self::sanitize_text_output(&raw);
+
+        if raw.trim() != sanitized {
+            eprintln!(
+                "[llm][ocr] sanitized model output: raw_len={}, sanitized_len={}, raw_preview=\"{}\", sanitized_preview=\"{}\"",
+                raw.chars().count(),
+                sanitized.chars().count(),
+                Self::preview_for_log(&raw, 220),
+                Self::preview_for_log(&sanitized, 220),
+            );
+        }
+
+        Ok(sanitized)
+    }
+
+    /// Generate semantic triples as JSON.
+    ///
+    /// IMPORTANT: this intentionally avoids llama.cpp GBNF grammars.
+    /// With Gemma 4 + llama.cpp 0.1.145, constrained decoding can abort the
+    /// whole process with `GGML_ASSERT(!stacks.empty()) failed` inside
+    /// `llama-grammar.cpp`. We prefer unconstrained generation plus robust
+    /// JSON extraction/parsing over a hard process crash.
+    pub fn generate_triples(&self, prompt: &str, max_tokens: i32) -> Result<String, String> {
+        let raw = self.generate_raw(prompt, max_tokens)?;
+        let sanitized = Self::sanitize_json_array_output(&raw);
+
+        if raw.trim() != sanitized {
+            eprintln!(
+                "[llm][triples] sanitized model output: raw_len={}, sanitized_len={}, raw_preview=\"{}\", sanitized_preview=\"{}\"",
+                raw.chars().count(),
+                sanitized.chars().count(),
+                Self::preview_for_log(&raw, 220),
+                Self::preview_for_log(&sanitized, 220),
+            );
+        }
+
+        Ok(sanitized)
     }
 }

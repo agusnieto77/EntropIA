@@ -67,13 +67,16 @@ export class LlmStore {
   private unlisteners: UnlistenFn[] = []
   private onComplete?: (id: string, job: string, result: string) => void
   private onCorrectOcr?: (id: string, result: string) => void
+  private onError?: (id: string, job: string, error: string) => void
 
   constructor(opts?: {
     onComplete?: (id: string, job: string, result: string) => void
     onCorrectOcr?: (id: string, result: string) => void
+    onError?: (id: string, job: string, error: string) => void
   }) {
     this.onComplete = opts?.onComplete
     this.onCorrectOcr = opts?.onCorrectOcr
+    this.onError = opts?.onError
   }
 
   private defaultState(): ItemLlmState {
@@ -150,6 +153,7 @@ export class LlmStore {
           activeJob: null,
           error,
         })
+        this.onError?.(id, job, error)
       }),
     )
   }
@@ -225,9 +229,4 @@ export function llmGetResult(targetId: string, jobType: string): Promise<LlmResu
 /** Check if the LLM engine (Gemma 4) is available and ready to accept jobs. */
 export function llmIsAvailable(): Promise<boolean> {
   return invoke<boolean>('llm_is_available')
-}
-
-/** Check if the LLM engine supports multimodal (vision) input. */
-export function llmIsMultimodal(): Promise<boolean> {
-  return invoke<boolean>('llm_is_multimodal')
 }

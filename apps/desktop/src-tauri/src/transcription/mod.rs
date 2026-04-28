@@ -90,11 +90,6 @@ impl TranscriptionQueue {
                 }
             });
 
-        eprintln!(
-            "[transcription] Script path: {}",
-            script_path.display()
-        );
-
         // Find Python interpreter
         let python_path = match which_python() {
             Some(p) => p,
@@ -129,11 +124,6 @@ impl TranscriptionQueue {
         std::fs::create_dir_all(&model_cache_dir).unwrap_or_else(|e| {
             eprintln!("[transcription] Warning: could not create model cache dir {}: {e}", model_cache_dir.display());
         });
-        eprintln!(
-            "[transcription] Model cache dir: {}",
-            model_cache_dir.display()
-        );
-
         std::thread::Builder::new()
             .name("transcription-worker".to_string())
             .stack_size(8 * 1024 * 1024) // 8 MB — subprocess only, no heavy stack needed
@@ -163,8 +153,6 @@ impl TranscriptionQueue {
                         return;
                     }
                 };
-
-                eprintln!("[transcription] Worker ready, processing jobs.");
 
                 // ── Open dedicated DB connection ────────────────────────────
                 let conn = match rusqlite::Connection::open(&db_path) {

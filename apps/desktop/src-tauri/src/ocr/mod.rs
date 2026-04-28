@@ -126,10 +126,8 @@ impl OcrQueue {
                 #[cfg(feature = "paddle-ocr")]
                 {
                     let model_dir = resolve_paddle_model_dir(&app_handle);
-                    eprintln!("[OCR] Attempting PaddleOCR init from: {}", model_dir.display());
                     match paddle::PaddleOcrProvider::new(model_dir) {
                         Ok(p) => {
-                            eprintln!("[OCR] ✅ PaddleOCR initialized successfully — using as primary engine");
                             chosen = Some(Arc::new(p) as Arc<dyn OcrProvider>);
                         }
                         Err(e) => {
@@ -141,10 +139,8 @@ impl OcrQueue {
                 // Step 2: Try Tesseract (fallback engine)
                 if chosen.is_none() {
                     let tessdata_path = resolve_tessdata_dir(&app_handle);
-                    eprintln!("[OCR] Attempting Tesseract init with tessdata: {}", tessdata_path.as_deref().unwrap_or("(default)"));
                     match tesseract::TesseractProvider::init("spa+eng", tessdata_path.as_deref()) {
                         Ok(t) => {
-                            eprintln!("[OCR] ✅ Tesseract initialized — using as fallback engine");
                             chosen = Some(Arc::new(t) as Arc<dyn OcrProvider>);
                         }
                         Err(e) => {
@@ -171,15 +167,15 @@ impl OcrQueue {
                 }
             };
 
-            eprintln!("[OCR] Using provider: {}", provider.name());
+            eprintln!("[OCR] Provider ready: {}", provider.name());
 
             // Lazily initialize PaddleVL engine — Python probing happens here
             // instead of blocking app startup. First OCR(H) job pays the one-time cost.
             let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
             if paddle_vl_engine.is_some() {
-                eprintln!("[OCR] ✅ PaddleOCR-VL available — will use for OCRH (High mode)");
+                eprintln!("[OCR] OCRH available via PaddleOCR-VL");
             } else {
-                eprintln!("[OCR] PaddleOCR-VL not available — OCRH will fall back to plain OCR");
+                eprintln!("[OCR] OCRH unavailable — falling back to plain OCR");
             }
 
             // Layout engine currently unused in production (OCRL uses plain OCR).

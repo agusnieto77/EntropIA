@@ -15,8 +15,13 @@ Tu tarea:
 2. Unificá líneas rotas: mergeá líneas que fueron divididas por el layout en columnas o guiones en oraciones y párrafos completos. NO conserves saltos de línea que provienen del layout en columnas — reconstruí el flujo de lectura natural.
 3. Ignorá los cortes de columnas de impresión: el texto viene de layouts multi-columna. Mergeá el texto de diferentes columnas en un orden de lectura coherente.
 4. Preservá el idioma, estilo y terminología histórica originales. No modernices ni interpretes.
+5. Si una palabra o fragmento es dudoso, conservá la versión más probable según el contexto, pero NO inventes contenido ausente.
+6. No resumas ni reescribas: corregí el OCR, pero mantené el contenido, el orden de lectura y el nivel de detalle del original.
+7. Si una palabra quedó cortada por guion de fin de línea, reconstruila; si el guion pertenece realmente al contenido, conserválo.
 
-Devolvé SOLO el texto corregido y unificado con saltos de párrafo apropiados. No agregues explicaciones.
+Devolvé SOLO el texto corregido y unificado con saltos de párrafo apropiados.
+NO agregues explicaciones, títulos, comillas, markdown, bloques de código ni JSON.
+NO repitas la consigna.
 
 Texto OCR:
 {text}"#
@@ -38,11 +43,59 @@ Texto:
 
 pub fn extract_triples(text: &str) -> String {
     gemma_prompt(&format!(
-        r#"Extraé triples semánticos (sujeto-predicado-objeto) de este texto de documento histórico. Devolvé un array JSON donde cada elemento tiene: "subject", "predicate", "object".
+        r#"Extraé triples semánticos (sujeto-predicado-objeto) de este texto de documento histórico.
+
+Reglas obligatorias:
+- Devolvé SOLO un array JSON válido.
+- Cada elemento DEBE ser un objeto con EXACTAMENTE estas claves: "subject", "predicate", "object".
+- Todos los valores DEBEN ser strings JSON válidos.
+- No agregues claves extra.
+- No agregues texto antes ni después del array.
+- Si no encontrás relaciones confiables, devolvé [] .
+- Preferí sujetos y objetos completos (sintagmas nominales completos), no fragmentos sueltos, pronombres ni títulos aislados si el referente explícito aparece en el texto.
+- Evitá duplicados o variantes mínimas de la misma relación.
 
 Enfocate en relaciones fácticas: quién hizo qué, quién está relacionado con quién, qué pasó dónde y cuándo. Usá los términos exactos del texto. Respondé en el mismo idioma que el texto original (por defecto, español).
 
-Devolvé SOLO el array JSON, sin explicaciones.
+Ejemplo válido:
+[
+  {{"subject":"Juan Pérez","predicate":"firmó","object":"el acta"}}
+]
+
+Texto:
+{text}"#
+    ))
+}
+
+pub fn consolidate_entities(text: &str, candidate_entities_json: &str) -> String {
+    gemma_prompt(&format!(
+        r#"Sos una capa de validación y mejora para un pipeline NER histórico.
+
+Recibís:
+1. El texto original.
+2. Una lista preliminar de entidades detectadas por NER híbrido (RegEx + BERT).
+
+Tu tarea:
+- Revisá las entidades preliminares.
+- Corregí OCR evidente dentro del valor de la entidad cuando el contexto lo haga claro.
+- Normalizá variantes obvias del mismo nombre si corresponden, pero sin modernizar el texto.
+- Eliminá falsos positivos.
+- Agregá entidades relevantes que el NER no haya detectado.
+- Mantené un tipado consistente usando SOLO: person, place, date, organization, institution, misc.
+- No incluyas duplicados ni variantes mínimas de la misma entidad.
+- Priorizá entidades concretas y útiles para búsqueda/exploración.
+
+Reglas de salida:
+- Devolvé SOLO un array JSON válido.
+- Cada elemento debe tener EXACTAMENTE estas claves: "value", "type", "confidence".
+- "value" debe ser un string.
+- "type" debe ser uno de: person, place, date, organization, institution, misc.
+- "confidence" debe ser un número entre 0.0 y 1.0.
+- No agregues texto fuera del JSON.
+- Si no hay entidades válidas, devolvé [].
+
+Entidades preliminares:
+{candidate_entities_json}
 
 Texto:
 {text}"#

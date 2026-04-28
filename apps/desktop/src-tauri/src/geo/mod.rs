@@ -121,8 +121,6 @@ impl GeoQueue {
                 .build()
                 .unwrap();
 
-            eprintln!("[geo] Worker ready — Nominatim geocoding enabled.");
-
             while let Some(job) = receiver.recv().await {
                 match job {
                     GeoJob::GeocodeEntity { entity_id } => {
@@ -180,9 +178,6 @@ impl GeoQueue {
                                 continue;
                             }
                         };
-
-                        let total = candidates.len();
-                        eprintln!("[geo] Geocoding {total} place entities for item {item_id}");
 
                         let mut geocoded_count = 0usize;
                         let mut not_found_count = 0usize;

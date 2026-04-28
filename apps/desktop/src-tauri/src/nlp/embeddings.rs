@@ -45,8 +45,6 @@ pub struct EmbeddingEngine {
 #[derive(Debug, Deserialize)]
 struct EmbedOutput {
     vector: Vec<f32>,
-    dim: usize,
-    model: String,
 }
 
 impl EmbeddingEngine {
@@ -134,11 +132,6 @@ impl EmbeddingEngine {
                 stderr.trim(),
             )
         })?;
-
-        eprintln!(
-            "[nlp/embeddings] Python embedding complete: {} dims, model={}",
-            embed_output.dim, embed_output.model
-        );
 
         Ok(embed_output.vector)
     }

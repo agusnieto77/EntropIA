@@ -62,7 +62,6 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
             } else {
                 PathBuf::from(&conda_prefix).join("bin").join("python")
             };
-            eprintln!("[python] CONDA_PREFIX detected: {}", conda_python.display());
             candidates.push(conda_python);
         }
 
@@ -142,9 +141,8 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
             }
         }
 
-        // Summary log — one line instead of per-discovery noise
-        eprintln!("[python] Discovered {} Python candidate(s)", candidates.len());
         if is_verbose_python_logging_enabled() {
+            eprintln!("[python] Discovered {} Python candidate(s)", candidates.len());
             for (i, c) in candidates.iter().enumerate() {
                 eprintln!("[python]   [{}] {}", i + 1, c.display());
             }

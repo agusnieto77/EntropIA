@@ -10,24 +10,19 @@
     embedAsset,
     extractEntities,
     extractEntitiesForAsset,
-    extractTriples,
-    extractTriplesForAsset,
     similarItems as fetchSimilarItems,
   } from '$lib/nlp'
   import {
     LlmStore,
     llmSummarize,
     llmCorrectOcr,
-    llmExtractEntities,
     llmExtractTriples,
     llmSummarizeAsset,
     llmCorrectOcrAsset,
-    llmExtractEntitiesAsset,
-    llmExtractTriplesAsset,
-    llmIsAvailable,
-    llmIsMultimodal,
-    llmGetResult,
-  } from '$lib/llm'
+llmExtractTriplesAsset,
+  llmIsAvailable,
+  llmGetResult,
+} from '$lib/llm'
   import { GeoStore } from '$lib/geo'
   import {
     DocumentViewer,
@@ -169,7 +164,7 @@
       // asset-level enrichment for that asset
       if (selectedAsset && selectedAsset.id === assetId) {
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
-        void extractTriplesForAsset(itemId, assetId).catch(() => {})
+        void llmExtractTriplesAsset(assetId).catch(() => {})
       }
       // Auto-summarize: OCR completed → text is now available
       void autoSummarizeIfNeeded(assetId)
@@ -190,7 +185,7 @@
       // After transcription completes, auto-trigger enrichment for that asset
       if (selectedAsset && selectedAsset.id === assetId) {
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
-        void extractTriplesForAsset(itemId, assetId).catch(() => {})
+        void llmExtractTriplesAsset(assetId).catch(() => {})
       }
       // Auto-summarize: transcription completed → text is now available
       void autoSummarizeIfNeeded(assetId)
@@ -209,19 +204,19 @@
     if (existing) clearTimeout(existing)
 
     const timer = setTimeout(async () => {
-      const jobs = [
+const jobs: Array<[string, () => Promise<unknown>]> = [
         ['ner', () => extractEntitiesForAsset(itemId, assetId)],
-        ['triples', () => extractTriplesForAsset(itemId, assetId)],
+        ['triples', () => llmExtractTriplesAsset(assetId)],
         ['fts', () => indexFts(itemId)],
         ['embed', () => embedAsset(itemId, assetId)],
-      ] as const
+      ]
 
       try {
         console.info('[ItemView] Re-running post-edit analysis', { itemId, assetId })
 
-        const results = await Promise.allSettled(jobs.map(([, run]) => run()))
+const results = await Promise.allSettled(jobs.map(([, run]) => run()))
         results.forEach((result, index) => {
-          const [jobName] = jobs[index]
+          const jobName = jobs[index]?.[0] ?? 'unknown'
           if (result.status === 'rejected') {
             console.error(`[ItemView] Post-edit ${jobName} failed`, result.reason)
           }
@@ -322,7 +317,12 @@
         summaryTexts.set(id, result)
         summaryTick++
       }
-      // When OCRC completes, replace the OCR extracted text with the corrected text
+      // When LLM triples complete, reload triples from DB (they're now in the triples table)
+      if (job === 'extract_triples') {
+        loadTriples()
+        nlpStore._setJobStatus(itemId, 'triples', 'done')
+        nlpTick++
+      }
       if (job === 'correct_ocr') {
         ocrCorrectedAssets.add(id)
         ocrTick++ // Force Svelte reactivity for the textarea
@@ -346,6 +346,13 @@
       // Track that OCRC already ran for this asset (from persisted results or live)
       ocrCorrectedAssets.add(id)
     },
+    onError: (id, job, error) => {
+      // When LLM triples extraction fails, set NLP triples status to error
+      if (job === 'extract_triples') {
+        nlpStore._setJobStatus(itemId, 'triples', 'error', error)
+        nlpTick++
+      }
+    },
   })
   let llmTick = $state(0)
 
@@ -354,9 +361,8 @@
   let ocrCorrectedAssets = $state(new Set<string>()) // asset IDs that have been OCRC'd
 
   // Auto-summary: tracks whether LLM is available and per-asset summary text
-  let llmAvailable = $state(false)
-  let llmMultimodal = $state(false)
-  let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
+let llmAvailable = $state(false)
+let summaryTexts = $state(new Map<string, string>()) // assetId → summary text
   let summaryTick = $state(0) // reactivity trigger for summary display
   let autoSummarizeTriggered = $state(new Set<string>()) // asset IDs we've already queued
 
@@ -395,19 +401,9 @@
     }
   }
 
-  async function handleLlmExtractEntities() {
-    try {
-      if (selectedAsset) {
-        await llmExtractEntitiesAsset(selectedAsset.id)
-      } else {
-        await llmExtractEntities(itemId)
-      }
-    } catch (e) {
-      console.error('[LLM] extract entities failed:', e)
-    }
-  }
-
   async function handleLlmExtractTriples() {
+    nlpStore._setJobStatus(itemId, 'triples', 'pending')
+    nlpTick++
     try {
       if (selectedAsset) {
         await llmExtractTriplesAsset(selectedAsset.id)
@@ -416,6 +412,8 @@
       }
     } catch (e) {
       console.error('[LLM] extract triples failed:', e)
+      nlpStore._setJobStatus(itemId, 'triples', 'error', e instanceof Error ? e.message : 'Failed')
+      nlpTick++
     }
   }
 
@@ -994,21 +992,6 @@
       }
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'ner', 'error', e instanceof Error ? e.message : 'Failed')
-      nlpTick++
-    }
-  }
-
-  async function handleExtractTriples() {
-    nlpStore._setJobStatus(itemId, 'triples', 'pending')
-    nlpTick++
-    try {
-      if (selectedAsset) {
-        await extractTriplesForAsset(itemId, selectedAsset.id)
-      } else {
-        await extractTriples(itemId)
-      }
-    } catch (e) {
-      nlpStore._setJobStatus(itemId, 'triples', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
     }
   }
@@ -1603,19 +1586,12 @@
       llmStore.loadPersistedResults(itemId)
     })
 
-    // Check if the LLM engine (Gemma 4) is available for auto-summarize
-    llmIsAvailable().then((available) => {
-      llmAvailable = available
-    }).catch(() => {
-      llmAvailable = false
-    })
-
-    // Check if the LLM engine supports multimodal (vision) for OCRC
-    llmIsMultimodal().then((multimodal) => {
-      llmMultimodal = multimodal
-    }).catch(() => {
-      llmMultimodal = false
-    })
+// Check if the LLM engine (Gemma 4) is available for auto-summarize
+llmIsAvailable().then((available) => {
+  llmAvailable = available
+}).catch(() => {
+  llmAvailable = false
+})
 
     geoStore.startListening()
     return () => {
@@ -1819,14 +1795,14 @@ path={selectedAsset.path}
                   OCRH
                 </button>
                 {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
-                  <button
-                    class="ocr-btn ocr-btn--correct"
-                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
-                    onclick={handleLlmCorrectOcr}
-                    title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : llmMultimodal ? 'LLM OCR correction with image + text (Gemma 4)' : 'LLM OCR correction, text only (Gemma 4)'}
-                  >
-                    OCRC{#if llmMultimodal} 👁{/if}
-                  </button>
+<button
+  class="ocr-btn ocr-btn--correct"
+  disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+  onclick={handleLlmCorrectOcr}
+  title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : 'LLM OCR correction (Gemma 4)'}
+>
+  OCRC
+</button>
                 {/if}
               </div>
             </div>
@@ -2065,10 +2041,10 @@ path={selectedAsset.path}
                   NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
                 </button>
 
-                <button
+<button
                   class="nlp-btn"
-                  disabled={nlp.triples === 'pending' || nlp.triples === 'running'}
-                  onclick={handleExtractTriples}
+                  disabled={!llmAvailable || nlp.triples === 'pending' || nlp.triples === 'running'}
+                  onclick={handleLlmExtractTriples}
                 >
                   TRIPLET <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
                 </button>
@@ -2077,59 +2053,6 @@ path={selectedAsset.path}
               {#if nlp.errors?.embed}
                 <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
               {/if}
-
-              <!-- LLM section (Gemma 4) -->
-              <div class="llm-section">
-                <h4>IA Generativa (Gemma 4){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h4>
-
-                <div class="nlp-actions">
-                  {#if !ocrCorrectedAssets.has(selectedAsset?.id ?? '')}
-                    <button
-                      class="nlp-btn llm-btn"
-                      disabled={getLlmState().status === 'running'}
-                      onclick={handleLlmCorrectOcr}
-                    >
-                      Corregir OCR
-                      {#if getLlmState().status === 'running' && getLlmState().activeJob === 'correct_ocr'}
-                        <span class="nlp-badge nlp-badge--running">procesando...</span>
-                      {/if}
-                    </button>
-                  {/if}
-
-                  <button
-                    class="nlp-btn llm-btn"
-                    disabled={getLlmState().status === 'running'}
-                    onclick={handleLlmExtractEntities}
-                  >
-                    Entidades (LLM)
-                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'extract_entities'}
-                      <span class="nlp-badge nlp-badge--running">procesando...</span>
-                    {/if}
-                  </button>
-
-                  <button
-                    class="nlp-btn llm-btn"
-                    disabled={getLlmState().status === 'running'}
-                    onclick={handleLlmExtractTriples}
-                  >
-                    Triples (LLM)
-                    {#if getLlmState().status === 'running' && getLlmState().activeJob === 'extract_triples'}
-                      <span class="nlp-badge nlp-badge--running">procesando...</span>
-                    {/if}
-                  </button>
-                </div>
-
-                {#if getLlmState().error}
-                  <p class="ocr-error">{getLlmState().error}</p>
-                {/if}
-
-                {#if getLlmState().result && !ocrCorrectedAssets.has(selectedAsset?.id ?? itemId)}
-                  <div class="llm-result">
-                    <h5>Resultado LLM{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h5>
-                    <pre class="llm-result-text">{getLlmState().result}</pre>
-                  </div>
-                {/if}
-              </div>
 
               <!-- Map section (OpenStreetMap) -->
               <div class="geo-section">

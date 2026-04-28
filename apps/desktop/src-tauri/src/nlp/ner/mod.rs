@@ -6,6 +6,7 @@ pub mod spacy;
 pub mod types;
 
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use crate::nlp::text_provider;
 
@@ -112,22 +113,6 @@ impl NerRegistry {
         }
     }
 
-    pub fn configured_mode(&self) -> &'static str {
-        match self.config.engine {
-            NerEngineKind::RuleBased => "rule_based",
-            NerEngineKind::Onnx => "onnx",
-            NerEngineKind::Hybrid => "hybrid",
-            NerEngineKind::Spacy => "spacy",
-        }
-    }
-
-    pub fn engine_available(&self) -> bool {
-        match self.config.engine {
-            NerEngineKind::Spacy => self.spacy.is_some(),
-            NerEngineKind::Onnx | NerEngineKind::Hybrid => self.onnx.is_some(),
-            NerEngineKind::RuleBased => true,
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -137,60 +122,236 @@ pub fn extract_entities(text: &str) -> Vec<Entity> {
         .expect("rule-based NER should extract entities")
 }
 
+#[derive(Clone)]
+pub struct EntityExtractionBatch {
+    pub text: String,
+    pub protected_entities: Vec<Entity>,
+    pub entities: Vec<Entity>,
+}
+
+#[derive(Serialize)]
+struct EntityReviewCandidate<'a> {
+    value: &'a str,
+    #[serde(rename = "type")]
+    entity_type: &'a str,
+    confidence: f32,
+}
+
+#[derive(Deserialize)]
+struct ReviewedEntity {
+    #[serde(default, alias = "entity", alias = "text")]
+    value: String,
+    #[serde(default, alias = "entity_type")]
+    #[serde(rename = "type")]
+    entity_type: String,
+    #[serde(default)]
+    confidence: Option<f32>,
+}
+
+pub fn extract_candidates_for_item(
+    conn: &Connection,
+    item_id: &str,
+    registry: &NerRegistry,
+) -> Result<EntityExtractionBatch, String> {
+    let text = text_provider::get_item_text(conn, item_id)?;
+    let protected_entities = load_protected_entities(conn, item_id)?;
+    let entities = collect_candidate_entities(&text, &protected_entities, registry)?;
+
+    Ok(EntityExtractionBatch {
+        text,
+        protected_entities,
+        entities,
+    })
+}
+
+pub fn extract_candidates_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    registry: &NerRegistry,
+) -> Result<EntityExtractionBatch, String> {
+    let text = text_provider::get_asset_text(conn, asset_id)?;
+    let protected_entities = load_protected_entities(conn, item_id)?;
+    let entities = collect_candidate_entities(&text, &protected_entities, registry)?;
+
+    Ok(EntityExtractionBatch {
+        text,
+        protected_entities,
+        entities,
+    })
+}
+
+pub fn serialize_review_candidates(entities: &[Entity]) -> Result<String, String> {
+    let payload = entities
+        .iter()
+        .map(|entity| EntityReviewCandidate {
+            value: entity.value.as_str(),
+            entity_type: entity.entity_type.as_str(),
+            confidence: entity.confidence,
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize entity review candidates: {e}"))
+}
+
+pub fn apply_llm_review(
+    text: &str,
+    candidate_entities: &[Entity],
+    protected_entities: &[Entity],
+    raw_review_json: &str,
+) -> Result<Vec<Entity>, String> {
+    let content = strip_markdown_fences(raw_review_json);
+    let start = content.find('[').or_else(|| content.find('{'));
+    let end = content.rfind(']').or_else(|| content.rfind('}'));
+
+    let Some(start_idx) = start else {
+        return Err("LLM entity review did not return JSON content".to_string());
+    };
+    let Some(end_idx) = end else {
+        return Err("LLM entity review did not return a closed JSON payload".to_string());
+    };
+
+    let slice = &content[start_idx..=end_idx];
+    let reviewed_entities = if slice.starts_with('[') {
+        serde_json::from_str::<Vec<ReviewedEntity>>(slice)
+            .map_err(|e| format!("Failed to parse LLM entity review array: {e}"))?
+    } else {
+        vec![
+            serde_json::from_str::<ReviewedEntity>(slice)
+                .map_err(|e| format!("Failed to parse LLM entity review object: {e}"))?,
+        ]
+    };
+
+    let mut deduped_keys = std::collections::HashSet::new();
+    let mut final_entities = Vec::new();
+
+    for reviewed in reviewed_entities {
+        let value = sanitize_entity_value(&reviewed.value);
+        if value.is_empty() {
+            continue;
+        }
+
+        let Some(entity_type) = parse_entity_type_alias(&reviewed.entity_type) else {
+            continue;
+        };
+
+        let confidence = reviewed.confidence.unwrap_or(0.95).clamp(0.0, 1.0);
+        let mut entity = Entity {
+            entity_type,
+            value,
+            start_offset: 0,
+            end_offset: 0,
+            confidence,
+            source: EntitySource::Llm,
+            model_name: Some("gemma-4-E2B-it-Q4_K_M".to_string()),
+        };
+
+        if let Some(existing) = candidate_entities.iter().find(|candidate| {
+            same_entity_family(&candidate.entity_type, &entity.entity_type)
+                && normalize_entity_value(&candidate.value) == normalize_entity_value(&entity.value)
+        }) {
+            entity.start_offset = existing.start_offset;
+            entity.end_offset = existing.end_offset;
+            entity.confidence = entity.confidence.max(existing.confidence);
+        } else if let Some((start_offset, end_offset)) = find_entity_span(text, &entity.value) {
+            entity.start_offset = start_offset;
+            entity.end_offset = end_offset;
+        }
+
+        if is_suppressed_by_protected(&entity, protected_entities) {
+            continue;
+        }
+
+        let dedupe_key = (
+            normalize_entity_value(&entity.value),
+            entity.entity_type.as_str().to_string(),
+        );
+        if deduped_keys.insert(dedupe_key) {
+            final_entities.push(entity);
+        }
+    }
+
+    Ok(final_entities)
+}
+
+pub fn persist_entities_for_item(
+    conn: &Connection,
+    item_id: &str,
+    entities: &[Entity],
+) -> Result<(), String> {
+    delete_automatic_entities(conn, item_id)?;
+    insert_entities_for_item(conn, item_id, entities)
+}
+
+pub fn persist_entities_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    entities: &[Entity],
+) -> Result<(), String> {
+    delete_automatic_entities_for_asset(conn, item_id, asset_id)?;
+    insert_entities_for_asset(conn, item_id, asset_id, entities)
+}
+
+#[allow(dead_code)]
 pub fn extract_and_store(
     conn: &Connection,
     item_id: &str,
     registry: &NerRegistry,
 ) -> Result<(), String> {
-    let text = text_provider::get_item_text(conn, item_id)?;
-    let protected_entities = load_protected_entities(conn, item_id)?;
-    eprintln!(
-        "[nlp/ner] Extract start: item_id={}, mode={}, engine_available={}, text_len={}",
-        item_id,
-        registry.configured_mode(),
-        registry.engine_available(),
-        text.len()
-    );
+    let batch = extract_candidates_for_item(conn, item_id, registry)?;
 
-    if text.trim().is_empty() {
-        delete_automatic_entities(conn, item_id)?;
+    if batch.text.trim().is_empty() {
         eprintln!("[nlp/ner] Extract skipped: item_id={}, no text available", item_id);
-        return Ok(());
     }
 
-    let entities = registry
-        .extract(&text)?
-        .into_iter()
-        .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
-        .filter(|entity| !is_suppressed_by_protected(entity, &protected_entities))
-        .collect::<Vec<_>>();
-    let (_, _, _, model_name) = summarize_entities(&entities);
+    persist_entities_for_item(conn, item_id, &batch.entities)
+}
 
-    // Build a concise type-count summary instead of dumping all entity values.
-    // Example: "person:3,place:2,date:1" — much less noisy than listing every value.
-    let mut type_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for entity in &entities {
-        *type_counts.entry(entity.entity_type.as_str()).or_insert(0) += 1;
+/// Extract entities for a single asset/page (asset-level NER).
+///
+/// Similar to `extract_and_store`, but only processes the text for the given
+/// `asset_id` and stores entities with both `item_id` and `asset_id` for
+/// per-page filtering in the UI.
+#[allow(dead_code)]
+pub fn extract_and_store_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    registry: &NerRegistry,
+) -> Result<(), String> {
+    let batch = extract_candidates_for_asset(conn, item_id, asset_id, registry)?;
+
+    if batch.text.trim().is_empty() {
+        eprintln!("[nlp/ner] Asset-level extract skipped: asset_id={}, no text available", asset_id);
     }
-    let mut type_pairs: Vec<_> = type_counts.into_iter().collect();
-    type_pairs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    let type_summary: String = type_pairs
-        .iter()
-        .map(|(t, c)| format!("{t}:{c}"))
-        .collect::<Vec<_>>()
-        .join(", ");
 
-    eprintln!(
-        "[nlp/ner] Extract result: item_id={}, total={}, breakdown=[{}], model={}",
-        item_id,
-        entities.len(),
-        type_summary,
-        model_name.unwrap_or("<none>")
-    );
+    persist_entities_for_asset(conn, item_id, asset_id, &batch.entities)
+}
 
-    delete_automatic_entities(conn, item_id)?;
+fn collect_candidate_entities(
+    text: &str,
+    protected_entities: &[Entity],
+    registry: &NerRegistry,
+) -> Result<Vec<Entity>, String> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
 
-    for entity in &entities {
+    registry
+        .extract(text)
+        .map(|entities| {
+            entities
+                .into_iter()
+                .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
+                .filter(|entity| !is_suppressed_by_protected(entity, protected_entities))
+                .collect::<Vec<_>>()
+        })
+}
+
+fn insert_entities_for_item(conn: &Connection, item_id: &str, entities: &[Entity]) -> Result<(), String> {
+    for entity in entities {
         conn.execute(
             r#"
             INSERT INTO entities (
@@ -218,46 +379,13 @@ pub fn extract_and_store(
     Ok(())
 }
 
-/// Extract entities for a single asset/page (asset-level NER).
-///
-/// Similar to `extract_and_store`, but only processes the text for the given
-/// `asset_id` and stores entities with both `item_id` and `asset_id` for
-/// per-page filtering in the UI.
-pub fn extract_and_store_for_asset(
+fn insert_entities_for_asset(
     conn: &Connection,
     item_id: &str,
     asset_id: &str,
-    registry: &NerRegistry,
+    entities: &[Entity],
 ) -> Result<(), String> {
-    let text = text_provider::get_asset_text(conn, asset_id)?;
-    let protected_entities = load_protected_entities(conn, item_id)?;
-    eprintln!(
-        "[nlp/ner] Asset-level extract start: item_id={}, asset_id={}, mode={}, engine_available={}, text_len={}",
-        item_id, asset_id, registry.configured_mode(), registry.engine_available(), text.len()
-    );
-
-    if text.trim().is_empty() {
-        delete_automatic_entities_for_asset(conn, item_id, asset_id)?;
-        eprintln!("[nlp/ner] Asset-level extract skipped: asset_id={}, no text available", asset_id);
-        return Ok(());
-    }
-
-    let entities = registry
-        .extract(&text)?
-        .into_iter()
-        .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
-        .filter(|entity| !is_suppressed_by_protected(entity, &protected_entities))
-        .collect::<Vec<_>>();
-
-    eprintln!(
-        "[nlp/ner] Asset-level extract result: item_id={}, asset_id={}, total={}",
-        item_id, asset_id, entities.len()
-    );
-
-    // Delete old automatic entities for this specific asset
-    delete_automatic_entities_for_asset(conn, item_id, asset_id)?;
-
-    for entity in &entities {
+    for entity in entities {
         conn.execute(
             r#"
             INSERT INTO entities (
@@ -344,6 +472,26 @@ fn load_protected_entities(conn: &Connection, item_id: &str) -> Result<Vec<Entit
         .map_err(|e| format!("Failed to collect protected entities: {e}"))
 }
 
+fn strip_markdown_fences(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let without_opening = trimmed
+        .strip_prefix("```")
+        .unwrap_or(trimmed)
+        .trim_start_matches("json")
+        .trim_start_matches("JSON")
+        .trim();
+
+    without_opening
+        .strip_suffix("```")
+        .unwrap_or(without_opening)
+        .trim()
+        .to_string()
+}
+
 fn parse_entity_type(value: &str) -> Option<EntityType> {
     match value {
         "person" => Some(EntityType::Person),
@@ -354,6 +502,34 @@ fn parse_entity_type(value: &str) -> Option<EntityType> {
         "misc" => Some(EntityType::Misc),
         _ => None,
     }
+}
+
+fn parse_entity_type_alias(value: &str) -> Option<EntityType> {
+    match value.trim().to_lowercase().as_str() {
+        "person" | "persona" => Some(EntityType::Person),
+        "place" | "location" | "lugar" => Some(EntityType::Place),
+        "date" | "fecha" => Some(EntityType::Date),
+        "institution" | "institucion" | "institución" => Some(EntityType::Institution),
+        "organization" | "organizacion" | "organización" => Some(EntityType::Organization),
+        "misc" | "other" | "otro" => Some(EntityType::Misc),
+        _ => parse_entity_type(value.trim()),
+    }
+}
+
+fn find_entity_span(text: &str, value: &str) -> Option<(usize, usize)> {
+    let needle = value.trim();
+    if needle.is_empty() {
+        return None;
+    }
+
+    let haystack_lower = text.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let byte_start = haystack_lower.find(&needle_lower)?;
+    let byte_end = byte_start + needle_lower.len();
+    Some((
+        text[..byte_start].chars().count(),
+        text[..byte_end].chars().count(),
+    ))
 }
 
 fn is_suppressed_by_protected(candidate: &Entity, protected_entities: &[Entity]) -> bool {
@@ -385,33 +561,6 @@ fn normalize_entity_value(value: &str) -> String {
 
 fn spans_overlap(a: &Entity, b: &Entity) -> bool {
     a.start_offset < b.end_offset && b.start_offset < a.end_offset
-}
-
-fn summarize_entities(entities: &[Entity]) -> (usize, usize, usize, Option<&str>) {
-    let mut rule_based = 0usize;
-    let mut onnx = 0usize;
-    let mut spacy = 0usize;
-    let mut model_name = None;
-
-    for entity in entities {
-        match entity.source {
-            EntitySource::RuleBased => rule_based += 1,
-            EntitySource::Onnx => {
-                onnx += 1;
-                if model_name.is_none() {
-                    model_name = entity.model_name.as_deref();
-                }
-            }
-            EntitySource::Spacy => {
-                spacy += 1;
-                if model_name.is_none() {
-                    model_name = entity.model_name.as_deref();
-                }
-            }
-        }
-    }
-
-    (rule_based, onnx, spacy, model_name)
 }
 
 fn now_millis() -> i64 {

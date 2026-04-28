@@ -1,15 +1,16 @@
 pub mod commands;
 pub mod engine;
 pub mod prompt;
-pub mod sidecar;
 
 use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rusqlite::params;
-use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -17,7 +18,6 @@ use tokio::sync::mpsc;
 use crate::nlp::text_provider;
 
 use self::engine::{LlmConfig, LlmEngine};
-use self::sidecar::{SidecarManager, SidecarHandle};
 
 // ---------------------------------------------------------------------------
 // Job definition
@@ -27,6 +27,10 @@ use self::sidecar::{SidecarManager, SidecarHandle};
 pub enum LlmJob {
     CorrectOcr { item_id: String },
     ExtractEntities { item_id: String },
+    ConsolidateEntities {
+        item_id: String,
+        candidate_entities_json: String,
+    },
     ExtractTriples { item_id: String },
     Summarize { item_id: String },
     Classify { item_id: String, categories: Vec<String> },
@@ -36,6 +40,10 @@ pub enum LlmJob {
     // avoiding context-window overflow on multi-page documents.
     CorrectOcrAsset { asset_id: String },
     ExtractEntitiesAsset { asset_id: String },
+    ConsolidateEntitiesAsset {
+        asset_id: String,
+        candidate_entities_json: String,
+    },
     ExtractTriplesAsset { asset_id: String },
     SummarizeAsset { asset_id: String },
 }
@@ -45,12 +53,14 @@ impl LlmJob {
         match self {
             LlmJob::CorrectOcr { .. } => "correct_ocr",
             LlmJob::ExtractEntities { .. } => "extract_entities",
+            LlmJob::ConsolidateEntities { .. } => "consolidate_entities",
             LlmJob::ExtractTriples { .. } => "extract_triples",
             LlmJob::Summarize { .. } => "summarize",
             LlmJob::Classify { .. } => "classify",
             LlmJob::Ask { .. } => "ask",
             LlmJob::CorrectOcrAsset { .. } => "correct_ocr",
             LlmJob::ExtractEntitiesAsset { .. } => "extract_entities",
+            LlmJob::ConsolidateEntitiesAsset { .. } => "consolidate_entities",
             LlmJob::ExtractTriplesAsset { .. } => "extract_triples",
             LlmJob::SummarizeAsset { .. } => "summarize",
         }
@@ -62,12 +72,14 @@ impl LlmJob {
         match self {
             LlmJob::CorrectOcr { item_id }
             | LlmJob::ExtractEntities { item_id }
+            | LlmJob::ConsolidateEntities { item_id, .. }
             | LlmJob::ExtractTriples { item_id }
             | LlmJob::Summarize { item_id }
             | LlmJob::Classify { item_id, .. } => item_id,
             LlmJob::Ask { collection_id, .. } => collection_id,
             LlmJob::CorrectOcrAsset { asset_id }
             | LlmJob::ExtractEntitiesAsset { asset_id }
+            | LlmJob::ConsolidateEntitiesAsset { asset_id, .. }
             | LlmJob::ExtractTriplesAsset { asset_id }
             | LlmJob::SummarizeAsset { asset_id } => asset_id,
         }
@@ -248,7 +260,7 @@ fn persist_result(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
+        .as_millis() as i64;
 
     conn.execute(
         "INSERT OR REPLACE INTO llm_results (id, target_id, job_type, result, created_at)
@@ -261,27 +273,329 @@ fn persist_result(
 }
 
 // ---------------------------------------------------------------------------
+// Parse LLM triples JSON and store in the `triples` table
+// ---------------------------------------------------------------------------
+
+/// A single triple parsed from the LLM JSON response.
+/// Fields use `#[serde(default)]` so incomplete triples (missing object, etc.)
+/// deserialize with empty strings instead of failing the entire array.
+/// Incomplete triples are filtered out after parsing.
+#[derive(Clone, serde::Deserialize)]
+struct LlmTriple {
+    #[serde(default, alias = "sujeto")]
+    subject: String,
+    #[serde(default, alias = "predicado")]
+    predicate: String,
+    #[serde(default, alias = "objeto")]
+    object: String,
+}
+
+static TRAILING_COMMA_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r",\s*([}\]])").expect("valid trailing comma regex"));
+static MISSING_OBJECT_COMMA_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"}\s*\{").expect("valid missing object comma regex"));
+
+impl LlmTriple {
+    fn cleaned(mut self) -> Option<Self> {
+        self.subject = self.subject.trim().to_string();
+        self.predicate = self.predicate.trim().to_string();
+        self.object = self.object.trim().to_string();
+
+        if self.subject.is_empty() || self.predicate.is_empty() || self.object.is_empty() {
+            return None;
+        }
+
+        Some(self)
+    }
+}
+
+fn strip_markdown_fences(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let without_opening = trimmed
+        .strip_prefix("```")
+        .unwrap_or(trimmed)
+        .trim_start_matches("json")
+        .trim_start_matches("JSON")
+        .trim_start_matches("javascript")
+        .trim_start_matches("js")
+        .trim();
+
+    without_opening
+        .strip_suffix("```")
+        .unwrap_or(without_opening)
+        .trim()
+        .to_string()
+}
+
+fn normalize_jsonish(text: &str) -> String {
+    let normalized_quotes = text
+        .replace(['“', '”', '„', '‟'], "\"")
+        .replace(['’', '‘', '‚', '‛'], "'");
+
+    let without_trailing_commas = TRAILING_COMMA_RE
+        .replace_all(normalized_quotes.trim(), "$1")
+        .into_owned();
+
+    MISSING_OBJECT_COMMA_RE
+        .replace_all(&without_trailing_commas, "},{")
+        .into_owned()
+}
+
+fn preview_for_log(text: &str, max_chars: usize) -> String {
+    let sanitized = text.replace('\r', "\\r").replace('\n', "\\n");
+    let mut chars = sanitized.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn extract_json_objects(text: &str) -> Vec<String> {
+    let mut objects = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (i, ch) in text.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(obj_start) = start.take() {
+                        objects.push(text[obj_start..=i].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    objects
+}
+
+fn parse_single_triple(raw: &str) -> Option<LlmTriple> {
+    let normalized = normalize_jsonish(raw);
+    serde_json::from_str::<LlmTriple>(&normalized)
+        .ok()
+        .and_then(LlmTriple::cleaned)
+}
+
+fn dedupe_triples(triples: Vec<LlmTriple>) -> Vec<LlmTriple> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+
+    for triple in triples {
+        let key = (
+            triple.subject.to_lowercase(),
+            triple.predicate.to_lowercase(),
+            triple.object.to_lowercase(),
+        );
+        if seen.insert(key) {
+            deduped.push(triple);
+        }
+    }
+
+    deduped
+}
+
+/// Parse the JSON array of triples returned by Gemma 4.
+///
+/// The LLM is prompted to return `[{"subject": ..., "predicate": ..., "object": ...}]`.
+/// This function is tolerant: it strips markdown fences and trailing text,
+/// and parses each triple individually so one bad entry doesn't spoil the rest.
+fn parse_triples_json(raw: &str) -> Vec<LlmTriple> {
+    let content = strip_markdown_fences(raw);
+    let normalized_content = normalize_jsonish(&content);
+
+    let json_candidate = if let Some(start) = normalized_content.find('[') {
+        if let Some(end) = normalized_content[start..].rfind(']') {
+            normalized_content[start..=start + end].to_string()
+        } else {
+            normalized_content.clone()
+        }
+    } else if let (Some(start), Some(end)) = (
+        normalized_content.find('{'),
+        normalized_content.rfind('}'),
+    ) {
+        format!("[{}]", &normalized_content[start..=end])
+    } else {
+        normalized_content.clone()
+    };
+
+    // Try parsing the whole array first (fast path).
+    // With #[serde(default)] on LlmTriple, incomplete triples become empty-string fields
+    // instead of causing a parse error.
+    match serde_json::from_str::<Vec<LlmTriple>>(&json_candidate) {
+        Ok(triples) => dedupe_triples(
+            triples
+                .into_iter()
+                .filter_map(LlmTriple::cleaned)
+                .collect(),
+        ),
+        Err(_) => {
+            // Fast path failed — parse each object individually so one bad triple
+            // doesn't spoil the rest. Gemma sometimes omits fields or produces
+            // malformed entries in the middle of an otherwise valid array.
+            let valid_triples = dedupe_triples(
+                extract_json_objects(&normalized_content)
+                    .into_iter()
+                    .filter_map(|obj| parse_single_triple(&obj))
+                    .collect(),
+            );
+
+            if valid_triples.is_empty() {
+                eprintln!("[llm][triples] failed to parse any triples");
+                eprintln!(
+                    "[llm][triples] normalized_preview=\"{}\", candidate_preview=\"{}\"",
+                    preview_for_log(&normalized_content, 220),
+                    preview_for_log(&json_candidate, 220),
+                );
+            } else {
+                eprintln!(
+                    "[llm][triples] parse fallback ok: parsed={}, object_candidates={}, candidate_preview=\"{}\"",
+                    valid_triples.len(),
+                    normalized_content.matches('{').count(),
+                    preview_for_log(&json_candidate, 220),
+                );
+            }
+
+            valid_triples
+        }
+    }
+}
+
+fn fn_uuid_v4() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn fn_now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Store parsed LLM triples into the `triples` table for an item-level job.
+/// Deletes existing triples for the item before inserting new ones.
+fn store_triples_for_item(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    raw_json: &str,
+) -> Result<usize, String> {
+    let triples = parse_triples_json(raw_json);
+
+    // Delete old triples for this item (no asset_id filter => item-level)
+    conn.execute("DELETE FROM triples WHERE item_id = ?1", params![item_id])
+        .map_err(|e| format!("Failed to delete old triples for item: {e}"))?;
+
+    let mut count = 0;
+    for triple in &triples {
+        conn.execute(
+            "INSERT INTO triples (id, item_id, subject, predicate, object, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                fn_uuid_v4(),
+                item_id,
+                triple.subject,
+                triple.predicate,
+                triple.object,
+                fn_now_millis(),
+            ],
+        )
+        .map_err(|e| format!("Failed to insert triple: {e}"))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Store parsed LLM triples into the `triples` table for an asset-level job.
+/// Deletes existing triples for the specific asset before inserting new ones.
+fn store_triples_for_asset(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    asset_id: &str,
+    raw_json: &str,
+) -> Result<usize, String> {
+    let triples = parse_triples_json(raw_json);
+
+    // Delete old triples for this specific asset only
+    conn.execute(
+        "DELETE FROM triples WHERE item_id = ?1 AND asset_id = ?2",
+        params![item_id, asset_id],
+    )
+    .map_err(|e| format!("Failed to delete old triples for asset: {e}"))?;
+
+    let mut count = 0;
+    for triple in &triples {
+        conn.execute(
+            "INSERT INTO triples (id, item_id, asset_id, subject, predicate, object, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                fn_uuid_v4(),
+                item_id,
+                asset_id,
+                triple.subject,
+                triple.predicate,
+                triple.object,
+                fn_now_millis(),
+            ],
+        )
+        .map_err(|e| format!("Failed to insert triple: {e}"))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct LlmQueue {
     sender: mpsc::Sender<LlmJob>,
     /// Shared flag set to `true` after the LLM engine initializes successfully.
     available: Arc<AtomicBool>,
-    /// Shared flag set to `true` after multimodal (vision) support is confirmed.
-    multimodal: Arc<AtomicBool>,
 }
 
 impl LlmQueue {
     pub fn new() -> (Self, mpsc::Receiver<LlmJob>) {
         let (sender, receiver) = mpsc::channel::<LlmJob>(64);
         let available = Arc::new(AtomicBool::new(false));
-        let multimodal = Arc::new(AtomicBool::new(false));
         (
             Self {
                 sender,
                 available: available.clone(),
-                multimodal: multimodal.clone(),
             },
             receiver,
         )
@@ -298,20 +612,10 @@ impl LlmQueue {
         self.available.load(Ordering::Relaxed)
     }
 
-    /// Returns `true` if the LLM engine supports multimodal (vision) input.
-    pub fn is_multimodal(&self) -> bool {
-        self.multimodal.load(Ordering::Relaxed)
-    }
-
     /// Returns a clone of the availability flag for sharing with the worker.
     /// Used to signal engine readiness from the worker back to the main state.
     pub fn available_flag(&self) -> Arc<AtomicBool> {
         self.available.clone()
-    }
-
-    /// Returns a clone of the multimodal flag for sharing with the worker.
-    pub fn multimodal_flag(&self) -> Arc<AtomicBool> {
-        self.multimodal.clone()
     }
 
     pub fn start_worker(
@@ -319,12 +623,9 @@ impl LlmQueue {
         mut receiver: mpsc::Receiver<LlmJob>,
         app_handle: AppHandle,
         available: Arc<AtomicBool>,
-        multimodal: Arc<AtomicBool>,
     ) {
         tauri::async_runtime::spawn(async move {
             const MODEL_FILENAME: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
-            // Common mmproj filenames — first match wins
-            const MMPROJ_FILENAME: &str = "mmproj-BF16.gguf";
 
             // Search for model in multiple locations (first match wins)
             let app_models_dir = db_path
@@ -350,37 +651,13 @@ impl LlmQueue {
                 .find(|p| p.exists())
                 .cloned()
                 .unwrap_or_else(|| app_models_dir.join(MODEL_FILENAME));
-
-            // Search for mmproj (multimodal projection) — DISABLED in-process due to
-            // STATUS_STACK_BUFFER_OVERRUN conflict with pdfium/ort/tesseract.
-            // Kept for detection/logging; sidecar approach will use this path.
-            let mmproj_search_paths = [
-                app_models_dir.join(MMPROJ_FILENAME),
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(MMPROJ_FILENAME),
-            ];
-
-            let mmproj_path = mmproj_search_paths
-                .iter()
-                .find(|p| p.exists())
-                .cloned();
-
-            if let Some(ref mmp) = mmproj_path {
-                eprintln!(
-                    "[llm] Found mmproj: {} — vision DISABLED in-process (sidecar needed)",
-                    mmp.display()
-                );
-            } else {
-                eprintln!("[llm] No mmproj found — vision not available");
-            }
+            eprintln!("[llm] OCRC configured as text-only (multimodal disabled)");
 
             let config = LlmConfig {
                 model_path: model_path.clone(),
                 n_ctx: 4096,
                 n_threads: None,
                 seed: 1234,
-                mmproj_path: mmproj_path.clone(),
             };
 
             // Initialize engine (optional — degrades gracefully)
@@ -403,46 +680,6 @@ impl LlmQueue {
                     None
                 }
             };
-
-            // Start sidecar for vision (multimodal) support.
-            // The sidecar loads Gemma + mmproj in an isolated process, avoiding the
-            // STATUS_STACK_BUFFER_OVERRUN crash that mmproj causes inside Tauri's
-            // process (conflict with pdfium/ort/tesseract).
-            let mut sidecar: Option<SidecarHandle> = None;
-            if engine.is_some() {
-                let sidecar_bin = sidecar::find_sidecar_binary();
-                match sidecar_bin {
-                    Some(bin) => {
-                        if let Some(ref mmp) = mmproj_path {
-                            if mmp.exists() {
-                                eprintln!("[llm] Starting sidecar for vision support...");
-                                let model = model_path.clone();
-                                let mmproj = mmp.clone();
-                                match tokio::task::block_in_place(|| {
-                                    let manager = SidecarManager::new(bin, model, Some(mmproj));
-                                    manager.start()
-                                }) {
-                                    Ok(handle) => {
-                                        eprintln!("[llm] Sidecar ready — vision enabled");
-                                        sidecar = Some(handle);
-                                        multimodal.store(true, Ordering::Relaxed);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[llm] Sidecar failed: {e} — text-only mode");
-                                    }
-                                }
-                            } else {
-                                eprintln!("[llm] mmproj file missing — vision not available");
-                            }
-                        } else {
-                            eprintln!("[llm] No mmproj configured — vision not available");
-                        }
-                    }
-                    None => {
-                        eprintln!("[llm] No sidecar binary found — vision not available");
-                    }
-                }
-            }
 
             // Open dedicated DB connection for the worker
             let conn = match rusqlite::Connection::open(&db_path) {
@@ -492,7 +729,7 @@ impl LlmQueue {
                 emit_progress(&app_handle, &id, job_name, 10);
 
                 let result = tokio::task::block_in_place(|| {
-                    process_job(engine, sidecar.as_mut(), &conn, &job)
+                    process_job(engine, &conn, &job)
                 });
 
                 match result {
@@ -500,6 +737,31 @@ impl LlmQueue {
                         // Persist result to database (non-fatal if it fails)
                         if let Err(e) = persist_result(&conn, &id, job_name, &output) {
                             eprintln!("[llm] Warning: failed to persist result for {id}/{job_name}: {e}");
+                        }
+
+                        // Parse triples from LLM response and store in `triples` table
+                        // so the Semantic Triples section UI shows LLM-extracted triples.
+                        match &job {
+                            LlmJob::ExtractTriples { item_id } => {
+                                match store_triples_for_item(&conn, item_id, &output) {
+                                    Ok(count) => eprintln!("[llm] Stored {count} triples for item {item_id}"),
+                                    Err(e) => eprintln!("[llm] Warning: failed to store triples for item {item_id}: {e}"),
+                                }
+                            }
+                            LlmJob::ExtractTriplesAsset { asset_id } => {
+                                // Resolve item_id from asset_id for the triples table
+                                match crate::nlp::lookup_item_id_for_asset(&conn, asset_id) {
+                                    Ok(Some(item_id)) => {
+                                        match store_triples_for_asset(&conn, &item_id, asset_id, &output) {
+                                            Ok(count) => eprintln!("[llm] Stored {count} triples for asset {asset_id}"),
+                                            Err(e) => eprintln!("[llm] Warning: failed to store triples for asset {asset_id}: {e}"),
+                                        }
+                                    }
+                                    Ok(None) => eprintln!("[llm] Warning: no item_id found for asset {asset_id}, skipping triples storage"),
+                                    Err(e) => eprintln!("[llm] Warning: failed to lookup item_id for asset {asset_id}: {e}"),
+                                }
+                            }
+                            _ => {} // Other job types don't produce triples
                         }
 
                         emit_progress(&app_handle, &id, job_name, 100);
@@ -524,7 +786,10 @@ impl LlmQueue {
 fn max_tokens_for(job: &LlmJob) -> i32 {
     match job {
         LlmJob::CorrectOcr { .. } | LlmJob::CorrectOcrAsset { .. } => 2048,
-        LlmJob::ExtractEntities { .. } | LlmJob::ExtractEntitiesAsset { .. } => 1024,
+        LlmJob::ExtractEntities { .. }
+        | LlmJob::ExtractEntitiesAsset { .. }
+        | LlmJob::ConsolidateEntities { .. }
+        | LlmJob::ConsolidateEntitiesAsset { .. } => 1024,
         LlmJob::ExtractTriples { .. } | LlmJob::ExtractTriplesAsset { .. } => 1024,
         LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => 512,
         LlmJob::Classify { .. } => 256,
@@ -605,7 +870,7 @@ const MAX_ASK_CONTEXT_CHARS: usize = 6000;
 /// Maximum characters per individual document snippet (~400 tokens).
 const MAX_SNIPPET_CHARS: usize = 1200;
 
-fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
+fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
     let n_ctx = engine.n_ctx();
 
     match job {
@@ -616,7 +881,7 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::ocr_correction(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate_ocr_correction(&p, max_tokens_for(job))
         }
 
         LlmJob::ExtractEntities { item_id } => {
@@ -629,6 +894,19 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             engine.generate(&p, max_tokens_for(job))
         }
 
+        LlmJob::ConsolidateEntities {
+            item_id,
+            candidate_entities_json,
+        } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for entity consolidation".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::consolidate_entities(&truncated, candidate_entities_json);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
         LlmJob::ExtractTriples { item_id } => {
             let text = text_provider::get_item_text(conn, item_id)?;
             if text.is_empty() {
@@ -636,7 +914,7 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_triples(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate_triples(&p, max_tokens_for(job))
         }
 
         LlmJob::Summarize { item_id } => {
@@ -680,30 +958,7 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::ocr_correction(&truncated);
-
-            // Try vision via sidecar if available and image exists.
-            // Falls back to text-only if sidecar fails or no image path.
-            if let Some(sc) = sidecar {
-                match get_asset_image_path(conn, asset_id) {
-                    Ok(Some(image_path)) => {
-                        match sc.generate_with_image(&image_path.to_string_lossy(), &p, max_tokens_for(job)) {
-                            Ok(result) => return Ok(result),
-                            Err(e) => {
-                                eprintln!("[llm] Sidecar vision failed, falling back to text-only: {e}");
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // No image path (e.g. audio/PDF) — use text-only
-                    }
-                    Err(e) => {
-                        eprintln!("[llm] Could not resolve image path for {asset_id}: {e}");
-                    }
-                }
-            }
-
-            // Text-only fallback (no sidecar, no image, or sidecar failure)
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate_ocr_correction(&p, max_tokens_for(job))
         }
 
         LlmJob::ExtractEntitiesAsset { asset_id } => {
@@ -716,6 +971,19 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             engine.generate(&p, max_tokens_for(job))
         }
 
+        LlmJob::ConsolidateEntitiesAsset {
+            asset_id,
+            candidate_entities_json,
+        } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for entity consolidation on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::consolidate_entities(&truncated, candidate_entities_json);
+            engine.generate(&p, max_tokens_for(job))
+        }
+
         LlmJob::ExtractTriplesAsset { asset_id } => {
             let text = text_provider::get_asset_text(conn, asset_id)?;
             if text.is_empty() {
@@ -723,7 +991,7 @@ fn process_job(engine: &LlmEngine, sidecar: Option<&mut SidecarHandle>, conn: &r
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_triples(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate_triples(&p, max_tokens_for(job))
         }
 
         LlmJob::SummarizeAsset { asset_id } => {
@@ -816,51 +1084,4 @@ fn gather_collection_context(
     }
 
     Ok(context)
-}
-
-/// Look up the image/pdf file path for an asset from the database.
-/// Returns Ok(Some(path)) if the asset exists and is an image type,
-/// Ok(None) if the asset exists but is audio/PDF (no direct image),
-/// Err if the asset doesn't exist or the query fails.
-fn get_asset_image_path(conn: &rusqlite::Connection, asset_id: &str) -> Result<Option<PathBuf>, String> {
-    let path_str: String = conn
-        .query_row(
-            "SELECT path FROM assets WHERE id = ?1",
-            params![asset_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to query asset path: {e}"))?
-        .unwrap_or_default();
-
-    if path_str.is_empty() {
-        return Ok(None);
-    }
-
-    let path = PathBuf::from(&path_str);
-
-    // Only return path for visual assets (image/pdf). Audio has no image.
-    let asset_type: String = conn
-        .query_row(
-            "SELECT type FROM assets WHERE id = ?1",
-            params![asset_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to query asset type: {e}"))?
-        .unwrap_or_default();
-
-    if asset_type == "audio" {
-        return Ok(None);
-    }
-
-    // For PDFs, we'd need to render a page — not supported yet.
-    // Only serve direct image files for now.
-    if asset_type == "pdf" {
-        // PDFs need page rendering which we don't do here yet.
-        // Return None to fall back to text-only correction.
-        return Ok(None);
-    }
-
-    Ok(Some(path))
 }

@@ -430,8 +430,6 @@ pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVl
         }
     };
 
-    eprintln!("[paddle_vl] Script path: {}", script_path.display());
-
     // Find Python interpreter with paddleocr
     let python_path = match which_python_for_paddle_vl() {
         Some(p) => p,
@@ -445,10 +443,7 @@ pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVl
         python_path,
         script_path,
     }) {
-        Ok(engine) => {
-            eprintln!("[paddle_vl] ✅ PaddleVLEngine created");
-            Some(engine)
-        }
+        Ok(engine) => Some(engine),
         Err(e) => {
             eprintln!("[paddle_vl] ❌ Failed to create PaddleVLEngine: {e}");
             None
