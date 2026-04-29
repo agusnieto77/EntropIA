@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::Manager;
 
+use crate::path_utils::normalize_windows_path;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -394,14 +396,7 @@ pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVl
             .ok();
 
         // Strip Windows \\?\ prefix if present
-        let clean_resource_path = resource_path.map(|p| {
-            let s = p.to_string_lossy().into_owned();
-            if s.starts_with(r"\\?\") {
-                std::path::PathBuf::from(&s[4..])
-            } else {
-                p
-            }
-        });
+        let clean_resource_path = resource_path.map(normalize_windows_path);
 
         // Check if the resource path actually exists on disk
         if let Some(ref path) = clean_resource_path {
@@ -412,20 +407,24 @@ pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVl
                 let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("resources/scripts/paddle_vl.py");
                 if dev_path.exists() {
-                    dev_path
+                    normalize_windows_path(dev_path)
                 } else {
-                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("scripts/paddle_vl.py")
+                    normalize_windows_path(
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("scripts/paddle_vl.py"),
+                    )
                 }
             }
         } else {
             let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/scripts/paddle_vl.py");
             if dev_path.exists() {
-                dev_path
+                normalize_windows_path(dev_path)
             } else {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("scripts/paddle_vl.py")
+                normalize_windows_path(
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("scripts/paddle_vl.py"),
+                )
             }
         }
     };

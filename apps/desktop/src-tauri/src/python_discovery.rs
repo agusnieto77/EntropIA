@@ -214,14 +214,47 @@ pub fn which_python_for_module(
         }
     }
 
-    let candidates = discover_python_candidates();
+    let known_good = collect_known_good_pythons();
+    if !known_good.is_empty() {
+        eprintln!(
+            "[{tag}] Fast-path: trying {} previously-validated Python(s) before full scan for {module_name}",
+            known_good.len()
+        );
+        for python in &known_good {
+            let probe_start = std::time::Instant::now();
+            if probe_python_module(python, probe_code) {
+                eprintln!(
+                    "[{tag}] ✅ Found Python with {module_name} via fast-path ({}ms): {}",
+                    probe_start.elapsed().as_millis(),
+                    python.display()
+                );
+                if let Ok(mut cache) = get_probe_cache().lock() {
+                    cache.insert(tag.to_string(), Some(python.clone()));
+                }
+                return Some(python.clone());
+            }
+        }
+        eprintln!("[{tag}] Fast-path: no previously-validated Python had {module_name}, falling back to full scan");
+    }
 
-    eprintln!("[{tag}] Probing {n} candidate(s) for {module_name}", n = candidates.len());
+    let known_good_keys: std::collections::HashSet<String> = known_good
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+
+    let candidates: Vec<PathBuf> = discover_python_candidates()
+        .iter()
+        .filter(|candidate| !known_good_keys.contains(&candidate.to_string_lossy().into_owned()))
+        .cloned()
+        .collect();
+
+    let candidate_count = candidates.len();
+    eprintln!("[{tag}] Probing {n} candidate(s) for {module_name}", n = candidate_count);
     let mut failed_probes = 0usize;
 
     for candidate in candidates {
         let probe_start = std::time::Instant::now();
-        let import_ok = probe_python_module(candidate, probe_code);
+        let import_ok = probe_python_module(&candidate, probe_code);
 
         if import_ok {
             eprintln!(
@@ -249,7 +282,7 @@ pub fn which_python_for_module(
 
     eprintln!(
         "[{tag}] WARNING: No Python with {module_name} found among {} candidate(s)",
-        candidates.len()
+        candidate_count
     );
     // Cache the miss
     if let Ok(mut cache) = get_probe_cache().lock() {
@@ -260,16 +293,31 @@ pub fn which_python_for_module(
 
 /// Collect Python interpreters that were previously validated for ANY module.
 ///
-/// Returns paths from the probe cache in insertion order. Used as a fast-path
-/// so that modules probed later (e.g., PaddleVL) can try known-good Pythons
-/// first instead of re-scanning all 15 candidates.
+/// Returns deduplicated paths from the probe cache, ordered by the normal
+/// discovery preference when possible. Used as a fast-path so that modules
+/// probed later can try known-good Pythons before re-scanning everything.
 fn collect_known_good_pythons() -> Vec<PathBuf> {
     let cache = match get_probe_cache().lock() {
         Ok(cache) => cache,
         Err(_) => return Vec::new(),
     };
-    let mut seen = std::collections::HashSet::new();
+    let mut cached = std::collections::HashSet::new();
+    for value in cache.values() {
+        if let Some(path) = value {
+            cached.insert(path.to_string_lossy().into_owned());
+        }
+    }
+
     let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for candidate in discover_python_candidates() {
+        let key = candidate.to_string_lossy().into_owned();
+        if cached.contains(&key) && seen.insert(key) {
+            paths.push(candidate.clone());
+        }
+    }
+
     for value in cache.values() {
         if let Some(path) = value {
             let key = path.to_string_lossy().into_owned();
@@ -278,6 +326,7 @@ fn collect_known_good_pythons() -> Vec<PathBuf> {
             }
         }
     }
+
     paths
 }
 
@@ -342,7 +391,16 @@ pub fn which_python_for_module_scored(
         eprintln!("[{tag}] Fast-path: no previously-validated Python had {module_name}, falling back to full scan");
     }
 
-    let mut candidates = discover_python_candidates().clone();
+    let known_good_keys: std::collections::HashSet<String> = known_good
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+
+    let mut candidates: Vec<PathBuf> = discover_python_candidates()
+        .iter()
+        .filter(|candidate| !known_good_keys.contains(&candidate.to_string_lossy().into_owned()))
+        .cloned()
+        .collect();
 
     // Sort candidates by score (descending) — dedicated envs first
     candidates.sort_by_key(|c| -scorer(c));

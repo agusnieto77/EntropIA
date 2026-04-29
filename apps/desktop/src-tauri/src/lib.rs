@@ -4,6 +4,7 @@ mod image_edit;
 mod llm;
 mod nlp;
 mod ocr;
+mod path_utils;
 mod python_discovery;
 mod transcription;
 
@@ -247,12 +248,14 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             let (nlp_queue, nlp_receiver) = NlpQueue::new();
             // Clone the dedup handle before moving nlp_queue into managed state
             let ner_pending = nlp_queue.ner_pending_handle();
+            let fts_pending = nlp_queue.fts_pending_handle();
             app.manage(nlp_queue);
             NlpQueue::start_worker(
                 db_path.clone(),
                 nlp_receiver,
                 app.handle().clone(),
                 ner_pending,
+                fts_pending,
                 nlp_llm_queue,
             );
 

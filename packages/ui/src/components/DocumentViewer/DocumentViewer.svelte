@@ -143,7 +143,7 @@
   /** Convert normalized [0,1] → natural-image pixels (SVG viewBox space) */
   function px(value: number, axis: 'x' | 'y') {
     const dimension = axis === 'x' ? naturalW : naturalH
-    return String(Math.round(value * dimension))
+    return Math.round(value * dimension)
   }
 
   /** Convert a viewport PointerEvent to normalized [0,1] coordinates.

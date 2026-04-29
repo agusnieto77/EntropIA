@@ -6,6 +6,7 @@ pub mod commands;
 mod engine;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+use crate::path_utils::normalize_windows_path;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
@@ -75,7 +76,7 @@ impl TranscriptionQueue {
         app_handle: AppHandle,
     ) {
         // Resolve script path: try Resource directory first (production), then source (dev)
-        let script_path = app_handle
+        let script_path = normalize_windows_path(app_handle
             .path()
             .resolve("scripts/transcribe.py", BaseDirectory::Resource)
             .unwrap_or_else(|_| {
@@ -88,7 +89,7 @@ impl TranscriptionQueue {
                     // Last resort
                     std::path::PathBuf::from("scripts/transcribe.py")
                 }
-            });
+            }));
 
         // Find Python interpreter
         let python_path = match which_python() {

@@ -462,6 +462,7 @@ describe('embedding architecture governance', () => {
     expect(cargoToml).not.toContain('fastembed-upstream')
     expect(cargoToml).not.toContain('fastembed-shim')
     expect(cargoToml).not.toContain('sqlite-vec-shim')
-    expect(cargoToml).not.toContain('[features]')
+    expect(cargoToml).not.toContain('fastembed =')
+    expect(cargoToml).not.toContain('fastembed-core')
   })
 })

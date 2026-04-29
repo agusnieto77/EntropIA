@@ -9,7 +9,7 @@ pub mod text_provider;
 
 use serde::Serialize;
 use rusqlite::OptionalExtension;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
 use crate::llm::LlmQueue;
+use crate::path_utils::normalize_windows_path;
 use embeddings::EmbeddingEngine;
 use ner::{NerRegistry, types::{NerConfig, NerEngineKind}};
 
@@ -102,26 +103,65 @@ pub struct NlpQueue {
     /// Prevents duplicate NER work when OCR and transcription both trigger
     /// entity extraction for the same item.
     ner_pending: Arc<Mutex<HashSet<String>>>,
+    /// Tracks queued/in-progress FTS jobs per item.
+    /// `true` means another enqueue arrived while the current one was busy,
+    /// so one extra rerun should happen after the current pass completes.
+    fts_pending: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl NlpQueue {
     /// Create a new queue and return `(NlpQueue, Receiver)`.
     pub fn new() -> (Self, mpsc::Receiver<NlpJob>) {
         let (sender, receiver) = mpsc::channel::<NlpJob>(64);
-        (Self { sender, ner_pending: Arc::new(Mutex::new(HashSet::new())) }, receiver)
+        (
+            Self {
+                sender,
+                ner_pending: Arc::new(Mutex::new(HashSet::new())),
+                fts_pending: Arc::new(Mutex::new(HashMap::new())),
+            },
+            receiver,
+        )
     }
 
     /// Submit a job to the queue. Returns immediately.
     pub fn submit(&self, job: NlpJob) -> Result<(), String> {
+        let tracked_fts_item = match &job {
+            NlpJob::IndexFts { item_id } => {
+                if let Ok(mut pending) = self.fts_pending.lock() {
+                    if let Some(needs_rerun) = pending.get_mut(item_id) {
+                        *needs_rerun = true;
+                        eprintln!(
+                            "[nlp/fts] Coalescing duplicate IndexFts enqueue for item_id={item_id}"
+                        );
+                        return Ok(());
+                    }
+                    pending.insert(item_id.clone(), false);
+                }
+                Some(item_id.clone())
+            }
+            _ => None,
+        };
+
         self.sender
             .try_send(job)
-            .map_err(|e| format!("Failed to enqueue NLP job: {e}"))
+            .map_err(|e| {
+                if let Some(item_id) = tracked_fts_item {
+                    if let Ok(mut pending) = self.fts_pending.lock() {
+                        pending.remove(&item_id);
+                    }
+                }
+                format!("Failed to enqueue NLP job: {e}")
+            })
     }
 
     /// Get a clone of the NER dedup set handle.
     /// Used by the worker to remove item_ids after processing completes.
     pub fn ner_pending_handle(&self) -> Arc<Mutex<HashSet<String>>> {
         Arc::clone(&self.ner_pending)
+    }
+
+    pub fn fts_pending_handle(&self) -> Arc<Mutex<HashMap<String, bool>>> {
+        Arc::clone(&self.fts_pending)
     }
 
     /// Spawn the background worker loop on the Tokio runtime.
@@ -133,6 +173,7 @@ impl NlpQueue {
         mut receiver: mpsc::Receiver<NlpJob>,
         app_handle: AppHandle,
         ner_pending: Arc<Mutex<HashSet<String>>>,
+        fts_pending: Arc<Mutex<HashMap<String, bool>>>,
         _llm_queue: LlmQueue,
     ) {
         tauri::async_runtime::spawn(async move {
@@ -178,7 +219,7 @@ impl NlpQueue {
 
             // Resolve embedding script path: try Resource directory first (production),
             // then source (dev) — mirrors transcription script resolution.
-            let embed_script_path = app_handle
+            let embed_script_path = normalize_windows_path(app_handle
                 .path()
                 .resolve("scripts/embed.py", BaseDirectory::Resource)
                 .unwrap_or_else(|_| {
@@ -189,7 +230,7 @@ impl NlpQueue {
                     } else {
                         std::path::PathBuf::from("scripts/embed.py")
                     }
-                });
+                }));
 
             // Find Python interpreter with fastembed — skip engine creation if unavailable.
             // No fallback to bare "python" — if which_python() returned None,
@@ -248,11 +289,8 @@ impl NlpQueue {
             while let Some(job) = receiver.recv().await {
                 match job {
                     NlpJob::IndexFts { item_id } => {
-                        eprintln!("[nlp/fts] Reindex start: item_id={}", item_id);
                         emit_progress(&app_handle, &item_id, "fts", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            fts::index_item_from_db(&conn, &item_id)
-                        });
+                        let result = run_coalesced_fts_reindex(&conn, &item_id, &fts_pending);
                         match result {
                             Ok(_) => {
                                 eprintln!("[nlp/fts] Reindex complete: item_id={}", item_id);
@@ -562,12 +600,52 @@ fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result
     Ok(found.is_some())
 }
 
+fn run_coalesced_fts_reindex(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    fts_pending: &Arc<Mutex<HashMap<String, bool>>>,
+) -> Result<(), String> {
+    loop {
+        eprintln!("[nlp/fts] Reindex start: item_id={item_id}");
+        if let Err(error) = tokio::task::block_in_place(|| fts::index_item_from_db(conn, item_id)) {
+            if let Ok(mut pending) = fts_pending.lock() {
+                pending.remove(item_id);
+            }
+            return Err(error);
+        }
+
+        let should_rerun = match fts_pending.lock() {
+            Ok(mut pending) => match pending.get_mut(item_id) {
+                Some(needs_rerun) if *needs_rerun => {
+                    *needs_rerun = false;
+                    true
+                }
+                Some(_) => {
+                    pending.remove(item_id);
+                    false
+                }
+                None => false,
+            },
+            Err(_) => false,
+        };
+
+        if should_rerun {
+            eprintln!(
+                "[nlp/fts] Reindex rerun requested while busy: item_id={item_id} — processing latest state"
+            );
+            continue;
+        }
+
+        return Ok(());
+    }
+}
+
 fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("models/ner/{file_name}");
-    let resolved = app_handle
+    let resolved = normalize_windows_path(app_handle
         .path()
         .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
 
     if resolved.exists() {
         return resolved;
@@ -590,10 +668,10 @@ fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
 
 fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("scripts/{file_name}");
-    let resolved = app_handle
+    let resolved = normalize_windows_path(app_handle
         .path()
         .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
 
     if resolved.exists() {
         return resolved;
@@ -688,6 +766,36 @@ fn ensure_entities_schema(conn: &rusqlite::Connection) -> Result<(), String> {
 mod tests {
     use super::*;
     use rusqlite::{params, Connection};
+
+    #[test]
+    fn submit_coalesces_duplicate_fts_jobs_while_pending() {
+        let (queue, mut receiver) = NlpQueue::new();
+
+        queue
+            .submit(NlpJob::IndexFts {
+                item_id: "item-dup".to_string(),
+            })
+            .expect("first enqueue should succeed");
+        queue
+            .submit(NlpJob::IndexFts {
+                item_id: "item-dup".to_string(),
+            })
+            .expect("duplicate enqueue should coalesce");
+
+        let first = receiver.try_recv().expect("one FTS job should be queued");
+        assert!(matches!(first, NlpJob::IndexFts { ref item_id } if item_id == "item-dup"));
+        assert!(receiver.try_recv().is_err(), "duplicate should not queue a second FTS job");
+        assert_eq!(
+            queue
+                .fts_pending
+                .lock()
+                .expect("fts pending lock")
+                .get("item-dup")
+                .copied(),
+            Some(true),
+            "duplicate enqueue should mark the item for one rerun"
+        );
+    }
 
     fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {

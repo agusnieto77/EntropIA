@@ -171,9 +171,9 @@ impl OcrQueue {
 
                 let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
                 if paddle_vl_engine.is_some() {
-                    eprintln!("[OCR] OCRH available via PaddleOCR-VL");
+                    eprintln!("[OCR] High OCR mode available via PaddleOCR-VL");
                 } else {
-                    eprintln!("[OCR] OCRH unavailable — falling back to plain OCR");
+                    eprintln!("[OCR] High OCR mode unavailable — falling back to plain OCR");
                 }
 
                 // Dedicated DB connection for this worker (avoids open/close per job).

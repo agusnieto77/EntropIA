@@ -88,6 +88,7 @@ describe('buildCollectionExportData', () => {
             itemId: 'i1',
             path: '/mock/app-data/assets/c1/i1/file.pdf',
             type: 'pdf',
+            sortIndex: 0,
             size: 123,
             createdAt: 5,
           },
@@ -98,6 +99,7 @@ describe('buildCollectionExportData', () => {
           {
             id: 'n1',
             itemId: 'i1',
+            assetId: null,
             content: 'nota',
             createdAt: 6,
             updatedAt: 7,
@@ -169,6 +171,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/img.png',
       type: 'image',
+      sortIndex: 0,
       size: 50,
       createdAt: 5,
     }
@@ -202,6 +205,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/img.png',
       type: 'image',
+      sortIndex: 0,
       size: 50,
       createdAt: 5,
     }
@@ -250,6 +254,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/img.png',
       type: 'image',
+      sortIndex: 0,
       size: 50,
       createdAt: 5,
     }
@@ -328,6 +333,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/doc.pdf',
       type: 'pdf',
+      sortIndex: 0,
       size: 100,
       createdAt: 5,
     }
@@ -370,6 +376,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/recording.wav',
       type: 'audio',
+      sortIndex: 0,
       size: 5000,
       createdAt: 5,
     }
@@ -415,6 +422,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/doc.pdf',
       type: 'pdf',
+      sortIndex: 0,
       size: 100,
       createdAt: 5,
     }
@@ -469,6 +477,7 @@ describe('buildCollectionExportData', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/audio.mp3',
       type: 'audio',
+      sortIndex: 0,
       size: 2000,
       createdAt: 5,
     }
@@ -533,6 +542,7 @@ describe('exportCollectionById', () => {
       itemId: 'i1',
       path: '/mock/app-data/assets/c1/i1/acta.pdf',
       type: 'pdf',
+      sortIndex: 0,
       size: 10,
       createdAt: 5,
     }
@@ -566,7 +576,7 @@ describe('exportCollectionById', () => {
         findByItem: vi
           .fn()
           .mockResolvedValue([
-            { id: 'n1', itemId: 'i1', content: 'nota', createdAt: 6, updatedAt: 7 },
+            { id: 'n1', itemId: 'i1', assetId: null, content: 'nota', createdAt: 6, updatedAt: 7 },
           ]),
       },
       extractions: { findByAsset: vi.fn().mockResolvedValue(extraction) },
@@ -620,6 +630,7 @@ describe('exportCollectionById', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/img1.png',
       type: 'image',
+      sortIndex: 0,
       size: 50,
       createdAt: 5,
     }
@@ -628,6 +639,7 @@ describe('exportCollectionById', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/img2.png',
       type: 'image',
+      sortIndex: 1,
       size: 60,
       createdAt: 6,
     }
@@ -721,6 +733,7 @@ describe('exportCollectionById', () => {
       itemId: 'i1',
       path: '/app/assets/c1/i1/interview.wav',
       type: 'audio',
+      sortIndex: 0,
       size: 5000,
       createdAt: 5,
     }
