@@ -6,6 +6,7 @@ mod nlp;
 mod ocr;
 mod path_utils;
 mod python_discovery;
+mod settings;
 mod transcription;
 
 use db::state::AppDbState;
@@ -211,6 +212,19 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 }
             }
 
+            // Create app_settings table for user configuration (API keys, preferences).
+            // Keep this outside the legacy fallback so modern-schema databases get it too.
+            ui_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );",
+                )
+                .map_err(|e| format!("Failed to create app_settings table: {e}"))
+                .expect("Failed to create app_settings table");
+            eprintln!("[setup] app_settings table ensured");
+
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
                 .expect("Failed to open SQLite database (worker)");
@@ -231,7 +245,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
 
             // LLM queue: local Gemma model via llama.cpp for NER, summarization,
             // OCR correction, Q&A, etc. Degrades gracefully if model not present.
-            let (llm_queue, llm_receiver) = LlmQueue::new();
+            let (llm_queue, llm_receiver) = LlmQueue::new(db_path.clone());
             let llm_available = llm_queue.available_flag();
             let nlp_llm_queue = llm_queue.clone();
             app.manage(llm_queue);
@@ -320,6 +334,11 @@ llm::commands::llm_get_results,
             image_edit::crop_image,
             image_edit::rotate_image,
             image_edit::erase_region,
+            settings::settings_get,
+            settings::settings_set,
+            settings::settings_get_all,
+            settings::settings_delete,
+            llm::commands::test_openrouter_connection,
             open_external_url,
         ])
         .run(tauri::generate_context!())

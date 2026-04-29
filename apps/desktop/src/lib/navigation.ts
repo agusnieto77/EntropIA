@@ -14,6 +14,7 @@ export type View =
       itemId: string
       itemTitle: string
     }
+  | { name: 'settings' }
 
 type NavigationSnapshot = {
   history: View[]
@@ -45,6 +46,7 @@ export class NavigationStore {
       breadcrumb: history.map((v) => {
         if (v.name === 'collections') return 'Collections'
         if (v.name === 'collection') return v.collectionName
+        if (v.name === 'settings') return 'Configuracion'
         return v.itemTitle
       }),
     }

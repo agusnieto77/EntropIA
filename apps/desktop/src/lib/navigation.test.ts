@@ -93,4 +93,29 @@ describe('NavigationStore', () => {
     nav.back()
     expect(nav.breadcrumb).toEqual(['Collections', 'Docs'])
   })
+
+  it('navigates to settings view', () => {
+    nav.navigate({ name: 'settings' })
+    expect(nav.current).toEqual({ name: 'settings' })
+    expect(nav.canGoBack).toBe(true)
+  })
+
+  it('settings breadcrumb shows Configuracion', () => {
+    nav.navigate({ name: 'settings' })
+    expect(nav.breadcrumb).toEqual(['Collections', 'Configuracion'])
+  })
+
+  it('can go back from settings to collections', () => {
+    nav.navigate({ name: 'settings' })
+    nav.back()
+    expect(nav.current).toEqual({ name: 'collections' })
+    expect(nav.canGoBack).toBe(false)
+  })
+
+  it('replace works with settings view', () => {
+    nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Test' })
+    nav.replace({ name: 'settings' })
+    expect(nav.current).toEqual({ name: 'settings' })
+    expect(nav.breadcrumb).toEqual(['Collections', 'Configuracion'])
+  })
 })
