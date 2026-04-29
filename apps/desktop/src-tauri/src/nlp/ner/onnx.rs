@@ -1244,6 +1244,10 @@ fn surface_form_score(value: &str) -> usize {
         return 0;
     }
 
+    if contains_suspicious_surface_artifacts(value) {
+        return 0;
+    }
+
     let mut score = value.chars().filter(|ch| ch.is_alphanumeric()).count();
     if !value.contains("[UNK]") {
         score += 50;
@@ -1256,6 +1260,13 @@ fn surface_form_score(value: &str) -> usize {
     }
 
     score
+}
+
+fn contains_suspicious_surface_artifacts(value: &str) -> bool {
+    value.contains('�')
+        || value.contains('Ã')
+        || value.contains('Â')
+        || value.contains("â€")
 }
 
 fn should_drop_entity_value(value: &str) -> bool {
@@ -1416,6 +1427,14 @@ mod tests {
                 entity_type: EntityType::Date,
             })
         ));
+    }
+
+    #[test]
+    fn choose_best_surface_form_prefers_clean_source_span_over_corrupted_reconstruction() {
+        let span = "Según ella";
+        let reconstructed = "Seg�n ella";
+
+        assert_eq!(choose_best_surface_form(span, reconstructed), "Según ella");
     }
 
     #[test]
