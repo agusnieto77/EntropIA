@@ -108,8 +108,16 @@ describe('AssetRepo', () => {
 
       expect(rawExecuteMock).toHaveBeenCalledOnce()
       expect(rawExecuteMock).toHaveBeenCalledWith(
-        'INSERT INTO assets (id, item_id, path, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [result.id, result.itemId, result.path, result.type, result.size, result.createdAt]
+        'INSERT INTO assets (id, item_id, path, type, sort_index, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          result.id,
+          result.itemId,
+          result.path,
+          result.type,
+          result.sortIndex,
+          result.size,
+          result.createdAt,
+        ]
       )
       expect(db.db.insert).not.toHaveBeenCalled()
     })

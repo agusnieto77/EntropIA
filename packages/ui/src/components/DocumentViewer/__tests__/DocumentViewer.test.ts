@@ -66,6 +66,7 @@ describe('DocumentViewer', () => {
     // naturalWidth/naturalHeight reflect the intrinsic image dimensions
     Object.defineProperty(img, 'naturalWidth', { configurable: true, value: naturalW })
     Object.defineProperty(img, 'naturalHeight', { configurable: true, value: naturalH })
+    Object.defineProperty(img, 'complete', { configurable: true, value: true })
     img.getBoundingClientRect = vi.fn(() => ({
       x: 0,
       y: 0,
