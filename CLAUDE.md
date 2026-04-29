@@ -22,9 +22,10 @@ The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 - **`layout/`** — DocLayout-YOLO document structure analysis (Python subprocess), reading order algorithm, stores results in `layouts` table
 - **`transcription/`** — Audio transcription via Python faster-whisper subprocess, async job queue
 
-In-progress modules on `feat/gemma4-llm-nlp-v1` branch (not yet merged):
-- **`llm/`** — Local LLM via Gemma + llama.cpp (OCR correction, entity extraction, summarization, classification, Q&A)
+- **`llm/`** — LLM pipeline with dual backend: local Gemma via llama.cpp sidecar OR OpenRouter API. Jobs: OCR correction, entity extraction, triple extraction, summarization, classification, Q&A. Results persisted in `llm_results` table. Asset-level variants avoid context-window overflow on multi-page documents.
 - **`geo/`** — Nominatim geocoding for place entities (populates latitude/longitude/geoStatus on entities)
+- **`settings/`** — Key-value settings store (`app_settings` table). Tauri commands: `settings_get`, `settings_set`, `settings_get_all`, `settings_delete`. Used for OpenRouter API key, model selection, and user preferences.
+- **`image_edit/`** — Image manipulation commands (rotation, cropping)
 
 `openspec/` contains SDD (Specification-Driven Development) specs and change archives — not code.
 `AGENTS.md` contains detailed build prerequisites (Windows toolchain, vcpkg Tesseract, LLVM/Clang) and engine architecture notes.
@@ -77,11 +78,12 @@ pnpm rust:quality:report
 
 ### Frontend Navigation (Not File-Based Routing)
 
-The desktop app does **not** use SvelteKit or file-based routing. Navigation is a manual state machine in `src/lib/navigation.ts` with three views conditionally rendered in `App.svelte`:
+The desktop app does **not** use SvelteKit or file-based routing. Navigation is a manual state machine in `src/lib/navigation.ts` with four views conditionally rendered in `App.svelte`:
 
 - `collections` — list all collections
-- `collection` — single collection (requires `id`)
-- `item` — single item (requires `itemId` + `collectionId`)
+- `collection` — single collection (requires `id`, `collectionName`)
+- `item` — single item (requires `itemId`, `collectionId`, `collectionName`, `itemTitle`)
+- `settings` — app settings (OpenRouter API key, model selection)
 
 Views live in `src/views/`, layout in `src/layout/` (AppShell, TopBar).
 
@@ -91,6 +93,7 @@ Views live in `src/views/`, layout in `src/layout/` (AppShell, TopBar).
 2. Repos use `client.ts` which wraps Tauri's `@tauri-apps/plugin-sql` for SQL operations, or calls `invoke()` for Rust commands
 3. Rust Tauri commands (`db_execute`, `db_select`) operate on shared `AppDbState` (rusqlite)
 4. AI commands (`extract_text`, `index_fts`, `embed_item`, `extract_entities`, `extract_triples`, `fts_search`, `similar_items`, `transcribe_audio`, `extract_layout`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`, `LayoutQueue`)
+5. LLM commands (`llm_correct_ocr`, `llm_summarize`, `llm_extract_entities`, etc.) go through `LlmQueue`. Settings commands (`settings_get`, `settings_set`) use direct DB access via `AppDbState`.
 
 ### SQLite Connections
 
@@ -101,21 +104,26 @@ The Rust backend manages multiple SQLite connections to `entropia.sqlite`:
 
 All connections use WAL mode + foreign keys enabled. Each queue worker opens its own connection independently.
 
-On startup, `lib.rs` runs: (1) legacy migration from old `com.entropia.app` directory (SQLite bundle comparison by "richness score" + asset path rewriting), (2) `extractions.method` CHECK constraint migration (removes legacy `CHECK(method IN ('native','ocr'))` to allow PaddleOCR methods), (3) `layouts` table creation.
+On startup, `lib.rs` runs: (1) legacy migration from old `com.entropia.app` directory (SQLite bundle comparison by "richness score" + asset path rewriting), (2) `extractions.method` CHECK constraint migration (removes legacy `CHECK(method IN ('native','ocr'))` to allow PaddleOCR methods), (3) `layouts` table creation, (4) `assets.sort_index` column addition (for stable page ordering), (5) `llm_results` table creation, (6) `app_settings` table creation.
 
 ### OCR Provider Chain
 
 OCR uses a fallback chain defined in `ocr/mod.rs`:
-- **PaddleOCR** (primary) — `ocr-rs` crate with MNN backend, feature-gated as `paddle-ocr`. PP-OCRv5 detection + latin recognition. PP-LCNet orientation model auto-corrects 0°/90°/180°/270° rotation. `OcrEngine` is `Send + Sync`.
+- **PaddleOCR-VL** (primary) — Python subprocess (`paddle_vl.py`) using `paddleocr[doc-parser]`. Does layout detection + OCR in a single pass, returns structured blocks with labels, bounding boxes, and reading order. Method field: `"paddle_vl"`.
+- **PaddleOCR** (fallback) — `ocr-rs` crate with MNN backend, feature-gated as `paddle-ocr`. PP-OCRv5 detection + latin recognition. PP-LCNet orientation model auto-corrects 0°/90°/180°/270° rotation. `OcrEngine` is `Send + Sync`.
 - **Tesseract** (fallback) — `leptess` crate, languages `spa+eng`. `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`.
-- **Layout-aware OCR** — When DocLayout-YOLO is available, OCR runs layout detection first, then OCR per text-bearing region in reading order. Method field: `"paddle+layout"` or `"tesseract+layout"`.
-- **PDF pipeline** — Native text extraction first (`pdf-extract`), quality-checked. Falls back to pdfium-render at 300 DPI + OCR per page.
+- **Provider chain**: PaddleVL → PaddleOCR → Tesseract → Error. PaddleVL is tried first automatically; if unavailable, falls back to plain OCR.
+- **PDF pipeline** — Native text extraction first (`pdf-extract`), quality-checked (`is_quality_text()`: ≥50 alphanumeric chars). Falls back to pdfium-render at 300 DPI + OCR per page. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"` | `"pdf_tesseract"`.
 
 Postprocessing heuristics in `postprocess.rs` are **DISABLED** (mixed columns). Kept for reference only.
 
 ### Layout Detection
 
-DocLayout-YOLO (Python subprocess) detects 10 region categories (title, plain_text, figure, table, formula, etc.). Reading order uses union-find column grouping: regions with ≥50% horizontal overlap → same column, columns left-to-right, regions within columns top-to-bottom. Results stored in `layouts` table (Rust-side, not yet in Drizzle schema). Auto-wired into OCR pipeline when available. See `AGENTS.md` for full architecture details.
+Two layout engines available:
+- **PaddleVL** (primary) — layout detection is integrated into PaddleOCR-VL's single-pass pipeline.
+- **ONNX PP-DocLayout-S** — standalone PicoDet ONNX model (`resources/models/ocr/PP-DocLayout-S.onnx`, 4.68 MB). 23 region categories. Input: 2 tensors (image [1,3,480,480] + scale_factor [1,2]).
+
+Reading order uses union-find column grouping: regions with ≥50% horizontal overlap → same column, columns left-to-right, regions within columns top-to-bottom. Results stored in `layouts` table (Rust-side, not yet in Drizzle schema). See `AGENTS.md` for full architecture details.
 
 ### Python Subprocess Architecture
 
@@ -125,10 +133,11 @@ Several features delegate to Python scripts (ORT/MSVC linker failures on Windows
 - **`scripts/transcribe.py`** — faster-whisper with `base` model, `int8` compute, default language `es`. Same sentinel pattern.
 - **`scripts/spacy_ner.py`** — spaCy NER backend (optional, used by hybrid NER engine when spaCy is available).
 - **`scripts/layout_detect.py`** — DocLayout-YOLO layout detection. Same sentinel pattern (`===LAYOUT_JSON_BEGIN===` / `===LAYOUT_JSON_END===`).
+- **`scripts/paddle_vl.py`** — PaddleOCR-VL layout + OCR in one pass. Sentinel pattern (`===VL_JSON_BEGIN===` / `===VL_JSON_END===`). Label mapping: doc_title/paragraph_title → title, text → plain_text, image → figure.
 
 Rust spawns Python via `which_python()` / `which_python_for_layout()` (searches conda envs first, falls back to system Python). All Python-backed features degrade non-fatally if Python or dependencies are unavailable.
 
-**Python deps required**: `fastembed`, `faster-whisper`, `doclayout-yolo` (install via pip/conda). Optional: `spacy` + `es_core_news_sm` model for spaCy NER.
+**Python deps required**: `fastembed`, `faster-whisper`, `doclayout-yolo`, `paddleocr[doc-parser]` (install via pip/conda). Optional: `spacy` + `es_core_news_sm` model for spaCy NER.
 
 ### Hybrid NER Architecture
 
@@ -141,9 +150,18 @@ NER uses a multi-engine approach (`nlp/ner/`):
 
 Engine selection is configured via `NerConfig` with `NerEngineKind` (Onnx, Spacy, Hybrid, RuleBased). The `NerRegistry` initializes available engines at startup and logs preflight status.
 
+### LLM Architecture
+
+Dual-backend LLM system in `llm/`:
+- **OpenRouter** (`openrouter.rs`) — Cloud API via `reqwest`. Model and API key stored in `app_settings` table. Frontend configures via `SettingsView`.
+- **Local sidecar** (`sidecar.rs`) — llama.cpp server process managed by `SidecarManager`/`SidecarHandle`. Runs Gemma models locally.
+- **Engine** (`engine.rs`) — `LlmEngine` abstracts both backends behind `LlmConfig`. Reads settings from `app_settings` to decide which backend to use.
+- **Prompts** (`prompt.rs`) — All prompts in Spanish, matching source text language. Structured prompts for each job type (OCR correction, entity extraction, summarization, classification, Q&A, triple extraction).
+- **Results** persisted in `llm_results` table (target_id, job_type, result JSON, timestamp).
+
 ### Job Queue Pattern
 
-All background systems (OCR, NLP, Transcription, Layout) follow the same pattern:
+All background systems (OCR, NLP, Transcription, Layout, LLM) follow the same pattern:
 1. Frontend calls Tauri command → submits job to mpsc channel → returns "queued"
 2. Worker thread drains jobs serially, emits `progress/complete/error` events
 3. Frontend listens to events via reactive stores → updates UI

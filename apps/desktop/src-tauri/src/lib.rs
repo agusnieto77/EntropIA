@@ -5,6 +5,7 @@ mod llm;
 mod nlp;
 mod ocr;
 mod python_discovery;
+mod settings;
 mod transcription;
 
 use db::state::AppDbState;
@@ -149,6 +150,18 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to create llm_results table");
             eprintln!("[setup] llm_results table ensured");
 
+            // Create app_settings table for user configuration (API keys, preferences)
+            ui_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );",
+                )
+                .map_err(|e| format!("Failed to create app_settings table: {e}"))
+                .expect("Failed to create app_settings table");
+            eprintln!("[setup] app_settings table ensured");
+
             // Add asset_id columns to notes, entities, and triples for per-page scoping.
             // These are nullable — legacy rows without asset_id are "item-level" (shown on all pages).
             let has_notes_asset_id: bool = ui_conn
@@ -215,7 +228,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
 
             // LLM queue: local Gemma model via llama.cpp for NER, summarization,
             // OCR correction, Q&A, etc. Degrades gracefully if model not present.
-            let (llm_queue, llm_receiver) = LlmQueue::new();
+            let (llm_queue, llm_receiver) = LlmQueue::new(db_path.clone());
             let llm_available = llm_queue.available_flag();
             let llm_multimodal = llm_queue.multimodal_flag();
             app.manage(llm_queue);
@@ -279,6 +292,11 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             image_edit::crop_image,
             image_edit::rotate_image,
             image_edit::erase_region,
+            settings::settings_get,
+            settings::settings_set,
+            settings::settings_get_all,
+            settings::settings_delete,
+            llm::commands::test_openrouter_connection,
             open_external_url,
         ])
         .run(tauri::generate_context!())

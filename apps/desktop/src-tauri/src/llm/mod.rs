@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod engine;
+pub mod openrouter;
 pub mod prompt;
 pub mod sidecar;
 
@@ -15,8 +16,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
 use crate::nlp::text_provider;
+use crate::settings;
 
 use self::engine::{LlmConfig, LlmEngine};
+use self::openrouter::OpenRouterClient;
 use self::sidecar::{SidecarManager, SidecarHandle};
 
 // ---------------------------------------------------------------------------
@@ -270,10 +273,12 @@ pub struct LlmQueue {
     available: Arc<AtomicBool>,
     /// Shared flag set to `true` after multimodal (vision) support is confirmed.
     multimodal: Arc<AtomicBool>,
+    /// Path to the database, used for checking settings.
+    db_path: PathBuf,
 }
 
 impl LlmQueue {
-    pub fn new() -> (Self, mpsc::Receiver<LlmJob>) {
+    pub fn new(db_path: PathBuf) -> (Self, mpsc::Receiver<LlmJob>) {
         let (sender, receiver) = mpsc::channel::<LlmJob>(64);
         let available = Arc::new(AtomicBool::new(false));
         let multimodal = Arc::new(AtomicBool::new(false));
@@ -282,6 +287,7 @@ impl LlmQueue {
                 sender,
                 available: available.clone(),
                 multimodal: multimodal.clone(),
+                db_path,
             },
             receiver,
         )
@@ -293,9 +299,27 @@ impl LlmQueue {
             .map_err(|e| format!("LLM queue full or closed: {e}"))
     }
 
-    /// Returns `true` if the LLM engine has been loaded successfully.
+    /// Returns `true` if any LLM backend is available (local engine OR OpenRouter configured).
     pub fn is_available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        if self.available.load(Ordering::Relaxed) {
+            return true;
+        }
+        // Check if OpenRouter is configured
+        self.is_openrouter_configured()
+    }
+
+    /// Check if OpenRouter is configured with an API key and mode is not `local`.
+    fn is_openrouter_configured(&self) -> bool {
+        let conn = match rusqlite::Connection::open(&self.db_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let mode = settings::get_setting(&conn, "llm_mode").unwrap_or_default();
+        if mode != "openrouter" && mode != "auto" {
+            return false;
+        }
+        let key = settings::get_setting(&conn, "openrouter_api_key").unwrap_or_default();
+        !key.is_empty()
     }
 
     /// Returns `true` if the LLM engine supports multimodal (vision) input.
@@ -471,29 +495,71 @@ impl LlmQueue {
                 eprintln!("[llm] Warning: could not create llm_results table: {e}");
             }
 
+            // Ensure app_settings table exists (idempotent) for reading LLM mode
+            if let Err(e) = conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                 );",
+            ) {
+                eprintln!("[llm] Warning: could not create app_settings table: {e}");
+            }
+
             // Main worker loop
             while let Some(job) = receiver.recv().await {
                 let job_name = job.job_name();
                 let id = job.target_id().to_string();
 
-                let engine = match &engine {
-                    Some(e) => e,
-                    None => {
-                        emit_error(
-                            &app_handle,
-                            &id,
-                            job_name,
-                            "LLM engine not available. Place a GGUF model in the models/ directory.",
-                        );
-                        continue;
-                    }
+                // Read LLM mode from settings on each job (< 1ms, allows hot-reload)
+                let llm_mode = settings::get_setting(&conn, "llm_mode")
+                    .unwrap_or_else(|| "local".to_string());
+
+                let use_openrouter = match llm_mode.as_str() {
+                    "openrouter" => true,
+                    "auto" => engine.is_none(),
+                    _ => false, // "local" or unknown
                 };
 
                 emit_progress(&app_handle, &id, job_name, 10);
 
-                let result = tokio::task::block_in_place(|| {
-                    process_job(engine, sidecar.as_mut(), &conn, &job)
-                });
+                let result = if use_openrouter {
+                    // OpenRouter remote path
+                    let api_key = settings::get_setting(&conn, "openrouter_api_key")
+                        .unwrap_or_default();
+                    let model = settings::get_setting(&conn, "openrouter_model")
+                        .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
+
+                    if api_key.is_empty() {
+                        emit_error(
+                            &app_handle,
+                            &id,
+                            job_name,
+                            "OpenRouter API key no configurada. Andá a Configuración para agregarla.",
+                        );
+                        continue;
+                    }
+
+                    let client = OpenRouterClient::new(api_key, model);
+                    process_job_remote(&client, &conn, &job).await
+                } else {
+                    // Local engine path
+                    match &engine {
+                        Some(e) => {
+                            tokio::task::block_in_place(|| {
+                                process_job(e, sidecar.as_mut(), &conn, &job)
+                            })
+                        }
+                        None => {
+                            emit_error(
+                                &app_handle,
+                                &id,
+                                job_name,
+                                "LLM no disponible. Colocá un modelo GGUF en models/ o configurá OpenRouter.",
+                            );
+                            continue;
+                        }
+                    }
+                };
 
                 match result {
                     Ok(output) => {
@@ -816,6 +882,124 @@ fn gather_collection_context(
     }
 
     Ok(context)
+}
+
+// ---------------------------------------------------------------------------
+// Remote job processing (OpenRouter)
+// ---------------------------------------------------------------------------
+
+/// Process a job using OpenRouter API. Uses raw prompt text (no Gemma formatting).
+async fn process_job_remote(
+    client: &OpenRouterClient,
+    conn: &rusqlite::Connection,
+    job: &LlmJob,
+) -> Result<String, String> {
+    let n_ctx = client.n_ctx();
+
+    match job {
+        LlmJob::CorrectOcr { item_id } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for OCR correction".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_ocr_correction(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::ExtractEntities { item_id } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for entity extraction".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_extract_entities(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::ExtractTriples { item_id } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for triple extraction".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_extract_triples(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::Summarize { item_id } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for summarization".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_summarize(&truncated);
+            let result = client.generate(&p, max_tokens_for(job)).await?;
+            Ok(truncate_to_sentence_boundary(&result))
+        }
+
+        LlmJob::Classify { item_id, categories } => {
+            let text = text_provider::get_item_text(conn, item_id)?;
+            if text.is_empty() {
+                return Err("No text available for classification".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_classify(&truncated, categories);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::Ask { collection_id, question } => {
+            let context = gather_collection_context(conn, collection_id, question)?;
+            if context.is_empty() {
+                return Err("No relevant documents found for this question".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &context);
+            let p = prompt::raw_question_answer(question, &truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        // Asset-level variants
+        LlmJob::CorrectOcrAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for OCR correction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_ocr_correction(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::ExtractEntitiesAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for entity extraction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_extract_entities(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::ExtractTriplesAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for triple extraction on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_extract_triples(&truncated);
+            client.generate(&p, max_tokens_for(job)).await
+        }
+
+        LlmJob::SummarizeAsset { asset_id } => {
+            let text = text_provider::get_asset_text(conn, asset_id)?;
+            if text.is_empty() {
+                return Err("No text available for summarization on this asset".to_string());
+            }
+            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
+            let p = prompt::raw_summarize(&truncated);
+            let result = client.generate(&p, max_tokens_for(job)).await?;
+            Ok(truncate_to_sentence_boundary(&result))
+        }
+    }
 }
 
 /// Look up the image/pdf file path for an asset from the database.

@@ -7,6 +7,7 @@
   import CollectionsView from './views/CollectionsView.svelte'
   import CollectionView from './views/CollectionView.svelte'
   import ItemView from './views/ItemView.svelte'
+  import SettingsView from './views/SettingsView.svelte'
 
   let ready = $state(false)
   let error = $state<string | null>(null)
@@ -44,6 +45,8 @@
         itemId={$navigation.current.itemId}
         collectionId={$navigation.current.collectionId}
       />
+    {:else if $navigation.current.name === 'settings'}
+      <SettingsView />
     {/if}
   </AppShell>
 {/if}

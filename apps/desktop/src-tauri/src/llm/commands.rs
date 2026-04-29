@@ -3,6 +3,7 @@ use tauri::State;
 use super::LlmQueue;
 use super::LlmJob;
 use super::LlmResultEntry;
+use super::openrouter::{OpenRouterClient, ModelInfo};
 use crate::db::state::AppDbState;
 
 /// Returns `true` if the LLM engine loaded successfully and is ready to accept jobs.
@@ -122,6 +123,14 @@ pub async fn llm_get_results(
 ) -> Result<Vec<LlmResultEntry>, String> {
     let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
     super::get_all_results_for_target(&conn, &target_id)
+}
+
+/// Test the OpenRouter connection with the given API key.
+/// Returns a list of available models on success.
+#[tauri::command]
+pub async fn test_openrouter_connection(api_key: String) -> Result<Vec<ModelInfo>, String> {
+    let client = OpenRouterClient::new(api_key, String::new());
+    client.test_connection().await
 }
 
 /// Retrieve the latest single LLM result for a target + job_type.
