@@ -4,6 +4,7 @@ mod image_edit;
 mod llm;
 mod nlp;
 mod ocr;
+mod path_utils;
 mod python_discovery;
 mod settings;
 mod transcription;
@@ -13,6 +14,7 @@ use geo::GeoQueue;
 use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
+use rusqlite::OptionalExtension;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
@@ -59,6 +61,32 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Suppress Windows error dialogs and CRT debug assertions that block the
+    // process when native libraries crash.
+    // This must run before any other initialization.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+        const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
+        const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+        extern "system" { fn SetErrorMode(uMode: u32) -> u32; }
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+
+        // Suppress CRT debug assertions in debug builds.
+        // Routes assertion output to stderr instead of a blocking dialog.
+        #[cfg(debug_assertions)]
+        {
+            extern "C" {
+                fn _CrtSetReportMode(reportType: i32, reportMode: i32) -> i32;
+            }
+            const _CRT_ASSERT: i32 = 2;
+            const _CRTDBG_MODE_FILE: i32 = 4;
+            const _CRTDBG_FILE_STDERR: i32 = 2;
+            _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+            _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -69,10 +97,7 @@ pub fn run() {
                 .expect("Failed to get app data dir");
             migrate_legacy_app_dir(&app_dir).expect("Failed to migrate legacy app data dir");
             std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
-            eprintln!("[setup] app_dir: {:?}", app_dir);
-
             let db_path = app_dir.join("entropia.sqlite");
-            eprintln!("[setup] db_path: {:?}", db_path);
 
 migrate_legacy_asset_paths(&db_path, &app_dir)
                 .expect("Failed to migrate legacy asset paths in database");
@@ -80,11 +105,28 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // UI connection — used by Tauri IPC commands
             let ui_conn =
                 rusqlite::Connection::open(&db_path).expect("Failed to open SQLite database (ui)");
-            eprintln!("[setup] DB opened");
             ui_conn
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (ui)");
-            eprintln!("[setup] PRAGMA foreign_keys=ON");
+
+            // Normalize legacy duplicates and enforce one-row-per-asset semantics
+            // for extractions/transcriptions so Rust workers can use real UPSERT.
+            ui_conn
+                .execute_batch(
+                    "DELETE FROM extractions
+                     WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM extractions GROUP BY asset_id
+                     );
+                     DELETE FROM transcriptions
+                     WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM transcriptions GROUP BY asset_id
+                     );
+                     CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+                     ON extractions(asset_id);
+                     CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_asset_id_unique
+                     ON transcriptions(asset_id);",
+                )
+                .expect("Failed to enforce unique asset_id indexes for extraction/transcription");
 
             // Migrate extractions.method CHECK constraint: remove the legacy
             // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
@@ -108,49 +150,70 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 )
                 .map_err(|e| format!("Failed to create layouts table: {e}"))
                 .expect("Failed to create layouts table");
-            eprintln!("[setup] layouts table ensured");
+            let modern_schema_bootstrapped =
+                migration_applied(&ui_conn, "0017_vec_assets").unwrap_or(false);
 
-            // Add sort_index column to assets if it doesn't exist (for pre-0013 databases)
-            // This column enables stable page ordering for multi-asset items (e.g. scanned PDFs)
-            let has_sort_index: bool = ui_conn
-                .prepare("SELECT sort_index FROM assets LIMIT 0")
-                .and_then(|mut stmt| {
-                    // If we can prepare this statement, the column exists
-                    let _ = stmt.query_map([], |_| Ok(()));
-                    Ok(true)
-                })
-                .unwrap_or(false);
+            if !modern_schema_bootstrapped {
+                // Legacy fallback for databases that haven't run JS migrations yet.
+                let has_sort_index: bool = ui_conn
+                    .prepare("SELECT sort_index FROM assets LIMIT 0")
+                    .and_then(|mut stmt| {
+                        let _ = stmt.query_map([], |_| Ok(()));
+                        Ok(true)
+                    })
+                    .unwrap_or(false);
 
-            if !has_sort_index {
+                if !has_sort_index {
+                    ui_conn
+                        .execute_batch(
+                            "ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
+                             CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);",
+                        )
+                        .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
+                        .expect("Failed to add sort_index column");
+                    eprintln!("[setup] Added sort_index column to assets table");
+                }
+
                 ui_conn
                     .execute_batch(
-                        "ALTER TABLE assets ADD COLUMN sort_index INTEGER NOT NULL DEFAULT 0;
-                         CREATE INDEX IF NOT EXISTS idx_assets_item_sort ON assets(item_id, sort_index);",
+                        "CREATE TABLE IF NOT EXISTS llm_results (
+                            id TEXT PRIMARY KEY,
+                            target_id TEXT NOT NULL,
+                            job_type TEXT NOT NULL,
+                            result TEXT NOT NULL,
+                            created_at INTEGER NOT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
                     )
-                    .map_err(|e| format!("Failed to add sort_index column to assets: {e}"))
-                    .expect("Failed to add sort_index column");
-                eprintln!("[setup] Added sort_index column to assets table");
-            } else {
-                eprintln!("[setup] sort_index column already exists in assets table");
+                    .map_err(|e| format!("Failed to create llm_results table: {e}"))
+                    .expect("Failed to create llm_results table");
+
+                let has_notes_asset_id: bool = ui_conn
+                    .prepare("SELECT asset_id FROM notes LIMIT 0")
+                    .and_then(|mut stmt| {
+                        let _ = stmt.query_map([], |_| Ok(()));
+                        Ok(true)
+                    })
+                    .unwrap_or(false);
+
+                if !has_notes_asset_id {
+                    ui_conn
+                        .execute_batch(
+                            "ALTER TABLE notes ADD COLUMN asset_id TEXT;
+                             ALTER TABLE entities ADD COLUMN asset_id TEXT;
+                             ALTER TABLE triples ADD COLUMN asset_id TEXT;
+                             CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
+                             CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
+                             CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);",
+                        )
+                        .map_err(|e| format!("Failed to add asset_id columns: {e}"))
+                        .expect("Failed to add asset_id columns");
+                    eprintln!("[setup] Added asset_id columns to notes, entities, triples");
+                }
             }
 
-            // Create llm_results table for persisting LLM job results
-            ui_conn
-                .execute_batch(
-                    "CREATE TABLE IF NOT EXISTS llm_results (
-                        id TEXT PRIMARY KEY,
-                        target_id TEXT NOT NULL,
-                        job_type TEXT NOT NULL,
-                        result TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
-                )
-                .map_err(|e| format!("Failed to create llm_results table: {e}"))
-                .expect("Failed to create llm_results table");
-            eprintln!("[setup] llm_results table ensured");
-
-            // Create app_settings table for user configuration (API keys, preferences)
+            // Create app_settings table for user configuration (API keys, preferences).
+            // Keep this outside the legacy fallback so modern-schema databases get it too.
             ui_conn
                 .execute_batch(
                     "CREATE TABLE IF NOT EXISTS app_settings (
@@ -161,33 +224,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .map_err(|e| format!("Failed to create app_settings table: {e}"))
                 .expect("Failed to create app_settings table");
             eprintln!("[setup] app_settings table ensured");
-
-            // Add asset_id columns to notes, entities, and triples for per-page scoping.
-            // These are nullable — legacy rows without asset_id are "item-level" (shown on all pages).
-            let has_notes_asset_id: bool = ui_conn
-                .prepare("SELECT asset_id FROM notes LIMIT 0")
-                .and_then(|mut stmt| {
-                    let _ = stmt.query_map([], |_| Ok(()));
-                    Ok(true)
-                })
-                .unwrap_or(false);
-
-            if !has_notes_asset_id {
-                ui_conn
-                    .execute_batch(
-                        "ALTER TABLE notes ADD COLUMN asset_id TEXT;
-                         ALTER TABLE entities ADD COLUMN asset_id TEXT;
-                         ALTER TABLE triples ADD COLUMN asset_id TEXT;
-                         CREATE INDEX IF NOT EXISTS idx_notes_asset_id ON notes(asset_id);
-                         CREATE INDEX IF NOT EXISTS idx_entities_asset_id ON entities(asset_id);
-                         CREATE INDEX IF NOT EXISTS idx_triples_asset_id ON triples(asset_id);",
-                    )
-                    .map_err(|e| format!("Failed to add asset_id columns: {e}"))
-                    .expect("Failed to add asset_id columns");
-                eprintln!("[setup] Added asset_id columns to notes, entities, triples");
-            } else {
-                eprintln!("[setup] asset_id columns already exist in notes, entities, triples");
-            }
 
             // OCR worker connection
             let worker_conn = rusqlite::Connection::open(&db_path)
@@ -207,14 +243,35 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // startup path, which previously blocked app window display by 3-15s.
             OcrQueue::start_worker(db_path.clone(), ocr_receiver, app.handle().clone());
 
+            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
+            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
+            let (llm_queue, llm_receiver) = LlmQueue::new(db_path.clone());
+            let llm_available = llm_queue.available_flag();
+            let nlp_llm_queue = llm_queue.clone();
+            app.manage(llm_queue);
+            LlmQueue::start_worker(
+                db_path.clone(),
+                llm_receiver,
+                app.handle().clone(),
+                llm_available,
+            );
+
             // NLP queue: create channel, manage the sender half, spawn worker with receiver
             // The NLP worker opens its own dedicated connection and initializes the
             // embedding engine (Python subprocess) independently from OCR/UI connections.
             let (nlp_queue, nlp_receiver) = NlpQueue::new();
             // Clone the dedup handle before moving nlp_queue into managed state
             let ner_pending = nlp_queue.ner_pending_handle();
+            let fts_pending = nlp_queue.fts_pending_handle();
             app.manage(nlp_queue);
-            NlpQueue::start_worker(db_path.clone(), nlp_receiver, app.handle().clone(), ner_pending);
+            NlpQueue::start_worker(
+                db_path.clone(),
+                nlp_receiver,
+                app.handle().clone(),
+                ner_pending,
+                fts_pending,
+                nlp_llm_queue,
+            );
 
             // Transcription queue: faster-whisper subprocess for audio transcription.
             // Each job spawns a Python process, no persistent state needed.
@@ -224,20 +281,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 db_path.clone(),
                 transcription_receiver,
                 app.handle().clone(),
-            );
-
-            // LLM queue: local Gemma model via llama.cpp for NER, summarization,
-            // OCR correction, Q&A, etc. Degrades gracefully if model not present.
-            let (llm_queue, llm_receiver) = LlmQueue::new(db_path.clone());
-            let llm_available = llm_queue.available_flag();
-            let llm_multimodal = llm_queue.multimodal_flag();
-            app.manage(llm_queue);
-            LlmQueue::start_worker(
-                db_path.clone(),
-                llm_receiver,
-                app.handle().clone(),
-                llm_available,
-                llm_multimodal,
             );
 
             // Geo queue: Nominatim geocoding for place entities.
@@ -283,11 +326,10 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_extract_entities_asset,
             llm::commands::llm_extract_triples_asset,
             llm::commands::llm_summarize_asset,
-            llm::commands::llm_get_results,
-            llm::commands::llm_get_result,
-            llm::commands::llm_is_available,
-            llm::commands::llm_is_multimodal,
-            geo::commands::geocode_entity,
+llm::commands::llm_get_results,
+        llm::commands::llm_get_result,
+        llm::commands::llm_is_available,
+        geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
             image_edit::crop_image,
             image_edit::rotate_image,
@@ -529,13 +571,38 @@ fn migrate_legacy_asset_paths(db_path: &Path, app_dir: &Path) -> Result<(), Stri
     let conn = Connection::open(db_path)
         .map_err(|error| format!("Failed to open database for asset-path migration: {error}"))?;
 
-conn.execute(
+    conn.execute(
         "UPDATE assets SET path = REPLACE(path, ?1, ?2) WHERE path LIKE ?3",
         rusqlite::params![legacy_prefix, current_prefix, format!("{}%", legacy_dir.to_string_lossy())],
     )
     .map_err(|error| format!("Failed to migrate asset paths from legacy app dir: {error}"))?;
 
     Ok(())
+}
+
+fn migration_applied(conn: &Connection, name: &str) -> Result<bool, String> {
+    let has_migrations_table: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_migrations' LIMIT 1",
+            [],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !has_migrations_table {
+        return Ok(false);
+    }
+
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM _migrations WHERE name = ?1 LIMIT 1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to check migration '{name}': {e}"))?;
+
+    Ok(found.is_some())
 }
 
 /// Migrate the `extractions` table to remove the legacy CHECK constraint

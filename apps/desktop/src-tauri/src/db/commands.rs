@@ -13,6 +13,7 @@ pub struct ExecuteResult {
 /// Used for cascade deletes and other multi-statement operations.
 #[tauri::command]
 pub fn db_execute_batch(db: State<'_, AppDbState>, sql: String) -> Result<(), String> {
+    validate_sql_batch(&sql)?;
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
     conn.execute_batch(&sql).map_err(|e| e.to_string())
 }
@@ -23,6 +24,7 @@ pub fn db_execute(
     sql: String,
     params: Vec<serde_json::Value>,
 ) -> Result<ExecuteResult, String> {
+    validate_sql_execute(&sql)?;
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
     let params_ref: Vec<Box<dyn rusqlite::ToSql>> = params.iter().map(json_to_sql_param).collect();
     let params_as_refs: Vec<&dyn rusqlite::ToSql> = params_ref.iter().map(|b| b.as_ref()).collect();
@@ -40,6 +42,7 @@ pub fn db_select(
     sql: String,
     params: Vec<serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    validate_sql_row_query(&sql)?;
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
     let params_ref: Vec<Box<dyn rusqlite::ToSql>> = params.iter().map(json_to_sql_param).collect();
     let params_as_refs: Vec<&dyn rusqlite::ToSql> = params_ref.iter().map(|b| b.as_ref()).collect();
@@ -73,6 +76,7 @@ pub fn db_select_rows(
     sql: String,
     params: Vec<serde_json::Value>,
 ) -> Result<Vec<Vec<serde_json::Value>>, String> {
+    validate_sql_row_query(&sql)?;
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
     let params_ref: Vec<Box<dyn rusqlite::ToSql>> = params.iter().map(json_to_sql_param).collect();
     let params_as_refs: Vec<&dyn rusqlite::ToSql> = params_ref.iter().map(|b| b.as_ref()).collect();
@@ -153,4 +157,67 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     result
+}
+
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn validate_sql_row_query(sql: &str) -> Result<(), String> {
+    let normalized = normalize_sql(sql);
+
+    if normalized.contains(';') {
+        return Err("db_select/db_select_rows accept only a single SQL statement".to_string());
+    }
+
+    for forbidden in ["pragma ", "attach ", "detach ", "vacuum "] {
+        if normalized.starts_with(forbidden) || normalized.contains(&format!(" {forbidden}")) {
+            return Err("Restricted SQL statement for db_select/db_select_rows".to_string());
+        }
+    }
+
+    if normalized.starts_with("select ") || normalized.starts_with("with ") {
+        return Ok(());
+    }
+
+    let is_dml = normalized.starts_with("insert ")
+        || normalized.starts_with("update ")
+        || normalized.starts_with("delete ");
+
+    if is_dml && normalized.contains(" returning ") {
+        return Ok(());
+    }
+
+    Err(
+        "Only row-returning queries (SELECT/WITH or DML with RETURNING) are allowed in db_select/db_select_rows"
+            .to_string(),
+    )
+}
+
+fn validate_sql_execute(sql: &str) -> Result<(), String> {
+    let normalized = normalize_sql(sql);
+    if normalized.contains(';') {
+        return Err("db_execute accepts only a single SQL statement".to_string());
+    }
+    if normalized.starts_with("pragma ")
+        || normalized.starts_with("attach ")
+        || normalized.starts_with("detach ")
+        || normalized.starts_with("vacuum ")
+    {
+        return Err("Restricted SQL statement for db_execute".to_string());
+    }
+    Ok(())
+}
+
+fn validate_sql_batch(sql: &str) -> Result<(), String> {
+    let normalized = normalize_sql(sql);
+    for forbidden in ["attach ", "detach ", "vacuum ", "pragma "] {
+        if normalized.contains(forbidden) {
+            return Err("Restricted SQL statement in db_execute_batch".to_string());
+        }
+    }
+    Ok(())
 }

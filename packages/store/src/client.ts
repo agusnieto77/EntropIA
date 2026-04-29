@@ -30,9 +30,10 @@ export const createDbClient = (): DbClient => ({
  * Creates a Drizzle ORM instance in sqlite-proxy mode.
  * Delegates all SQL execution to the provided DbClient (Tauri IPC).
  *
- * - `run` method: used for INSERT/UPDATE/DELETE — executes via client.execute
- * - `all`/`get`/`values` methods: used for SELECT — executes via db_select_rows
- *   which returns rows as arrays in correct column order (Drizzle expects `{ rows: unknown[][] }`)
+ * - `run` method: used for INSERT/UPDATE/DELETE without row results — executes via client.execute
+ * - `all`/`get`/`values` methods: used for row-returning queries (SELECT and DML with RETURNING)
+ *   — executes via db_select_rows, which returns rows as arrays in correct column order
+ *   (Drizzle expects `{ rows: unknown[][] }`)
  */
 export const createDrizzleClient = (client: DbClient) =>
   drizzle(async (sql, params, method) => {
@@ -40,7 +41,7 @@ export const createDrizzleClient = (client: DbClient) =>
       await client.execute(sql, params as unknown[])
       return { rows: [] }
     }
-    // Use db_select_rows for correct column ordering
+    // Use db_select_rows for any query that returns rows (including DML with RETURNING)
     const rows = await invoke<unknown[][]>('db_select_rows', { sql, params })
     return { rows }
   })

@@ -2,10 +2,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ItemView from './ItemView.svelte'
 
-const { nlpEventHandlers, extractTriplesMock, similarItemsMock, extractTextMock } = vi.hoisted(
+const { nlpEventHandlers, extractTriplesMock, llmExtractTriplesMock, llmExtractTriplesAssetMock, similarItemsMock, extractTextMock } = vi.hoisted(
   () => ({
     nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
     extractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
+    llmExtractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
+    llmExtractTriplesAssetMock: vi.fn<(_: string) => Promise<void>>(),
     similarItemsMock: vi.fn<(_: string, __?: number) => Promise<Array<{ itemId: string }>>>(),
     extractTextMock: vi.fn(),
   })
@@ -27,6 +29,13 @@ type AnnotationRow = {
 }
 
 type StoreOptions = {
+  notesRows?: Array<{
+    id: string
+    itemId: string
+    content: string
+    createdAt: number
+    updatedAt: number
+  }>
   entitiesRows?: Array<{
     id: string
     itemId: string
@@ -65,6 +74,7 @@ type StoreOptions = {
 }
 
 function createStore({
+  notesRows = [],
   entitiesRows = [],
   triplesRows = [],
   itemsById = {
@@ -96,9 +106,11 @@ function createStore({
     },
     assets: {
       findByItem: vi.fn().mockResolvedValue(assetsRows),
+      updatePath: vi.fn().mockResolvedValue(undefined),
     },
     notes: {
-      findByItem: vi.fn().mockResolvedValue([]),
+      findByItem: vi.fn().mockResolvedValue(notesRows),
+      findByAsset: vi.fn().mockResolvedValue(notesRows),
       create: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
@@ -114,6 +126,7 @@ function createStore({
     },
     entities: {
       findByItemId: vi.fn().mockResolvedValue(entitiesRows),
+      findByAssetId: vi.fn().mockResolvedValue(entitiesRows),
       create: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
@@ -137,6 +150,14 @@ function createStore({
     },
     triples: {
       findByItemId: vi.fn().mockResolvedValue(triplesRows),
+      findByAssetId: vi.fn().mockResolvedValue(triplesRows),
+    },
+    topics: {
+      findByItemId: vi.fn().mockResolvedValue([]),
+      allNames: vi.fn().mockResolvedValue([]),
+      addTopicToItem: vi.fn().mockResolvedValue(undefined),
+      findByName: vi.fn().mockResolvedValue(null),
+      removeTopicFromItem: vi.fn().mockResolvedValue(undefined),
     },
   }
 }
@@ -173,10 +194,36 @@ vi.mock('$lib/nlp', async () => {
   }
 })
 
+vi.mock('$lib/llm', async () => {
+  const actual = await vi.importActual<typeof import('$lib/llm')>('$lib/llm')
+  return {
+    ...actual,
+    llmIsAvailable: vi.fn().mockResolvedValue(true),
+    llmGetResult: vi.fn().mockResolvedValue(null),
+    llmGetResults: vi.fn().mockResolvedValue([]),
+    llmSummarize: vi.fn().mockResolvedValue(undefined),
+    llmCorrectOcr: vi.fn().mockResolvedValue(undefined),
+    llmExtractTriples: llmExtractTriplesMock,
+    llmSummarizeAsset: vi.fn().mockResolvedValue(undefined),
+    llmCorrectOcrAsset: vi.fn().mockResolvedValue(undefined),
+    llmExtractTriplesAsset: llmExtractTriplesAssetMock,
+  }
+})
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn((eventName: string, callback: (event: { payload: unknown }) => void) => {
     nlpEventHandlers.set(eventName, callback)
     return Promise.resolve(vi.fn())
+  }),
+}))
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async (command: string) => {
+    if (command === 'llm_get_results') return []
+    if (command === 'llm_get_result') return null
+    if (command === 'llm_is_available') return true
+    if (command === 'db_select') return []
+    return null
   }),
 }))
 
@@ -191,6 +238,8 @@ vi.mock('@entropia/ui', async () => {
     Button: () => null,
     Card: () => null,
     EntityViewer: MockEntityViewer,
+    MapViewer: () => null,
+    TopicEditor: () => null,
   }
 })
 
@@ -198,6 +247,8 @@ describe('ItemView semantic triples panel', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
     similarItemsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
@@ -214,7 +265,7 @@ describe('ItemView semantic triples panel', () => {
     await renderItemViewWith([])
 
     expect(await screen.findByText('Semantic Triples (S|P|O)')).toBeInTheDocument()
-    expect(await screen.findByText('No triples extracted yet for this item.')).toBeInTheDocument()
+    expect(await screen.findByText('No triples extracted yet.')).toBeInTheDocument()
   })
 
   it('renders triples as Subject | Predicate | Object rows when store has data', async () => {
@@ -236,7 +287,7 @@ describe('ItemView semantic triples panel', () => {
     const triplesBtn = await screen.findByRole('button', { name: /TRIPLET/i })
 
     await fireEvent.click(triplesBtn)
-    expect(extractTriplesMock).toHaveBeenCalledWith('item-1')
+    expect(llmExtractTriplesAssetMock).toHaveBeenCalledWith('asset-1')
     expect(triplesBtn).toBeDisabled()
     expect(screen.getByText('pending')).toBeInTheDocument()
 
@@ -248,7 +299,7 @@ describe('ItemView semantic triples panel', () => {
       expect(triplesBtn).toBeDisabled()
     })
 
-    storeRef.current.triples.findByItemId.mockResolvedValueOnce([
+    storeRef.current.triples.findByAssetId.mockResolvedValueOnce([
       { subject: 'Moreno', predicate: 'fundó', object: 'La Gazeta' },
     ])
     nlpEventHandlers.get('nlp:complete')?.({
@@ -269,7 +320,7 @@ describe('ItemView semantic triples panel', () => {
     })
 
     await fireEvent.click(triplesBtn)
-    expect(extractTriplesMock).toHaveBeenCalledTimes(2)
+    expect(llmExtractTriplesAssetMock).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -277,6 +328,8 @@ describe('ItemView full-text search in Analysis panel', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
     similarItemsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
@@ -442,21 +495,23 @@ describe('ItemView note editing', () => {
   })
 
   async function renderItemViewWithNotes(notes: (typeof sampleNote)[]) {
-    storeRef.current = createStore()
+    storeRef.current = createStore({ notesRows: notes })
     storeRef.current.notes.findByItem.mockResolvedValue(notes)
+    storeRef.current.notes.findByAsset.mockResolvedValue(notes)
     storeRef.current.notes.update.mockResolvedValue(undefined)
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
-    await screen.findByText(`Notes (${notes.length})`)
+    await screen.findByText(new RegExp(`Notes \\(${notes.length}\\)`))
   }
 
   it('displays the correct note count', async () => {
     await renderItemViewWithNotes([sampleNote])
-    expect(screen.getByText('Notes (1)')).toBeInTheDocument()
+    expect(screen.getByText(/Notes \(1\)/)).toBeInTheDocument()
   })
 
   it('displays "No notes yet" when notes array is empty', async () => {
     storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue([])
+    storeRef.current.notes.findByAsset.mockResolvedValue([])
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
     expect(await screen.findByText('No notes yet.')).toBeInTheDocument()
   })
@@ -482,8 +537,8 @@ describe('ItemView note editing', () => {
 
     // Simulate the update that handleSaveEdit would do
     await storeRef.current.notes.update('note-1', 'Updated content')
-    // After update, findByItem is called again to refresh the list
-    expect(storeRef.current.notes.findByItem).toHaveBeenCalledWith('item-1')
+    // After update, notes are loaded in the current asset scope
+    expect(storeRef.current.notes.findByAsset).toHaveBeenCalledWith('item-1', 'asset-1')
   })
 })
 
@@ -492,6 +547,8 @@ describe('ItemView image annotations', () => {
     vi.useFakeTimers()
     nlpEventHandlers.clear()
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
     similarItemsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
@@ -568,7 +625,7 @@ describe('ItemView image annotations', () => {
     })
     expect(storeRef.current.annotations.findByAsset).toHaveBeenCalledWith('asset-image-1', 1)
 
-    await fireEvent.click(screen.getByRole('button', { name: /photo-b\.jpg/i }))
+    await fireEvent.click(screen.getByRole('button', { name: /next page/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('2')
@@ -666,6 +723,8 @@ describe('ItemView entity editing UX', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
     similarItemsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })

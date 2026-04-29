@@ -12,12 +12,6 @@ pub async fn llm_is_available(llm_queue: State<'_, LlmQueue>) -> Result<bool, St
     Ok(llm_queue.is_available())
 }
 
-/// Returns `true` if the LLM engine supports multimodal (vision) input.
-#[tauri::command]
-pub async fn llm_is_multimodal(llm_queue: State<'_, LlmQueue>) -> Result<bool, String> {
-    Ok(llm_queue.is_multimodal())
-}
-
 #[tauri::command]
 pub async fn llm_correct_ocr(
     item_id: String,

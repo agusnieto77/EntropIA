@@ -12,6 +12,12 @@ fn enqueue(nlp_queue: &NlpQueue, job: NlpJob) -> Result<String, String> {
     Ok("queued".to_string())
 }
 
+fn triples_retired_error(target: &str) -> String {
+    format!(
+        "NLP triples extraction was retired for {target}. Use the Gemma LLM triples commands instead."
+    )
+}
+
 /// Submit an FTS5 indexing job for `item_id`.
 ///
 /// The worker will fetch the item's title + extracted text and upsert into
@@ -52,14 +58,15 @@ pub async fn extract_entities(
 #[tauri::command]
 pub async fn extract_triples(
     item_id: String,
-    nlp_queue: State<'_, NlpQueue>,
+    _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ExtractTriples { item_id })
+    Err(triples_retired_error(&format!("item '{item_id}'")))
 }
 
-/// Submit a full enrichment pipeline job (FTS + embed + NER + triples) for `item_id`.
+/// Submit a full enrichment pipeline job (FTS + embed + NER) for `item_id`.
 ///
-/// The worker runs all 4 sub-jobs sequentially. Errors in individual sub-jobs
+/// Semantic triples are Gemma-only and intentionally excluded from this NLP pipeline.
+/// The worker runs all 3 sub-jobs sequentially. Errors in individual sub-jobs
 /// are logged and emitted as `nlp:error` events but do NOT block remaining sub-jobs.
 #[tauri::command]
 pub async fn enrich_item(
@@ -76,8 +83,8 @@ pub async fn enrich_item(
 /// Submit an embedding computation job for a specific asset.
 ///
 /// The worker will extract the asset's text, compute a 384-dim vector,
-/// and upsert into `vec_items` using the parent item_id as the key.
-/// Only the selected asset's text is embedded.
+/// and upsert into `vec_assets` keyed by `asset_id`.
+/// This preserves the item-level vector in `vec_items`.
 #[tauri::command]
 pub async fn embed_asset(
     item_id: String,
@@ -102,15 +109,15 @@ pub async fn extract_entities_for_asset(
 
 /// Submit a semantic triples extraction job for a specific asset.
 ///
-/// The worker will extract triples from only the selected asset's text.
-/// Triples are stored with both `item_id` and `asset_id` for filtering.
+/// Semantic triples are Gemma-only. This legacy NLP endpoint is intentionally disabled
+/// to prevent rule-based output from overwriting LLM triples in the shared table.
 #[tauri::command]
 pub async fn extract_triples_for_asset(
     item_id: String,
     asset_id: String,
-    nlp_queue: State<'_, NlpQueue>,
+    _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ExtractTriplesForAsset { item_id, asset_id })
+    Err(triples_retired_error(&format!("asset '{asset_id}' (item '{item_id}')")))
 }
 
 #[cfg(test)]
@@ -118,11 +125,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn enqueue_accepts_extract_triples_job_when_queue_has_capacity() {
+    fn enqueue_accepts_index_job_when_queue_has_capacity() {
         let (queue, _receiver) = NlpQueue::new();
         let result = enqueue(
             &queue,
-            NlpJob::ExtractTriples {
+            NlpJob::IndexFts {
                 item_id: "item-1".to_string(),
             },
         );
@@ -138,7 +145,7 @@ mod tests {
         for i in 0..64 {
             let ok = enqueue(
                 &queue,
-                NlpJob::ExtractTriples {
+                NlpJob::IndexFts {
                     item_id: format!("item-{i}"),
                 },
             );
@@ -147,7 +154,7 @@ mod tests {
 
         let result = enqueue(
             &queue,
-            NlpJob::ExtractTriples {
+            NlpJob::IndexFts {
                 item_id: "overflow".to_string(),
             },
         );
@@ -175,16 +182,16 @@ mod tests {
                 item_id: "item-ner".to_string(),
             },
         );
-        let triples = enqueue(
-            &queue,
-            NlpJob::ExtractTriples {
-                item_id: "item-triples".to_string(),
-            },
-        );
-
         assert_eq!(fts.unwrap(), "queued");
         assert_eq!(ner.unwrap(), "queued");
-        assert_eq!(triples.unwrap(), "queued");
+    }
+
+    #[test]
+    fn triples_retired_error_points_callers_to_gemma() {
+        let message = triples_retired_error("item 'item-7'");
+
+        assert!(message.contains("retired"));
+        assert!(message.contains("Gemma LLM triples commands"));
     }
 
     #[test]
@@ -322,8 +329,17 @@ pub async fn similar_items(
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(5) as usize;
+    const MAX_CANDIDATES: usize = 2000;
 
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
+
+    let target_collection_id: String = conn
+        .query_row(
+            "SELECT collection_id FROM items WHERE id = ?1",
+            rusqlite::params![item_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to resolve target collection: {e}"))?;
 
     // Read the target item's embedding (stored as little-endian f32 blob)
     let target_blob: Vec<u8> = conn
@@ -352,24 +368,30 @@ pub async fn similar_items(
         .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
         .collect();
 
-    // Read all other embeddings with their titles and collection_id via JOIN
+    // Read candidate embeddings with their titles and collection_id via JOIN.
+    // Limit scan to same collection and cap candidates to keep latency bounded.
     let mut stmt = conn
         .prepare(
             "SELECT v.item_id, i.title, i.collection_id, v.embedding
              FROM vec_items v
              LEFT JOIN items i ON i.id = v.item_id
-             WHERE v.item_id != ?1",
+             WHERE v.item_id != ?1
+               AND i.collection_id = ?2
+             LIMIT ?3",
         )
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![item_id], |row| {
+        .query_map(
+            rusqlite::params![item_id, target_collection_id, MAX_CANDIDATES as i64],
+            |row| {
             let id: String = row.get(0)?;
             let title: Option<String> = row.get(1)?;
             let collection_id: Option<String> = row.get(2)?;
             let blob: Vec<u8> = row.get(3)?;
             Ok((id, title.unwrap_or_default(), collection_id.unwrap_or_default(), blob))
-        })
+        },
+        )
         .map_err(|e| format!("Failed to execute query: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read rows: {e}"))?;

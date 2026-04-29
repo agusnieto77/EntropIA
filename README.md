@@ -8,6 +8,8 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 **EntropIA** es una app de escritorio open-source orientada a investigación en humanidades y ciencias sociales. Está pensada para trabajar con **imágenes, PDFs y audio** de forma **local/offline-first**, construir corpus y sumar capas de análisis asistido sobre las fuentes.
 
+**Release actual:** [`v0.0.7`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.7)
+
 Hoy el foco del proyecto está en:
 
 - **organización de corpus** en colecciones e ítems
@@ -39,15 +41,34 @@ Hoy el foco del proyecto está en:
 - extracción de **triples S-P-O**
 - indexación **FTS**
 - **embeddings** y búsqueda de ítems similares
+- **topics** editables y sugerencias reutilizables
+- visualización geográfica de entidades resueltas en mapa
 - procesamiento en **background jobs** con eventos de progreso
 
 ### Trabajo sobre documentos
 
 - visor de documento
-- panel de entidades y triples por ítem
+- panel de entidades y triples por ítem y/o asset según el contexto activo
 - **anotaciones** sobre assets
-- **notas** por ítem
+- **notas** asociadas al documento/asset activo
 - edición de metadata
+
+## Modelos usados hoy (por proceso)
+
+| Proceso | Modelo / runtime actual |
+| --- | --- |
+| LLM local (OCR correction, summaries, triples, tareas asistidas) | **`gemma-4-E2B-it-Q4_K_M.gguf`** vía `llama.cpp` (`llama-cpp-2`), `n_ctx=4096` |
+| Transcripción de audio | **`faster-whisper/base`** vía subprocess de Python (`compute_type=int8`, idioma por defecto `es`) |
+| Embeddings | **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`** vía `fastembed` en Python |
+| NER local principal | modelo **ONNX local** en `resources/models/ner/model.onnx` |
+| NER opcional / fallback enriquecido | **`es_core_news_lg`** vía spaCy en Python |
+| OCR High (OCRH) | **PaddleOCR-VL** vía `paddleocr[doc-parser]` en Python |
+| OCR nativo (cuando `paddle-ocr` está habilitado) | **`PP-OCRv5_mobile_det.mnn`** + **`latin_PP-OCRv5_mobile_rec_infer.mnn`** |
+| Corrección de orientación OCR nativo | **`PP-LCNet_x1_0_doc_ori.mnn`** |
+| Detección de layout ONNX (hoy no activa en producción) | **`PP-DocLayout-L.onnx`** |
+| Fallback OCR clásico | **Tesseract** (`spa+eng`) |
+
+> Nota: algunos pipelines tienen degradación elegante. Si falta un runtime/modelo opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
 
 ## Stack técnico real
 
@@ -62,6 +83,7 @@ Hoy el foco del proyecto está en:
 | Transcripción | **faster-whisper** vía Python |
 | Embeddings | **fastembed** vía Python |
 | NER | ONNX local + **spaCy** opcional |
+| LLM local | **llama.cpp** + GGUF (**Gemma 4 E2B IT Q4_K_M**) |
 
 ## Instalación
 
@@ -104,6 +126,14 @@ pnpm install
 
 ```bash
 pnpm --filter @entropia/desktop tauri dev
+```
+
+### Validar sólo la app desktop
+
+```bash
+pnpm --filter @entropia/desktop test
+pnpm --filter @entropia/desktop lint
+pnpm --filter @entropia/desktop typecheck
 ```
 
 ### Build

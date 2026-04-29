@@ -140,12 +140,7 @@ export async function extractEntities(itemId: string): Promise<void> {
   await invoke('extract_entities', { itemId })
 }
 
-/** Submit a semantic triples extraction job for `itemId`. */
-export async function extractTriples(itemId: string): Promise<void> {
-  await invoke('extract_triples', { itemId })
-}
-
-/** Submit a full enrichment pipeline job (FTS + embed + NER + triples) for `itemId`. */
+/** Submit a full enrichment pipeline job (FTS + embed + NER) for `itemId`. */
 export async function enrichItem(itemId: string): Promise<void> {
   await invoke('enrich_item', { itemId })
 }

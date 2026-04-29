@@ -3,6 +3,7 @@
 use super::{update_extraction_text, OcrQueue};
 use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;
+use crate::path_utils::normalize_windows_path_string;
 use serde::Serialize;
 use tauri::State;
 
@@ -100,10 +101,7 @@ pub async fn generate_pdf_thumbnail(
 
     // Return cached thumbnail immediately if it exists
     if thumb_path.exists() {
-        // Strip Windows \\?\ prefix if present
-        let path_str = thumb_path.to_string_lossy().into_owned();
-        let clean = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
-        return Ok(clean);
+        return Ok(normalize_windows_path_string(&thumb_path));
     }
 
     // Read PDF and render thumbnail in a blocking task
@@ -120,10 +118,7 @@ pub async fn generate_pdf_thumbnail(
         file.write_all(&png_data)
             .map_err(|e| format!("Failed to write thumbnail data: {e}"))?;
 
-        // Strip Windows \\?\ prefix if present
-        let path_str = thumb_path.to_string_lossy().into_owned();
-        let clean = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
-        Ok::<String, String>(clean)
+        Ok::<String, String>(normalize_windows_path_string(&thumb_path))
     })
     .await
     .map_err(|e| format!("Thumbnail generation task panicked: {e}"))??;
@@ -252,13 +247,9 @@ pub async fn render_pdf_pages(
             file.write_all(&png_data)
                 .map_err(|e| format!("Failed to write PNG data for page {page_number}: {e}"))?;
 
-            // Strip Windows \\?\ prefix if present
-            let path_str = file_path.to_string_lossy().into_owned();
-            let clean = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
-
             rendered_pages.push(RenderedPage {
                 page_number,
-                png_path: clean,
+                png_path: normalize_windows_path_string(&file_path),
             });
 
             eprintln!("[render_pdf_pages] Rendered page {page_number}/{page_count}");

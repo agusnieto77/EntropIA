@@ -149,6 +149,7 @@ fn source_rank(source: &EntitySource) -> u8 {
         EntitySource::RuleBased => 1,
         EntitySource::Onnx => 2,
         EntitySource::Spacy => 3,
+        EntitySource::Llm => 4,
     }
 }
 

@@ -146,6 +146,12 @@ export class CollectionRepo {
       }
 
       try {
+        await this.rawClient.execute(`DELETE FROM vec_assets WHERE item_id IN (${itemIdsList})`)
+      } catch {
+        /* table may not exist — non-fatal */
+      }
+
+      try {
         await this.rawClient.execute(
           `DELETE FROM embeddings_fallback WHERE item_id IN (${itemIdsList})`
         )

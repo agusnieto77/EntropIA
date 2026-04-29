@@ -3,17 +3,21 @@ pub mod embeddings;
 pub mod fts;
 pub mod ner;
 pub mod text_provider;
-pub mod triples;
+// NOTE: `triples` module removed — semantic triples are now Gemma-only via the LLM pipeline
+// (see llm::LlmJob::ExtractTriples / ExtractTriplesAsset). The old NLP regex+spaCy route has
+// been retired to prevent low-quality triples from overwriting LLM results in the `triples` table.
 
 use serde::Serialize;
 use rusqlite::OptionalExtension;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 use tokio::sync::mpsc;
 
+use crate::llm::LlmQueue;
+use crate::path_utils::normalize_windows_path;
 use embeddings::EmbeddingEngine;
 use ner::{NerRegistry, types::{NerConfig, NerEngineKind}};
 
@@ -47,12 +51,10 @@ pub enum NlpJob {
     IndexFts { item_id: String },
     ComputeEmbedding { item_id: String },
     ExtractEntities { item_id: String },
-    ExtractTriples { item_id: String },
     EnrichItem { item_id: String },
     // Asset-level variants: process only the selected asset/page
     ComputeAssetEmbedding { item_id: String, asset_id: String },
     ExtractEntitiesForAsset { item_id: String, asset_id: String },
-    ExtractTriplesForAsset { item_id: String, asset_id: String },
 }
 
 pub fn lookup_item_id_for_asset(
@@ -101,26 +103,65 @@ pub struct NlpQueue {
     /// Prevents duplicate NER work when OCR and transcription both trigger
     /// entity extraction for the same item.
     ner_pending: Arc<Mutex<HashSet<String>>>,
+    /// Tracks queued/in-progress FTS jobs per item.
+    /// `true` means another enqueue arrived while the current one was busy,
+    /// so one extra rerun should happen after the current pass completes.
+    fts_pending: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl NlpQueue {
     /// Create a new queue and return `(NlpQueue, Receiver)`.
     pub fn new() -> (Self, mpsc::Receiver<NlpJob>) {
         let (sender, receiver) = mpsc::channel::<NlpJob>(64);
-        (Self { sender, ner_pending: Arc::new(Mutex::new(HashSet::new())) }, receiver)
+        (
+            Self {
+                sender,
+                ner_pending: Arc::new(Mutex::new(HashSet::new())),
+                fts_pending: Arc::new(Mutex::new(HashMap::new())),
+            },
+            receiver,
+        )
     }
 
     /// Submit a job to the queue. Returns immediately.
     pub fn submit(&self, job: NlpJob) -> Result<(), String> {
+        let tracked_fts_item = match &job {
+            NlpJob::IndexFts { item_id } => {
+                if let Ok(mut pending) = self.fts_pending.lock() {
+                    if let Some(needs_rerun) = pending.get_mut(item_id) {
+                        *needs_rerun = true;
+                        eprintln!(
+                            "[nlp/fts] Coalescing duplicate IndexFts enqueue for item_id={item_id}"
+                        );
+                        return Ok(());
+                    }
+                    pending.insert(item_id.clone(), false);
+                }
+                Some(item_id.clone())
+            }
+            _ => None,
+        };
+
         self.sender
             .try_send(job)
-            .map_err(|e| format!("Failed to enqueue NLP job: {e}"))
+            .map_err(|e| {
+                if let Some(item_id) = tracked_fts_item {
+                    if let Ok(mut pending) = self.fts_pending.lock() {
+                        pending.remove(&item_id);
+                    }
+                }
+                format!("Failed to enqueue NLP job: {e}")
+            })
     }
 
     /// Get a clone of the NER dedup set handle.
     /// Used by the worker to remove item_ids after processing completes.
     pub fn ner_pending_handle(&self) -> Arc<Mutex<HashSet<String>>> {
         Arc::clone(&self.ner_pending)
+    }
+
+    pub fn fts_pending_handle(&self) -> Arc<Mutex<HashMap<String, bool>>> {
+        Arc::clone(&self.fts_pending)
     }
 
     /// Spawn the background worker loop on the Tokio runtime.
@@ -132,6 +173,8 @@ impl NlpQueue {
         mut receiver: mpsc::Receiver<NlpJob>,
         app_handle: AppHandle,
         ner_pending: Arc<Mutex<HashSet<String>>>,
+        fts_pending: Arc<Mutex<HashMap<String, bool>>>,
+        _llm_queue: LlmQueue,
     ) {
         tauri::async_runtime::spawn(async move {
             // Open a dedicated SQLite connection for the NLP worker.
@@ -163,14 +206,20 @@ impl NlpQueue {
                 "CREATE TABLE IF NOT EXISTS vec_items(
                     item_id TEXT PRIMARY KEY,
                     embedding BLOB NOT NULL
-                )",
+                );
+                CREATE TABLE IF NOT EXISTS vec_assets(
+                    asset_id TEXT PRIMARY KEY,
+                    item_id TEXT NOT NULL,
+                    embedding BLOB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_vec_assets_item_id ON vec_assets(item_id)",
             ) {
-                eprintln!("[nlp] Failed to create vec_items table: {e} — embedding storage will be unavailable");
+                eprintln!("[nlp] Failed to create embedding tables: {e} — embedding storage will be unavailable");
             }
 
             // Resolve embedding script path: try Resource directory first (production),
             // then source (dev) — mirrors transcription script resolution.
-            let embed_script_path = app_handle
+            let embed_script_path = normalize_windows_path(app_handle
                 .path()
                 .resolve("scripts/embed.py", BaseDirectory::Resource)
                 .unwrap_or_else(|_| {
@@ -181,12 +230,7 @@ impl NlpQueue {
                     } else {
                         std::path::PathBuf::from("scripts/embed.py")
                     }
-                });
-
-            eprintln!(
-                "[nlp/embeddings] Script path: {}",
-                embed_script_path.display()
-            );
+                }));
 
             // Find Python interpreter with fastembed — skip engine creation if unavailable.
             // No fallback to bare "python" — if which_python() returned None,
@@ -207,10 +251,7 @@ impl NlpQueue {
                         model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
                         cache_dir: Some(embed_cache_dir),
                     }) {
-                        Ok(engine) => {
-                            eprintln!("[nlp/embeddings] Engine ready.");
-                            Some(engine)
-                        }
+                        Ok(engine) => Some(Arc::new(engine)),
                         Err(e) => {
                             eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
                             None
@@ -248,11 +289,8 @@ impl NlpQueue {
             while let Some(job) = receiver.recv().await {
                 match job {
                     NlpJob::IndexFts { item_id } => {
-                        eprintln!("[nlp/fts] Reindex start: item_id={}", item_id);
                         emit_progress(&app_handle, &item_id, "fts", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            fts::index_item_from_db(&conn, &item_id)
-                        });
+                        let result = run_coalesced_fts_reindex(&conn, &item_id, &fts_pending);
                         match result {
                             Ok(_) => {
                                 eprintln!("[nlp/fts] Reindex complete: item_id={}", item_id);
@@ -264,7 +302,7 @@ impl NlpQueue {
                     }
                     NlpJob::ComputeEmbedding { item_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let engine_ref = embed_engine.as_ref();
+                        let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store(engine_ref, &conn, &item_id)
                         });
@@ -289,18 +327,19 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_and_store(&conn, &item_id, &ner_registry)
-                            }))
-                            .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-                        });
+                        let result = run_ner_for_item(&conn, &item_id, &ner_registry);
                         // Remove from dedup set so future enqueues for this item are allowed
                         if let Ok(mut pending) = ner_pending.lock() {
                             pending.remove(&item_id);
                         }
                         match result {
-                            Ok(_) => {
+                            Ok(final_entities) => {
+                                if let Err(e) = tokio::task::block_in_place(|| {
+                                    ner::persist_entities_for_item(&conn, &item_id, &final_entities)
+                                }) {
+                                    emit_error(&app_handle, &item_id, "ner", &e);
+                                    continue;
+                                }
                                 emit_progress(&app_handle, &item_id, "ner", 100);
                                 emit_complete(&app_handle, &item_id, "ner");
                                 // Auto-trigger geocoding for place entities
@@ -314,48 +353,56 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
                     }
-                    NlpJob::ExtractTriples { item_id } => {
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            triples::extract_and_store(&conn, &item_id)
-                        });
-                        match result {
-                            Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "triples", 100);
-                                emit_complete(&app_handle, &item_id, "triples");
-                            }
-                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
-                        }
-                    }
                     NlpJob::EnrichItem { item_id } => {
-                        // Run all 4 sub-jobs sequentially; errors don't short-circuit.
-                        // Embedding uses engine (may be None → graceful degradation).
-                        // FTS, NER, Triples are pure Rust and always available.
-                        let engine_ref = embed_engine.as_ref();
-
+                        // Run FTS + embedding in parallel (independent tasks), then continue
+                        // with NER. Semantic triples are Gemma-only via the LLM pipeline.
                         emit_progress(&app_handle, &item_id, "fts", 10);
-                        let r = tokio::task::block_in_place(|| fts::index_item_from_db(&conn, &item_id));
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "fts", 100); emit_complete(&app_handle, &item_id, "fts"); } Err(e) => emit_error(&app_handle, &item_id, "fts", &e), }
-
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let r = tokio::task::block_in_place(|| embeddings::compute_and_store(engine_ref, &conn, &item_id));
-                        match r {
-                            Ok(_) => {
-                                match embedding_exists(&conn, &item_id) {
-                                    Ok(true) => {
-                                        emit_progress(&app_handle, &item_id, "embed", 100);
-                                        emit_complete(&app_handle, &item_id, "embed");
-                                    }
-                                    Ok(false) => emit_error(
-                                        &app_handle,
-                                        &item_id,
-                                        "embed",
-                                        "Embedding job completed but no vector was persisted",
-                                    ),
-                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
-                                }
+
+                        let db_for_fts = db_path.clone();
+                        let item_for_fts = item_id.clone();
+                        let fts_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let c = rusqlite::Connection::open(&db_for_fts)
+                                .map_err(|e| format!("Failed to open FTS connection: {e}"))?;
+                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                            fts::index_item_from_db(&c, &item_for_fts)
+                        });
+
+                        let db_for_embed = db_path.clone();
+                        let item_for_embed = item_id.clone();
+                        let embed_engine_for_task = embed_engine.clone();
+                        let embed_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let c = rusqlite::Connection::open(&db_for_embed)
+                                .map_err(|e| format!("Failed to open embed connection: {e}"))?;
+                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                            embeddings::compute_and_store(embed_engine_for_task.as_deref(), &c, &item_for_embed)
+                        });
+
+                        match fts_handle.await {
+                            Ok(Ok(())) => {
+                                emit_progress(&app_handle, &item_id, "fts", 100);
+                                emit_complete(&app_handle, &item_id, "fts");
                             }
-                            Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            Ok(Err(e)) => emit_error(&app_handle, &item_id, "fts", &e),
+                            Err(e) => emit_error(&app_handle, &item_id, "fts", &format!("FTS task panicked: {e}")),
+                        }
+
+                        match embed_handle.await {
+                            Ok(Ok(())) => match embedding_exists(&conn, &item_id) {
+                                Ok(true) => {
+                                    emit_progress(&app_handle, &item_id, "embed", 100);
+                                    emit_complete(&app_handle, &item_id, "embed");
+                                }
+                                Ok(false) => emit_error(
+                                    &app_handle,
+                                    &item_id,
+                                    "embed",
+                                    "Embedding job completed but no vector was persisted",
+                                ),
+                                Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            },
+                            Ok(Err(e)) => emit_error(&app_handle, &item_id, "embed", &e),
+                            Err(e) => emit_error(&app_handle, &item_id, "embed", &format!("Embed task panicked: {e}")),
                         }
 
                         // NER sub-job: check dedup set — if ExtractEntities is already
@@ -369,18 +416,19 @@ impl NlpQueue {
                                 pending.insert(item_id.clone());
                             }
                             emit_progress(&app_handle, &item_id, "ner", 10);
-                            let r = tokio::task::block_in_place(|| {
-                                catch_unwind(AssertUnwindSafe(|| {
-                                    ner::extract_and_store(&conn, &item_id, &ner_registry)
-                                }))
-                                .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-                            });
+                            let r = run_ner_for_item(&conn, &item_id, &ner_registry);
                             // Remove from dedup set after NER completes
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.remove(&item_id);
                             }
                             match r {
-                                Ok(_) => {
+                                Ok(final_entities) => {
+                                    if let Err(e) = tokio::task::block_in_place(|| {
+                                        ner::persist_entities_for_item(&conn, &item_id, &final_entities)
+                                    }) {
+                                        emit_error(&app_handle, &item_id, "ner", &e);
+                                        continue;
+                                    }
                                     emit_progress(&app_handle, &item_id, "ner", 100);
                                     emit_complete(&app_handle, &item_id, "ner");
                                     if let Err(e) = crate::geo::enqueue_geocoding_for_item(
@@ -393,10 +441,6 @@ impl NlpQueue {
                                 Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                             }
                         }
-
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let r = tokio::task::block_in_place(|| triples::extract_and_store(&conn, &item_id));
-                        match r { Ok(_) => { emit_progress(&app_handle, &item_id, "triples", 100); emit_complete(&app_handle, &item_id, "triples"); } Err(e) => emit_error(&app_handle, &item_id, "triples", &e), }
                     }
 
                     // ── Asset-level processing ─────────────────────────────────────
@@ -405,23 +449,15 @@ impl NlpQueue {
                     // (for ownership/cascade) and asset_id (for filtering).
 
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
-                        eprintln!(
-                            "[nlp/embeddings] Asset embedding start: item_id={}, asset_id={}",
-                            item_id, asset_id
-                        );
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        let engine_ref = embed_engine.as_ref();
+                        let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store_for_asset(engine_ref, &conn, &item_id, &asset_id)
                         });
                         match result {
                             Ok(_) => {
-                                match embedding_exists(&conn, &item_id) {
+                                match asset_embedding_exists(&conn, &asset_id) {
                                     Ok(true) => {
-                                        eprintln!(
-                                            "[nlp/embeddings] Asset embedding complete: item_id={}, asset_id={}",
-                                            item_id, asset_id
-                                        );
                                         emit_progress(&app_handle, &item_id, "embed", 100);
                                         emit_complete(&app_handle, &item_id, "embed");
                                     }
@@ -442,7 +478,7 @@ impl NlpQueue {
                         emit_progress(&app_handle, &item_id, "ner", 10);
                         let result = tokio::task::block_in_place(|| {
                             catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_and_store_for_asset(&conn, &item_id, &asset_id, &ner_registry)
+                                ner::extract_candidates_for_asset(&conn, &item_id, &asset_id, &ner_registry)
                             }))
                             .map_err(|panic| format_panic_payload("NER extraction for asset panicked", panic))?
                         });
@@ -451,7 +487,21 @@ impl NlpQueue {
                             pending.remove(&item_id);
                         }
                         match result {
-                            Ok(_) => {
+                            Ok(batch) => {
+                                // NER now runs only hybrid extraction (RegEx + BERT/ONNX + spaCy).
+                                // LLM consolidation with Gemma is intentionally disabled for speed.
+                                let final_entities = if batch.text.trim().is_empty() {
+                                    Vec::new()
+                                } else {
+                                    batch.entities
+                                };
+
+                                if let Err(e) = tokio::task::block_in_place(|| {
+                                    ner::persist_entities_for_asset(&conn, &item_id, &asset_id, &final_entities)
+                                }) {
+                                    emit_error(&app_handle, &item_id, "ner", &e);
+                                    continue;
+                                }
                                 emit_progress(&app_handle, &item_id, "ner", 100);
                                 emit_complete(&app_handle, &item_id, "ner");
                                 if let Err(e) = crate::geo::enqueue_geocoding_for_item(
@@ -465,19 +515,6 @@ impl NlpQueue {
                         }
                     }
 
-                    NlpJob::ExtractTriplesForAsset { item_id, asset_id } => {
-                        emit_progress(&app_handle, &item_id, "triples", 10);
-                        let result = tokio::task::block_in_place(|| {
-                            triples::extract_and_store_for_asset(&conn, &item_id, &asset_id)
-                        });
-                        match result {
-                            Ok(_) => {
-                                emit_progress(&app_handle, &item_id, "triples", 100);
-                                emit_complete(&app_handle, &item_id, "triples");
-                            }
-                            Err(e) => emit_error(&app_handle, &item_id, "triples", &e),
-                        }
-                    }
                 }
             }
         });
@@ -518,6 +555,25 @@ fn emit_error(app_handle: &AppHandle, item_id: &str, job: &str, error: &str) {
     );
 }
 
+fn run_ner_for_item(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    ner_registry: &NerRegistry,
+) -> Result<Vec<ner::types::Entity>, String> {
+    let batch = tokio::task::block_in_place(|| {
+        catch_unwind(AssertUnwindSafe(|| {
+            ner::extract_candidates_for_item(conn, item_id, ner_registry)
+        }))
+        .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
+    })?;
+
+    if batch.text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(batch.entities)
+}
+
 fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, String> {
     let found: Option<i64> = conn
         .query_row(
@@ -531,12 +587,65 @@ fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, 
     Ok(found.is_some())
 }
 
+fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result<bool, String> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM vec_assets WHERE asset_id = ?1 LIMIT 1",
+            rusqlite::params![asset_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to verify persisted asset embedding: {e}"))?;
+
+    Ok(found.is_some())
+}
+
+fn run_coalesced_fts_reindex(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    fts_pending: &Arc<Mutex<HashMap<String, bool>>>,
+) -> Result<(), String> {
+    loop {
+        eprintln!("[nlp/fts] Reindex start: item_id={item_id}");
+        if let Err(error) = tokio::task::block_in_place(|| fts::index_item_from_db(conn, item_id)) {
+            if let Ok(mut pending) = fts_pending.lock() {
+                pending.remove(item_id);
+            }
+            return Err(error);
+        }
+
+        let should_rerun = match fts_pending.lock() {
+            Ok(mut pending) => match pending.get_mut(item_id) {
+                Some(needs_rerun) if *needs_rerun => {
+                    *needs_rerun = false;
+                    true
+                }
+                Some(_) => {
+                    pending.remove(item_id);
+                    false
+                }
+                None => false,
+            },
+            Err(_) => false,
+        };
+
+        if should_rerun {
+            eprintln!(
+                "[nlp/fts] Reindex rerun requested while busy: item_id={item_id} — processing latest state"
+            );
+            continue;
+        }
+
+        return Ok(());
+    }
+}
+
 fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("models/ner/{file_name}");
-    let resolved = app_handle
+    let resolved = normalize_windows_path(app_handle
         .path()
         .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
 
     if resolved.exists() {
         return resolved;
@@ -559,10 +668,10 @@ fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
 
 fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("scripts/{file_name}");
-    let resolved = app_handle
+    let resolved = normalize_windows_path(app_handle
         .path()
         .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel));
+        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
 
     if resolved.exists() {
         return resolved;
@@ -658,6 +767,36 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
 
+    #[test]
+    fn submit_coalesces_duplicate_fts_jobs_while_pending() {
+        let (queue, mut receiver) = NlpQueue::new();
+
+        queue
+            .submit(NlpJob::IndexFts {
+                item_id: "item-dup".to_string(),
+            })
+            .expect("first enqueue should succeed");
+        queue
+            .submit(NlpJob::IndexFts {
+                item_id: "item-dup".to_string(),
+            })
+            .expect("duplicate enqueue should coalesce");
+
+        let first = receiver.try_recv().expect("one FTS job should be queued");
+        assert!(matches!(first, NlpJob::IndexFts { ref item_id } if item_id == "item-dup"));
+        assert!(receiver.try_recv().is_err(), "duplicate should not queue a second FTS job");
+        assert_eq!(
+            queue
+                .fts_pending
+                .lock()
+                .expect("fts pending lock")
+                .get("item-dup")
+                .copied(),
+            Some(true),
+            "duplicate enqueue should mark the item for one rerun"
+        );
+    }
+
     fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {
             NlpJob::IndexFts { item_id } => fts::index_item_from_db(conn, item_id),
@@ -666,13 +805,11 @@ mod tests {
                 embeddings::compute_and_store(None, conn, item_id)
             }
             NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id, &rule_based_registry()),
-            NlpJob::ExtractTriples { item_id } => triples::extract_and_store(conn, item_id),
             NlpJob::EnrichItem { item_id } => {
-                // Run all 4 sub-jobs sequentially; errors don't short-circuit
+                // Run all 3 NLP sub-jobs sequentially; errors don't short-circuit
                 let _ = fts::index_item_from_db(conn, item_id);
                 let _ = embeddings::compute_and_store(None, conn, item_id);
                 let _ = ner::extract_and_store(conn, item_id, &rule_based_registry());
-                let _ = triples::extract_and_store(conn, item_id);
                 Ok(())
             }
         }
@@ -818,13 +955,6 @@ mod tests {
                 item_id: "item-1".to_string(),
             },
         );
-        let triples = run_job_without_events(
-            &conn,
-            &NlpJob::ExtractTriples {
-                item_id: "item-1".to_string(),
-            },
-        );
-
         assert!(
             embed.is_err(),
             "embedding job should report degradation as an error result"
@@ -839,10 +969,6 @@ mod tests {
         );
         assert!(fts.is_ok(), "FTS job should still run after embedding degradation");
         assert!(ner.is_ok(), "NER job should still run after embedding degradation");
-        assert!(
-            triples.is_ok(),
-            "Triples job should still run after embedding degradation"
-        );
 
         let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))

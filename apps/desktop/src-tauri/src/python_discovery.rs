@@ -62,7 +62,6 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
             } else {
                 PathBuf::from(&conda_prefix).join("bin").join("python")
             };
-            eprintln!("[python] CONDA_PREFIX detected: {}", conda_python.display());
             candidates.push(conda_python);
         }
 
@@ -142,9 +141,8 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
             }
         }
 
-        // Summary log — one line instead of per-discovery noise
-        eprintln!("[python] Discovered {} Python candidate(s)", candidates.len());
         if is_verbose_python_logging_enabled() {
+            eprintln!("[python] Discovered {} Python candidate(s)", candidates.len());
             for (i, c) in candidates.iter().enumerate() {
                 eprintln!("[python]   [{}] {}", i + 1, c.display());
             }
@@ -216,14 +214,47 @@ pub fn which_python_for_module(
         }
     }
 
-    let candidates = discover_python_candidates();
+    let known_good = collect_known_good_pythons();
+    if !known_good.is_empty() {
+        eprintln!(
+            "[{tag}] Fast-path: trying {} previously-validated Python(s) before full scan for {module_name}",
+            known_good.len()
+        );
+        for python in &known_good {
+            let probe_start = std::time::Instant::now();
+            if probe_python_module(python, probe_code) {
+                eprintln!(
+                    "[{tag}] ✅ Found Python with {module_name} via fast-path ({}ms): {}",
+                    probe_start.elapsed().as_millis(),
+                    python.display()
+                );
+                if let Ok(mut cache) = get_probe_cache().lock() {
+                    cache.insert(tag.to_string(), Some(python.clone()));
+                }
+                return Some(python.clone());
+            }
+        }
+        eprintln!("[{tag}] Fast-path: no previously-validated Python had {module_name}, falling back to full scan");
+    }
 
-    eprintln!("[{tag}] Probing {n} candidate(s) for {module_name}", n = candidates.len());
+    let known_good_keys: std::collections::HashSet<String> = known_good
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+
+    let candidates: Vec<PathBuf> = discover_python_candidates()
+        .iter()
+        .filter(|candidate| !known_good_keys.contains(&candidate.to_string_lossy().into_owned()))
+        .cloned()
+        .collect();
+
+    let candidate_count = candidates.len();
+    eprintln!("[{tag}] Probing {n} candidate(s) for {module_name}", n = candidate_count);
     let mut failed_probes = 0usize;
 
     for candidate in candidates {
         let probe_start = std::time::Instant::now();
-        let import_ok = probe_python_module(candidate, probe_code);
+        let import_ok = probe_python_module(&candidate, probe_code);
 
         if import_ok {
             eprintln!(
@@ -251,7 +282,7 @@ pub fn which_python_for_module(
 
     eprintln!(
         "[{tag}] WARNING: No Python with {module_name} found among {} candidate(s)",
-        candidates.len()
+        candidate_count
     );
     // Cache the miss
     if let Ok(mut cache) = get_probe_cache().lock() {
@@ -260,11 +291,55 @@ pub fn which_python_for_module(
     None
 }
 
+/// Collect Python interpreters that were previously validated for ANY module.
+///
+/// Returns deduplicated paths from the probe cache, ordered by the normal
+/// discovery preference when possible. Used as a fast-path so that modules
+/// probed later can try known-good Pythons before re-scanning everything.
+fn collect_known_good_pythons() -> Vec<PathBuf> {
+    let cache = match get_probe_cache().lock() {
+        Ok(cache) => cache,
+        Err(_) => return Vec::new(),
+    };
+    let mut cached = std::collections::HashSet::new();
+    for value in cache.values() {
+        if let Some(path) = value {
+            cached.insert(path.to_string_lossy().into_owned());
+        }
+    }
+
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for candidate in discover_python_candidates() {
+        let key = candidate.to_string_lossy().into_owned();
+        if cached.contains(&key) && seen.insert(key) {
+            paths.push(candidate.clone());
+        }
+    }
+
+    for value in cache.values() {
+        if let Some(path) = value {
+            let key = path.to_string_lossy().into_owned();
+            if seen.insert(key) {
+                paths.push(path.clone());
+            }
+        }
+    }
+
+    paths
+}
+
 /// Find a Python interpreter that can import a specific module, with candidate scoring.
 ///
 /// Like [`which_python_for_module`], but sorts candidates by a scoring function
 /// before probing. Higher scores are probed first. This is useful for subsystems
 /// that prefer dedicated environments (e.g., PaddleVL prefers `ppocrvl-py312` envs).
+///
+/// **Fast-path**: before scanning all candidates, this function tries Python
+/// interpreters that were already validated for OTHER modules (from the probe cache).
+/// On typical setups where the same Conda Python has ALL required packages, this
+/// avoids 10+ seconds of redundant probing.
 ///
 /// Arguments:
 /// - `tag`: Subsystem tag for logging
@@ -289,7 +364,43 @@ pub fn which_python_for_module_scored(
         }
     }
 
-    let mut candidates = discover_python_candidates().clone();
+    // Fast-path: try Python interpreters that were already validated for other
+    // modules before scanning all candidates. On a typical setup where one
+    // Conda Python has all packages, this avoids ~10s of redundant probing.
+    let known_good = collect_known_good_pythons();
+    if !known_good.is_empty() {
+        eprintln!(
+            "[{tag}] Fast-path: trying {} previously-validated Python(s) before full scan for {module_name}",
+            known_good.len()
+        );
+        for python in &known_good {
+            let probe_start = std::time::Instant::now();
+            if probe_python_module(python, probe_code) {
+                eprintln!(
+                    "[{tag}] ✅ Found Python with {module_name} via fast-path ({}ms): {}",
+                    probe_start.elapsed().as_millis(),
+                    python.display()
+                );
+                // Cache the hit
+                if let Ok(mut cache) = get_probe_cache().lock() {
+                    cache.insert(tag.to_string(), Some(python.clone()));
+                }
+                return Some(python.clone());
+            }
+        }
+        eprintln!("[{tag}] Fast-path: no previously-validated Python had {module_name}, falling back to full scan");
+    }
+
+    let known_good_keys: std::collections::HashSet<String> = known_good
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+
+    let mut candidates: Vec<PathBuf> = discover_python_candidates()
+        .iter()
+        .filter(|candidate| !known_good_keys.contains(&candidate.to_string_lossy().into_owned()))
+        .cloned()
+        .collect();
 
     // Sort candidates by score (descending) — dedicated envs first
     candidates.sort_by_key(|c| -scorer(c));

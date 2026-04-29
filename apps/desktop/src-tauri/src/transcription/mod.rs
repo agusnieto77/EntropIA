@@ -6,6 +6,7 @@ pub mod commands;
 mod engine;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+use crate::path_utils::normalize_windows_path;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
@@ -75,7 +76,7 @@ impl TranscriptionQueue {
         app_handle: AppHandle,
     ) {
         // Resolve script path: try Resource directory first (production), then source (dev)
-        let script_path = app_handle
+        let script_path = normalize_windows_path(app_handle
             .path()
             .resolve("scripts/transcribe.py", BaseDirectory::Resource)
             .unwrap_or_else(|_| {
@@ -88,12 +89,7 @@ impl TranscriptionQueue {
                     // Last resort
                     std::path::PathBuf::from("scripts/transcribe.py")
                 }
-            });
-
-        eprintln!(
-            "[transcription] Script path: {}",
-            script_path.display()
-        );
+            }));
 
         // Find Python interpreter
         let python_path = match which_python() {
@@ -129,11 +125,6 @@ impl TranscriptionQueue {
         std::fs::create_dir_all(&model_cache_dir).unwrap_or_else(|e| {
             eprintln!("[transcription] Warning: could not create model cache dir {}: {e}", model_cache_dir.display());
         });
-        eprintln!(
-            "[transcription] Model cache dir: {}",
-            model_cache_dir.display()
-        );
-
         std::thread::Builder::new()
             .name("transcription-worker".to_string())
             .stack_size(8 * 1024 * 1024) // 8 MB — subprocess only, no heavy stack needed
@@ -163,8 +154,6 @@ impl TranscriptionQueue {
                         return;
                     }
                 };
-
-                eprintln!("[transcription] Worker ready, processing jobs.");
 
                 // ── Open dedicated DB connection ────────────────────────────
                 let conn = match rusqlite::Connection::open(&db_path) {
@@ -247,13 +236,6 @@ fn save_transcription(
     let segments_json = serde_json::to_string(&result.segments)
         .map_err(|e| format!("Failed to serialize segments: {e}"))?;
 
-    // Delete existing transcription for this asset (upsert semantics)
-    conn.execute(
-        "DELETE FROM transcriptions WHERE asset_id = ?1",
-        [asset_id],
-    )
-    .map_err(|e| format!("Failed to delete existing transcription: {e}"))?;
-
     let id = uuid::Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -261,7 +243,16 @@ fn save_transcription(
         .unwrap_or(0);
 
     conn.execute(
-        "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           text_content = excluded.text_content,
+           language = excluded.language,
+           duration_ms = excluded.duration_ms,
+           model = excluded.model,
+           segments = excluded.segments,
+           confidence = excluded.confidence,
+           created_at = excluded.created_at",
         rusqlite::params![
             id,
             asset_id,
@@ -274,7 +265,7 @@ fn save_transcription(
             now,
         ],
     )
-    .map_err(|e| format!("Failed to insert transcription: {e}"))?;
+    .map_err(|e| format!("Failed to upsert transcription: {e}"))?;
 
     lookup_item_id_for_asset(conn, asset_id)
 }
@@ -315,11 +306,28 @@ fn process_job(
                 job.asset_id, item_id
             );
         }
-        if let Err(e) = nlp_queue.submit(NlpJob::ExtractTriplesForAsset {
+        // FTS indexing: ensures the new transcript is searchable immediately.
+        if let Err(e) = nlp_queue.submit(NlpJob::IndexFts {
             item_id: item_id.clone(),
-            asset_id: job.asset_id.clone(),
         }) {
-            eprintln!("[nlp] Failed to auto-enqueue ExtractTriplesForAsset after transcription save: {e}");
+            eprintln!("[nlp] Failed to auto-enqueue IndexFts after transcription save: {e}");
+        } else {
+            eprintln!(
+                "[nlp] Auto-enqueued IndexFts after transcription save: item_id={}",
+                item_id
+            );
+        }
+        // Item-level embedding: powers Similar Items (vec_items).
+        // Without this, similar_items returns empty results for transcribed items.
+        if let Err(e) = nlp_queue.submit(NlpJob::ComputeEmbedding {
+            item_id: item_id.clone(),
+        }) {
+            eprintln!("[nlp] Failed to auto-enqueue ComputeEmbedding after transcription save: {e}");
+        } else {
+            eprintln!(
+                "[nlp] Auto-enqueued ComputeEmbedding after transcription save: item_id={}",
+                item_id
+            );
         }
     }
 

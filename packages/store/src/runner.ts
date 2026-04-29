@@ -256,6 +256,36 @@ CREATE TABLE IF NOT EXISTS item_topics (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_item_topics_item_topic ON item_topics(item_id, topic_id);
 CREATE INDEX IF NOT EXISTS idx_item_topics_topic_id ON item_topics(topic_id);
   `.trim(),
+
+  '0016_asset_unique_ocr_transcription': `
+-- Enforce one extraction/transcription row per asset to enable true UPSERT.
+-- Keep the most recent row (largest rowid) if any legacy duplicates exist.
+DELETE FROM extractions
+WHERE rowid NOT IN (
+  SELECT MAX(rowid) FROM extractions GROUP BY asset_id
+);
+
+DELETE FROM transcriptions
+WHERE rowid NOT IN (
+  SELECT MAX(rowid) FROM transcriptions GROUP BY asset_id
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+ON extractions(asset_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_asset_id_unique
+ON transcriptions(asset_id);
+  `.trim(),
+
+  '0017_vec_assets': `
+CREATE TABLE IF NOT EXISTS vec_assets(
+  asset_id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  embedding BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vec_assets_item_id ON vec_assets(item_id);
+  `.trim(),
 }
 
 /**
