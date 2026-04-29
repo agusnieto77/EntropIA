@@ -187,7 +187,7 @@
           {showApiKey ? '🙈' : '👁'}
         </button>
         <Button
-          variant="outline"
+          variant="secondary"
           size="sm"
           onclick={handleTestConnection}
           disabled={testing || !apiKey.trim()}
