@@ -320,11 +320,13 @@ fn extract_sentinel_json(output: &str) -> &str {
 ///
 /// Uses the shared Python candidate cache to avoid redundant filesystem scans
 /// and log noise. Probes each candidate for the `fastembed` module.
-pub fn which_python() -> Option<PathBuf> {
+pub fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<PathBuf> {
     crate::python_discovery::which_python_for_module(
         "nlp/embeddings",
         "fastembed",
+        "fastembed",
         "import fastembed; print('ok')",
+        settings_db_path,
     )
 }
 

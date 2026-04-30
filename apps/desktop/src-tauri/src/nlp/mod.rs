@@ -232,10 +232,6 @@ impl NlpQueue {
                     }
                 }));
 
-            // Find Python interpreter with fastembed — skip engine creation if unavailable.
-            // No fallback to bare "python" — if which_python() returned None,
-            // it already probed ALL candidates including system python.
-
             // Resolve model cache directory for HuggingFace (avoids broken symlinks on Windows)
             let embed_cache_dir = app_handle
                 .path()
@@ -243,48 +239,14 @@ impl NlpQueue {
                 .expect("Failed to get app data dir for NLP cache")
                 .join("hf_cache");
 
-            let embed_engine = match embeddings::which_python() {
-                Some(python_path) => {
-                    match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-                        python_path,
-                        script_path: embed_script_path,
-                        model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                        cache_dir: Some(embed_cache_dir),
-                    }) {
-                        Ok(engine) => Some(Arc::new(engine)),
-                        Err(e) => {
-                            eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
-                            None
-                        }
-                    }
-                }
-                None => {
-                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
-                    None
-                }
-            };
-
             let ner_model_path = resolve_ner_resource(&app_handle, "model.onnx");
             let ner_tokenizer_path = resolve_ner_resource(&app_handle, "tokenizer.json");
             let ner_script_path = resolve_ner_script(&app_handle, "spacy_ner.py");
             let ner_engine = resolve_ner_engine_kind();
-            // No fallback to bare "python" — if which_python() returned None,
-            // it already probed ALL candidates including system python.
-            let ner_python_path = ner::spacy::which_python();
 
-            let ner_config = NerConfig {
-                engine: ner_engine,
-                model_path: Some(ner_model_path),
-                tokenizer_path: Some(ner_tokenizer_path),
-                python_path: ner_python_path,
-                script_path: Some(ner_script_path),
-                model_name: Some("es_core_news_lg".to_string()),
-                max_length: 256,
-                stride: 32,
-                score_threshold: 0.65,
-            };
-            ner::log_startup_status(&ner_config);
-            let ner_registry = NerRegistry::init(ner_config);
+            let mut embed_engine: Option<Arc<EmbeddingEngine>> = None;
+            let mut embed_init_attempted = false;
+            let mut ner_registry: Option<NerRegistry> = None;
 
             while let Some(job) = receiver.recv().await {
                 match job {
@@ -302,6 +264,30 @@ impl NlpQueue {
                     }
                     NlpJob::ComputeEmbedding { item_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
+                        if !embed_init_attempted {
+                            embed_init_attempted = true;
+                            embed_engine = match embeddings::which_python(Some(&db_path)) {
+                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+                                    python_path,
+                                    script_path: embed_script_path.clone(),
+                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                                    cache_dir: Some(embed_cache_dir.clone()),
+                                }) {
+                                    Ok(engine) => {
+                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
+                                        Some(Arc::new(engine))
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                                        None
+                                    }
+                                },
+                                None => {
+                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+                                    None
+                                }
+                            };
+                        }
                         let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store(engine_ref, &conn, &item_id)
@@ -327,7 +313,24 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let result = run_ner_for_item(&conn, &item_id, &ner_registry);
+                        if ner_registry.is_none() {
+                            let ner_config = NerConfig {
+                                engine: ner_engine.clone(),
+                                model_path: Some(ner_model_path.clone()),
+                                tokenizer_path: Some(ner_tokenizer_path.clone()),
+                                python_path: ner::spacy::which_python(Some(&db_path)),
+                                script_path: Some(ner_script_path.clone()),
+                                model_name: Some("es_core_news_lg".to_string()),
+                                max_length: 256,
+                                stride: 32,
+                                score_threshold: 0.65,
+                            };
+                            ner::log_startup_status(&ner_config);
+                            eprintln!("[nlp/ner] Registry ready (lazy init)");
+                            ner_registry = Some(NerRegistry::init(ner_config));
+                        }
+                        let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
+                        let result = run_ner_for_item(&conn, &item_id, registry);
                         // Remove from dedup set so future enqueues for this item are allowed
                         if let Ok(mut pending) = ner_pending.lock() {
                             pending.remove(&item_id);
@@ -358,6 +361,31 @@ impl NlpQueue {
                         // with NER. Semantic triples are Gemma-only via the LLM pipeline.
                         emit_progress(&app_handle, &item_id, "fts", 10);
                         emit_progress(&app_handle, &item_id, "embed", 10);
+
+                        if !embed_init_attempted {
+                            embed_init_attempted = true;
+                            embed_engine = match embeddings::which_python(Some(&db_path)) {
+                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+                                    python_path,
+                                    script_path: embed_script_path.clone(),
+                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                                    cache_dir: Some(embed_cache_dir.clone()),
+                                }) {
+                                    Ok(engine) => {
+                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
+                                        Some(Arc::new(engine))
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                                        None
+                                    }
+                                },
+                                None => {
+                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+                                    None
+                                }
+                            };
+                        }
 
                         let db_for_fts = db_path.clone();
                         let item_for_fts = item_id.clone();
@@ -411,12 +439,29 @@ impl NlpQueue {
                         if ner_already_pending {
                             eprintln!("[nlp/ner] Skipping NER in EnrichItem for item_id={item_id} — already queued or in progress");
                         } else {
+                            if ner_registry.is_none() {
+                                let ner_config = NerConfig {
+                                    engine: ner_engine.clone(),
+                                    model_path: Some(ner_model_path.clone()),
+                                    tokenizer_path: Some(ner_tokenizer_path.clone()),
+                                    python_path: ner::spacy::which_python(Some(&db_path)),
+                                    script_path: Some(ner_script_path.clone()),
+                                    model_name: Some("es_core_news_lg".to_string()),
+                                    max_length: 256,
+                                    stride: 32,
+                                    score_threshold: 0.65,
+                                };
+                                ner::log_startup_status(&ner_config);
+                                eprintln!("[nlp/ner] Registry ready (lazy init)");
+                                ner_registry = Some(NerRegistry::init(ner_config));
+                            }
+                            let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
                             // Register in dedup set before starting NER
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.insert(item_id.clone());
                             }
                             emit_progress(&app_handle, &item_id, "ner", 10);
-                            let r = run_ner_for_item(&conn, &item_id, &ner_registry);
+                            let r = run_ner_for_item(&conn, &item_id, registry);
                             // Remove from dedup set after NER completes
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.remove(&item_id);
@@ -450,6 +495,30 @@ impl NlpQueue {
 
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
+                        if !embed_init_attempted {
+                            embed_init_attempted = true;
+                            embed_engine = match embeddings::which_python(Some(&db_path)) {
+                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+                                    python_path,
+                                    script_path: embed_script_path.clone(),
+                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+                                    cache_dir: Some(embed_cache_dir.clone()),
+                                }) {
+                                    Ok(engine) => {
+                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
+                                        Some(Arc::new(engine))
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                                        None
+                                    }
+                                },
+                                None => {
+                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+                                    None
+                                }
+                            };
+                        }
                         let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store_for_asset(engine_ref, &conn, &item_id, &asset_id)
@@ -476,9 +545,26 @@ impl NlpQueue {
 
                     NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
+                        if ner_registry.is_none() {
+                            let ner_config = NerConfig {
+                                engine: ner_engine.clone(),
+                                model_path: Some(ner_model_path.clone()),
+                                tokenizer_path: Some(ner_tokenizer_path.clone()),
+                                python_path: ner::spacy::which_python(Some(&db_path)),
+                                script_path: Some(ner_script_path.clone()),
+                                model_name: Some("es_core_news_lg".to_string()),
+                                max_length: 256,
+                                stride: 32,
+                                score_threshold: 0.65,
+                            };
+                            ner::log_startup_status(&ner_config);
+                            eprintln!("[nlp/ner] Registry ready (lazy init)");
+                            ner_registry = Some(NerRegistry::init(ner_config));
+                        }
+                        let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
                         let result = tokio::task::block_in_place(|| {
                             catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_candidates_for_asset(&conn, &item_id, &asset_id, &ner_registry)
+                                ner::extract_candidates_for_asset(&conn, &item_id, &asset_id, registry)
                             }))
                             .map_err(|panic| format_panic_payload("NER extraction for asset panicked", panic))?
                         });
@@ -655,11 +741,16 @@ fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
         .join("resources/models/ner")
         .join(file_name);
     if dev_path.exists() {
-        eprintln!(
-            "[nlp/ner] Dev fallback resolved {} -> {}",
-            file_name,
-            dev_path.display()
-        );
+        if std::env::var("ENTROPIA_VERBOSE_STARTUP")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "[nlp/ner] Dev fallback resolved {} -> {}",
+                file_name,
+                dev_path.display()
+            );
+        }
         return dev_path;
     }
 
@@ -679,11 +770,16 @@ fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
 
     let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts").join(file_name);
     if dev_path.exists() {
-        eprintln!(
-            "[nlp/ner] Dev fallback resolved script {} -> {}",
-            file_name,
-            dev_path.display()
-        );
+        if std::env::var("ENTROPIA_VERBOSE_STARTUP")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "[nlp/ner] Dev fallback resolved script {} -> {}",
+                file_name,
+                dev_path.display()
+            );
+        }
         return dev_path;
     }
 

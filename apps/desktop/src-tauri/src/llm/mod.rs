@@ -15,6 +15,7 @@ use rusqlite::params;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use crate::nlp::text_provider;
 use crate::settings;
@@ -685,27 +686,33 @@ impl LlmQueue {
                 n_threads: None,
                 seed: 1234,
             };
+            eprintln!("[llm] Scheduling background warmup: {}", model_path.display());
 
-            // Initialize engine (optional — degrades gracefully)
-            let engine = match tokio::task::spawn_blocking(move || LlmEngine::init(config)).await {
-                Ok(Ok(engine)) => {
-                    eprintln!("[llm] Engine ready: {}", model_path.display());
-                    available.store(true, Ordering::Relaxed);
-                    Some(engine)
-                }
-                Ok(Err(e)) => {
-                    eprintln!(
-                        "[llm] Engine unavailable: {e} — LLM jobs will degrade gracefully. \
-                         Place a GGUF model at: {}",
-                        model_path.display()
-                    );
-                    None
-                }
-                Err(e) => {
-                    eprintln!("[llm] Engine init panicked: {e}");
-                    None
-                }
-            };
+            let warmup_model_path = model_path.clone();
+            let warmup_available = available.clone();
+            let (init_tx, init_rx) = oneshot::channel::<Result<LlmEngine, String>>();
+            tauri::async_runtime::spawn(async move {
+                let result = match tokio::task::spawn_blocking(move || LlmEngine::init(config)).await {
+                    Ok(Ok(engine)) => {
+                        eprintln!("[llm] Engine ready (background warmup): {}", warmup_model_path.display());
+                        warmup_available.store(true, Ordering::Relaxed);
+                        Ok(engine)
+                    }
+                    Ok(Err(e)) => {
+                        Err(format!(
+                            "Engine unavailable: {e} — LLM jobs will degrade gracefully. Place a GGUF model at: {}",
+                            warmup_model_path.display()
+                        ))
+                    }
+                    Err(e) => Err(format!("Engine init panicked: {e}")),
+                };
+
+                let _ = init_tx.send(result);
+            });
+
+            let mut engine: Option<LlmEngine> = None;
+            let mut init_error: Option<String> = None;
+            let mut init_rx = Some(init_rx);
 
             // Open dedicated DB connection for the worker
             let conn = match rusqlite::Connection::open(&db_path) {
@@ -753,9 +760,13 @@ impl LlmQueue {
                 let llm_mode = settings::get_setting(&conn, "llm_mode")
                     .unwrap_or_else(|| "local".to_string());
 
+                let api_key = settings::get_setting(&conn, "openrouter_api_key")
+                    .unwrap_or_default();
+                let remote_model = settings::get_setting(&conn, "openrouter_model")
+                    .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
                 let use_openrouter = match llm_mode.as_str() {
                     "openrouter" => true,
-                    "auto" => engine.is_none(),
+                    "auto" => engine.is_none() && !api_key.is_empty(),
                     _ => false, // "local" or unknown
                 };
 
@@ -763,10 +774,6 @@ impl LlmQueue {
 
                 let result = if use_openrouter {
                     // OpenRouter remote path
-                    let api_key = settings::get_setting(&conn, "openrouter_api_key")
-                        .unwrap_or_default();
-                    let model = settings::get_setting(&conn, "openrouter_model")
-                        .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
 
                     if api_key.is_empty() {
                         emit_error(
@@ -778,7 +785,7 @@ impl LlmQueue {
                         continue;
                     }
 
-                    let client = OpenRouterClient::new(api_key, model);
+                    let client = OpenRouterClient::new(api_key, remote_model);
                     match prepare_remote_job_request(&conn, &job, client.n_ctx()) {
                         Ok(request) => match client.generate(&request.prompt, request.max_tokens).await {
                             Ok(output) if request.truncate_to_sentence_boundary => {
@@ -791,6 +798,80 @@ impl LlmQueue {
                     }
                 } else {
                     // Local engine path
+                    if engine.is_none() && init_error.is_none() {
+                        match init_rx.take() {
+                            Some(rx) => match rx.await {
+                                Ok(Ok(resolved_engine)) => {
+                                    engine = Some(resolved_engine);
+                                }
+                                Ok(Err(error)) => {
+                                    eprintln!("[llm] {error}");
+                                    init_error = Some(error);
+                                }
+                                Err(_) => {
+                                    let fallback_model_path = model_path.clone();
+                                    eprintln!("[llm] Warmup channel closed before completion; falling back to lazy init");
+                                    match tokio::task::spawn_blocking(move || {
+                                        LlmEngine::init(LlmConfig {
+                                            model_path: fallback_model_path,
+                                            n_ctx: 4096,
+                                            n_threads: None,
+                                            seed: 1234,
+                                        })
+                                    }).await {
+                                        Ok(Ok(resolved_engine)) => {
+                                            eprintln!("[llm] Engine ready (lazy fallback)");
+                                            available.store(true, Ordering::Relaxed);
+                                            engine = Some(resolved_engine);
+                                        }
+                                        Ok(Err(error)) => {
+                                            eprintln!("[llm] Engine unavailable after lazy fallback: {error}");
+                                            init_error = Some(format!(
+                                                "Engine unavailable after lazy fallback: {error}"
+                                            ));
+                                        }
+                                        Err(error) => {
+                                            eprintln!("[llm] Engine lazy fallback panicked: {error}");
+                                            init_error = Some(format!(
+                                                "Engine lazy fallback panicked: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
+                            },
+                            None => {
+                                let fallback_model_path = model_path.clone();
+                                eprintln!("[llm] Warmup result unavailable; falling back to lazy init");
+                                match tokio::task::spawn_blocking(move || {
+                                    LlmEngine::init(LlmConfig {
+                                        model_path: fallback_model_path,
+                                        n_ctx: 4096,
+                                        n_threads: None,
+                                        seed: 1234,
+                                    })
+                                }).await {
+                                    Ok(Ok(resolved_engine)) => {
+                                        eprintln!("[llm] Engine ready (lazy fallback)");
+                                        available.store(true, Ordering::Relaxed);
+                                        engine = Some(resolved_engine);
+                                    }
+                                    Ok(Err(error)) => {
+                                        eprintln!("[llm] Engine unavailable after lazy fallback: {error}");
+                                        init_error = Some(format!(
+                                            "Engine unavailable after lazy fallback: {error}"
+                                        ));
+                                    }
+                                    Err(error) => {
+                                        eprintln!("[llm] Engine lazy fallback panicked: {error}");
+                                        init_error = Some(format!(
+                                            "Engine lazy fallback panicked: {error}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     match &engine {
                         Some(e) => {
                             tokio::task::block_in_place(|| process_job(e, &conn, &job))
@@ -800,7 +881,9 @@ impl LlmQueue {
                                 &app_handle,
                                 &id,
                                 job_name,
-                                "LLM no disponible. Colocá un modelo GGUF en models/ o configurá OpenRouter.",
+                                init_error.as_deref().unwrap_or(
+                                    "LLM no disponible. Colocá un modelo GGUF en models/ o configurá OpenRouter.",
+                                ),
                             );
                             continue;
                         }

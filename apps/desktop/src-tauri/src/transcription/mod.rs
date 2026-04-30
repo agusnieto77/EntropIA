@@ -9,6 +9,7 @@ use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::path_utils::normalize_windows_path;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
 
 // ── Event payloads ──────────────────────────────────────────────────────────
@@ -91,30 +92,6 @@ impl TranscriptionQueue {
                 }
             }));
 
-        // Find Python interpreter
-        let python_path = match which_python() {
-            Some(p) => p,
-            None => {
-                eprintln!("[transcription] No Python with faster_whisper found — worker will report errors for all jobs.");
-                std::thread::Builder::new()
-                    .name("transcription-worker".to_string())
-                    .stack_size(8 * 1024 * 1024)
-                    .spawn(move || {
-                        while let Some(job) = receiver.blocking_recv() {
-                            let _ = app_handle.emit(
-                                "transcription:error",
-                                TranscriptionErrorPayload {
-                                    asset_id: job.asset_id,
-                                    error: "No Python interpreter with faster_whisper found. Please install Python and run: pip install faster-whisper".to_string(),
-                                },
-                            );
-                        }
-                    })
-                    .expect("Failed to spawn transcription worker thread (no-python fallback)");
-                return;
-            }
-        };
-
         // Resolve model cache directory inside app data (avoids HuggingFace symlink
         // issues on Windows — WinError 448 "untrusted mount point" on reparse points)
         let model_cache_dir = app_handle
@@ -129,31 +106,8 @@ impl TranscriptionQueue {
             .name("transcription-worker".to_string())
             .stack_size(8 * 1024 * 1024) // 8 MB — subprocess only, no heavy stack needed
             .spawn(move || {
-                let engine = WhisperEngine::init(WhisperConfig {
-                    python_path: python_path,
-                    script_path,
-                    model_size: "base".to_string(),
-                    language: "es".to_string(),
-                    compute_type: "int8".to_string(),
-                    model_dir: Some(model_cache_dir),
-                });
-
-                let engine = match engine {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!("[transcription] Failed to initialize transcription engine: {e}");
-                        while let Some(job) = receiver.blocking_recv() {
-                            let _ = app_handle.emit(
-                                "transcription:error",
-                                TranscriptionErrorPayload {
-                                    asset_id: job.asset_id,
-                                    error: format!("Transcription engine initialization failed: {e}"),
-                                },
-                            );
-                        }
-                        return;
-                    }
-                };
+                let mut engine: Option<WhisperEngine> = None;
+                let mut init_error: Option<String> = None;
 
                 // ── Open dedicated DB connection ────────────────────────────
                 let conn = match rusqlite::Connection::open(&db_path) {
@@ -179,7 +133,50 @@ impl TranscriptionQueue {
                 // ── Main work loop ──────────────────────────────────────────
                 while let Some(job) = receiver.blocking_recv() {
                     let asset_id = job.asset_id.clone();
-                    let result = process_job(&engine, &conn, &job, &app_handle);
+
+                    if engine.is_none() && init_error.is_none() {
+                        let python_path = match which_python(Some(&db_path)) {
+                            Some(path) => path,
+                            None => {
+                                init_error = Some(
+                                    "No Python interpreter with faster_whisper found. Please install Python and run: pip install faster-whisper"
+                                        .to_string(),
+                                );
+                                eprintln!(
+                                    "[transcription] Worker lazy init failed: {}",
+                                    init_error.as_deref().unwrap_or("unknown error")
+                                );
+                                PathBuf::new()
+                            }
+                        };
+
+                        if init_error.is_none() {
+                            match WhisperEngine::init(WhisperConfig {
+                                python_path,
+                                script_path: script_path.clone(),
+                                model_size: "base".to_string(),
+                                language: "es".to_string(),
+                                compute_type: "int8".to_string(),
+                                model_dir: Some(model_cache_dir.clone()),
+                            }) {
+                                Ok(resolved_engine) => {
+                                    eprintln!("[transcription] Engine ready (lazy init)");
+                                    engine = Some(resolved_engine);
+                                }
+                                Err(error) => {
+                                    eprintln!("[transcription] Failed to initialize transcription engine: {error}");
+                                    init_error = Some(format!("Transcription engine initialization failed: {error}"));
+                                }
+                            }
+                        }
+                    }
+
+                    let result = match engine.as_ref() {
+                        Some(engine) => process_job(engine, &conn, &job, &app_handle),
+                        None => Err(init_error.clone().unwrap_or_else(|| {
+                            "Transcription engine unavailable after lazy init".to_string()
+                        })),
+                    };
 
                     match result {
                         Ok(transcription) => {
@@ -215,11 +212,13 @@ impl TranscriptionQueue {
 ///
 /// Uses the shared Python candidate cache to avoid redundant filesystem scans
 /// and log noise. Probes each candidate for the `faster_whisper` module.
-fn which_python() -> Option<std::path::PathBuf> {
+fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
     crate::python_discovery::which_python_for_module(
         "transcription",
         "faster_whisper",
+        "faster_whisper",
         "import faster_whisper; print('ok')",
+        settings_db_path,
     )
 }
 

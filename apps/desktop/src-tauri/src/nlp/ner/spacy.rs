@@ -264,10 +264,12 @@ fn extract_sentinel_json(output: &str) -> &str {
     output.trim()
 }
 
-pub fn which_python() -> Option<PathBuf> {
+pub fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<PathBuf> {
     python_discovery::which_python_for_module(
         "nlp/ner/spacy",
+        "spacy",
         "spacy+es_core_news_lg",
         "import spacy, es_core_news_lg; print('ok')",
+        settings_db_path,
     )
 }

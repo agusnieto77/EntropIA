@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use rusqlite::Connection;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -163,6 +165,42 @@ fn get_probe_cache() -> &'static Mutex<HashMap<String, Option<PathBuf>>> {
     MODULE_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn python_setting_key(cache_key: &str) -> String {
+    format!("python.{cache_key}.path")
+}
+
+fn load_persisted_python(
+    cache_key: &str,
+    probe_code: &str,
+    settings_db_path: Option<&Path>,
+) -> Option<PathBuf> {
+    let db_path = settings_db_path?;
+    let conn = Connection::open(db_path).ok()?;
+    let setting_key = python_setting_key(cache_key);
+    let persisted = crate::settings::get_setting(&conn, &setting_key)?;
+    let path = PathBuf::from(&persisted);
+
+    if path.is_file() && probe_python_module(&path, probe_code) {
+        return Some(path);
+    }
+
+    let _ = crate::settings::delete_setting(&conn, &setting_key);
+    None
+}
+
+fn persist_python_hit(cache_key: &str, path: &Path, settings_db_path: Option<&Path>) {
+    let Some(db_path) = settings_db_path else {
+        return;
+    };
+    let Ok(conn) = Connection::open(db_path) else {
+        return;
+    };
+
+    let setting_key = python_setting_key(cache_key);
+    let value = path.to_string_lossy();
+    let _ = crate::settings::set_setting(&conn, &setting_key, &value);
+}
+
 // ── Module probing ────────────────────────────────────────────────────────────
 
 /// Probe a single Python interpreter for a specific import check.
@@ -199,19 +237,29 @@ pub fn probe_python_module(
 /// - `probe_code`: Python code to verify import (e.g., `"import faster_whisper; print('ok')"`)
 pub fn which_python_for_module(
     tag: &str,
+    cache_key: &str,
     module_name: &str,
     probe_code: &str,
+    settings_db_path: Option<&Path>,
 ) -> Option<PathBuf> {
-    // Check probe cache — if we already resolved this tag, return the cached result.
+    // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
-        if let Some(cached) = cache.get(tag) {
+        if let Some(cached) = cache.get(cache_key) {
             if let Some(path) = cached {
-                eprintln!("[{tag}] Probe cache hit: {module_name} → {}", path.display());
+                eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}", path.display());
                 return Some(path.clone());
             }
-            eprintln!("[{tag}] Probe cache hit: {module_name} → not available");
+            eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available");
             return None;
         }
+    }
+
+    if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
+        eprintln!("[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}", path.display());
+        if let Ok(mut cache) = get_probe_cache().lock() {
+            cache.insert(cache_key.to_string(), Some(path.clone()));
+        }
+        return Some(path);
     }
 
     let known_good = collect_known_good_pythons();
@@ -224,13 +272,14 @@ pub fn which_python_for_module(
             let probe_start = std::time::Instant::now();
             if probe_python_module(python, probe_code) {
                 eprintln!(
-                    "[{tag}] ✅ Found Python with {module_name} via fast-path ({}ms): {}",
+                    "[{tag}] ✅ Found Python with {module_name} via fast-path (source=known_good, {}ms): {}",
                     probe_start.elapsed().as_millis(),
                     python.display()
                 );
                 if let Ok(mut cache) = get_probe_cache().lock() {
-                    cache.insert(tag.to_string(), Some(python.clone()));
+                    cache.insert(cache_key.to_string(), Some(python.clone()));
                 }
+                persist_python_hit(cache_key, python, settings_db_path);
                 return Some(python.clone());
             }
         }
@@ -258,15 +307,16 @@ pub fn which_python_for_module(
 
         if import_ok {
             eprintln!(
-                "[{tag}] ✅ Found Python with {module_name} after {} failed probe(s) ({}ms): {}",
+                "[{tag}] ✅ Found Python with {module_name} after {} failed probe(s) (source=full_scan, {}ms): {}",
                 failed_probes,
                 probe_start.elapsed().as_millis(),
                 candidate.display()
             );
             // Cache the hit
             if let Ok(mut cache) = get_probe_cache().lock() {
-                cache.insert(tag.to_string(), Some(candidate.clone()));
+                cache.insert(cache_key.to_string(), Some(candidate.clone()));
             }
+            persist_python_hit(cache_key, &candidate, settings_db_path);
             return Some(candidate.clone());
         }
 
@@ -286,7 +336,7 @@ pub fn which_python_for_module(
     );
     // Cache the miss
     if let Ok(mut cache) = get_probe_cache().lock() {
-        cache.insert(tag.to_string(), None);
+        cache.insert(cache_key.to_string(), None);
     }
     None
 }
@@ -348,20 +398,30 @@ fn collect_known_good_pythons() -> Vec<PathBuf> {
 /// - `scorer`: Function that assigns a score to each candidate path (higher = better)
 pub fn which_python_for_module_scored(
     tag: &str,
+    cache_key: &str,
     module_name: &str,
     probe_code: &str,
+    settings_db_path: Option<&Path>,
     scorer: &dyn Fn(&std::path::Path) -> i32,
 ) -> Option<PathBuf> {
-    // Check probe cache — if we already resolved this tag, return the cached result.
+    // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
-        if let Some(cached) = cache.get(tag) {
+        if let Some(cached) = cache.get(cache_key) {
             if let Some(path) = cached {
-                eprintln!("[{tag}] Probe cache hit: {module_name} → {}", path.display());
+                eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}", path.display());
                 return Some(path.clone());
             }
-            eprintln!("[{tag}] Probe cache hit: {module_name} → not available");
+            eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available");
             return None;
         }
+    }
+
+    if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
+        eprintln!("[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}", path.display());
+        if let Ok(mut cache) = get_probe_cache().lock() {
+            cache.insert(cache_key.to_string(), Some(path.clone()));
+        }
+        return Some(path);
     }
 
     // Fast-path: try Python interpreters that were already validated for other
@@ -377,14 +437,15 @@ pub fn which_python_for_module_scored(
             let probe_start = std::time::Instant::now();
             if probe_python_module(python, probe_code) {
                 eprintln!(
-                    "[{tag}] ✅ Found Python with {module_name} via fast-path ({}ms): {}",
+                    "[{tag}] ✅ Found Python with {module_name} via fast-path (source=known_good, {}ms): {}",
                     probe_start.elapsed().as_millis(),
                     python.display()
                 );
                 // Cache the hit
                 if let Ok(mut cache) = get_probe_cache().lock() {
-                    cache.insert(tag.to_string(), Some(python.clone()));
+                    cache.insert(cache_key.to_string(), Some(python.clone()));
                 }
+                persist_python_hit(cache_key, python, settings_db_path);
                 return Some(python.clone());
             }
         }
@@ -414,15 +475,16 @@ pub fn which_python_for_module_scored(
 
         if import_ok {
             eprintln!(
-                "[{tag}] ✅ Found Python with {module_name} after {} failed probe(s) ({}ms): {}",
+                "[{tag}] ✅ Found Python with {module_name} after {} failed probe(s) (source=full_scan, {}ms): {}",
                 failed_probes,
                 probe_start.elapsed().as_millis(),
                 candidate.display()
             );
             // Cache the hit
             if let Ok(mut cache) = get_probe_cache().lock() {
-                cache.insert(tag.to_string(), Some(candidate.clone()));
+                cache.insert(cache_key.to_string(), Some(candidate.clone()));
             }
+            persist_python_hit(cache_key, candidate, settings_db_path);
             return Some(candidate.clone());
         }
 
@@ -442,7 +504,7 @@ pub fn which_python_for_module_scored(
     );
     // Cache the miss
     if let Ok(mut cache) = get_probe_cache().lock() {
-        cache.insert(tag.to_string(), None);
+        cache.insert(cache_key.to_string(), None);
     }
     None
 }

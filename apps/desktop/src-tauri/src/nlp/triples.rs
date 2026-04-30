@@ -58,8 +58,10 @@ pub fn extract_triples(text: &str) -> Vec<Triple> {
 fn extract_triples_with_spacy(text: &str) -> Result<Vec<Triple>, String> {
     let python = crate::python_discovery::which_python_for_module(
         "nlp/triples",
+        "spacy",
         "spacy+es_core_news_lg",
         "import spacy, es_core_news_lg; print('ok')",
+        None,
     )
     .ok_or_else(|| "No Python with spaCy/es_core_news_lg found".to_string())?;
 

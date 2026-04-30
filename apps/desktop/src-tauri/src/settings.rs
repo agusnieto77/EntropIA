@@ -87,3 +87,22 @@ pub fn get_setting(conn: &rusqlite::Connection, key: &str) -> Option<String> {
     )
     .ok()
 }
+
+/// Persist a setting value directly from Rust-side worker code.
+pub fn set_setting(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Delete a setting directly from Rust-side worker code.
+pub fn delete_setting(conn: &rusqlite::Connection, key: &str) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
+    Ok(())
+}

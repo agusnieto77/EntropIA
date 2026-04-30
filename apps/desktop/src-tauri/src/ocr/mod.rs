@@ -169,7 +169,7 @@ impl OcrQueue {
 
                 eprintln!("[OCR] Provider ready: {}", provider.name());
 
-                let paddle_vl_engine = create_paddle_vl_engine(&app_handle);
+                let paddle_vl_engine = create_paddle_vl_engine(&app_handle, &db_path);
                 if paddle_vl_engine.is_some() {
                     eprintln!("[OCR] High OCR mode available via PaddleOCR-VL");
                 } else {

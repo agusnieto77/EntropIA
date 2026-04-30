@@ -93,11 +93,16 @@ impl PaddleVlEngine {
             ));
         }
 
-        eprintln!(
-            "[paddle_vl] Engine configured: python={}, script={}",
-            config.python_path.display(),
-            config.script_path.display(),
-        );
+        if std::env::var("ENTROPIA_VERBOSE_STARTUP")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "[paddle_vl] Engine configured: python={}, script={}",
+                config.python_path.display(),
+                config.script_path.display(),
+            );
+        }
 
         Ok(Self { config })
     }
@@ -373,11 +378,13 @@ fn score_python_candidate(path: &Path) -> i32 {
 /// CRITICAL: The probe verifies `PaddleOCRVL` specifically, not just `paddleocr`.
 /// The `paddleocr` package can be installed without the `[doc-parser]` extra,
 /// in which case `PaddleOCRVL` is missing and the subprocess would crash later.
-pub fn which_python_for_paddle_vl() -> Option<PathBuf> {
+pub fn which_python_for_paddle_vl(settings_db_path: Option<&std::path::Path>) -> Option<PathBuf> {
     crate::python_discovery::which_python_for_module_scored(
+        "paddle_vl",
         "paddle_vl",
         "PaddleOCRVL",
         "from paddleocr import PaddleOCRVL; print('ok')",
+        settings_db_path,
         &score_python_candidate,
     )
 }
@@ -386,7 +393,10 @@ pub fn which_python_for_paddle_vl() -> Option<PathBuf> {
 ///
 /// Resolves the script path and Python interpreter, initializes the engine.
 /// Returns None if PaddleVL is unavailable (no Python with paddleocr, or missing script).
-pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVlEngine> {
+pub fn create_paddle_vl_engine(
+    app_handle: &tauri::AppHandle,
+    settings_db_path: &std::path::Path,
+) -> Option<PaddleVlEngine> {
     // Resolve script path: try Resource directory first (production), then source (dev).
     // CRITICAL: Tauri's resolve() returns a path but doesn't verify the file exists.
     let script_path = {
@@ -430,7 +440,7 @@ pub fn create_paddle_vl_engine(app_handle: &tauri::AppHandle) -> Option<PaddleVl
     };
 
     // Find Python interpreter with paddleocr
-    let python_path = match which_python_for_paddle_vl() {
+    let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
         Some(p) => p,
         None => {
             eprintln!("[paddle_vl] No Python with paddleocr found — PaddleVL OCR will be unavailable.");
