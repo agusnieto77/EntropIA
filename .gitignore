@@ -179,6 +179,8 @@ pagina_*.ocr.txt
 pagina_*.png
 llm-diag-output.txt
 logss.md
+inicio.md
+inicio_nuevo.md
 
 # LLM diagnostic tool (dev-only, not part of app build)
 tools/llm-diag/
