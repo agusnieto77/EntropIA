@@ -901,6 +901,13 @@ mod tests {
                 embeddings::compute_and_store(None, conn, item_id)
             }
             NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id, &rule_based_registry()),
+            NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
+                // No engine in test context → graceful degradation
+                embeddings::compute_and_store_for_asset(None, conn, item_id, asset_id)
+            }
+            NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
+                ner::extract_and_store_for_asset(conn, item_id, asset_id, &rule_based_registry())
+            }
             NlpJob::EnrichItem { item_id } => {
                 // Run all 3 NLP sub-jobs sequentially; errors don't short-circuit
                 let _ = fts::index_item_from_db(conn, item_id);

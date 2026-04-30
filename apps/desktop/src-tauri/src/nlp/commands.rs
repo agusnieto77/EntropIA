@@ -7,6 +7,8 @@
 use super::{NlpJob, NlpQueue};
 use tauri::State;
 
+type SimilarItemRow = (String, String, String, Vec<u8>);
+
 fn enqueue(nlp_queue: &NlpQueue, job: NlpJob) -> Result<String, String> {
     nlp_queue.submit(job)?;
     Ok("queued".to_string())
@@ -123,6 +125,31 @@ pub async fn extract_triples_for_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn embedding_blob(values: [f32; 2]) -> Vec<u8> {
+        values.into_iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    fn setup_similar_items_test_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db should open");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE items (
+                id TEXT PRIMARY KEY,
+                collection_id TEXT,
+                title TEXT NOT NULL
+            );
+
+            CREATE TABLE vec_items (
+                item_id TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL
+            );
+            "#,
+        )
+        .expect("test schema should be created");
+
+        conn
+    }
 
     #[test]
     fn enqueue_accepts_index_job_when_queue_has_capacity() {
@@ -281,6 +308,85 @@ mod tests {
             .collect();
         assert_eq!(recovered, original, "blob round-trip should preserve values");
     }
+
+    #[test]
+    fn rank_similar_item_rows_includes_other_collections() {
+        let target_blob = embedding_blob([1.0_f32, 0.0_f32]);
+        let same_collection_blob = embedding_blob([0.8_f32, 0.2_f32]);
+        let other_collection_blob = embedding_blob([0.95_f32, 0.05_f32]);
+
+        let results = super::rank_similar_item_rows(
+            &target_blob,
+            vec![
+                (
+                    "item-same".to_string(),
+                    "Misma colección".to_string(),
+                    "col-1".to_string(),
+                    same_collection_blob,
+                ),
+                (
+                    "item-other".to_string(),
+                    "Otra colección".to_string(),
+                    "col-2".to_string(),
+                    other_collection_blob,
+                ),
+            ],
+            5,
+        )
+        .expect("ranking should succeed");
+
+        assert_eq!(results.len(), 2, "should keep candidates from every collection");
+        assert_eq!(results[0]["itemId"], "item-other");
+        assert_eq!(results[0]["collectionId"], "col-2");
+        assert_eq!(results[1]["itemId"], "item-same");
+    }
+
+    #[test]
+    fn similar_items_queries_across_collections() {
+        let conn = setup_similar_items_test_db();
+
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["item-target", "col-1", "Documento base"],
+        )
+        .expect("target item should insert");
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["item-same", "col-1", "Misma colección"],
+        )
+        .expect("same collection item should insert");
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["item-other", "col-2", "Otra colección"],
+        )
+        .expect("other collection item should insert");
+
+        conn.execute(
+            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params!["item-target", embedding_blob([1.0_f32, 0.0_f32])],
+        )
+        .expect("target embedding should insert");
+        conn.execute(
+            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params!["item-same", embedding_blob([0.8_f32, 0.2_f32])],
+        )
+        .expect("same collection embedding should insert");
+        conn.execute(
+            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params!["item-other", embedding_blob([0.95_f32, 0.05_f32])],
+        )
+        .expect("other collection embedding should insert");
+
+        let results = super::similar_items_from_conn(&conn, "item-target", 5)
+            .expect("similar items query should succeed");
+        let results = results.as_array().expect("result should be a JSON array");
+
+        assert_eq!(results.len(), 2, "should return candidates from both collections");
+        assert_eq!(results[0]["itemId"], "item-other");
+        assert_eq!(results[0]["collectionId"], "col-2");
+        assert_eq!(results[1]["itemId"], "item-same");
+        assert_eq!(results[1]["collectionId"], "col-1");
+    }
 }
 
 /// Search `fts_items` using full-text search.
@@ -329,17 +435,17 @@ pub async fn similar_items(
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(5) as usize;
-    const MAX_CANDIDATES: usize = 2000;
-
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
 
-    let target_collection_id: String = conn
-        .query_row(
-            "SELECT collection_id FROM items WHERE id = ?1",
-            rusqlite::params![item_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("Failed to resolve target collection: {e}"))?;
+    similar_items_from_conn(&conn, &item_id, limit)
+}
+
+fn similar_items_from_conn(
+    conn: &rusqlite::Connection,
+    item_id: &str,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    const MAX_CANDIDATES: usize = 2000;
 
     // Read the target item's embedding (stored as little-endian f32 blob)
     let target_blob: Vec<u8> = conn
@@ -356,34 +462,22 @@ pub async fn similar_items(
             }
         })?;
 
-    // Convert blob to f32 vector
-    if target_blob.len() % 4 != 0 {
-        return Err(format!(
-            "Embedding blob has invalid size: {} bytes (not divisible by 4)",
-            target_blob.len()
-        ));
-    }
-    let target: Vec<f32> = target_blob
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-        .collect();
-
     // Read candidate embeddings with their titles and collection_id via JOIN.
-    // Limit scan to same collection and cap candidates to keep latency bounded.
+    // Scan across every collection/project so Similar Items matches the global
+    // scope already used by Search by Similar Text (FTS).
     let mut stmt = conn
         .prepare(
             "SELECT v.item_id, i.title, i.collection_id, v.embedding
              FROM vec_items v
              LEFT JOIN items i ON i.id = v.item_id
              WHERE v.item_id != ?1
-               AND i.collection_id = ?2
-             LIMIT ?3",
+             LIMIT ?2",
         )
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
     let rows = stmt
         .query_map(
-            rusqlite::params![item_id, target_collection_id, MAX_CANDIDATES as i64],
+            rusqlite::params![item_id, MAX_CANDIDATES as i64],
             |row| {
             let id: String = row.get(0)?;
             let title: Option<String> = row.get(1)?;
@@ -395,6 +489,30 @@ pub async fn similar_items(
         .map_err(|e| format!("Failed to execute query: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read rows: {e}"))?;
+
+    Ok(serde_json::Value::Array(rank_similar_item_rows(
+        &target_blob,
+        rows,
+        limit,
+    )?))
+}
+
+fn rank_similar_item_rows(
+    target_blob: &[u8],
+    rows: Vec<SimilarItemRow>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>, String> {
+    if target_blob.len() % 4 != 0 {
+        return Err(format!(
+            "Embedding blob has invalid size: {} bytes (not divisible by 4)",
+            target_blob.len()
+        ));
+    }
+
+    let target: Vec<f32> = target_blob
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
 
     // Compute cosine distance for each item
     let mut results: Vec<(String, String, String, f64)> = rows
@@ -430,7 +548,7 @@ pub async fn similar_items(
         })
         .collect();
 
-    Ok(serde_json::Value::Array(results))
+    Ok(results)
 }
 
 /// Compute cosine distance (1 - cosine_similarity) between two f32 vectors.
