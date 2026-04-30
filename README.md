@@ -72,6 +72,38 @@ Hoy el foco del proyecto está en:
 
 > Nota: varios pipelines tienen **degradación elegante**. Si falta un runtime, modelo o dependencia opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
 
+## Botones cableados hoy: UI → función → comando → backend
+
+> En esta tabla, **LLMCloud** significa el proveedor remoto de inferencia LLM configurado en la app. Hoy puede ser OpenRouter, pero el provider puede cambiar.
+
+> Referencia rápida de labels actuales en UI:
+> - `OCRL` = OCR Light
+> - `OCRH` = OCR High
+> - `OCRC` = OCR Correction por LLM
+> - `OCRR` = OCR/Transcription Summary por LLM
+> - `TRIPLET` = extracción de triples semánticos por LLM
+
+| Botón visible | Dónde aparece | Archivo frontend | Función frontend | Comando Tauri | Archivo backend | Backend efectivo |
+| --- | --- | --- | --- | --- | --- | --- |
+| `OCRL` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR / Tesseract según disponibilidad) |
+| `OCRH` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR-VL por Python; con fallback local si corresponde) |
+| `OCRC` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmCorrectOcr()` | `llm_correct_ocr` / `llm_correct_ocr_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
+| `OCRR` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()` | `llm_summarize` / `llm_summarize_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
+| `Transcribe` | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)` | `transcribe_audio` | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`) |
+| `OCRR` | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()` | `llm_summarize` / `llm_summarize_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
+| `INDEX` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleIndexFts()` | `index_fts` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (SQLite FTS) |
+| `EMBED` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleEmbedItem()` | `embed_item` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (Python + `fastembed`) |
+| `NER` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleExtractEntities()` | `extract_entities` / `extract_entities_for_asset` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (ONNX + spaCy opcional) |
+| `TRIPLET` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleLlmExtractTriples()` | `llm_extract_triples` / `llm_extract_triples_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
+
+### Capacidades implementadas pero no visibles todavía en la UI
+
+| Capacidad | Wrapper frontend | Archivo frontend | Comando Tauri | Archivo backend | Backend efectivo | Estado UI |
+| --- | --- | --- | --- | --- | --- | --- |
+| Q&A sobre colección | `llmAsk(collectionId, question)` | `apps/desktop/src/lib/llm.ts` | `llm_ask` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
+| Extracción de entidades por LLM | `llmExtractEntities(itemId)` / `llmExtractEntitiesAsset(assetId)` | `apps/desktop/src/lib/llm.ts` | `llm_extract_entities` / `llm_extract_entities_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
+| Clasificación por LLM | `llmClassify(itemId, categories)` | `apps/desktop/src/lib/llm.ts` | `llm_classify` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
+
 ## Stack técnico real
 
 | Capa | Tecnología |
