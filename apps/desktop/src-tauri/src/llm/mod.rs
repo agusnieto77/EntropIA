@@ -779,7 +779,16 @@ impl LlmQueue {
                     }
 
                     let client = OpenRouterClient::new(api_key, model);
-                    process_job_remote(&client, &conn, &job).await
+                    match prepare_remote_job_request(&conn, &job, client.n_ctx()) {
+                        Ok(request) => match client.generate(&request.prompt, request.max_tokens).await {
+                            Ok(output) if request.truncate_to_sentence_boundary => {
+                                Ok(truncate_to_sentence_boundary(&output))
+                            }
+                            Ok(output) => Ok(output),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    }
                 } else {
                     // Local engine path
                     match &engine {
@@ -1151,17 +1160,23 @@ fn gather_collection_context(
 
     Ok(context)
 }
+struct RemoteJobRequest {
+    prompt: String,
+    max_tokens: i32,
+    truncate_to_sentence_boundary: bool,
+}
+
 // ---------------------------------------------------------------------------
-// Remote job processing (OpenRouter)
+// Remote job preparation (OpenRouter)
 // ---------------------------------------------------------------------------
 
-/// Process a job using OpenRouter API. Uses raw prompt text (no Gemma formatting).
-async fn process_job_remote(
-    client: &OpenRouterClient,
+/// Prepare a remote OpenRouter request without holding a DB connection across `.await`.
+fn prepare_remote_job_request(
     conn: &rusqlite::Connection,
     job: &LlmJob,
-) -> Result<String, String> {
-    let n_ctx = client.n_ctx();
+    n_ctx: u32,
+) -> Result<RemoteJobRequest, String> {
+    let max_tokens = max_tokens_for(job);
 
     match job {
         LlmJob::CorrectOcr { item_id } => {
@@ -1169,9 +1184,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for OCR correction".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_ocr_correction(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_ocr_correction(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ExtractEntities { item_id } => {
@@ -1179,9 +1197,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for entity extraction".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_extract_entities(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_extract_entities(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ConsolidateEntities {
@@ -1192,9 +1213,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for entity consolidation".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_consolidate_entities(&truncated, candidate_entities_json);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_consolidate_entities(&truncated, candidate_entities_json),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ExtractTriples { item_id } => {
@@ -1202,9 +1226,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for triple extraction".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_extract_triples(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_extract_triples(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::Summarize { item_id } => {
@@ -1212,10 +1239,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for summarization".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_summarize(&truncated);
-            let result = client.generate(&p, max_tokens_for(job)).await?;
-            Ok(truncate_to_sentence_boundary(&result))
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_summarize(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: true,
+            })
         }
 
         LlmJob::Classify { item_id, categories } => {
@@ -1223,9 +1252,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for classification".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_classify(&truncated, categories);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_classify(&truncated, categories),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::Ask { collection_id, question } => {
@@ -1233,9 +1265,12 @@ async fn process_job_remote(
             if context.is_empty() {
                 return Err("No relevant documents found for this question".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &context);
-            let p = prompt::raw_question_answer(question, &truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &context);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_question_answer(question, &truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         // Asset-level variants
@@ -1244,9 +1279,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for OCR correction on this asset".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_ocr_correction(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_ocr_correction(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ExtractEntitiesAsset { asset_id } => {
@@ -1254,9 +1292,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for entity extraction on this asset".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_extract_entities(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_extract_entities(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ConsolidateEntitiesAsset {
@@ -1267,9 +1308,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for entity consolidation on this asset".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_consolidate_entities(&truncated, candidate_entities_json);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_consolidate_entities(&truncated, candidate_entities_json),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::ExtractTriplesAsset { asset_id } => {
@@ -1277,9 +1321,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for triple extraction on this asset".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_extract_triples(&truncated);
-            client.generate(&p, max_tokens_for(job)).await
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_extract_triples(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: false,
+            })
         }
 
         LlmJob::SummarizeAsset { asset_id } => {
@@ -1287,10 +1334,12 @@ async fn process_job_remote(
             if text.is_empty() {
                 return Err("No text available for summarization on this asset".to_string());
             }
-            let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
-            let p = prompt::raw_summarize(&truncated);
-            let result = client.generate(&p, max_tokens_for(job)).await?;
-            Ok(truncate_to_sentence_boundary(&result))
+            let truncated = truncate_text_for_context(n_ctx, max_tokens, &text);
+            Ok(RemoteJobRequest {
+                prompt: prompt::raw_summarize(&truncated),
+                max_tokens,
+                truncate_to_sentence_boundary: true,
+            })
         }
     }
 }
