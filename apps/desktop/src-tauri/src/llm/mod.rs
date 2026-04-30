@@ -1063,6 +1063,7 @@ const MAX_SNIPPET_CHARS: usize = 1200;
 
 fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
     let n_ctx = engine.n_ctx();
+    let log_prefix = llm_job_prefix(false, job);
 
     match job {
         LlmJob::CorrectOcr { item_id } => {
@@ -1072,7 +1073,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::ocr_correction(&truncated);
-            engine.generate_ocr_correction(&p, max_tokens_for(job))
+            engine.generate_ocr_correction(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ExtractEntities { item_id } => {
@@ -1082,7 +1083,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_entities(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ConsolidateEntities {
@@ -1095,7 +1096,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::consolidate_entities(&truncated, candidate_entities_json);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ExtractTriples { item_id } => {
@@ -1105,7 +1106,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_triples(&truncated);
-            engine.generate_triples(&p, max_tokens_for(job))
+            engine.generate_triples(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::Summarize { item_id } => {
@@ -1115,7 +1116,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::summarize(&truncated);
-            let result = engine.generate(&p, max_tokens_for(job))?;
+            let result = engine.generate(&p, max_tokens_for(job), &log_prefix)?;
             Ok(truncate_to_sentence_boundary(&result))
         }
 
@@ -1126,7 +1127,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::classify(&truncated, categories);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::Ask { collection_id, question } => {
@@ -1137,7 +1138,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &context);
             let p = prompt::question_answer(question, &truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         // ── Asset-level variants (single page/asset, avoids context overflow) ──
@@ -1149,7 +1150,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::ocr_correction(&truncated);
-            engine.generate_ocr_correction(&p, max_tokens_for(job))
+            engine.generate_ocr_correction(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ExtractEntitiesAsset { asset_id } => {
@@ -1159,7 +1160,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_entities(&truncated);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ConsolidateEntitiesAsset {
@@ -1172,7 +1173,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::consolidate_entities(&truncated, candidate_entities_json);
-            engine.generate(&p, max_tokens_for(job))
+            engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::ExtractTriplesAsset { asset_id } => {
@@ -1182,7 +1183,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::extract_triples(&truncated);
-            engine.generate_triples(&p, max_tokens_for(job))
+            engine.generate_triples(&p, max_tokens_for(job), &log_prefix)
         }
 
         LlmJob::SummarizeAsset { asset_id } => {
@@ -1192,7 +1193,7 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             }
             let truncated = truncate_text_for_context(n_ctx, max_tokens_for(job), &text);
             let p = prompt::summarize(&truncated);
-            let result = engine.generate(&p, max_tokens_for(job))?;
+            let result = engine.generate(&p, max_tokens_for(job), &log_prefix)?;
             Ok(truncate_to_sentence_boundary(&result))
         }
     }
