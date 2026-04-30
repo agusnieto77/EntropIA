@@ -23,6 +23,33 @@ use crate::settings;
 use self::engine::{LlmConfig, LlmEngine};
 use self::openrouter::OpenRouterClient;
 
+const LLM_LOCAL_PREFIX: &str = "[llm-local]";
+const LLM_CLOUD_PREFIX: &str = "[llm-cloud]";
+
+fn llm_prefix(use_cloud: bool) -> &'static str {
+    if use_cloud {
+        LLM_CLOUD_PREFIX
+    } else {
+        LLM_LOCAL_PREFIX
+    }
+}
+
+fn llm_job_suffix(job: &LlmJob) -> Option<&'static str> {
+    match job {
+        LlmJob::CorrectOcr { .. } | LlmJob::CorrectOcrAsset { .. } => Some("correction"),
+        LlmJob::Summarize { .. } | LlmJob::SummarizeAsset { .. } => Some("summary"),
+        LlmJob::ExtractTriples { .. } | LlmJob::ExtractTriplesAsset { .. } => Some("triples"),
+        _ => None,
+    }
+}
+
+fn llm_job_prefix(use_cloud: bool, job: &LlmJob) -> String {
+    match llm_job_suffix(job) {
+        Some(suffix) => format!("{}[{}]", llm_prefix(use_cloud), suffix),
+        None => llm_prefix(use_cloud).to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Job definition
 // ---------------------------------------------------------------------------
@@ -440,7 +467,7 @@ fn dedupe_triples(triples: Vec<LlmTriple>) -> Vec<LlmTriple> {
 /// The LLM is prompted to return `[{"subject": ..., "predicate": ..., "object": ...}]`.
 /// This function is tolerant: it strips markdown fences and trailing text,
 /// and parses each triple individually so one bad entry doesn't spoil the rest.
-fn parse_triples_json(raw: &str) -> Vec<LlmTriple> {
+fn parse_triples_json(raw: &str, log_prefix: &str) -> Vec<LlmTriple> {
     let content = strip_markdown_fences(raw);
     let normalized_content = normalize_jsonish(&content);
 
@@ -481,15 +508,15 @@ fn parse_triples_json(raw: &str) -> Vec<LlmTriple> {
             );
 
             if valid_triples.is_empty() {
-                eprintln!("[llm][triples] failed to parse any triples");
+                eprintln!("{log_prefix}[triples] failed to parse any triples");
                 eprintln!(
-                    "[llm][triples] normalized_preview=\"{}\", candidate_preview=\"{}\"",
+                    "{log_prefix}[triples] normalized_preview=\"{}\", candidate_preview=\"{}\"",
                     preview_for_log(&normalized_content, 220),
                     preview_for_log(&json_candidate, 220),
                 );
             } else {
                 eprintln!(
-                    "[llm][triples] parse fallback ok: parsed={}, object_candidates={}, candidate_preview=\"{}\"",
+                    "{log_prefix}[triples] parse fallback ok: parsed={}, object_candidates={}, candidate_preview=\"{}\"",
                     valid_triples.len(),
                     normalized_content.matches('{').count(),
                     preview_for_log(&json_candidate, 220),
@@ -518,8 +545,9 @@ fn store_triples_for_item(
     conn: &rusqlite::Connection,
     item_id: &str,
     raw_json: &str,
+    log_prefix: &str,
 ) -> Result<usize, String> {
-    let triples = parse_triples_json(raw_json);
+    let triples = parse_triples_json(raw_json, log_prefix);
 
     // Delete old triples for this item (no asset_id filter => item-level)
     conn.execute("DELETE FROM triples WHERE item_id = ?1", params![item_id])
@@ -552,8 +580,9 @@ fn store_triples_for_asset(
     item_id: &str,
     asset_id: &str,
     raw_json: &str,
+    log_prefix: &str,
 ) -> Result<usize, String> {
-    let triples = parse_triples_json(raw_json);
+    let triples = parse_triples_json(raw_json, log_prefix);
 
     // Delete old triples for this specific asset only
     conn.execute(
@@ -678,7 +707,7 @@ impl LlmQueue {
                 .find(|p| p.exists())
                 .cloned()
                 .unwrap_or_else(|| app_models_dir.join(MODEL_FILENAME));
-            eprintln!("[llm] OCRC configured as text-only (multimodal disabled)");
+            eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
 
             let config = LlmConfig {
                 model_path: model_path.clone(),
@@ -686,7 +715,7 @@ impl LlmQueue {
                 n_threads: None,
                 seed: 1234,
             };
-            eprintln!("[llm] Scheduling background warmup: {}", model_path.display());
+            eprintln!("{LLM_LOCAL_PREFIX} Scheduling background warmup: {}", model_path.display());
 
             let warmup_model_path = model_path.clone();
             let warmup_available = available.clone();
@@ -694,7 +723,7 @@ impl LlmQueue {
             tauri::async_runtime::spawn(async move {
                 let result = match tokio::task::spawn_blocking(move || LlmEngine::init(config)).await {
                     Ok(Ok(engine)) => {
-                        eprintln!("[llm] Engine ready (background warmup): {}", warmup_model_path.display());
+                        eprintln!("{LLM_LOCAL_PREFIX} Engine ready (background warmup): {}", warmup_model_path.display());
                         warmup_available.store(true, Ordering::Relaxed);
                         Ok(engine)
                     }
@@ -722,7 +751,7 @@ impl LlmQueue {
                     c
                 }
                 Err(e) => {
-                    eprintln!("[llm] Failed to open worker DB connection: {e}");
+                    eprintln!("{LLM_LOCAL_PREFIX} Failed to open worker DB connection: {e}");
                     return;
                 }
             };
@@ -738,7 +767,7 @@ impl LlmQueue {
                  );
                  CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
             ) {
-                eprintln!("[llm] Warning: could not create llm_results table: {e}");
+                eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create llm_results table: {e}");
             }
 
             // Ensure app_settings table exists (idempotent) for reading LLM mode
@@ -748,7 +777,7 @@ impl LlmQueue {
                     value TEXT NOT NULL
                  );",
             ) {
-                eprintln!("[llm] Warning: could not create app_settings table: {e}");
+                eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create app_settings table: {e}");
             }
 
             // Main worker loop
@@ -769,6 +798,7 @@ impl LlmQueue {
                     "auto" => engine.is_none() && !api_key.is_empty(),
                     _ => false, // "local" or unknown
                 };
+                let job_log_prefix = llm_job_prefix(use_openrouter, &job);
 
                 emit_progress(&app_handle, &id, job_name, 10);
 
@@ -785,6 +815,7 @@ impl LlmQueue {
                         continue;
                     }
 
+                    eprintln!("{job_log_prefix} Running job '{job_name}' for {id} via remote API");
                     let client = OpenRouterClient::new(api_key, remote_model);
                     match prepare_remote_job_request(&conn, &job, client.n_ctx()) {
                         Ok(request) => match client.generate(&request.prompt, request.max_tokens).await {
@@ -805,12 +836,12 @@ impl LlmQueue {
                                     engine = Some(resolved_engine);
                                 }
                                 Ok(Err(error)) => {
-                                    eprintln!("[llm] {error}");
+                                    eprintln!("{LLM_LOCAL_PREFIX} {error}");
                                     init_error = Some(error);
                                 }
                                 Err(_) => {
                                     let fallback_model_path = model_path.clone();
-                                    eprintln!("[llm] Warmup channel closed before completion; falling back to lazy init");
+                                    eprintln!("{LLM_LOCAL_PREFIX} Warmup channel closed before completion; falling back to lazy init");
                                     match tokio::task::spawn_blocking(move || {
                                         LlmEngine::init(LlmConfig {
                                             model_path: fallback_model_path,
@@ -820,18 +851,18 @@ impl LlmQueue {
                                         })
                                     }).await {
                                         Ok(Ok(resolved_engine)) => {
-                                            eprintln!("[llm] Engine ready (lazy fallback)");
+                                            eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
                                             available.store(true, Ordering::Relaxed);
                                             engine = Some(resolved_engine);
                                         }
                                         Ok(Err(error)) => {
-                                            eprintln!("[llm] Engine unavailable after lazy fallback: {error}");
+                                            eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
                                             init_error = Some(format!(
                                                 "Engine unavailable after lazy fallback: {error}"
                                             ));
                                         }
                                         Err(error) => {
-                                            eprintln!("[llm] Engine lazy fallback panicked: {error}");
+                                            eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
                                             init_error = Some(format!(
                                                 "Engine lazy fallback panicked: {error}"
                                             ));
@@ -841,7 +872,7 @@ impl LlmQueue {
                             },
                             None => {
                                 let fallback_model_path = model_path.clone();
-                                eprintln!("[llm] Warmup result unavailable; falling back to lazy init");
+                                eprintln!("{LLM_LOCAL_PREFIX} Warmup result unavailable; falling back to lazy init");
                                 match tokio::task::spawn_blocking(move || {
                                     LlmEngine::init(LlmConfig {
                                         model_path: fallback_model_path,
@@ -851,18 +882,18 @@ impl LlmQueue {
                                     })
                                 }).await {
                                     Ok(Ok(resolved_engine)) => {
-                                        eprintln!("[llm] Engine ready (lazy fallback)");
+                                        eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
                                         available.store(true, Ordering::Relaxed);
                                         engine = Some(resolved_engine);
                                     }
                                     Ok(Err(error)) => {
-                                        eprintln!("[llm] Engine unavailable after lazy fallback: {error}");
+                                        eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
                                         init_error = Some(format!(
                                             "Engine unavailable after lazy fallback: {error}"
                                         ));
                                     }
                                     Err(error) => {
-                                        eprintln!("[llm] Engine lazy fallback panicked: {error}");
+                                        eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
                                         init_error = Some(format!(
                                             "Engine lazy fallback panicked: {error}"
                                         ));
@@ -871,6 +902,8 @@ impl LlmQueue {
                             }
                         }
                     }
+
+                    eprintln!("{job_log_prefix} Running job '{job_name}' for {id} via local engine");
 
                     match &engine {
                         Some(e) => {
@@ -894,29 +927,29 @@ impl LlmQueue {
                     Ok(output) => {
                         // Persist result to database (non-fatal if it fails)
                         if let Err(e) = persist_result(&conn, &id, job_name, &output) {
-                            eprintln!("[llm] Warning: failed to persist result for {id}/{job_name}: {e}");
+                            eprintln!("{job_log_prefix} Warning: failed to persist result for {id}/{job_name}: {e}");
                         }
 
                         // Parse triples from LLM response and store in `triples` table
                         // so the Semantic Triples section UI shows LLM-extracted triples.
                         match &job {
                             LlmJob::ExtractTriples { item_id } => {
-                                match store_triples_for_item(&conn, item_id, &output) {
-                                    Ok(count) => eprintln!("[llm] Stored {count} triples for item {item_id}"),
-                                    Err(e) => eprintln!("[llm] Warning: failed to store triples for item {item_id}: {e}"),
+                                match store_triples_for_item(&conn, item_id, &output, &job_log_prefix) {
+                                    Ok(count) => eprintln!("{job_log_prefix} Stored {count} triples for item {item_id}"),
+                                    Err(e) => eprintln!("{job_log_prefix} Warning: failed to store triples for item {item_id}: {e}"),
                                 }
                             }
                             LlmJob::ExtractTriplesAsset { asset_id } => {
                                 // Resolve item_id from asset_id for the triples table
                                 match crate::nlp::lookup_item_id_for_asset(&conn, asset_id) {
                                     Ok(Some(item_id)) => {
-                                        match store_triples_for_asset(&conn, &item_id, asset_id, &output) {
-                                            Ok(count) => eprintln!("[llm] Stored {count} triples for asset {asset_id}"),
-                                            Err(e) => eprintln!("[llm] Warning: failed to store triples for asset {asset_id}: {e}"),
+                                        match store_triples_for_asset(&conn, &item_id, asset_id, &output, &job_log_prefix) {
+                                            Ok(count) => eprintln!("{job_log_prefix} Stored {count} triples for asset {asset_id}"),
+                                            Err(e) => eprintln!("{job_log_prefix} Warning: failed to store triples for asset {asset_id}: {e}"),
                                         }
                                     }
-                                    Ok(None) => eprintln!("[llm] Warning: no item_id found for asset {asset_id}, skipping triples storage"),
-                                    Err(e) => eprintln!("[llm] Warning: failed to lookup item_id for asset {asset_id}: {e}"),
+                                    Ok(None) => eprintln!("{job_log_prefix} Warning: no item_id found for asset {asset_id}, skipping triples storage"),
+                                    Err(e) => eprintln!("{job_log_prefix} Warning: failed to lookup item_id for asset {asset_id}: {e}"),
                                 }
                             }
                             _ => {} // Other job types don't produce triples
@@ -931,7 +964,7 @@ impl LlmQueue {
                 }
             }
 
-            eprintln!("[llm] Worker loop ended — channel closed.");
+            eprintln!("{LLM_LOCAL_PREFIX} Worker loop ended — channel closed.");
         });
     }
 }
