@@ -80,21 +80,6 @@ describe('DocumentViewer', () => {
     }))
   }
 
-  /** Simulate measuring the container by patching getComputedStyle */
-  function mockContainerSize(width: number, height: number) {
-    const origGetComputedStyle = window.getComputedStyle
-    vi.spyOn(window, 'getComputedStyle').mockImplementation((elt: Element) => {
-      const real = origGetComputedStyle(elt)
-      return {
-        ...real,
-        paddingLeft: '16px',
-        paddingRight: '16px',
-        paddingTop: '16px',
-        paddingBottom: '16px',
-      } as CSSStyleDeclaration
-    })
-  }
-
   describe('image mode', () => {
     it('renders an img element with the asset URL', () => {
       render(DocumentViewer, {

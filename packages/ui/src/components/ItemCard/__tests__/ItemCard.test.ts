@@ -103,7 +103,6 @@ describe('ItemCard', () => {
   it('calls onclick when the main card area is clicked', async () => {
     const onclick = vi.fn()
     render(ItemCard, { props: { ...baseProps, onclick } })
-    const card = screen.getByRole('button', { name: /test document/i })
     // The main card button contains the content, click on the title area
     const title = screen.getByText('Test Document')
     await fireEvent.click(title)

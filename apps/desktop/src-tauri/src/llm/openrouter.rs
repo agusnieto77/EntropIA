@@ -76,11 +76,6 @@ impl OpenRouterClient {
         }
     }
 
-    pub fn update_config(&mut self, api_key: String, model: String) {
-        self.api_key = api_key;
-        self.model = model;
-    }
-
     /// Returns the configured model's context window size.
     /// Uses a conservative default since we can't always query the API.
     pub fn n_ctx(&self) -> u32 {
