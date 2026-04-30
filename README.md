@@ -8,7 +8,7 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 **EntropIA** es una app de escritorio open-source orientada a investigación en humanidades y ciencias sociales. Está pensada para trabajar con **imágenes, PDFs y audio** de forma **local/offline-first**, construir corpus y sumar capas de análisis asistido sobre las fuentes.
 
-**Release actual:** [`v0.0.7`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.7)
+**Release actual:** [`v0.0.8`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.8)
 
 Hoy el foco del proyecto está en:
 
