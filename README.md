@@ -10,6 +10,8 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 **Release actual:** [`v0.0.8`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.8)
 
+> Si querés probar la app sin compilar, andá directo a [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
+
 Hoy el foco del proyecto está en:
 
 - **organización de corpus** en colecciones e ítems
@@ -29,7 +31,7 @@ Hoy el foco del proyecto está en:
 
 ### OCR y transcripción
 
-- **OCR Light (OCRL)**: OCR plano para imágenes/PDFs
+- **OCR Light (OCRL)**: OCR plano para imágenes y PDFs
 - **OCR High (OCRH)**: modo con **PaddleOCR-VL** para extracción más rica y sensible al layout
 - extracción de texto nativo desde PDF cuando la calidad lo permite
 - transcripción de audio con **faster-whisper** vía subprocess de Python
@@ -68,7 +70,7 @@ Hoy el foco del proyecto está en:
 | Detección de layout ONNX (hoy no activa en producción) | **`PP-DocLayout-L.onnx`** |
 | Fallback OCR clásico | **Tesseract** (`spa+eng`) |
 
-> Nota: algunos pipelines tienen degradación elegante. Si falta un runtime/modelo opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
+> Nota: varios pipelines tienen **degradación elegante**. Si falta un runtime, modelo o dependencia opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
 
 ## Stack técnico real
 
@@ -99,6 +101,20 @@ Podés bajar instaladores desde [GitHub Releases](https://github.com/agusnieto77
 | Linux | `.deb` o `.AppImage` |
 
 > En macOS, si aparece el warning de “desarrollador no identificado”, abrí con clic derecho → **Abrir**.
+
+### Qué necesitás para la experiencia completa
+
+La app puede abrirse y usarse sin tener todo el stack local instalado, pero algunas capacidades avanzadas dependen de runtimes externos.
+
+| Capacidad | Requiere |
+| --- | --- |
+| OCR básico / fallback | Tesseract disponible |
+| OCR High (OCRH) | Python + `paddleocr[doc-parser]` |
+| Transcripción | Python + `faster-whisper` |
+| Embeddings | Python + `fastembed` |
+| NER enriquecido opcional | Python + `spacy` + `es_core_news_lg` |
+
+> En la práctica, **Windows es hoy la plataforma mejor documentada y más verificada** para levantar el stack completo de OCR/NLP local.
 
 ## Desarrollo desde código fuente
 
@@ -144,7 +160,7 @@ pnpm --filter @entropia/desktop tauri build
 
 ## Requisitos adicionales para OCR/NLP local
 
-La app puede **degradar con gracia** si faltan dependencias opcionales, pero para tener el stack completo de OCR/transcripción/NLP local necesitás herramientas adicionales.
+La app puede **degradar con gracia** si faltan dependencias opcionales, pero para tener el stack completo de OCR, transcripción y NLP local necesitás herramientas adicionales.
 
 ### Windows
 
@@ -198,6 +214,8 @@ python -m spacy download es_core_news_lg
 [System.Environment]::SetEnvironmentVariable("TESSDATA_PREFIX", "C:\vcpkg\installed\x64-windows-static-md\share", "User")
 ```
 
+> Recomendación práctica: si vas a desarrollar o validar OCR/NLP local de punta a punta, arrancá por **Windows**. Es el entorno con mejor cobertura documental y el más probado en este repo hoy.
+
 ## Scripts útiles del monorepo
 
 Desde la raíz:
@@ -225,7 +243,8 @@ Todavía hay trabajo abierto en estabilidad, DX, roadmap de sync/export y refina
 ## Notas
 
 - EntropIA privilegia **procesamiento local** y puede degradar algunas capacidades si faltan dependencias opcionales de Python o del toolchain nativo.
-- El stack de OCR/NLP más completo hoy está mejor documentado y verificado en **Windows**.
+- El stack de OCR/NLP más completo hoy está **mejor documentado y más verificado en Windows**.
+- Los instaladores publicados sirven para probar la app rápido; el stack local completo requiere dependencias adicionales si querés OCR/NLP avanzado.
 - El roadmap sigue abierto para estabilidad, sync/export y refinamiento de pipelines.
 
 ---
