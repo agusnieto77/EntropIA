@@ -1,6 +1,23 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { getAssetUrl } from '$lib/file-import'
+  import {
+    buildLayoutBlockViews,
+    countLayoutBlocksByFilter,
+    filterBlocksByPage,
+    filterRegionsByPage,
+    filterLayoutBlocksByType,
+    getBlockCountByPage,
+    getLayoutByAsset,
+    getPagesFromLayout,
+    LAYOUT_BLOCK_FILTERS,
+    type LayoutBlockFilterId,
+  } from '$lib/layouts'
+  import {
+    formatLayoutBbox,
+    getLayoutOverlaySourceMeta,
+    serializeLayoutBlock,
+  } from '$lib/layout-inspector'
   import { OcrStore, extractText, type OcrMode } from '$lib/ocr'
   import { TranscriptionStore, transcribeAudio } from '$lib/transcription'
   import {
@@ -48,6 +65,7 @@ llmExtractTriplesAsset,
   import type {
     Entity,
     ViewerAnnotation,
+    ViewerLayoutRegion,
     AnnotationKind as ViewerAnnotationKind,
     EditTool,
     ImageEditResult,
@@ -137,6 +155,22 @@ llmExtractTriplesAsset,
     assetId: string
     annotations: ViewerAnnotation[]
   } | null = null
+
+  let assetLayout = $state<Awaited<ReturnType<typeof getLayoutByAsset>>>(null)
+  let layoutLoading = $state(false)
+  let layoutError = $state<string | null>(null)
+  let showLayout = $state(false)
+  let layoutTypeFilter = $state<LayoutBlockFilterId>('all')
+  let layoutHoveredBlockId = $state<string | null>(null)
+  let layoutSelectedBlockId = $state<string | null>(null)
+  let layoutHoveredRegionId = $state<string | null>(null)
+  let layoutSelectedRegionId = $state<string | null>(null)
+  let layoutBlockListEl = $state<HTMLDivElement | null>(null)
+  let lastAutoScrolledLayoutBlockId = $state<string | null>(null)
+  let layoutInspectorCopyMessage = $state<{ tone: 'success' | 'error'; text: string } | null>(null)
+  let layoutInspectorCopyTimer = $state<ReturnType<typeof setTimeout> | null>(null)
+  let viewerPage = $state(1)
+  let viewerTotalPages = $state(1)
 
   // Image edit state
   let editTool = $state<EditTool>('none')
@@ -506,6 +540,126 @@ llmExtractTriplesAsset,
   let viewerType = $derived<'image' | 'pdf' | 'audio'>(
     selectedAsset?.type === 'pdf' ? 'pdf' : selectedAsset?.type === 'audio' ? 'audio' : 'image'
   )
+
+  let layoutBlocks = $derived(assetLayout ? buildLayoutBlockViews(assetLayout) : [])
+  let layoutPages = $derived(getPagesFromLayout(assetLayout))
+  let layoutPageOptions = $derived(
+    viewerType === 'pdf' && assetLayout
+      ? Array.from({ length: Math.max(viewerTotalPages, layoutPages[layoutPages.length - 1] ?? 0) }, (_, index) => index + 1)
+      : []
+  )
+  let layoutActivePage = $derived(
+    viewerType === 'pdf' ? viewerPage : (layoutPages[0] ?? 1)
+  )
+  let layoutBlockCountsByPage = $derived(getBlockCountByPage(layoutBlocks))
+  let layoutPageRegions = $derived(
+    assetLayout
+      ? viewerType === 'pdf'
+        ? filterRegionsByPage(assetLayout.regions, layoutActivePage)
+        : assetLayout.regions
+      : []
+  )
+  let layoutPageBlocks = $derived(
+    viewerType === 'pdf' ? filterBlocksByPage(layoutBlocks, layoutActivePage) : layoutBlocks
+  )
+  let layoutFilterCounts = $derived(countLayoutBlocksByFilter(layoutPageBlocks))
+  let visibleLayoutBlocks = $derived(filterLayoutBlocksByType(layoutPageBlocks, layoutTypeFilter))
+  let selectedLayoutBlock = $derived(findVisibleLayoutBlockById(layoutSelectedBlockId))
+  let layoutRegions = $derived<ViewerLayoutRegion[]>(
+    visibleLayoutBlocks.map((block) => ({
+      id: block.regionId,
+      blockId: block.id,
+      label: block.label,
+      x: block.overlayBbox.x,
+      y: block.overlayBbox.y,
+      width: block.overlayBbox.width,
+      height: block.overlayBbox.height,
+      matchSource: block.overlaySource,
+    }))
+  )
+  let layoutReferenceWidth = $derived(
+    layoutPageBlocks[0]?.imageWidth ?? layoutPageRegions[0]?.imageWidth ?? assetLayout?.imageWidth ?? 0
+  )
+  let layoutReferenceHeight = $derived(
+    layoutPageBlocks[0]?.imageHeight ?? layoutPageRegions[0]?.imageHeight ?? assetLayout?.imageHeight ?? 0
+  )
+  let hasLayoutData = $derived(Boolean(assetLayout && layoutBlocks.length > 0))
+
+  function findVisibleLayoutBlockById(blockId: string | null) {
+    if (!blockId) return null
+    return visibleLayoutBlocks.find((block) => block.id === blockId) ?? null
+  }
+
+  function findVisibleLayoutBlockByRegionId(regionId: string | null) {
+    if (!regionId) return null
+    return visibleLayoutBlocks.find((block) => block.regionId === regionId) ?? null
+  }
+
+  function syncLayoutHoverFromBlock(blockId: string | null) {
+    const block = findVisibleLayoutBlockById(blockId)
+    layoutHoveredBlockId = block?.id ?? null
+    layoutHoveredRegionId = block?.regionId ?? null
+  }
+
+  function syncLayoutHoverFromRegion(regionId: string | null) {
+    const block = findVisibleLayoutBlockByRegionId(regionId)
+    layoutHoveredBlockId = block?.id ?? null
+    layoutHoveredRegionId = block?.regionId ?? null
+  }
+
+  function setSelectedLayoutBlock(blockId: string | null) {
+    const block = findVisibleLayoutBlockById(blockId)
+    layoutSelectedBlockId = block?.id ?? null
+    layoutSelectedRegionId = block?.regionId ?? null
+    if (block) {
+      showLayout = true
+    }
+  }
+
+  function setSelectedLayoutRegion(regionId: string | null) {
+    const block = findVisibleLayoutBlockByRegionId(regionId)
+    layoutSelectedBlockId = block?.id ?? null
+    layoutSelectedRegionId = block?.regionId ?? null
+    if (block) {
+      showLayout = true
+    }
+  }
+
+  function scrollSelectedLayoutBlockIntoView(blockId: string | null) {
+    if (!layoutBlockListEl || !blockId) return
+    const selector = `[data-layout-block-id="${blockId}"]`
+    const blockEl = layoutBlockListEl.querySelector<HTMLElement>(selector)
+    blockEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }
+
+  function clearLayoutInspectorCopyMessage() {
+    if (layoutInspectorCopyTimer) {
+      clearTimeout(layoutInspectorCopyTimer)
+      layoutInspectorCopyTimer = null
+    }
+  }
+
+  function showLayoutInspectorCopyMessage(tone: 'success' | 'error', text: string) {
+    clearLayoutInspectorCopyMessage()
+    layoutInspectorCopyMessage = { tone, text }
+    layoutInspectorCopyTimer = setTimeout(() => {
+      layoutInspectorCopyMessage = null
+      layoutInspectorCopyTimer = null
+    }, 2200)
+  }
+
+  async function copyLayoutInspectorValue(value: string, successText: string) {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error('Clipboard API unavailable')
+      }
+
+      await navigator.clipboard.writeText(value)
+      showLayoutInspectorCopyMessage('success', successText)
+    } catch {
+      showLayoutInspectorCopyMessage('error', 'No se pudo copiar desde el inspector.')
+    }
+  }
 
   function clampNormalized(value: number) {
     return Math.max(0, Math.min(1, value))
@@ -1372,6 +1526,15 @@ llmExtractTriplesAsset,
       selectedAnnotationId = null
       annotationTool = 'select'
       editTool = 'none'
+      viewerPage = 1
+      viewerTotalPages = 1
+      showLayout = false
+      layoutTypeFilter = 'all'
+      layoutHoveredBlockId = null
+      layoutSelectedBlockId = null
+      layoutHoveredRegionId = null
+      layoutSelectedRegionId = null
+      lastAutoScrolledLayoutBlockId = null
       // Reset undo stack only when switching to a DIFFERENT asset by id.
       // Editing the same asset creates a new versioned path, which should NOT
       // clear undo history.
@@ -1411,6 +1574,82 @@ llmExtractTriplesAsset,
     return () => {
       cancelled = true
     }
+  })
+
+  $effect(() => {
+    const asset = selectedAsset
+
+    if (!asset || asset.type === 'audio') {
+      assetLayout = null
+      layoutLoading = false
+      layoutError = null
+      return
+    }
+
+    let cancelled = false
+    layoutLoading = true
+    layoutError = null
+
+    void (async () => {
+      try {
+        const layout = await getLayoutByAsset(asset.id)
+        if (!cancelled && selectedAsset?.id === asset.id) {
+          assetLayout = layout
+          if (!layout || layout.blocks.length === 0) {
+            showLayout = false
+          }
+        }
+      } catch (e) {
+        if (!cancelled) {
+          assetLayout = null
+          layoutError = e instanceof Error ? e.message : 'Failed to load layout'
+          showLayout = false
+        }
+      } finally {
+        if (!cancelled) {
+          layoutLoading = false
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  })
+
+  $effect(() => {
+    if (!visibleLayoutBlocks.some((block) => block.id === layoutSelectedBlockId)) {
+      layoutSelectedBlockId = null
+      layoutSelectedRegionId = null
+    }
+
+    if (!visibleLayoutBlocks.some((block) => block.id === layoutHoveredBlockId)) {
+      layoutHoveredBlockId = null
+      layoutHoveredRegionId = null
+    }
+  })
+
+  $effect(() => {
+    const selectedBlockId = layoutSelectedBlockId
+
+    if (!selectedBlockId) {
+      lastAutoScrolledLayoutBlockId = null
+      return
+    }
+
+    if (!visibleLayoutBlocks.some((block) => block.id === selectedBlockId)) {
+      lastAutoScrolledLayoutBlockId = null
+      return
+    }
+
+    if (lastAutoScrolledLayoutBlockId === selectedBlockId) {
+      return
+    }
+
+    lastAutoScrolledLayoutBlockId = selectedBlockId
+    queueMicrotask(() => {
+      scrollSelectedLayoutBlockIntoView(selectedBlockId)
+    })
   })
 
   // Reload asset-scoped data when the selected asset changes
@@ -1466,8 +1705,8 @@ llmExtractTriplesAsset,
     void loadTriples()
     // Load persisted LLM results for this asset so previous
     // asset-level results (summarize, correct_ocr, etc.) are visible.
-    llmStore.loadPersistedResults(asset.id)
-    llmGetResult(asset.id, 'summarize')
+    llmStore.loadPersistedResults(asset.id, 'asset')
+    llmGetResult(asset.id, 'summarize', 'asset')
       .then((result) => {
         if (result) {
           summaryTexts.set(asset.id, result.result)
@@ -1545,7 +1784,7 @@ llmExtractTriplesAsset,
       })
       // Load persisted LLM results for the item (legacy item-level results).
       // Asset-level results are loaded in the selectedAsset effect below.
-      llmStore.loadPersistedResults(itemId)
+      llmStore.loadPersistedResults(itemId, 'item')
     })
 
     llmIsAvailable()
@@ -1563,6 +1802,7 @@ llmExtractTriplesAsset,
   })
 
   onDestroy(() => {
+    clearLayoutInspectorCopyMessage()
     ocrStore.stopListening()
     nlpStore.stopListening()
     transcriptionStore.stopListening()
@@ -1600,20 +1840,34 @@ path={selectedAsset.path}
             assetUrl={viewerSrc}
             type={viewerType}
             {annotations}
+            {layoutRegions}
+            showLayoutOverlay={showLayout && layoutRegions.length > 0}
+            hoveredLayoutRegionId={layoutHoveredRegionId}
+            selectedLayoutRegionId={layoutSelectedRegionId}
+            {layoutReferenceWidth}
+            {layoutReferenceHeight}
             {selectedAnnotationId}
             {annotationTool}
             {annotationColor}
             {editTool}
             canUndo={canUndo}
+            currentPage={viewerPage}
             onAnnotationsChange={handleAnnotationsChange}
             onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
             onAnnotationToolChange={handleAnnotationToolChange}
             onAnnotationColorChange={handleAnnotationColorChange}
+            onLayoutRegionHoverChange={(regionId) => {
+              syncLayoutHoverFromRegion(regionId)
+            }}
+            onLayoutRegionSelect={(regionId) => {
+              setSelectedLayoutRegion(regionId)
+            }}
             onEditSelect={handleEditSelect}
             onEditToolChange={(tool) => { editTool = tool; if (tool !== 'none') annotationTool = 'select' }}
             onRotateLeft={handleRotateLeft}
             onRotateRight={handleRotateRight}
             onUndo={handleUndo}
+            onPageChange={(page, totalPages) => { viewerPage = page; viewerTotalPages = totalPages }}
             onDimensionsChange={(dims) => { imageNaturalW = dims.width; imageNaturalH = dims.height }}
           />
 
@@ -1727,6 +1981,251 @@ path={selectedAsset.path}
           </div>
         {/if}
       </section>
+
+      {#if selectedAsset && selectedAsset.type !== 'audio'}
+        <section class="section">
+          <div class="layout-section-header">
+            <div>
+              <h3>Layout{#if viewerType === 'pdf'} · Page {layoutActivePage}{/if}</h3>
+              {#if assetLayout}
+                <p class="layout-meta">
+                  {assetLayout.model} · {viewerType === 'pdf' ? (layoutBlockCountsByPage[layoutActivePage] ?? 0) : layoutBlocks.length} bloques · {viewerType === 'pdf' ? layoutPageRegions.length : assetLayout.regions.length} regiones
+                </p>
+              {/if}
+            </div>
+
+            <button
+              type="button"
+              class="layout-toggle"
+              disabled={!hasLayoutData}
+              aria-pressed={showLayout}
+              onclick={() => {
+                showLayout = !showLayout
+              }}
+            >
+              {showLayout ? 'Ocultar overlay' : 'Mostrar overlay'}
+            </button>
+          </div>
+
+          {#if layoutLoading}
+            <p class="empty-text">Cargando layout…</p>
+          {:else if layoutError}
+            <p class="error">No se pudo cargar el layout: {layoutError}</p>
+          {:else if !assetLayout}
+            <p class="empty-text">Este asset todavía no tiene layout persistido.</p>
+          {:else if layoutBlocks.length === 0}
+            <p class="empty-text">Hay layout guardado, pero no trae bloques navegables.</p>
+          {:else}
+            {#if showLayout}
+              <p class="layout-help">
+                Tocá o pasá el mouse sobre un bloque para resaltarlo en el viewer.
+              </p>
+            {/if}
+
+            {#if viewerType === 'pdf' && layoutPageOptions.length > 1}
+              <div class="layout-page-toolbar">
+                <p class="layout-page-summary" data-testid="layout-page-summary">
+                  Página {layoutActivePage} de {layoutPageOptions.length}
+                </p>
+
+                <div class="layout-page-group" role="group" aria-label="Seleccionar página del layout">
+                  {#each layoutPageOptions as page (page)}
+                    <button
+                      type="button"
+                      class:active={layoutActivePage === page}
+                      class="layout-page-chip"
+                      data-testid={`layout-page-chip-${page}`}
+                      aria-pressed={layoutActivePage === page}
+                      onclick={() => {
+                        viewerPage = page
+                      }}
+                    >
+                      <span>P{page}</span>
+                      <span class="layout-page-chip__count">{layoutBlockCountsByPage[page] ?? 0}</span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            <div class="layout-filter-toolbar">
+              <div class="layout-filter-group" role="group" aria-label="Filtrar bloques por tipo">
+                {#each LAYOUT_BLOCK_FILTERS as filter (filter.id)}
+                  {@const count = layoutFilterCounts[filter.id]}
+                  <button
+                    type="button"
+                    class:active={layoutTypeFilter === filter.id}
+                    class="layout-filter-chip"
+                    data-testid={`layout-filter-${filter.id}`}
+                    aria-pressed={layoutTypeFilter === filter.id}
+                    onclick={() => {
+                      layoutTypeFilter = filter.id
+                    }}
+                  >
+                    <span>{filter.label}</span>
+                    <span
+                      class="layout-filter-chip__count"
+                      data-testid={`layout-filter-count-${filter.id}`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                {/each}
+              </div>
+
+              <p class="layout-filter-summary">
+                Mostrando {visibleLayoutBlocks.length} de {layoutPageBlocks.length} bloques.
+              </p>
+            </div>
+
+            {#if layoutPageBlocks.length === 0}
+              <p class="empty-text">No hay bloques para la página visible.</p>
+            {:else if visibleLayoutBlocks.length === 0}
+              <p class="empty-text">No hay bloques del tipo seleccionado para la página visible.</p>
+            {:else}
+              <div class="layout-block-list" bind:this={layoutBlockListEl}>
+                {#each visibleLayoutBlocks as block (block.id)}
+                  {@const isHovered = layoutHoveredBlockId === block.id}
+                  {@const isSelected = layoutSelectedBlockId === block.id}
+                  {@const overlayMeta = getLayoutOverlaySourceMeta(block.overlaySource)}
+                  <button
+                    type="button"
+                    data-testid={`layout-block-item-${block.id}`}
+                    data-layout-block-id={block.id}
+                    class:hovered={isHovered}
+                    class:selected={isSelected}
+                    class:fallback={block.overlaySource === 'block'}
+                    class="layout-block-item"
+                    onmouseenter={() => {
+                      syncLayoutHoverFromBlock(block.id)
+                    }}
+                    onmouseleave={() => {
+                      syncLayoutHoverFromBlock(null)
+                    }}
+                    onclick={() => {
+                      setSelectedLayoutBlock(block.id)
+                    }}
+                  >
+                    <span class="layout-block-order">#{block.order}</span>
+                    <span class="layout-block-content">
+                      <span class="layout-block-heading">
+                        <span class="layout-block-label">{block.label}</span>
+                        <span
+                          class:layout-block-source-badge--fallback={block.overlaySource === 'block'}
+                          class="layout-block-source-badge"
+                        >
+                          {overlayMeta.shortLabel}
+                        </span>
+                        {#if viewerType === 'pdf'}
+                          <span class="layout-block-page-chip">P{block.page}</span>
+                        {/if}
+                      </span>
+                      <span class="layout-block-preview">{block.preview || 'Sin preview textual'}</span>
+                    </span>
+                  </button>
+                {/each}
+              </div>
+
+              <div class="layout-inspector" data-testid="layout-block-inspector">
+                {#if selectedLayoutBlock}
+                  {@const overlayMeta = getLayoutOverlaySourceMeta(selectedLayoutBlock.overlaySource)}
+                  <div class="layout-inspector__header">
+                    <div>
+                      <p class="layout-inspector__eyebrow">Inspector</p>
+                      <h4>Bloque seleccionado · #{selectedLayoutBlock.order}</h4>
+                    </div>
+
+                    <div class="layout-inspector__actions">
+                      <button
+                        type="button"
+                        class="layout-inspector__action"
+                        data-testid="layout-inspector-copy-text"
+                        disabled={!selectedLayoutBlock.content.trim()}
+                        onclick={() => copyLayoutInspectorValue(selectedLayoutBlock.content, 'Texto copiado.')}
+                      >
+                        Copiar texto
+                      </button>
+                      <button
+                        type="button"
+                        class="layout-inspector__action"
+                        data-testid="layout-inspector-copy-bbox"
+                        onclick={() => copyLayoutInspectorValue(formatLayoutBbox(selectedLayoutBlock.overlayBbox), 'BBox copiado.')}
+                      >
+                        Copiar bbox
+                      </button>
+                      <button
+                        type="button"
+                        class="layout-inspector__action"
+                        data-testid="layout-inspector-copy-json"
+                        onclick={() => copyLayoutInspectorValue(serializeLayoutBlock(selectedLayoutBlock), 'JSON copiado.')}
+                      >
+                        Copiar JSON
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="layout-inspector__grid">
+                    <div>
+                      <span class="layout-inspector__label">Label</span>
+                      <strong data-testid="layout-inspector-label">{selectedLayoutBlock.label}</strong>
+                    </div>
+                    <div>
+                      <span class="layout-inspector__label">Orden</span>
+                      <strong>#{selectedLayoutBlock.order}</strong>
+                    </div>
+                    <div>
+                      <span class="layout-inspector__label">Página</span>
+                      <strong>{selectedLayoutBlock.page}</strong>
+                    </div>
+                    <div>
+                      <span class="layout-inspector__label">Group</span>
+                      <strong>{selectedLayoutBlock.groupId || '—'}</strong>
+                    </div>
+                    <div>
+                      <span class="layout-inspector__label">BBox bloque</span>
+                      <code>{formatLayoutBbox(selectedLayoutBlock.bbox)}</code>
+                    </div>
+                    <div>
+                      <span class="layout-inspector__label">BBox overlay</span>
+                      <code data-testid="layout-inspector-bbox">{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code>
+                    </div>
+                    <div class="layout-inspector__field layout-inspector__field--wide">
+                      <span class="layout-inspector__label">Overlay source</span>
+                      <strong
+                        class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource === 'block'}
+                        class="layout-inspector__source"
+                        data-testid="layout-inspector-overlay-source"
+                      >
+                        {overlayMeta.label}
+                      </strong>
+                      <p>{overlayMeta.description}</p>
+                    </div>
+                  </div>
+
+                  <div class="layout-inspector__content">
+                    <span class="layout-inspector__label">Texto / preview ampliado</span>
+                    <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content || 'Sin texto completo para este bloque.'}</pre>
+                  </div>
+
+                  {#if layoutInspectorCopyMessage}
+                    <p
+                      class:layout-inspector__message--error={layoutInspectorCopyMessage.tone === 'error'}
+                      class="layout-inspector__message"
+                      data-testid="layout-inspector-copy-message"
+                    >
+                      {layoutInspectorCopyMessage.text}
+                    </p>
+                  {/if}
+                {:else}
+                  <div class="layout-inspector__empty" data-testid="layout-inspector-empty">
+                    Seleccioná un bloque para ver label, orden, página, bbox, source y texto completo.
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+        </section>
+      {/if}
 
       {#if selectedAsset && selectedAsset.type !== 'audio'}
         {@const ocr = getOcrState(selectedAsset.id)}
@@ -2257,6 +2756,351 @@ OCRC
   .section {
     display: flex;
     flex-direction: column;
+  }
+  .layout-section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .layout-meta {
+    margin: var(--space-1) 0 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+  .layout-help {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+  }
+  .layout-page-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+  .layout-page-summary {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+  .layout-page-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .layout-page-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+  .layout-page-chip:hover,
+  .layout-page-chip.active {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  }
+  .layout-page-chip__count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-border) 55%, transparent);
+    font-variant-numeric: tabular-nums;
+  }
+  .layout-filter-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+  .layout-filter-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .layout-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+  .layout-filter-chip:hover,
+  .layout-filter-chip.active {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+  }
+  .layout-filter-chip__count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-border) 55%, transparent);
+    font-variant-numeric: tabular-nums;
+  }
+  .layout-filter-summary {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+  .layout-toggle {
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .layout-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .layout-block-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-height: 320px;
+    overflow: auto;
+  }
+  .layout-block-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease,
+      transform 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .layout-block-item:hover,
+  .layout-block-item.hovered,
+  .layout-block-item.selected {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+  }
+  .layout-block-item.hovered:not(.selected) {
+    border-color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 10%, var(--color-surface));
+  }
+  .layout-block-item:hover,
+  .layout-block-item.hovered {
+    transform: translateY(-1px);
+  }
+  .layout-block-item.selected {
+    transform: translateX(2px);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .layout-block-item.fallback {
+    border-style: dashed;
+  }
+  .layout-block-item.fallback.selected {
+    border-color: color-mix(in srgb, var(--color-warning) 65%, var(--color-accent));
+    background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface));
+  }
+  .layout-block-order {
+    flex-shrink: 0;
+    min-width: 42px;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+  }
+  .layout-block-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .layout-block-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .layout-block-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+  }
+  .layout-block-source-badge,
+  .layout-block-page-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 1.2;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+    color: var(--color-text-secondary);
+  }
+  .layout-block-source-badge--fallback {
+    border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-warning) 12%, var(--color-surface));
+  }
+  .layout-block-preview {
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .layout-inspector {
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-accent) 4%, var(--color-surface)) 0%,
+      var(--color-surface) 100%
+    );
+  }
+  .layout-inspector__header {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+  .layout-inspector__eyebrow {
+    margin: 0 0 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+  }
+  .layout-inspector h4 {
+    margin: 0;
+    font-size: var(--font-size-md);
+    color: var(--color-text-primary);
+  }
+  .layout-inspector__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    justify-content: flex-end;
+  }
+  .layout-inspector__action {
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+  }
+  .layout-inspector__action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .layout-inspector__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+  .layout-inspector__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .layout-inspector__field--wide {
+    grid-column: 1 / -1;
+  }
+  .layout-inspector__label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+  }
+  .layout-inspector__grid strong,
+  .layout-inspector__grid code {
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+  }
+  .layout-inspector__grid p {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+  }
+  .layout-inspector__source {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+    border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+  }
+  .layout-inspector__source--fallback {
+    background: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  }
+  .layout-inspector__content {
+    margin-top: var(--space-3);
+  }
+  .layout-inspector__content pre {
+    margin: 0;
+    padding: var(--space-3);
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+  }
+  .layout-inspector__message,
+  .layout-inspector__empty {
+    margin: var(--space-3) 0 0;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+  }
+  .layout-inspector__message {
+    color: var(--color-success, #16a34a);
+  }
+  .layout-inspector__message--error {
+    color: var(--color-danger);
   }
   .asset-pagination {
     display: flex;

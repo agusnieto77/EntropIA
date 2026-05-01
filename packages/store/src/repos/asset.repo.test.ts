@@ -252,6 +252,8 @@ describe('AssetRepo', () => {
       const batchSql = rawClient.executeBatch.mock.calls[0]?.[0] as string
       expect(batchSql).toContain('DELETE FROM jobs')
       expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM layouts')
+      expect(batchSql).toContain('DELETE FROM llm_results')
       expect(batchSql).toContain('DELETE FROM annotations')
       expect(batchSql).toContain('DELETE FROM assets')
       expect(batchSql).toContain('asset-1')

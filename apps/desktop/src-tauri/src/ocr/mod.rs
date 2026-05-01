@@ -19,7 +19,7 @@ mod debug_viz;
 
 use provider::{LayoutCategory, OcrProvider};
 use pdf::{extract_pdf_text, is_quality_text, pdf_page_count, init_pdfium_path};
-use paddle_vl::{PaddleVlEngine, create_paddle_vl_engine};
+use paddle_vl::{PaddleVlEngine, PaddleVlOutput, create_paddle_vl_engine};
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use serde::Serialize;
 use std::sync::Arc;
@@ -47,6 +47,145 @@ pub struct OcrCompletePayload {
 pub struct OcrErrorPayload {
     pub asset_id: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessedOcrOutput {
+    ocr: provider::OcrOutput,
+    layout: Option<LayoutPersistencePayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LayoutPersistencePayload {
+    model: String,
+    image_width: u32,
+    image_height: u32,
+    regions: Vec<PersistedLayoutRegion>,
+    blocks: Vec<PersistedLayoutBlock>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PersistedLayoutRegion {
+    page: u32,
+    image_width: u32,
+    image_height: u32,
+    category: String,
+    bbox: paddle_vl::PaddleVlBbox,
+    confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PersistedLayoutBlock {
+    page: u32,
+    image_width: u32,
+    image_height: u32,
+    label: String,
+    content: String,
+    bbox: paddle_vl::PaddleVlBbox,
+    order: i32,
+    group_id: i32,
+}
+
+impl LayoutPersistencePayload {
+    fn from_page(page: u32, output: &PaddleVlOutput) -> Self {
+        let mut payload = Self {
+            model: output.method.clone(),
+            image_width: output.image_width,
+            image_height: output.image_height,
+            regions: Vec::new(),
+            blocks: Vec::new(),
+        };
+        payload.push_page(page, output);
+        payload
+    }
+
+    fn push_page(&mut self, page: u32, output: &PaddleVlOutput) {
+        self.image_width = self.image_width.max(output.image_width);
+        self.image_height = self.image_height.max(output.image_height);
+
+        self.regions.extend(output.regions.iter().map(|region| PersistedLayoutRegion {
+            page,
+            image_width: output.image_width,
+            image_height: output.image_height,
+            category: region.category.clone(),
+            bbox: region.bbox.clone(),
+            confidence: region.confidence,
+        }));
+
+        self.blocks.extend(output.blocks.iter().map(|block| PersistedLayoutBlock {
+            page,
+            image_width: output.image_width,
+            image_height: output.image_height,
+            label: block.label.clone(),
+            content: block.content.clone(),
+            bbox: block.bbox.clone(),
+            order: block.order,
+            group_id: block.group_id,
+        }));
+    }
+}
+
+fn ocr_output_from_paddlevl(output: &PaddleVlOutput) -> provider::OcrOutput {
+    provider::OcrOutput {
+        text: output.text.clone(),
+        regions: output
+            .regions
+            .iter()
+            .map(|region| provider::OcrRegion {
+                text: String::new(),
+                confidence: region.confidence,
+                bbox: Some(provider::BoundingBox {
+                    x: region.bbox.x,
+                    y: region.bbox.y,
+                    width: region.bbox.width as u32,
+                    height: region.bbox.height as u32,
+                }),
+                column: None,
+            })
+            .collect(),
+        method: output.method.clone(),
+    }
+}
+
+fn detect_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::load_from_memory(bytes)
+        .map(|img| (img.width(), img.height()))
+        .ok()
+}
+
+fn rescale_paddlevl_bbox(bbox: &mut paddle_vl::PaddleVlBbox, scale_x: f64, scale_y: f64) {
+    bbox.x = ((bbox.x as f64) * scale_x).round() as i32;
+    bbox.y = ((bbox.y as f64) * scale_y).round() as i32;
+    bbox.width = ((bbox.width as f64) * scale_x).round() as i32;
+    bbox.height = ((bbox.height as f64) * scale_y).round() as i32;
+}
+
+fn rescale_paddlevl_output_to_dimensions(
+    output: &mut PaddleVlOutput,
+    target_width: u32,
+    target_height: u32,
+) {
+    if output.image_width == 0 || output.image_height == 0 {
+        return;
+    }
+
+    if output.image_width == target_width && output.image_height == target_height {
+        return;
+    }
+
+    let scale_x = target_width as f64 / output.image_width as f64;
+    let scale_y = target_height as f64 / output.image_height as f64;
+
+    for region in &mut output.regions {
+        rescale_paddlevl_bbox(&mut region.bbox, scale_x, scale_y);
+    }
+
+    for block in &mut output.blocks {
+        rescale_paddlevl_bbox(&mut block.bbox, scale_x, scale_y);
+    }
+
+    output.image_width = target_width;
+    output.image_height = target_height;
 }
 
 // ── Job & Queue ─────────────────────────────────────────────────────────────
@@ -212,9 +351,13 @@ impl OcrQueue {
 
                     match result {
                         Ok(output) => {
-                            let method = output.method.clone();
-                            let text_content = output.text.clone();
+                            let method = output.ocr.method.clone();
+                            let text_content = output.ocr.text.clone();
                             let save_result = save_extraction(&conn, &asset_id, &text_content, &method)
+                                .and_then(|_| match output.layout.as_ref() {
+                                    Some(layout) => save_layout(&conn, &asset_id, layout),
+                                    None => delete_layout(&conn, &asset_id),
+                                })
                                 .and_then(|_| lookup_item_id_for_asset(&conn, &asset_id));
 
                             if let Err(e) = &save_result {
@@ -394,6 +537,54 @@ fn save_extraction(
     )
     .map_err(|e| format!("Failed to upsert extraction: {e}"))?;
 
+    Ok(())
+}
+
+fn save_layout(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    layout: &LayoutPersistencePayload,
+) -> Result<(), String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let regions_json = serde_json::to_string(&layout.regions)
+        .map_err(|e| format!("Failed to serialize layout regions: {e}"))?;
+    let blocks_json = serde_json::to_string(&layout.blocks)
+        .map_err(|e| format!("Failed to serialize layout blocks: {e}"))?;
+
+    conn.execute(
+        "INSERT INTO layouts(id, asset_id, regions, blocks, model, image_width, image_height, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(asset_id) DO UPDATE SET
+           regions = excluded.regions,
+           blocks = excluded.blocks,
+           model = excluded.model,
+           image_width = excluded.image_width,
+           image_height = excluded.image_height,
+           created_at = excluded.created_at",
+        rusqlite::params![
+            id,
+            asset_id,
+            regions_json,
+            blocks_json,
+            layout.model,
+            layout.image_width,
+            layout.image_height,
+            now,
+        ],
+    )
+    .map_err(|e| format!("Failed to upsert layout: {e}"))?;
+
+    Ok(())
+}
+
+fn delete_layout(conn: &rusqlite::Connection, asset_id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM layouts WHERE asset_id = ?1", rusqlite::params![asset_id])
+        .map_err(|e| format!("Failed to delete stale layout: {e}"))?;
     Ok(())
 }
 
@@ -634,8 +825,7 @@ fn crop_region(
 
 /// Process a single OCR job using any OcrProvider.
 ///
-/// Returns `OcrOutput` on success, which includes the recognized text,
-/// structured regions (with bounding boxes for PaddleOCR), and the method name.
+/// Returns OCR text plus optional layout persistence payload.
 ///
 /// Layout engine parameter removed — layout-aware Light mode is not used in
 /// production. PaddleVL handles layout in High mode.
@@ -644,7 +834,7 @@ async fn process_job(
     job: &OcrJob,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
-) -> Result<provider::OcrOutput, String> {
+) -> Result<ProcessedOcrOutput, String> {
     let asset_id = job.asset_id.clone();
 
     // Stage 1 — reading file (25 %)
@@ -672,7 +862,7 @@ async fn process_pdf(
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
     mode: &OcrMode,
-) -> Result<provider::OcrOutput, String> {
+) -> Result<ProcessedOcrOutput, String> {
     // Stage 2 — extracting native text (50 %)
     emit_progress(app_handle, asset_id, 50, "extracting_native");
 
@@ -684,15 +874,18 @@ async fn process_pdf(
     match native_text {
         Ok(text) if is_quality_text(&text) => {
             emit_progress(app_handle, asset_id, 100, "done");
-            Ok(provider::OcrOutput {
-                text: text.clone(),
-                regions: vec![provider::OcrRegion {
-                    text,
-                    confidence: 0.0,
-                    bbox: None,
-                    column: None,
-                }],
-                method: "native".to_string(),
+            Ok(ProcessedOcrOutput {
+                ocr: provider::OcrOutput {
+                    text: text.clone(),
+                    regions: vec![provider::OcrRegion {
+                        text,
+                        confidence: 0.0,
+                        bbox: None,
+                        column: None,
+                    }],
+                    method: "native".to_string(),
+                },
+                layout: None,
             })
         }
         _ => {
@@ -712,6 +905,7 @@ async fn process_pdf(
 
             let mut all_text = String::new();
             let mut all_regions: Vec<provider::OcrRegion> = Vec::new();
+            let mut layout_payload: Option<LayoutPersistencePayload> = None;
             let mut method_suffix = String::new();
 
             for page_idx in 0..page_count {
@@ -732,6 +926,7 @@ async fn process_pdf(
                 let provider_clone = Arc::clone(provider);
                 let engine_clone = paddle_vl_engine.cloned();
                 let mode_clone = mode.clone();
+                let original_page_dimensions = detect_image_dimensions(&page_image);
 
                 let output = tokio::task::spawn_blocking(move || {
                     match mode_clone {
@@ -739,6 +934,7 @@ async fn process_pdf(
                             // Light mode: plain OCR, no layout detection
                             provider_clone
                                 .recognize(&page_image)
+                                .map(|output| (output, None))
                                 .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                         }
                         OcrMode::High => {
@@ -754,47 +950,46 @@ async fn process_pdf(
                                 ));
 
                                 if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
-                                    eprintln!("[OCRH] Failed to write temp file for PaddleVL on PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
-                                    return provider_clone
-                                        .recognize(&page_image)
-                                        .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
-                                }
+                                     eprintln!("[OCRH] Failed to write temp file for PaddleVL on PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
+                                     return provider_clone
+                                         .recognize(&page_image)
+                                         .map(|output| (output, None))
+                                         .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
+                                 }
 
                                 let temp_path_str = match temp_path.to_str() {
                                     Some(s) => s.to_string(),
                                     None => {
-                                        eprintln!("[OCRH] Invalid temp path for PaddleVL on PDF page {}. Falling back.", page_idx + 1);
-                                        return provider_clone
-                                            .recognize(&page_image)
-                                            .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
-                                    }
-                                };
+                                         eprintln!("[OCRH] Invalid temp path for PaddleVL on PDF page {}. Falling back.", page_idx + 1);
+                                         return provider_clone
+                                             .recognize(&page_image)
+                                             .map(|output| (output, None))
+                                             .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
+                                     }
+                                 };
 
                                 let vl_result = engine.detect(&temp_path_str);
                                 let _ = std::fs::remove_file(&temp_path);
 
                                 match vl_result {
-                                    Ok(vl_result) => {
-                                        Ok(provider::OcrOutput {
-                                            text: vl_result.text,
-                                            regions: vl_result.regions.into_iter().map(|r| provider::OcrRegion {
-                                                text: String::new(),
-                                                confidence: r.confidence,
-                                                bbox: Some(provider::BoundingBox {
-                                                    x: r.bbox.x,
-                                                    y: r.bbox.y,
-                                                    width: r.bbox.width as u32,
-                                                    height: r.bbox.height as u32,
-                                                }),
-                                                column: None,
-                                            }).collect(),
-                                            method: vl_result.method,
-                                        })
+                                    Ok(mut vl_result) => {
+                                        if let Some((original_width, original_height)) = original_page_dimensions {
+                                            rescale_paddlevl_output_to_dimensions(
+                                                &mut vl_result,
+                                                original_width,
+                                                original_height,
+                                            );
+                                        }
+                                        Ok((
+                                            ocr_output_from_paddlevl(&vl_result),
+                                            Some(vl_result),
+                                        ))
                                     }
                                     Err(e) => {
                                         eprintln!("[OCRH] PaddleVL failed for PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
                                         provider_clone
                                             .recognize(&page_image)
+                                            .map(|output| (output, None))
                                             .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                                     }
                                 }
@@ -802,6 +997,7 @@ async fn process_pdf(
                                 // No PaddleVL — plain OCR
                                 provider_clone
                                     .recognize(&page_image)
+                                    .map(|output| (output, None))
                                     .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                             }
                         }
@@ -811,6 +1007,18 @@ async fn process_pdf(
                 .map_err(|e| format!("OCR page {} task panicked: {e}", page_idx + 1))??;
 
                 // Track method for reporting
+                let (output, page_layout) = output;
+
+                if let Some(vl_output) = page_layout {
+                    let page_num = u32::try_from(page_idx + 1)
+                        .map_err(|_| format!("PDF page index {} does not fit into u32", page_idx + 1))?;
+                    if let Some(layout) = layout_payload.as_mut() {
+                        layout.push_page(page_num, &vl_output);
+                    } else {
+                        layout_payload = Some(LayoutPersistencePayload::from_page(page_num, &vl_output));
+                    }
+                }
+
                 if method_suffix.is_empty() {
                     method_suffix = format!("pdf_{}", output.method);
                 }
@@ -830,10 +1038,13 @@ async fn process_pdf(
             };
 
             emit_progress(app_handle, asset_id, 100, "done");
-            Ok(provider::OcrOutput {
-                text: all_text,
-                regions: all_regions,
-                method,
+            Ok(ProcessedOcrOutput {
+                ocr: provider::OcrOutput {
+                    text: all_text,
+                    regions: all_regions,
+                    method,
+                },
+                layout: layout_payload,
             })
         }
     }
@@ -852,7 +1063,7 @@ async fn process_image(
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
     mode: &OcrMode,
-) -> Result<provider::OcrOutput, String> {
+) -> Result<ProcessedOcrOutput, String> {
     match mode {
         OcrMode::Light => process_image_light(provider, bytes, asset_id, app_handle).await,
         OcrMode::High => process_image_high(provider, bytes, asset_id, app_handle, paddle_vl_engine).await,
@@ -868,7 +1079,7 @@ async fn process_image_light(
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
-) -> Result<provider::OcrOutput, String> {
+) -> Result<ProcessedOcrOutput, String> {
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
     // Plain OCR — no layout detection, just run the provider on the full image
@@ -912,7 +1123,10 @@ async fn process_image_light(
     }
 
     emit_progress(app_handle, asset_id, 100, "done");
-    Ok(output)
+    Ok(ProcessedOcrOutput {
+        ocr: output,
+        layout: None,
+    })
 }
 
 /// High mode: PaddleVL Python subprocess only.
@@ -925,7 +1139,7 @@ async fn process_image_high(
     asset_id: &str,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
-) -> Result<provider::OcrOutput, String> {
+) -> Result<ProcessedOcrOutput, String> {
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
     // Try PaddleVL (Python subprocess) if available
@@ -936,6 +1150,7 @@ async fn process_image_high(
         let provider_clone = Arc::clone(provider);
         let bytes_owned = bytes.to_vec();
         let asset_id_owned = asset_id.to_string();
+        let original_image_dimensions = detect_image_dimensions(bytes);
 
         let output = tokio::task::spawn_blocking(move || {
             // Downscale large images before feeding to PaddleVL — inference time
@@ -957,6 +1172,7 @@ async fn process_image_high(
                 );
                 return provider_clone
                     .recognize(&bytes_owned)
+                    .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
                     .map_err(|e| format!("OCR inference failed: {e}"));
             }
 
@@ -969,6 +1185,7 @@ async fn process_image_high(
                     );
                     return provider_clone
                         .recognize(&bytes_owned)
+                        .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
                         .map_err(|e| format!("OCR inference failed: {e}"));
                 }
             };
@@ -978,22 +1195,18 @@ async fn process_image_high(
             let _ = std::fs::remove_file(&temp_path); // best-effort cleanup
 
             match vl_result {
-                Ok(vl_output) => {
+                Ok(mut vl_output) => {
+                    if let Some((original_width, original_height)) = original_image_dimensions {
+                        rescale_paddlevl_output_to_dimensions(
+                            &mut vl_output,
+                            original_width,
+                            original_height,
+                        );
+                    }
                     eprintln!("[OCRH] PaddleVL detected {} blocks for {asset_id_owned}", vl_output.blocks.len());
-                    Ok(provider::OcrOutput {
-                        text: vl_output.text,
-                        regions: vl_output.regions.into_iter().map(|r| provider::OcrRegion {
-                            text: String::new(),
-                            confidence: r.confidence,
-                            bbox: Some(provider::BoundingBox {
-                                x: r.bbox.x,
-                                y: r.bbox.y,
-                                width: r.bbox.width as u32,
-                                height: r.bbox.height as u32,
-                            }),
-                            column: None,
-                        }).collect(),
-                        method: vl_output.method,
+                    Ok(ProcessedOcrOutput {
+                        ocr: ocr_output_from_paddlevl(&vl_output),
+                        layout: Some(LayoutPersistencePayload::from_page(1, &vl_output)),
                     })
                 }
                 Err(e) => {
@@ -1003,6 +1216,7 @@ async fn process_image_high(
                     );
                     provider_clone
                         .recognize(&bytes_owned)
+                        .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
                         .map_err(|e| format!("OCR inference failed: {e}"))
                 }
             }
@@ -1026,7 +1240,10 @@ async fn process_image_high(
     .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     emit_progress(app_handle, asset_id, 100, "done");
-    Ok(output)
+    Ok(ProcessedOcrOutput {
+        ocr: output,
+        layout: None,
+    })
 }
 
 /// Emit an `ocr:progress` event to the frontend.
@@ -1045,6 +1262,7 @@ fn emit_progress(app_handle: &AppHandle, asset_id: &str, pct: u8, stage: &str) {
 mod tests {
     use super::*;
     use crate::ocr::provider::{BoundingBox, LayoutCategory};
+    use crate::ocr::paddle_vl::{PaddleVlBbox, PaddleVlBlock, PaddleVlOutput, PaddleVlRegion};
 
     #[test]
     fn test_format_region_text_title() {
@@ -1184,5 +1402,170 @@ mod tests {
 
         assert_eq!(cropped.width(), 60, "50px + 5px + 5px = 60px width");
         assert_eq!(cropped.height(), 60, "50px + 5px + 5px = 60px height");
+    }
+
+    #[test]
+    fn test_layout_payload_tracks_page_metadata_and_blocks() {
+        let output = PaddleVlOutput {
+            text: "hola".to_string(),
+            method: "paddle_vl".to_string(),
+            blocks: vec![PaddleVlBlock {
+                label: "title".to_string(),
+                content: "Portada".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 10,
+                    y: 20,
+                    width: 30,
+                    height: 40,
+                },
+                order: 0,
+                group_id: 1,
+            }],
+            regions: vec![PaddleVlRegion {
+                category: "title".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 10,
+                    y: 20,
+                    width: 30,
+                    height: 40,
+                },
+                confidence: 0.98,
+            }],
+            image_width: 1200,
+            image_height: 1800,
+        };
+
+        let payload = LayoutPersistencePayload::from_page(2, &output);
+
+        assert_eq!(payload.model, "paddle_vl");
+        assert_eq!(payload.blocks.len(), 1);
+        assert_eq!(payload.regions.len(), 1);
+        assert_eq!(payload.blocks[0].page, 2);
+        assert_eq!(payload.blocks[0].image_width, 1200);
+        assert_eq!(payload.regions[0].page, 2);
+        assert_eq!(payload.regions[0].image_height, 1800);
+    }
+
+    #[test]
+    fn test_rescale_paddlevl_output_to_original_dimensions() {
+        let mut output = PaddleVlOutput {
+            text: "hola".to_string(),
+            method: "paddle_vl".to_string(),
+            blocks: vec![PaddleVlBlock {
+                label: "title".to_string(),
+                content: "Portada".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 100,
+                    y: 50,
+                    width: 200,
+                    height: 80,
+                },
+                order: 0,
+                group_id: 1,
+            }],
+            regions: vec![PaddleVlRegion {
+                category: "title".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 100,
+                    y: 50,
+                    width: 200,
+                    height: 80,
+                },
+                confidence: 0.98,
+            }],
+            image_width: 1000,
+            image_height: 334,
+        };
+
+        rescale_paddlevl_output_to_dimensions(&mut output, 2425, 809);
+
+        assert_eq!(output.image_width, 2425);
+        assert_eq!(output.image_height, 809);
+        assert_eq!(output.blocks[0].bbox.x, 243);
+        assert_eq!(output.blocks[0].bbox.y, 121);
+        assert_eq!(output.blocks[0].bbox.width, 485);
+        assert_eq!(output.blocks[0].bbox.height, 194);
+        assert_eq!(output.regions[0].bbox.x, 243);
+        assert_eq!(output.regions[0].bbox.height, 194);
+    }
+
+    #[test]
+    fn test_save_layout_upserts_and_delete_layout_clears_row() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE assets (id TEXT PRIMARY KEY);
+             INSERT INTO assets(id) VALUES ('asset-1');
+             CREATE TABLE layouts (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                regions TEXT NOT NULL,
+                blocks TEXT NOT NULL,
+                model TEXT NOT NULL,
+                image_width INTEGER NOT NULL,
+                image_height INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX idx_layouts_asset_id_unique ON layouts(asset_id);",
+        )
+        .expect("schema");
+
+        let payload = LayoutPersistencePayload {
+            model: "paddle_vl".to_string(),
+            image_width: 900,
+            image_height: 1400,
+            regions: vec![PersistedLayoutRegion {
+                page: 1,
+                image_width: 900,
+                image_height: 1400,
+                category: "plain_text".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 1,
+                    y: 2,
+                    width: 3,
+                    height: 4,
+                },
+                confidence: 0.9,
+            }],
+            blocks: vec![PersistedLayoutBlock {
+                page: 1,
+                image_width: 900,
+                image_height: 1400,
+                label: "plain_text".to_string(),
+                content: "texto".to_string(),
+                bbox: PaddleVlBbox {
+                    x: 1,
+                    y: 2,
+                    width: 3,
+                    height: 4,
+                },
+                order: 0,
+                group_id: 0,
+            }],
+        };
+
+        save_layout(&conn, "asset-1", &payload).expect("first upsert");
+        save_layout(&conn, "asset-1", &payload).expect("second upsert");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
+                row.get(0)
+            })
+            .expect("count row");
+        assert_eq!(count, 1, "layout upsert should keep one row per asset");
+
+        let blocks_json: String = conn
+            .query_row("SELECT blocks FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
+                row.get(0)
+            })
+            .expect("blocks json");
+        assert!(blocks_json.contains("texto"));
+
+        delete_layout(&conn, "asset-1").expect("delete layout");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
+                row.get(0)
+            })
+            .expect("remaining row count");
+        assert_eq!(remaining, 0);
     }
 }

@@ -133,6 +133,105 @@ describe('DocumentViewer', () => {
       expect(screen.getByTestId('image-zoom-out')).toBeInTheDocument()
     })
 
+    it('renders layout regions and syncs hover/select callbacks', async () => {
+      const onLayoutRegionHoverChange = vi.fn()
+      const onLayoutRegionSelect = vi.fn()
+
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          layoutRegions: [
+            {
+              id: 'layout-block-1::overlay',
+              blockId: 'layout-block-1',
+              label: 'title',
+              x: 20,
+              y: 10,
+              width: 80,
+              height: 30,
+            },
+          ],
+          showLayoutOverlay: true,
+          hoveredLayoutRegionId: 'layout-block-1::overlay',
+          selectedLayoutRegionId: null,
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+          onLayoutRegionHoverChange,
+          onLayoutRegionSelect,
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const region = await screen.findByTestId('layout-overlay-layout-block-1::overlay')
+      expect(region).toHaveAttribute('x', '20')
+      expect(region).toHaveAttribute('width', '80')
+
+      await fireEvent.pointerEnter(region)
+      expect(onLayoutRegionHoverChange).toHaveBeenCalledWith('layout-block-1::overlay')
+
+      await fireEvent.click(region)
+      expect(onLayoutRegionSelect).toHaveBeenCalledWith('layout-block-1::overlay')
+
+      await fireEvent.pointerLeave(region)
+      expect(onLayoutRegionHoverChange).toHaveBeenLastCalledWith(null)
+    })
+
+    it('keeps selected and hovered layout regions visually separate', async () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          layoutRegions: [
+            {
+              id: 'layout-block-1::overlay',
+              blockId: 'layout-block-1',
+              label: 'title',
+              x: 20,
+              y: 10,
+              width: 80,
+              height: 30,
+            },
+            {
+              id: 'layout-block-2::overlay',
+              blockId: 'layout-block-2',
+              label: 'text',
+              x: 30,
+              y: 60,
+              width: 90,
+              height: 40,
+            },
+          ],
+          showLayoutOverlay: true,
+          hoveredLayoutRegionId: 'layout-block-2::overlay',
+          selectedLayoutRegionId: 'layout-block-1::overlay',
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const selectedRegion = await screen.findByTestId('layout-overlay-layout-block-1::overlay')
+      const hoveredRegion = await screen.findByTestId('layout-overlay-layout-block-2::overlay')
+
+      expect(selectedRegion).toHaveAttribute('stroke', 'rgb(34, 211, 238)')
+      expect(hoveredRegion).toHaveAttribute('stroke', 'rgb(250, 204, 21)')
+    })
+
     it('creates a rectangle annotation with normalized coordinates relative to natural image size', async () => {
       const onAnnotationsChange = vi.fn()
 

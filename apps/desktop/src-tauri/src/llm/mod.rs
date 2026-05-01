@@ -25,6 +25,9 @@ use self::openrouter::OpenRouterClient;
 
 const LLM_LOCAL_PREFIX: &str = "[llm-local]";
 const LLM_CLOUD_PREFIX: &str = "[llm-cloud]";
+const LLM_TARGET_ASSET: &str = "asset";
+const LLM_TARGET_ITEM: &str = "item";
+const LLM_TARGET_COLLECTION: &str = "collection";
 
 fn llm_prefix(use_cloud: bool) -> &'static str {
     if use_cloud {
@@ -118,6 +121,23 @@ impl LlmJob {
         }
     }
 
+    fn target_type(&self) -> &'static str {
+        match self {
+            LlmJob::CorrectOcr { .. }
+            | LlmJob::ExtractEntities { .. }
+            | LlmJob::ConsolidateEntities { .. }
+            | LlmJob::ExtractTriples { .. }
+            | LlmJob::Summarize { .. }
+            | LlmJob::Classify { .. } => LLM_TARGET_ITEM,
+            LlmJob::Ask { .. } => LLM_TARGET_COLLECTION,
+            LlmJob::CorrectOcrAsset { .. }
+            | LlmJob::ExtractEntitiesAsset { .. }
+            | LlmJob::ConsolidateEntitiesAsset { .. }
+            | LlmJob::ExtractTriplesAsset { .. }
+            | LlmJob::SummarizeAsset { .. } => LLM_TARGET_ASSET,
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +205,7 @@ fn emit_error(app_handle: &AppHandle, id: &str, job: &str, error: &str) {
 #[derive(Clone, Serialize)]
 pub struct LlmResultEntry {
     pub target_id: String,
+    pub target_type: String,
     pub job_type: String,
     pub result: String,
     pub created_at: i64,
@@ -194,38 +215,41 @@ pub struct LlmResultEntry {
 /// optional job type. Returns `None` if no result is found.
 pub fn get_latest_result(
     conn: &rusqlite::Connection,
+    target_type: &str,
     target_id: &str,
     job_type: Option<&str>,
 ) -> Result<Option<LlmResultEntry>, String> {
     let row = if let Some(jt) = job_type {
         conn.query_row(
-            "SELECT target_id, job_type, result, created_at
+            "SELECT target_id, target_type, job_type, result, created_at
              FROM llm_results
-             WHERE target_id = ?1 AND job_type = ?2
+             WHERE target_type = ?1 AND target_id = ?2 AND job_type = ?3
              ORDER BY created_at DESC LIMIT 1",
-            params![target_id, jt],
+            params![target_type, target_id, jt],
             |row| {
                 Ok(LlmResultEntry {
                     target_id: row.get(0)?,
-                    job_type: row.get(1)?,
-                    result: row.get(2)?,
-                    created_at: row.get(3)?,
+                    target_type: row.get(1)?,
+                    job_type: row.get(2)?,
+                    result: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
             },
         )
     } else {
         conn.query_row(
-            "SELECT target_id, job_type, result, created_at
+            "SELECT target_id, target_type, job_type, result, created_at
              FROM llm_results
-             WHERE target_id = ?1
+             WHERE target_type = ?1 AND target_id = ?2
              ORDER BY created_at DESC LIMIT 1",
-            params![target_id],
+            params![target_type, target_id],
             |row| {
                 Ok(LlmResultEntry {
                     target_id: row.get(0)?,
-                    job_type: row.get(1)?,
-                    result: row.get(2)?,
-                    created_at: row.get(3)?,
+                    target_type: row.get(1)?,
+                    job_type: row.get(2)?,
+                    result: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
             },
         )
@@ -241,24 +265,26 @@ pub fn get_latest_result(
 /// Fetch all latest LLM results for a given target (one per job_type).
 pub fn get_all_results_for_target(
     conn: &rusqlite::Connection,
+    target_type: &str,
     target_id: &str,
 ) -> Result<Vec<LlmResultEntry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT target_id, job_type, result, created_at
+            "SELECT target_id, target_type, job_type, result, created_at
              FROM llm_results
-             WHERE target_id = ?1
+             WHERE target_type = ?1 AND target_id = ?2
              ORDER BY created_at DESC",
         )
         .map_err(|e| format!("Failed to prepare llm_results query: {e}"))?;
 
     let rows = stmt
-        .query_map(params![target_id], |row| {
+        .query_map(params![target_type, target_id], |row| {
             Ok(LlmResultEntry {
                 target_id: row.get(0)?,
-                job_type: row.get(1)?,
-                result: row.get(2)?,
-                created_at: row.get(3)?,
+                target_type: row.get(1)?,
+                job_type: row.get(2)?,
+                result: row.get(3)?,
+                created_at: row.get(4)?,
             })
         })
         .map_err(|e| format!("Failed to query llm_results: {e}"))?;
@@ -285,22 +311,110 @@ pub fn get_all_results_for_target(
 /// latest result per (target, job_type) pair is always kept.
 fn persist_result(
     conn: &rusqlite::Connection,
+    target_type: &str,
     target_id: &str,
     job_type: &str,
     result: &str,
 ) -> Result<(), String> {
-    let id = format!("llr-{target_id}-{job_type}");
+    let id = format!("llr-{target_type}-{target_id}-{job_type}");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
 
     conn.execute(
-        "INSERT OR REPLACE INTO llm_results (id, target_id, job_type, result, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, target_id, job_type, result, now],
+        "INSERT OR REPLACE INTO llm_results (id, target_id, target_type, job_type, result, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, target_id, target_type, job_type, result, now],
     )
     .map_err(|e| format!("Failed to persist LLM result: {e}"))?;
+
+    Ok(())
+}
+
+pub fn ensure_llm_results_schema(conn: &rusqlite::Connection) -> Result<(), String> {
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_results' LIMIT 1",
+            [],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !table_exists {
+        conn.execute_batch(
+            "CREATE TABLE llm_results (
+                id TEXT PRIMARY KEY,
+                target_id TEXT NOT NULL,
+                target_type TEXT NOT NULL CHECK(target_type IN ('asset', 'item', 'collection', 'unknown')),
+                job_type TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);
+             CREATE INDEX IF NOT EXISTS idx_llm_results_target_typed ON llm_results(target_type, target_id, job_type);",
+        )
+        .map_err(|e| format!("Failed to create llm_results table: {e}"))?;
+        return Ok(());
+    }
+
+    let has_target_type: bool = conn
+        .prepare("SELECT target_type FROM llm_results LIMIT 0")
+        .and_then(|mut stmt| {
+            let _ = stmt.query_map([], |_| Ok(()));
+            Ok(true)
+        })
+        .unwrap_or(false);
+
+    if !has_target_type {
+        conn.execute_batch(
+            "BEGIN TRANSACTION;
+             CREATE TABLE llm_results_v2 (
+                id TEXT PRIMARY KEY,
+                target_id TEXT NOT NULL,
+                target_type TEXT NOT NULL CHECK(target_type IN ('asset', 'item', 'collection', 'unknown')),
+                job_type TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             INSERT INTO llm_results_v2 (id, target_id, target_type, job_type, result, created_at)
+             SELECT
+                id,
+                target_id,
+                CASE
+                    WHEN EXISTS (SELECT 1 FROM assets a WHERE a.id = llm_results.target_id) THEN 'asset'
+                    WHEN EXISTS (SELECT 1 FROM items i WHERE i.id = llm_results.target_id) THEN 'item'
+                    WHEN EXISTS (SELECT 1 FROM collections c WHERE c.id = llm_results.target_id) THEN 'collection'
+                    ELSE 'unknown'
+                END,
+                job_type,
+                result,
+                CASE
+                    WHEN created_at > 0 AND created_at < 1000000000000 THEN created_at * 1000
+                    ELSE created_at
+                END
+             FROM llm_results;
+             DROP TABLE llm_results;
+             ALTER TABLE llm_results_v2 RENAME TO llm_results;
+             CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);
+             CREATE INDEX IF NOT EXISTS idx_llm_results_target_typed ON llm_results(target_type, target_id, job_type);
+             COMMIT;",
+        )
+        .map_err(|e| format!("Failed to migrate llm_results table: {e}"))?;
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "UPDATE llm_results
+         SET target_type = 'unknown'
+         WHERE target_type NOT IN ('asset', 'item', 'collection', 'unknown');
+         UPDATE llm_results
+         SET created_at = created_at * 1000
+         WHERE created_at > 0 AND created_at < 1000000000000;
+         CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);
+         CREATE INDEX IF NOT EXISTS idx_llm_results_target_typed ON llm_results(target_type, target_id, job_type);",
+    )
+    .map_err(|e| format!("Failed to normalize llm_results table: {e}"))?;
 
     Ok(())
 }
@@ -756,17 +870,8 @@ impl LlmQueue {
                 }
             };
 
-            // Ensure llm_results table exists (idempotent)
-            if let Err(e) = conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS llm_results (
-                    id TEXT PRIMARY KEY,
-                    target_id TEXT NOT NULL,
-                    job_type TEXT NOT NULL,
-                    result TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
-            ) {
+            // Ensure llm_results table exists and legacy rows are normalized.
+            if let Err(e) = ensure_llm_results_schema(&conn) {
                 eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create llm_results table: {e}");
             }
 
@@ -926,7 +1031,7 @@ impl LlmQueue {
                 match result {
                     Ok(output) => {
                         // Persist result to database (non-fatal if it fails)
-                        if let Err(e) = persist_result(&conn, &id, job_name, &output) {
+                        if let Err(e) = persist_result(&conn, job.target_type(), &id, job_name, &output) {
                             eprintln!("{job_log_prefix} Warning: failed to persist result for {id}/{job_name}: {e}");
                         }
 
@@ -1458,5 +1563,98 @@ fn prepare_remote_job_request(
                 truncate_to_sentence_boundary: true,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_llm_schema_fixture(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE collections (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE items (id TEXT PRIMARY KEY, title TEXT NOT NULL, collection_id TEXT NOT NULL, metadata TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE assets (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, path TEXT NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn ensure_llm_results_schema_migrates_legacy_rows_with_target_type_and_ms_timestamps() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_llm_schema_fixture(&conn);
+
+        conn.execute(
+            "INSERT INTO collections (id, name, description, created_at, updated_at) VALUES (?1, ?2, NULL, ?3, ?3)",
+            params!["collection-1", "Collection", 1_710_000_000_000_i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items (id, title, collection_id, metadata, created_at, updated_at) VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
+            params!["shared-id", "Item", "collection-1", 1_710_000_000_000_i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-1", "shared-id", "/tmp/a.pdf", "pdf", 1_710_000_000_000_i64],
+        )
+        .unwrap();
+
+        conn.execute_batch(
+            "CREATE TABLE llm_results (
+                id TEXT PRIMARY KEY,
+                target_id TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO llm_results (id, target_id, job_type, result, created_at) VALUES
+                ('legacy-item', 'shared-id', 'summarize', 'item summary', 1710000000),
+                ('legacy-asset', 'asset-1', 'summarize', 'asset summary', 1710000000123),
+                ('legacy-unknown', 'ghost-1', 'ask', 'ghost answer', 1710000001);",
+        )
+        .unwrap();
+
+        ensure_llm_results_schema(&conn).unwrap();
+
+        let rows: Vec<(String, String, i64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT target_id, target_type, created_at FROM llm_results ORDER BY id ASC",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&("shared-id".to_string(), "item".to_string(), 1_710_000_000_000_i64)));
+        assert!(rows.contains(&("asset-1".to_string(), "asset".to_string(), 1_710_000_000_123_i64)));
+        assert!(rows.contains(&("ghost-1".to_string(), "unknown".to_string(), 1_710_000_001_000_i64)));
+    }
+
+    #[test]
+    fn persist_and_query_results_are_scoped_by_target_type() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_llm_results_schema(&conn).unwrap();
+
+        persist_result(&conn, "item", "shared-id", "summarize", "item summary").unwrap();
+        persist_result(&conn, "asset", "shared-id", "summarize", "asset summary").unwrap();
+
+        let item_result = get_latest_result(&conn, "item", "shared-id", Some("summarize"))
+            .unwrap()
+            .unwrap();
+        let asset_result = get_latest_result(&conn, "asset", "shared-id", Some("summarize"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(item_result.target_type, "item");
+        assert_eq!(item_result.result, "item summary");
+        assert_eq!(asset_result.target_type, "asset");
+        assert_eq!(asset_result.result, "asset summary");
+        assert!(item_result.created_at >= 1_000_000_000_000_i64);
+        assert!(asset_result.created_at >= 1_000_000_000_000_i64);
     }
 }

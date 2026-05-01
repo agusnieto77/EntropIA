@@ -85,6 +85,22 @@ export const extractions = sqliteTable('extractions', {
 })
 
 // ---------------------------------------------------------------------------
+// Layouts — persisted OCRH/PaddleVL structure results for an asset
+// ---------------------------------------------------------------------------
+export const layouts = sqliteTable('layouts', {
+  id: text('id').primaryKey(),
+  assetId: text('asset_id')
+    .notNull()
+    .references(() => assets.id),
+  regions: text('regions').notNull(), // JSON array/object
+  blocks: text('blocks').notNull(), // JSON array/object
+  model: text('model').notNull(),
+  imageWidth: integer('image_width').notNull(),
+  imageHeight: integer('image_height').notNull(),
+  createdAt: integer('created_at').notNull(),
+})
+
+// ---------------------------------------------------------------------------
 // Entities — NER results linked to an item (optionally scoped to an asset)
 // ---------------------------------------------------------------------------
 export const entities = sqliteTable('entities', {

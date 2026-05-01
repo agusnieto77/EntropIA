@@ -11,6 +11,7 @@ export {
   notes,
   jobs,
   extractions,
+  layouts,
   entities,
   triples,
   annotations,
@@ -30,6 +31,7 @@ export { NoteRepo } from './repos/note.repo'
 export { AnnotationRepo } from './repos/annotation.repo'
 export { JobRepo } from './repos/job.repo'
 export { ExtractionRepo } from './repos/extraction.repo'
+export { LayoutRepo } from './repos/layout.repo'
 export { EntityRepo } from './repos/entity.repo'
 export { FtsRepo, sanitizeFts5Query } from './repos/fts.repo'
 export { EmbeddingRepo } from './repos/embedding.repo'
@@ -45,6 +47,7 @@ export type { StoreApi } from './repos/store'
 
 // Types
 export type { DbClient, DrizzleClient } from './types'
+export type { LayoutBoundingBox, LayoutRegion, LayoutBlock, AssetLayout } from './types'
 export type { Collection, NewCollection } from './repos/collection.repo'
 export type { Item, NewItem } from './repos/item.repo'
 export type { Asset, NewAsset } from './repos/asset.repo'

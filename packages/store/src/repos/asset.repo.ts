@@ -103,7 +103,9 @@ export class AssetRepo {
       await this.rawClient.executeBatch(`
         DELETE FROM jobs WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM extractions WHERE asset_id = '${id.replace(/'/g, "''")}';
+        DELETE FROM layouts WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM transcriptions WHERE asset_id = '${id.replace(/'/g, "''")}';
+        DELETE FROM llm_results WHERE target_id = '${id.replace(/'/g, "''")}' AND (target_type = 'asset' OR target_type = 'unknown');
         DELETE FROM annotations WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM assets WHERE id = '${id.replace(/'/g, "''")}';
       `)

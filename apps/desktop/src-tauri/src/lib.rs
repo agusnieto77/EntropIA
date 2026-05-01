@@ -133,23 +133,12 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
+            llm::ensure_llm_results_schema(&ui_conn)
+                .expect("Failed to migrate llm_results table");
 
-// Create layouts table for PaddleVL region persistence
-            ui_conn
-                .execute_batch(
-                    "CREATE TABLE IF NOT EXISTS layouts (
-                        id TEXT PRIMARY KEY,
-                        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-                        regions TEXT NOT NULL,
-                        model TEXT NOT NULL,
-                        image_width INTEGER NOT NULL,
-                        image_height INTEGER NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_layouts_asset_id ON layouts(asset_id);",
-                )
-                .map_err(|e| format!("Failed to create layouts table: {e}"))
-                .expect("Failed to create layouts table");
+            ensure_layouts_schema(&ui_conn)
+                .map_err(|e| format!("Failed to migrate layouts table: {e}"))
+                .expect("Failed to migrate layouts table");
             let modern_schema_bootstrapped =
                 migration_applied(&ui_conn, "0017_vec_assets").unwrap_or(false);
 
@@ -173,20 +162,6 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                         .expect("Failed to add sort_index column");
                     eprintln!("[setup] Added sort_index column to assets table");
                 }
-
-                ui_conn
-                    .execute_batch(
-                        "CREATE TABLE IF NOT EXISTS llm_results (
-                            id TEXT PRIMARY KEY,
-                            target_id TEXT NOT NULL,
-                            job_type TEXT NOT NULL,
-                            result TEXT NOT NULL,
-                            created_at INTEGER NOT NULL
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);",
-                    )
-                    .map_err(|e| format!("Failed to create llm_results table: {e}"))
-                    .expect("Failed to create llm_results table");
 
                 let has_notes_asset_id: bool = ui_conn
                     .prepare("SELECT asset_id FROM notes LIMIT 0")
@@ -648,5 +623,99 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("Failed to migrate extractions table: {e}"))?;
 
     eprintln!("[setup] extractions.method CHECK constraint removed successfully");
+    Ok(())
+}
+
+fn ensure_layouts_schema(conn: &Connection) -> Result<(), String> {
+    let has_layouts_table: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='layouts' LIMIT 1",
+            [],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !has_layouts_table {
+        conn.execute_batch(
+            "CREATE TABLE layouts (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                regions TEXT NOT NULL,
+                blocks TEXT NOT NULL,
+                model TEXT NOT NULL,
+                image_width INTEGER NOT NULL,
+                image_height INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_layouts_asset_id ON layouts(asset_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_layouts_asset_id_unique ON layouts(asset_id);",
+        )
+        .map_err(|e| format!("Failed to create layouts table: {e}"))?;
+        eprintln!("[setup] layouts table created with blocks column");
+        return Ok(());
+    }
+
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(layouts)")
+        .map_err(|e| format!("Failed to inspect layouts schema: {e}"))?;
+
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("Failed to read layouts schema: {e}"))?;
+
+    let mut has_blocks = false;
+    for column in columns {
+        if column.map_err(|e| format!("Failed to read layouts column: {e}"))? == "blocks" {
+            has_blocks = true;
+            break;
+        }
+    }
+    drop(stmt);
+
+    if !has_blocks {
+        eprintln!("[setup] Migrating legacy layouts table to add blocks column...");
+        conn.execute_batch(
+            "BEGIN TRANSACTION;
+             CREATE TABLE layouts_new (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                regions TEXT NOT NULL,
+                blocks TEXT NOT NULL,
+                model TEXT NOT NULL,
+                image_width INTEGER NOT NULL,
+                image_height INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             INSERT INTO layouts_new (
+                id, asset_id, regions, blocks, model, image_width, image_height, created_at
+             )
+             SELECT
+                id,
+                asset_id,
+                regions,
+                '[]' AS blocks,
+                model,
+                image_width,
+                image_height,
+                created_at
+             FROM layouts;
+             DROP TABLE layouts;
+             ALTER TABLE layouts_new RENAME TO layouts;
+             COMMIT;",
+        )
+        .map_err(|e| format!("Failed to migrate layouts table: {e}"))?;
+    }
+
+    conn.execute_batch(
+        "DELETE FROM layouts
+         WHERE rowid NOT IN (
+           SELECT MAX(rowid) FROM layouts GROUP BY asset_id
+         );
+         CREATE INDEX IF NOT EXISTS idx_layouts_asset_id ON layouts(asset_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_layouts_asset_id_unique ON layouts(asset_id);",
+    )
+    .map_err(|e| format!("Failed to finalize layouts schema: {e}"))?;
+
+    eprintln!("[setup] layouts schema ensured");
     Ok(())
 }

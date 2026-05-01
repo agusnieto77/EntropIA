@@ -137,21 +137,33 @@ describe('FtsRepo', () => {
   })
 
   describe('indexItem', () => {
-    it('executes INSERT OR REPLACE into fts_items', async () => {
-      await repo.indexItem('item-1', 'Acta del Cabildo', '{}', 'extracted text content')
-      const hasFtsInsert = client._executedSql.some(
-        (sql) => sql.includes('fts_items') && (sql.includes('INSERT') || sql.includes('insert'))
-      )
-      expect(hasFtsInsert).toBe(true)
-    })
+    it('executes INSERT OR REPLACE into fts_items with explicit rowid', async () => {
+      client._selectResults = [{ rowid: 42 }]
 
-    it('includes the item_id in the executed SQL params', async () => {
-      await repo.indexItem('item-42', 'Title', '', '')
-      // The last executed SQL should reference an insert into fts_items
+      await repo.indexItem('item-1', 'Acta del Cabildo', '{}', 'extracted text content')
       const insertSql = client._executedSql.find(
-        (sql) => sql.includes('fts_items') && sql.includes('INSERT')
+        (sql) =>
+          sql.includes('INSERT OR REPLACE INTO fts_items(rowid, item_id, title, metadata, extracted_text)')
       )
       expect(insertSql).toBeDefined()
+    })
+
+    it('looks up the source item rowid before indexing', async () => {
+      client._selectResults = [{ rowid: 7 }]
+
+      await repo.indexItem('item-42', 'Title', '', '')
+      const rowidLookupSql = client._executedSql.find(
+        (sql) => sql.includes('SELECT rowid FROM items WHERE id = ? LIMIT 1')
+      )
+      expect(rowidLookupSql).toBeDefined()
+    })
+
+    it('throws when the source item row does not exist', async () => {
+      client._selectResults = []
+
+      await expect(repo.indexItem('missing-item', 'Title', '', '')).rejects.toThrow(
+        'Cannot index FTS item: item "missing-item" does not exist'
+      )
     })
   })
 
@@ -231,12 +243,20 @@ describe('FtsRepo', () => {
   })
 
   describe('removeItem', () => {
-    it('executes DELETE from fts_items for the given item_id', async () => {
+    it('rebuilds the contentless index instead of deleting by item_id', async () => {
       await repo.removeItem('item-1')
-      const hasDelete = client._executedSql.some(
-        (sql) => sql.includes('fts_items') && sql.includes('DELETE')
+      const hasDeleteAll = client._executedSql.some((sql) =>
+        sql.includes("INSERT INTO fts_items(fts_items) VALUES ('delete-all')")
       )
-      expect(hasDelete).toBe(true)
+      const hasCanonicalInsert = client._executedSql.some((sql) =>
+        sql.includes('INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)')
+      )
+
+      expect(hasDeleteAll).toBe(true)
+      expect(hasCanonicalInsert).toBe(true)
+      expect(
+        client._executedSql.some((sql) => sql.includes('DELETE FROM fts_items WHERE item_id'))
+      ).toBe(false)
     })
 
     it('resolves without error when removing non-existent item', async () => {

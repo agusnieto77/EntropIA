@@ -113,10 +113,11 @@ pub async fn llm_summarize_asset(
 #[tauri::command]
 pub async fn llm_get_results(
     target_id: String,
+    target_type: Option<String>,
     db: State<'_, AppDbState>,
 ) -> Result<Vec<LlmResultEntry>, String> {
     let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
-    super::get_all_results_for_target(&conn, &target_id)
+    super::get_all_results_for_target(&conn, target_type.as_deref().unwrap_or("item"), &target_id)
 }
 
 /// Test the OpenRouter connection with the given API key.
@@ -132,8 +133,14 @@ pub async fn test_openrouter_connection(api_key: String) -> Result<Vec<ModelInfo
 pub async fn llm_get_result(
     target_id: String,
     job_type: String,
+    target_type: Option<String>,
     db: State<'_, AppDbState>,
 ) -> Result<Option<LlmResultEntry>, String> {
     let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
-    super::get_latest_result(&conn, &target_id, Some(&job_type))
+    super::get_latest_result(
+        &conn,
+        target_type.as_deref().unwrap_or("item"),
+        &target_id,
+        Some(&job_type),
+    )
 }

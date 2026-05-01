@@ -99,7 +99,7 @@ export class ItemRepo {
    * 4. Entities (FK → items)
    * 5. Triples (FK → items)
    * 6. Embeddings (item_id in vec_items or embeddings_fallback)
-   * 7. FTS entries (item_id in fts_index)
+   * 7. FTS rebuild from canonical rowid sources
    * 8. Notes (FK → items)
    * 9. Item itself
    *
@@ -127,6 +127,9 @@ export class ItemRepo {
         BEGIN;
         DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
         DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
+        DELETE FROM layouts WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
+        DELETE FROM llm_results WHERE (target_type = 'asset' OR target_type = 'unknown') AND target_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
+        DELETE FROM llm_results WHERE target_id = '${esc}' AND (target_type = 'item' OR target_type = 'unknown');
         DELETE FROM assets WHERE item_id = '${esc}';
         DELETE FROM entities WHERE item_id = '${esc}';
         DELETE FROM triples WHERE item_id = '${esc}';
@@ -141,9 +144,9 @@ export class ItemRepo {
       )
     }
 
-    // Phase 2: Best-effort cleanup for optional tables
+    // Phase 2: Best-effort cleanup for optional tables / derived indexes
     try {
-      await this.rawClient.execute(`DELETE FROM fts_items WHERE item_id = '${esc}'`)
+      await this.ftsRepo?.rebuildIndex()
     } catch {
       /* table may not exist — non-fatal */
     }

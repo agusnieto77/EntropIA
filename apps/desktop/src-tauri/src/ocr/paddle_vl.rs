@@ -6,7 +6,7 @@
 //!
 //! Fallback chain: PaddleVL → Tesseract (if PaddleVL fails or unavailable)
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::Manager;
@@ -20,7 +20,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Parsed result from the paddle_vl.py script.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)] // fields deserialized from Python but not all read in Rust
 pub struct PaddleVlOutput {
     pub text: String,
@@ -32,7 +32,7 @@ pub struct PaddleVlOutput {
 }
 
 /// A single block from PaddleOCR-VL with text content.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)] // fields deserialized from Python but not all read in Rust
 pub struct PaddleVlBlock {
     pub label: String,
@@ -43,7 +43,7 @@ pub struct PaddleVlBlock {
 }
 
 /// Bounding box in the format returned by paddle_vl.py.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaddleVlBbox {
     pub x: i32,
     pub y: i32,
@@ -52,7 +52,7 @@ pub struct PaddleVlBbox {
 }
 
 /// A layout region from PaddleOCR-VL detection.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)] // fields deserialized from Python but not all read in Rust
 pub struct PaddleVlRegion {
     pub category: String,

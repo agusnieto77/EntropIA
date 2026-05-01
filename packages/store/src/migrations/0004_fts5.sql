@@ -9,8 +9,8 @@ USING fts5(
 );
 
 -- Backfill from existing items + extractions
-INSERT INTO fts_items(item_id, title, metadata, extracted_text)
-SELECT i.id, i.title, COALESCE(i.metadata,''),
+INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)
+SELECT i.rowid, i.id, i.title, COALESCE(i.metadata,''),
        COALESCE((SELECT GROUP_CONCAT(e.text_content,' ') FROM extractions e
-                 JOIN assets a ON e.asset_id=a.id WHERE a.item_id=i.id), '')
+                  JOIN assets a ON e.asset_id=a.id WHERE a.item_id=i.id), '')
 FROM items i;

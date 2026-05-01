@@ -20,6 +20,7 @@ export type LlmJobType =
   | 'ask'
 
 export type LlmStatus = 'idle' | 'pending' | 'running' | 'done' | 'error'
+export type LlmTargetType = 'asset' | 'item' | 'collection'
 
 export interface ItemLlmState {
   status: LlmStatus
@@ -30,6 +31,7 @@ export interface ItemLlmState {
 
 export interface LlmResultEntry {
   target_id: string
+  target_type: LlmTargetType | 'unknown'
   job_type: string
   result: string
   created_at: number
@@ -97,9 +99,9 @@ export class LlmStore {
    * Hydrate the store from persisted results for a given target.
    * Call this on mount to restore state after a page reload.
    */
-  async loadPersistedResults(targetId: string): Promise<void> {
+  async loadPersistedResults(targetId: string, targetType: LlmTargetType = 'item'): Promise<void> {
     try {
-      const results: LlmResultEntry[] = await invoke('llm_get_results', { targetId })
+      const results: LlmResultEntry[] = await invoke('llm_get_results', { targetId, targetType })
       for (const entry of results) {
         this.update(entry.target_id, {
           status: 'done',
@@ -217,13 +219,20 @@ export function llmSummarizeAsset(assetId: string): Promise<string> {
 }
 
 /** Retrieve all latest LLM results for a target (item or collection). */
-export function llmGetResults(targetId: string): Promise<LlmResultEntry[]> {
-  return invoke<LlmResultEntry[]>('llm_get_results', { targetId })
+export function llmGetResults(
+  targetId: string,
+  targetType: LlmTargetType = 'item'
+): Promise<LlmResultEntry[]> {
+  return invoke<LlmResultEntry[]>('llm_get_results', { targetId, targetType })
 }
 
 /** Retrieve the latest single LLM result for a target + job type. */
-export function llmGetResult(targetId: string, jobType: string): Promise<LlmResultEntry | null> {
-  return invoke<LlmResultEntry | null>('llm_get_result', { targetId, jobType })
+export function llmGetResult(
+  targetId: string,
+  jobType: string,
+  targetType: LlmTargetType = 'item'
+): Promise<LlmResultEntry | null> {
+  return invoke<LlmResultEntry | null>('llm_get_result', { targetId, jobType, targetType })
 }
 
 /** Check if the LLM engine (Gemma 4) is available and ready to accept jobs. */

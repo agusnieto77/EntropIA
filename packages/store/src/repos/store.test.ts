@@ -21,6 +21,7 @@ import { NoteRepo } from './note.repo'
 import { AnnotationRepo } from './annotation.repo'
 import { JobRepo } from './job.repo'
 import { ExtractionRepo } from './extraction.repo'
+import { LayoutRepo } from './layout.repo'
 import { EntityRepo } from './entity.repo'
 import { FtsRepo } from './fts.repo'
 import { EmbeddingRepo } from './embedding.repo'
@@ -50,6 +51,7 @@ describe('initStore', () => {
     expect(store.annotations).toBeInstanceOf(AnnotationRepo)
     expect(store.jobs).toBeInstanceOf(JobRepo)
     expect(store.extractions).toBeInstanceOf(ExtractionRepo)
+    expect(store.layouts).toBeInstanceOf(LayoutRepo)
     expect(store.entities).toBeInstanceOf(EntityRepo)
     expect(store.fts).toBeInstanceOf(FtsRepo)
     expect(store.embeddings).toBeInstanceOf(EmbeddingRepo)

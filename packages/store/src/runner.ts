@@ -98,8 +98,8 @@ USING fts5(
   content=''
 );
 
-INSERT INTO fts_items(item_id, title, metadata, extracted_text)
-SELECT i.id, i.title, COALESCE(i.metadata,''),
+INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)
+SELECT i.rowid, i.id, i.title, COALESCE(i.metadata,''),
        COALESCE((SELECT GROUP_CONCAT(e.text_content,' ') FROM extractions e
                  JOIN assets a ON e.asset_id=a.id WHERE a.item_id=i.id), '')
 FROM items i
@@ -286,6 +286,129 @@ CREATE TABLE IF NOT EXISTS vec_assets(
 
 CREATE INDEX IF NOT EXISTS idx_vec_assets_item_id ON vec_assets(item_id);
   `.trim(),
+
+  '0018_fts_rowid_canonical': `
+-- Rebuild FTS rows so fts_items.rowid always matches items.rowid.
+INSERT INTO fts_items(fts_items) VALUES('delete-all');
+
+INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)
+SELECT
+  i.rowid,
+  i.id,
+  i.title,
+  COALESCE(i.metadata, ''),
+  COALESCE((
+    SELECT GROUP_CONCAT(text_part, ' ')
+    FROM (
+      SELECT text_part
+      FROM (
+        SELECT COALESCE(e.text_content, '') AS text_part,
+               0 AS source_order,
+               COALESCE(a.sort_index, 0) AS sort_index,
+               e.created_at AS created_at
+        FROM extractions e
+        JOIN assets a ON a.id = e.asset_id
+        WHERE a.item_id = i.id
+
+        UNION ALL
+
+        SELECT COALESCE(t.text_content, '') AS text_part,
+               1 AS source_order,
+               COALESCE(a.sort_index, 0) AS sort_index,
+               t.created_at AS created_at
+        FROM transcriptions t
+        JOIN assets a ON a.id = t.asset_id
+        WHERE a.item_id = i.id
+      ) ordered_text
+      ORDER BY source_order ASC, sort_index ASC, created_at ASC
+    )
+  ), '')
+FROM items i
+  `.trim(),
+
+  '0019_llm_results_target_type': `
+CREATE TABLE llm_results_v2 (
+  id TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL,
+  target_type TEXT NOT NULL CHECK(target_type IN ('asset', 'item', 'collection', 'unknown')),
+  job_type TEXT NOT NULL,
+  result TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+INSERT INTO llm_results_v2 (id, target_id, target_type, job_type, result, created_at)
+SELECT
+  lr.id,
+  lr.target_id,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM assets a WHERE a.id = lr.target_id) THEN 'asset'
+    WHEN EXISTS (SELECT 1 FROM items i WHERE i.id = lr.target_id) THEN 'item'
+    WHEN EXISTS (SELECT 1 FROM collections c WHERE c.id = lr.target_id) THEN 'collection'
+    ELSE 'unknown'
+  END,
+  lr.job_type,
+  lr.result,
+  CASE
+    WHEN lr.created_at > 0 AND lr.created_at < 1000000000000 THEN lr.created_at * 1000
+    ELSE lr.created_at
+  END
+FROM llm_results lr;
+
+DROP TABLE llm_results;
+ALTER TABLE llm_results_v2 RENAME TO llm_results;
+
+CREATE INDEX IF NOT EXISTS idx_llm_results_target ON llm_results(target_id);
+CREATE INDEX IF NOT EXISTS idx_llm_results_target_typed
+ON llm_results(target_type, target_id, job_type)
+  `.trim(),
+
+  '0020_layouts': `
+-- Handled programmatically in runMigrations() because existing desktop databases
+-- may already contain a legacy layouts table without the blocks column.
+CREATE TEMP TABLE IF NOT EXISTS __entropia_migration_0020_noop (id INTEGER);
+DROP TABLE IF EXISTS __entropia_migration_0020_noop
+  `.trim(),
+}
+
+async function applyLayoutsMigration(client: DbClient): Promise<void> {
+  const now = Date.now()
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS layouts (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      regions TEXT NOT NULL,
+      blocks TEXT NOT NULL DEFAULT '[]',
+      model TEXT NOT NULL,
+      image_width INTEGER NOT NULL,
+      image_height INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+
+  try {
+    await client.execute("ALTER TABLE layouts ADD COLUMN blocks TEXT NOT NULL DEFAULT '[]'")
+  } catch (error) {
+    const message = String(error).toLowerCase()
+    if (!message.includes('duplicate column name')) {
+      throw error
+    }
+  }
+
+  await client.execute(`
+    DELETE FROM layouts
+    WHERE rowid NOT IN (
+      SELECT MAX(rowid) FROM layouts GROUP BY asset_id
+    )
+  `)
+  await client.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_layouts_asset_id_unique ON layouts(asset_id)'
+  )
+  await client.execute('CREATE INDEX IF NOT EXISTS idx_layouts_asset_id ON layouts(asset_id)')
+  await client.execute(`
+    UPDATE layouts
+    SET created_at = ${now}
+    WHERE created_at IS NULL OR created_at = 0
+  `)
 }
 
 /**
@@ -329,14 +452,18 @@ export async function runMigrations(client: DbClient): Promise<void> {
     .filter((name) => !appliedSet.has(name))
 
   for (const name of pending) {
-    const sql = MIGRATIONS[name]!
-    const statements = splitStatements(sql)
-
     try {
       await client.execute('BEGIN')
 
-      for (const stmt of statements) {
-        await client.execute(stmt)
+      if (name === '0020_layouts') {
+        await applyLayoutsMigration(client)
+      } else {
+        const sql = MIGRATIONS[name]!
+        const statements = splitStatements(sql)
+
+        for (const stmt of statements) {
+          await client.execute(stmt)
+        }
       }
 
       await client.execute('INSERT INTO _migrations (name, applied_at) VALUES (?, ?)', [

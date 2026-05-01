@@ -1,15 +1,20 @@
 import { eq, desc, sql } from 'drizzle-orm'
 import type { DrizzleClient, DbClient } from '../types'
 import { collections, items } from '../schema'
+import { FtsRepo } from './fts.repo'
 
 export type Collection = typeof collections.$inferSelect
 export type NewCollection = typeof collections.$inferInsert
 
 export class CollectionRepo {
+  private ftsRepo: FtsRepo | null
+
   constructor(
     private db: DrizzleClient,
     private rawClient?: DbClient
-  ) {}
+  ) {
+    this.ftsRepo = rawClient ? new FtsRepo(rawClient) : null
+  }
 
   async create(data: Omit<NewCollection, 'id' | 'createdAt' | 'updatedAt'>): Promise<Collection> {
     const now = Date.now()
@@ -87,8 +92,9 @@ export class CollectionRepo {
    * Two-phase approach:
    * Phase 1 (atomic): Core tables that ALWAYS exist — wrapped in BEGIN/COMMIT.
    *   If any statement fails, the whole transaction rolls back.
-   * Phase 2 (best-effort): Optional tables that may not exist (fts_items, vec_items,
-   *   embeddings_fallback). These are cleaned up after Phase 1 succeeds.
+   * Phase 2 (best-effort): Derived/optional tables that may not exist
+   *   (`fts_items`, `vec_items`, `embeddings_fallback`). These are cleaned up
+   *   after Phase 1 succeeds.
    *   Failures here are silently ignored — they're index/cache data.
    *
    * @throws Error if rawClient is not available
@@ -115,6 +121,10 @@ export class CollectionRepo {
         BEGIN;
         DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
         DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
+        DELETE FROM layouts WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
+        DELETE FROM llm_results WHERE (target_type = 'asset' OR target_type = 'unknown') AND target_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
+        DELETE FROM llm_results WHERE (target_type = 'item' OR target_type = 'unknown') AND target_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
+        DELETE FROM llm_results WHERE target_id = '${esc}' AND (target_type = 'collection' OR target_type = 'unknown');
         DELETE FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
         DELETE FROM entities WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
         DELETE FROM triples WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}');
@@ -131,9 +141,9 @@ export class CollectionRepo {
 
     // Phase 2: Best-effort cleanup for optional tables (items already deleted, use cached IDs)
     if (itemIdsList.length > 0) {
-      // FTS search index
+      // FTS search index (contentless FTS5 must rebuild from canonical rowids)
       try {
-        await this.rawClient.execute(`DELETE FROM fts_items WHERE item_id IN (${itemIdsList})`)
+        await this.ftsRepo?.rebuildIndex()
       } catch {
         /* table may not exist — non-fatal */
       }

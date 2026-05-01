@@ -7,6 +7,7 @@ import { NoteRepo } from './note.repo'
 import { AnnotationRepo } from './annotation.repo'
 import { JobRepo } from './job.repo'
 import { ExtractionRepo } from './extraction.repo'
+import { LayoutRepo } from './layout.repo'
 import { EntityRepo } from './entity.repo'
 import { FtsRepo } from './fts.repo'
 import { EmbeddingRepo } from './embedding.repo'
@@ -22,6 +23,7 @@ export interface StoreApi {
   annotations: AnnotationRepo
   jobs: JobRepo
   extractions: ExtractionRepo
+  layouts: LayoutRepo
   entities: EntityRepo
   fts: FtsRepo
   embeddings: EmbeddingRepo
@@ -49,6 +51,7 @@ export async function initStore(): Promise<StoreApi> {
     annotations: new AnnotationRepo(db),
     jobs: new JobRepo(db),
     extractions: new ExtractionRepo(db),
+    layouts: new LayoutRepo(db),
     entities: new EntityRepo(db),
     fts: new FtsRepo(client),
     embeddings,

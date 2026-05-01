@@ -277,6 +277,8 @@ describe('ItemRepo', () => {
       expect(batchSql).toContain('BEGIN')
       expect(batchSql).toContain('DELETE FROM jobs')
       expect(batchSql).toContain('DELETE FROM extractions')
+      expect(batchSql).toContain('DELETE FROM layouts')
+      expect(batchSql).toContain('DELETE FROM llm_results')
       expect(batchSql).toContain('DELETE FROM assets')
       expect(batchSql).toContain('DELETE FROM entities')
       expect(batchSql).toContain('DELETE FROM triples')
@@ -305,7 +307,17 @@ describe('ItemRepo', () => {
 
       // Optional tables are cleaned up with individual execute calls
       const executeCalls = rawExecuteMock.mock.calls.map((c) => c[0] as string)
-      expect(executeCalls.some((sql) => sql.includes('DELETE FROM fts_items'))).toBe(true)
+      expect(
+        executeCalls.some((sql) => sql.includes("INSERT INTO fts_items(fts_items) VALUES ('delete-all')"))
+      ).toBe(true)
+      expect(
+        executeCalls.some((sql) =>
+          sql.includes('INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)')
+        )
+      ).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM fts_items WHERE item_id'))).toBe(
+        false
+      )
       expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_items'))).toBe(true)
       expect(executeCalls.some((sql) => sql.includes('DELETE FROM embeddings_fallback'))).toBe(true)
     })

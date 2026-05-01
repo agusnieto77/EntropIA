@@ -9,13 +9,22 @@
     type,
     assetUrl,
     annotations = [],
+    layoutRegions = [],
+    showLayoutOverlay = false,
     selectedAnnotationId = null,
+    hoveredLayoutRegionId = null,
+    selectedLayoutRegionId = null,
     annotationTool = 'select',
     annotationColor = 'var(--color-accent)',
     editTool = 'none',
     canUndo = false,
+    currentPage = 1,
+    layoutReferenceWidth = 0,
+    layoutReferenceHeight = 0,
     onAnnotationsChange = () => {},
     onSelectedAnnotationIdChange = () => {},
+    onLayoutRegionHoverChange = () => {},
+    onLayoutRegionSelect = () => {},
     onAnnotationToolChange = () => {},
     onAnnotationColorChange = () => {},
     onEditSelect = () => {},
@@ -23,6 +32,7 @@
     onRotateLeft = () => {},
     onRotateRight = () => {},
     onUndo = () => {},
+    onPageChange = () => {},
     onDimensionsChange = () => {},
   }: DocumentViewerProps = $props()
 
@@ -40,7 +50,7 @@
   const ZOOM_STEP = 0.25
 
   // PDF state
-  let currentPage = $state(1)
+  let pdfPage = $state(1)
   let totalPages = $state(0)
   let pdfZoom = $state(1.0)
   let loading = $state(false)
@@ -50,6 +60,8 @@
   let imgEl: HTMLImageElement | undefined = $state()
   let containerEl: HTMLElement | undefined = $state()
   let pdfDoc: any = null
+  let pdfCanvasW = $state(0)
+  let pdfCanvasH = $state(0)
 
   // Image geometry — natural (intrinsic) dimensions of the source file
   let naturalW = $state(0)
@@ -95,8 +107,8 @@
   const canZoomIn = $derived(imageZoom < MAX_ZOOM)
   const canZoomOut = $derived(imageZoom > MIN_ZOOM)
 
-  const canGoPrev = $derived(currentPage > 1)
-  const canGoNext = $derived(currentPage < totalPages)
+  const canGoPrev = $derived(pdfPage > 1)
+  const canGoNext = $derived(pdfPage < totalPages)
   const canPdfZoomIn = $derived(pdfZoom < 3.0)
   const canPdfZoomOut = $derived(pdfZoom > 0.5)
 
@@ -106,6 +118,21 @@
       : annotationTool === 'select'
         ? 'default'
         : 'crosshair'
+  )
+
+  const layoutOverlayInteractive = $derived(annotationTool === 'select' && editTool === 'none')
+  const layoutViewportW = $derived(type === 'image' ? naturalW : layoutReferenceWidth)
+  const layoutViewportH = $derived(type === 'image' ? naturalH : layoutReferenceHeight)
+  const layoutDisplayW = $derived(type === 'image' ? displayW : pdfCanvasW)
+  const layoutDisplayH = $derived(type === 'image' ? displayH : pdfCanvasH)
+  const canRenderLayoutOverlay = $derived(
+    showLayoutOverlay &&
+      layoutRegions.length > 0 &&
+      layoutViewportW > 0 &&
+      layoutViewportH > 0 &&
+      layoutDisplayW > 0 &&
+      layoutDisplayH > 0 &&
+      type !== 'audio'
   )
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -236,6 +263,52 @@
     )
   }
 
+  function getLayoutRegionFill(region: (typeof layoutRegions)[number], isSelected: boolean, isHovered: boolean) {
+    if (region.matchSource === 'block') {
+      return isSelected
+        ? 'rgba(251, 191, 36, 0.24)'
+        : isHovered
+          ? 'rgba(251, 191, 36, 0.18)'
+          : 'rgba(251, 191, 36, 0.08)'
+    }
+
+    return isSelected
+      ? 'rgba(34, 211, 238, 0.2)'
+      : isHovered
+        ? 'rgba(250, 204, 21, 0.16)'
+        : 'rgba(34, 211, 238, 0.08)'
+  }
+
+  function getLayoutRegionStroke(region: (typeof layoutRegions)[number], isSelected: boolean, isHovered: boolean) {
+    if (region.matchSource === 'block') {
+      return isSelected
+        ? 'rgb(245, 158, 11)'
+        : isHovered
+          ? 'rgb(251, 191, 36)'
+          : 'rgba(245, 158, 11, 0.9)'
+    }
+
+    return isSelected
+      ? 'rgb(34, 211, 238)'
+      : isHovered
+        ? 'rgb(250, 204, 21)'
+        : 'rgba(34, 211, 238, 0.8)'
+  }
+
+  function getLayoutRegionStrokeWidth(region: (typeof layoutRegions)[number], isSelected: boolean, isHovered: boolean) {
+    if (isSelected) return region.matchSource === 'block' ? 3 : 2.5
+    if (isHovered) return region.matchSource === 'block' ? 2.4 : 2
+    return region.matchSource === 'block' ? 1.75 : 1.25
+  }
+
+  function getLayoutRegionStrokeDasharray(region: (typeof layoutRegions)[number], isSelected: boolean) {
+    if (isSelected) {
+      return region.matchSource === 'block' ? '10 4' : '0'
+    }
+
+    return region.matchSource === 'block' ? '10 6' : '6 4'
+  }
+
   function handleDeleteSelected() {
     if (!selectedAnnotationId) return
     onAnnotationsChange(annotations.filter((a) => a.id !== selectedAnnotationId))
@@ -341,6 +414,26 @@
   function handleShapeClick(annotationId: string) {
     onSelectedAnnotationIdChange(annotationId)
   }
+
+  function handleLayoutRegionEnter(regionId: string) {
+    onLayoutRegionHoverChange(regionId)
+  }
+
+  function handleLayoutRegionLeave() {
+    onLayoutRegionHoverChange(null)
+  }
+
+  function handleLayoutRegionClick(regionId: string) {
+    onLayoutRegionSelect(regionId)
+  }
+
+  function handleLayoutRegionKeydown(event: KeyboardEvent, regionId: string) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    event.stopPropagation()
+    handleLayoutRegionClick(regionId)
+  }
+
   function handleShapePointerDown(event: PointerEvent, annotationId: string) {
     event.stopPropagation()
     handleShapeClick(annotationId)
@@ -364,10 +457,12 @@
   function resetViewerState() {
     loading = false
     error = null
-    currentPage = 1
+    pdfPage = 1
     totalPages = 0
     pdfZoom = 1.0
     pdfDoc = null
+    pdfCanvasW = 0
+    pdfCanvasH = 0
   }
   function activatePdfMode() {
     loading = true
@@ -385,6 +480,7 @@
       const loadingTask = pdfjs.getDocument(assetUrl)
       pdfDoc = await loadingTask.promise
       totalPages = pdfDoc.numPages
+      pdfPage = Math.min(Math.max(currentPage, 1), Math.max(pdfDoc.numPages, 1))
       await renderPage()
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to load PDF'
@@ -396,13 +492,16 @@
   async function renderPage() {
     if (!pdfDoc || !canvasEl) return
     try {
-      const page = await pdfDoc.getPage(currentPage)
+      const page = await pdfDoc.getPage(pdfPage)
       const viewport = page.getViewport({ scale: pdfZoom })
       const context = canvasEl.getContext('2d')
       if (!context) return
       canvasEl.width = viewport.width
       canvasEl.height = viewport.height
+      pdfCanvasW = viewport.width
+      pdfCanvasH = viewport.height
       await page.render({ canvasContext: context, viewport }).promise
+      onPageChange(pdfPage, totalPages)
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to render page'
     }
@@ -410,13 +509,13 @@
 
   function prevPage() {
     if (canGoPrev) {
-      currentPage--
+      pdfPage--
       renderPage()
     }
   }
   function nextPage() {
     if (canGoNext) {
-      currentPage++
+      pdfPage++
       renderPage()
     }
   }
@@ -471,6 +570,20 @@
     }
     activatePdfMode()
     void loadPdf()
+  })
+
+  $effect(() => {
+    if (type !== 'pdf' || !pdfDoc) {
+      return
+    }
+
+    const nextPage = Math.min(Math.max(currentPage, 1), Math.max(totalPages, 1))
+    if (nextPage === pdfPage) {
+      return
+    }
+
+    pdfPage = nextPage
+    void renderPage()
   })
 
   // ── Draft rendering ─────────────────────────────────────────────────
@@ -535,6 +648,39 @@
             onpointerup={finishDraft}
             onpointerleave={finishDraft}
           >
+            {#if canRenderLayoutOverlay}
+              {#each layoutRegions as region (region.id)}
+                {@const isSelectedRegion = region.id === selectedLayoutRegionId}
+                {@const isHoveredRegion = region.id === hoveredLayoutRegionId}
+                <rect
+                  data-testid={`layout-overlay-${region.id}`}
+                  class:selected={isSelectedRegion}
+                  class:hovered={isHoveredRegion}
+                  class="document-viewer__layout-region"
+                  x={region.x}
+                  y={region.y}
+                  width={region.width}
+                  height={region.height}
+                  fill={getLayoutRegionFill(region, isSelectedRegion, isHoveredRegion)}
+                  stroke={getLayoutRegionStroke(region, isSelectedRegion, isHoveredRegion)}
+                  stroke-width={getLayoutRegionStrokeWidth(region, isSelectedRegion, isHoveredRegion)}
+                  stroke-dasharray={getLayoutRegionStrokeDasharray(region, isSelectedRegion)}
+                  vector-effect="non-scaling-stroke"
+                  role="button"
+                  tabindex="-1"
+                  aria-label={`Layout region ${region.label}`}
+                  style={!layoutOverlayInteractive ? 'pointer-events:none' : ''}
+                  onpointerenter={() => handleLayoutRegionEnter(region.id)}
+                  onpointerleave={handleLayoutRegionLeave}
+                  onclick={(event) => {
+                    event.stopPropagation()
+                    handleLayoutRegionClick(region.id)
+                  }}
+                  onkeydown={(event) => handleLayoutRegionKeydown(event, region.id)}
+                />
+              {/each}
+            {/if}
+
             {#each annotations as annotation (annotation.id)}
               {#if annotation.kind === 'rectangle'}
                 <rect
@@ -731,7 +877,47 @@
     {/if}
 
     <div class="document-viewer__canvas-container">
-      <canvas bind:this={canvasEl} data-testid="pdf-canvas"></canvas>
+      <div class="document-viewer__pdf-stage">
+        <canvas bind:this={canvasEl} data-testid="pdf-canvas"></canvas>
+
+        {#if canRenderLayoutOverlay}
+          <svg
+            class="document-viewer__overlay document-viewer__overlay--layout-only"
+            data-testid="layout-overlay"
+            aria-label="Document layout overlay"
+            width={layoutDisplayW}
+            height={layoutDisplayH}
+            viewBox={`0 0 ${layoutViewportW} ${layoutViewportH}`}
+          >
+            {#each layoutRegions as region (region.id)}
+              {@const isSelectedRegion = region.id === selectedLayoutRegionId}
+              {@const isHoveredRegion = region.id === hoveredLayoutRegionId}
+              <rect
+                data-testid={`layout-overlay-${region.id}`}
+                class:selected={isSelectedRegion}
+                class:hovered={isHoveredRegion}
+                class="document-viewer__layout-region"
+                x={region.x}
+                y={region.y}
+                width={region.width}
+                height={region.height}
+                fill={getLayoutRegionFill(region, isSelectedRegion, isHoveredRegion)}
+                stroke={getLayoutRegionStroke(region, isSelectedRegion, isHoveredRegion)}
+                stroke-width={getLayoutRegionStrokeWidth(region, isSelectedRegion, isHoveredRegion)}
+                stroke-dasharray={getLayoutRegionStrokeDasharray(region, isSelectedRegion)}
+                vector-effect="non-scaling-stroke"
+                role="button"
+                tabindex="-1"
+                aria-label={`Layout region ${region.label}`}
+                onpointerenter={() => handleLayoutRegionEnter(region.id)}
+                onpointerleave={handleLayoutRegionLeave}
+                onclick={() => handleLayoutRegionClick(region.id)}
+                onkeydown={(event) => handleLayoutRegionKeydown(event, region.id)}
+              />
+            {/each}
+          </svg>
+        {/if}
+      </div>
     </div>
 
     <div class="document-viewer__controls" data-testid="pdf-controls">
@@ -744,7 +930,7 @@
         aria-label="Previous page">&#8249;</button
       >
       <span class="document-viewer__page-info" data-testid="pdf-page-info"
-        >{currentPage} / {totalPages}</span
+        >{pdfPage} / {totalPages}</span
       >
       <button
         type="button"
@@ -827,6 +1013,17 @@
     cursor: var(--overlay-cursor, crosshair);
   }
 
+  .document-viewer__overlay--layout-only {
+    cursor: default;
+  }
+
+  .document-viewer__layout-region {
+    transition:
+      fill 0.15s ease,
+      stroke 0.15s ease,
+      stroke-width 0.15s ease;
+  }
+
   .document-viewer__canvas-container {
     flex: 1;
     display: flex;
@@ -834,6 +1031,13 @@
     justify-content: center;
     overflow: auto;
     padding: var(--space-4);
+  }
+
+  .document-viewer__pdf-stage {
+    position: relative;
+    display: inline-flex;
+    align-items: flex-start;
+    justify-content: center;
   }
 
   .document-viewer__loading {

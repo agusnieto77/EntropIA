@@ -2,7 +2,16 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ItemView from './ItemView.svelte'
 
-const { nlpEventHandlers, extractTriplesMock, llmExtractTriplesMock, llmExtractTriplesAssetMock, similarItemsMock, extractTextMock } = vi.hoisted(
+const {
+  nlpEventHandlers,
+  extractTriplesMock,
+  llmExtractTriplesMock,
+  llmExtractTriplesAssetMock,
+  similarItemsMock,
+  extractTextMock,
+  getLayoutByAssetMock,
+  clipboardWriteTextMock,
+} = vi.hoisted(
   () => ({
     nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
     extractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
@@ -10,6 +19,8 @@ const { nlpEventHandlers, extractTriplesMock, llmExtractTriplesMock, llmExtractT
     llmExtractTriplesAssetMock: vi.fn<(_: string) => Promise<void>>(),
     similarItemsMock: vi.fn<(_: string, __?: number) => Promise<Array<{ itemId: string }>>>(),
     extractTextMock: vi.fn(),
+    getLayoutByAssetMock: vi.fn(),
+    clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
   })
 )
 
@@ -174,6 +185,14 @@ vi.mock('$lib/file-import', () => ({
   getAssetUrl: (path: string) => `https://asset.localhost/${path}`,
 }))
 
+vi.mock('$lib/layouts', async () => {
+  const actual = await vi.importActual<typeof import('$lib/layouts')>('$lib/layouts')
+  return {
+    ...actual,
+    getLayoutByAsset: getLayoutByAssetMock,
+  }
+})
+
 vi.mock('$lib/ocr', async () => {
   const actual = await vi.importActual<typeof import('$lib/ocr')>('$lib/ocr')
   return {
@@ -241,6 +260,14 @@ vi.mock('@entropia/ui', async () => {
     MapViewer: () => null,
     TopicEditor: () => null,
   }
+})
+
+beforeEach(() => {
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: clipboardWriteTextMock },
+  })
+  clipboardWriteTextMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe('ItemView semantic triples panel', () => {
@@ -543,6 +570,94 @@ describe('ItemView note editing', () => {
 })
 
 describe('ItemView image annotations', () => {
+  const layoutFixture = {
+    id: 'layout-1',
+    assetId: 'asset-image-1',
+    model: 'paddle_vl',
+    imageWidth: 1000,
+    imageHeight: 1400,
+    createdAt: 1,
+    regions: [
+      {
+        category: 'doc_title',
+        confidence: 0.98,
+        groupId: 1,
+        bbox: { x: 10, y: 20, width: 200, height: 80 },
+        page: 1,
+      },
+      {
+        category: 'text',
+        confidence: 0.96,
+        groupId: 2,
+        bbox: { x: 30, y: 140, width: 260, height: 120 },
+        page: 1,
+      },
+      {
+        category: 'table',
+        confidence: 0.94,
+        groupId: 3,
+        bbox: { x: 40, y: 300, width: 300, height: 130 },
+        page: 1,
+      },
+      {
+        category: 'figure',
+        confidence: 0.93,
+        groupId: 4,
+        bbox: { x: 360, y: 120, width: 180, height: 180 },
+        page: 1,
+      },
+      {
+        category: 'abandoned',
+        confidence: 0.9,
+        groupId: 5,
+        bbox: { x: 60, y: 450, width: 220, height: 80 },
+        page: 1,
+      },
+    ],
+    blocks: [
+      {
+        label: 'title',
+        content: 'Bloque título',
+        bbox: { x: 8, y: 18, width: 180, height: 70 },
+        order: 1,
+        groupId: 1,
+        page: 1,
+      },
+      {
+        label: 'plain_text',
+        content: 'Bloque cuerpo',
+        bbox: { x: 28, y: 138, width: 250, height: 110 },
+        order: 2,
+        groupId: 2,
+        page: 1,
+      },
+      {
+        label: 'table',
+        content: 'Bloque tabla',
+        bbox: { x: 42, y: 302, width: 280, height: 120 },
+        order: 3,
+        groupId: 3,
+        page: 1,
+      },
+      {
+        label: 'figure',
+        content: 'Bloque figura',
+        bbox: { x: 362, y: 122, width: 160, height: 170 },
+        order: 4,
+        groupId: 4,
+        page: 1,
+      },
+      {
+        label: 'vision_footnote',
+        content: 'Bloque nota',
+        bbox: { x: 62, y: 452, width: 210, height: 70 },
+        order: 5,
+        groupId: 5,
+        page: 1,
+      },
+    ],
+  }
+
   beforeEach(() => {
     vi.useFakeTimers()
     nlpEventHandlers.clear()
@@ -551,6 +666,7 @@ describe('ItemView image annotations', () => {
     llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
     similarItemsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
+    getLayoutByAssetMock.mockReset().mockResolvedValue(null)
   })
 
   it('loads annotations per asset and rehydrates when switching assets', async () => {
@@ -716,6 +832,404 @@ describe('ItemView image annotations', () => {
       expect(screen.getByTestId('viewer-type')).toHaveTextContent('pdf')
     })
     expect(storeRef.current.annotations.findByAsset).not.toHaveBeenCalled()
+  })
+
+  it('syncs list hover/select with overlay state and keeps selection persistent', async () => {
+    getLayoutByAssetMock.mockResolvedValue(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /mostrar overlay/i }))
+
+    const firstBlock = await screen.findByTestId('layout-block-item-layout-block-0')
+    const secondBlock = await screen.findByTestId('layout-block-item-layout-block-1')
+
+    await fireEvent.mouseEnter(firstBlock)
+    expect(screen.getByTestId('viewer-hovered-layout-region')).toHaveTextContent(
+      'layout-block-0::overlay'
+    )
+    expect(firstBlock.className).toContain('hovered')
+
+    await fireEvent.click(firstBlock)
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-0::overlay'
+    )
+    expect(firstBlock.className).toContain('selected')
+
+    await fireEvent.mouseEnter(secondBlock)
+    expect(screen.getByTestId('viewer-hovered-layout-region')).toHaveTextContent(
+      'layout-block-1::overlay'
+    )
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-0::overlay'
+    )
+    expect(firstBlock.className).toContain('selected')
+    expect(secondBlock.className).toContain('hovered')
+
+    await fireEvent.click(secondBlock)
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-1::overlay'
+    )
+    expect(secondBlock.className).toContain('selected')
+  })
+
+  it('syncs overlay hover/select back to the list and auto-scrolls selected block', async () => {
+    getLayoutByAssetMock.mockResolvedValue(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    const scrollIntoViewSpy = vi
+      .spyOn(HTMLElement.prototype, 'scrollIntoView')
+      .mockImplementation(() => undefined)
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /mostrar overlay/i }))
+
+    const firstBlock = await screen.findByTestId('layout-block-item-layout-block-0')
+    const secondBlock = await screen.findByTestId('layout-block-item-layout-block-1')
+
+    await fireEvent.click(screen.getByRole('button', { name: /hover first layout region/i }))
+    expect(firstBlock.className).toContain('hovered')
+
+    await fireEvent.click(screen.getByRole('button', { name: /select second layout region/i }))
+    await waitFor(() => {
+      expect(secondBlock.className).toContain('selected')
+    })
+    expect(scrollIntoViewSpy).toHaveBeenCalled()
+    expect(scrollIntoViewSpy.mock.instances.at(-1)).toBe(secondBlock)
+
+    await fireEvent.click(screen.getByRole('button', { name: /clear layout hover/i }))
+    expect(firstBlock.className).not.toContain('hovered')
+
+    scrollIntoViewSpy.mockRestore()
+  })
+
+  it('filters layout blocks by type, shows counters, and hides non-matching overlays', async () => {
+    getLayoutByAssetMock.mockResolvedValue(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    expect(screen.getByTestId('layout-filter-count-all')).toHaveTextContent('5')
+    expect(screen.getByTestId('layout-filter-count-titles')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-filter-count-text')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-filter-count-tables')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-filter-count-figures')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-filter-count-notes')).toHaveTextContent('1')
+
+    await fireEvent.click(screen.getByRole('button', { name: /mostrar overlay/i }))
+    expect(screen.getByTestId('viewer-layout-region-count')).toHaveTextContent('5')
+
+    await fireEvent.click(screen.getByTestId('layout-filter-figures'))
+
+    expect(screen.getByTestId('viewer-layout-region-count')).toHaveTextContent('1')
+    expect(await screen.findByTestId('layout-block-item-layout-block-3')).toBeInTheDocument()
+    expect(screen.queryByTestId('layout-block-item-layout-block-0')).not.toBeInTheDocument()
+    expect(screen.getByText('Mostrando 1 de 5 bloques.')).toBeInTheDocument()
+  })
+
+  it('shows a rich inspector for the selected block and exposes quick copy actions', async () => {
+    getLayoutByAssetMock.mockResolvedValue(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    expect(screen.getByTestId('layout-inspector-empty')).toBeInTheDocument()
+
+    await fireEvent.click(await screen.findByTestId('layout-block-item-layout-block-0'))
+
+    expect(screen.getByTestId('layout-inspector-label')).toHaveTextContent('title')
+    expect(screen.getByTestId('layout-inspector-overlay-source')).toHaveTextContent('Región matcheada')
+    expect(screen.getByTestId('layout-inspector-bbox')).toHaveTextContent('x:10 y:20 w:200 h:80')
+    expect(screen.getByTestId('layout-inspector-content')).toHaveTextContent('Bloque título')
+
+    await fireEvent.click(screen.getByTestId('layout-inspector-copy-text'))
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith('Bloque título')
+
+    await fireEvent.click(screen.getByTestId('layout-inspector-copy-bbox'))
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith('x:10 y:20 w:200 h:80')
+
+    await fireEvent.click(screen.getByTestId('layout-inspector-copy-json'))
+    expect(clipboardWriteTextMock).toHaveBeenLastCalledWith(
+      expect.stringContaining('"overlaySource": "region"')
+    )
+    expect(screen.getByTestId('layout-inspector-copy-message')).toHaveTextContent('JSON copiado.')
+  })
+
+  it('tracks a page-aware layoutActivePage for multi-page pdf layouts', async () => {
+    getLayoutByAssetMock.mockResolvedValue({
+      ...layoutFixture,
+      assetId: 'asset-pdf-1',
+      regions: [
+        {
+          category: 'doc_title',
+          confidence: 0.98,
+          groupId: 1,
+          bbox: { x: 10, y: 20, width: 200, height: 80 },
+          page: 1,
+        },
+        {
+          category: 'table',
+          confidence: 0.94,
+          groupId: 2,
+          bbox: { x: 20, y: 140, width: 260, height: 120 },
+          page: 2,
+        },
+      ],
+      blocks: [
+        {
+          label: 'title',
+          content: 'Bloque título página 1',
+          bbox: { x: 8, y: 18, width: 180, height: 70 },
+          order: 1,
+          groupId: 1,
+          page: 1,
+        },
+        {
+          label: 'table',
+          content: 'Bloque tabla página 2',
+          bbox: { x: 18, y: 138, width: 240, height: 110 },
+          order: 2,
+          groupId: 2,
+          page: 2,
+        },
+      ],
+    })
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-pdf-1',
+          itemId: 'item-1',
+          path: 'docs/acta.pdf',
+          type: 'pdf',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    const expectLayoutHeading = (page: number) =>
+      expect(
+        screen.getAllByText(new RegExp(`Page ${page}`, 'i')).some((node) => node.textContent?.includes(`Page ${page}`))
+      ).toBe(true)
+
+    expect(screen.getByText('Mostrando 1 de 1 bloques.')).toBeInTheDocument()
+    expectLayoutHeading(1)
+    expect(screen.getByTestId('layout-filter-count-all')).toHaveTextContent('1')
+    expect(screen.getByTestId('viewer-current-page')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-page-summary')).toHaveTextContent('Página 1 de 2')
+    expect(screen.getByTestId('layout-page-chip-1')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('layout-page-chip-2')).toHaveTextContent('2')
+
+    await fireEvent.click(screen.getByRole('button', { name: /go to page 2/i }))
+
+    await waitFor(() => {
+      expectLayoutHeading(2)
+    })
+    expect(screen.getByTestId('viewer-current-page')).toHaveTextContent('2')
+    expect(screen.getByText('Mostrando 1 de 1 bloques.')).toBeInTheDocument()
+    expect(screen.getByTestId('layout-filter-count-all')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-page-summary')).toHaveTextContent('Página 2 de 2')
+    expect(screen.getByTestId('layout-page-chip-2')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/paddle_vl · 1 bloques · 1 regiones/i)).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByTestId('layout-page-chip-1'))
+
+    await waitFor(() => {
+      expectLayoutHeading(1)
+    })
+    expect(screen.getByTestId('viewer-current-page')).toHaveTextContent('1')
+    expect(screen.getByTestId('layout-page-chip-1')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('clears the visible layout selection when the active page changes away from the selected block', async () => {
+    getLayoutByAssetMock.mockResolvedValue({
+      ...layoutFixture,
+      assetId: 'asset-pdf-1',
+      regions: [
+        {
+          category: 'doc_title',
+          confidence: 0.98,
+          groupId: 1,
+          bbox: { x: 10, y: 20, width: 200, height: 80 },
+          page: 1,
+        },
+        {
+          category: 'table',
+          confidence: 0.94,
+          groupId: 2,
+          bbox: { x: 20, y: 140, width: 260, height: 120 },
+          page: 2,
+        },
+      ],
+      blocks: [
+        {
+          label: 'title',
+          content: 'Bloque título página 1',
+          bbox: { x: 8, y: 18, width: 180, height: 70 },
+          order: 1,
+          groupId: 1,
+          page: 1,
+        },
+        {
+          label: 'table',
+          content: 'Bloque tabla página 2',
+          bbox: { x: 18, y: 138, width: 240, height: 110 },
+          order: 2,
+          groupId: 2,
+          page: 2,
+        },
+      ],
+    })
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-pdf-1',
+          itemId: 'item-1',
+          path: 'docs/acta.pdf',
+          type: 'pdf',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /mostrar overlay/i }))
+
+    const pageOneBlock = await screen.findByTestId('layout-block-item-layout-block-0')
+    await fireEvent.click(pageOneBlock)
+
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-0::overlay'
+    )
+
+    await fireEvent.click(screen.getByTestId('layout-page-chip-2'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('viewer-current-page')).toHaveTextContent('2')
+    })
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent('none')
+    expect(screen.queryByTestId('layout-block-item-layout-block-0')).not.toBeInTheDocument()
+    expect(await screen.findByTestId('layout-block-item-layout-block-1')).toBeInTheDocument()
+  })
+
+  it('keeps the chosen filter during internal navigation and clears selection when filtered out', async () => {
+    getLayoutByAssetMock.mockResolvedValue(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /mostrar overlay/i })).toBeEnabled()
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: /mostrar overlay/i }))
+
+    const titleBlock = await screen.findByTestId('layout-block-item-layout-block-0')
+    await fireEvent.click(titleBlock)
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-0::overlay'
+    )
+
+    const tablesFilter = screen.getByTestId('layout-filter-tables')
+    await fireEvent.click(tablesFilter)
+
+    expect(tablesFilter).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent('none')
+    expect(screen.queryByTestId('layout-block-item-layout-block-0')).not.toBeInTheDocument()
+
+    const tableBlock = await screen.findByTestId('layout-block-item-layout-block-2')
+    await fireEvent.mouseEnter(tableBlock)
+    expect(screen.getByTestId('viewer-hovered-layout-region')).toHaveTextContent(
+      'layout-block-2::overlay'
+    )
+    expect(tablesFilter).toHaveAttribute('aria-pressed', 'true')
+
+    await fireEvent.click(tableBlock)
+    expect(screen.getByTestId('viewer-selected-layout-region')).toHaveTextContent(
+      'layout-block-2::overlay'
+    )
+    expect(tablesFilter).toHaveAttribute('aria-pressed', 'true')
   })
 })
 

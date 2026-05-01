@@ -26,6 +26,17 @@ export interface ViewerAnnotation {
   updatedAt: number
 }
 
+export interface ViewerLayoutRegion {
+  id: string
+  blockId: string
+  label: string
+  x: number
+  y: number
+  width: number
+  height: number
+  matchSource?: 'region' | 'block'
+}
+
 export type ViewerType = 'image' | 'pdf' | 'audio'
 
 export interface DocumentViewerProps {
@@ -38,8 +49,17 @@ export interface DocumentViewerProps {
   annotationColor?: string
   editTool?: EditTool
   canUndo?: boolean
+  currentPage?: number
+  layoutRegions?: ViewerLayoutRegion[]
+  showLayoutOverlay?: boolean
+  hoveredLayoutRegionId?: string | null
+  selectedLayoutRegionId?: string | null
+  layoutReferenceWidth?: number
+  layoutReferenceHeight?: number
   onAnnotationsChange?: (annotations: ViewerAnnotation[]) => void
   onSelectedAnnotationIdChange?: (annotationId: string | null) => void
+  onLayoutRegionHoverChange?: (regionId: string | null) => void
+  onLayoutRegionSelect?: (regionId: string) => void
   onAnnotationToolChange?: (tool: AnnotationTool) => void
   onAnnotationColorChange?: (color: string) => void
   onEditSelect?: (region: { x: number; y: number; width: number; height: number }) => void
@@ -47,5 +67,6 @@ export interface DocumentViewerProps {
   onRotateLeft?: () => void
   onRotateRight?: () => void
   onUndo?: () => void
+  onPageChange?: (page: number, totalPages: number) => void
   onDimensionsChange?: (dimensions: { width: number; height: number }) => void
 }

@@ -29,6 +29,13 @@ Hoy el foco del proyecto está en:
 - soporte para **imágenes, PDFs y audio**
 - persistencia local en **SQLite**
 
+### Documentación técnica útil
+
+- [SQLite schema y guía de inspección](./SQLite.md)
+- [Alias en docs/database](./docs/database/SQLite.md)
+- [Guía operativa de debugging de base](./DATABASE_DEBUGGING.md)
+- [Script de auditoría SQLite](./scripts/sqlite_audit.sql)
+
 ### OCR y transcripción
 
 - **OCR Light (OCRL)**: OCR plano para imágenes y PDFs

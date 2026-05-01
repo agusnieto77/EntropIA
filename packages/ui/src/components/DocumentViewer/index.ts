@@ -3,6 +3,7 @@ export type {
   DocumentViewerProps,
   ViewerType,
   ViewerAnnotation,
+  ViewerLayoutRegion,
   AnnotationKind,
   AnnotationTool,
   EditTool,

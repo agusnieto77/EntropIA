@@ -22,6 +22,10 @@ export interface FtsStats {
   totalRows: number
 }
 
+interface ItemRowidRow {
+  rowid: number
+}
+
 // FTS5 operator keywords to strip from user queries
 const FTS5_OPERATORS = /\b(AND|OR|NOT|NEAR)\b/g
 // Special characters to strip from individual tokens
@@ -62,6 +66,54 @@ function extractSanitizedTerms(safeQuery: string): string[] {
 export class FtsRepo {
   constructor(private client: DbClient) {}
 
+  private static readonly REBUILD_INSERT_SQL = `INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)
+SELECT
+  i.rowid,
+  i.id,
+  i.title,
+  COALESCE(i.metadata, ''),
+  COALESCE((
+    SELECT GROUP_CONCAT(text_part, ' ')
+    FROM (
+      SELECT text_part
+      FROM (
+        SELECT COALESCE(e.text_content, '') AS text_part,
+               0 AS source_order,
+               COALESCE(a.sort_index, 0) AS sort_index,
+               e.created_at AS created_at
+        FROM extractions e
+        JOIN assets a ON a.id = e.asset_id
+        WHERE a.item_id = i.id
+
+        UNION ALL
+
+        SELECT COALESCE(t.text_content, '') AS text_part,
+               1 AS source_order,
+               COALESCE(a.sort_index, 0) AS sort_index,
+               t.created_at AS created_at
+        FROM transcriptions t
+        JOIN assets a ON a.id = t.asset_id
+        WHERE a.item_id = i.id
+      ) ordered_text
+      ORDER BY source_order ASC, sort_index ASC, created_at ASC
+    )
+  ), '')
+FROM items i`
+
+  private async getItemRowid(itemId: string): Promise<number> {
+    const rows = await this.client.select<ItemRowidRow>(
+      'SELECT rowid FROM items WHERE id = ? LIMIT 1',
+      [itemId]
+    )
+
+    const rowid = rows[0]?.rowid
+    if (rowid === undefined || rowid === null) {
+      throw new Error(`Cannot index FTS item: item \"${itemId}\" does not exist`)
+    }
+
+    return rowid
+  }
+
   private mapResults(rows: Array<{ item_id: string; rank: number }>): FtsResult[] {
     return rows.map((row) => ({
       itemId: row.item_id,
@@ -82,8 +134,8 @@ export class FtsRepo {
   }
 
   /**
-   * Insert or replace an item's indexed fields in fts_items.
-   * Uses raw SQL — FTS5 virtual tables don't work with Drizzle ORM builders.
+   * Insert or replace an item's indexed fields in fts_items using the
+   * canonical identity contract: fts_items.rowid = items.rowid.
    */
   async indexItem(
     itemId: string,
@@ -91,12 +143,24 @@ export class FtsRepo {
     metadata: string,
     extractedText: string
   ): Promise<void> {
-    // First delete existing row, then insert (manual upsert for FTS5 contentless tables)
-    await this.client.execute(`DELETE FROM fts_items WHERE item_id = ?`, [itemId])
+    const rowid = await this.getItemRowid(itemId)
+
     await this.client.execute(
-      `INSERT INTO fts_items(item_id, title, metadata, extracted_text) VALUES (?, ?, ?, ?)`,
-      [itemId, title, metadata, extractedText]
+      `INSERT OR REPLACE INTO fts_items(rowid, item_id, title, metadata, extracted_text) VALUES (?, ?, ?, ?, ?)`,
+      [rowid, itemId, title, metadata, extractedText]
     )
+  }
+
+  /**
+   * Rebuild the full FTS index from canonical item rows.
+   *
+   * Contentless FTS5 tables cannot be safely mutated with ad-hoc DELETEs by
+   * item_id. Rebuilding from `items.rowid` keeps row identity aligned and fixes
+   * drift after source-row deletes.
+   */
+  async rebuildIndex(): Promise<void> {
+    await this.client.execute(`INSERT INTO fts_items(fts_items) VALUES ('delete-all')`)
+    await this.client.execute(FtsRepo.REBUILD_INSERT_SQL)
   }
 
   /**
@@ -183,9 +247,11 @@ export class FtsRepo {
   }
 
   /**
-   * Remove an item's row from fts_items.
+   * Remove an item's row from fts_items by rebuilding from canonical sources.
+   *
+   * Call this after the source item row has been deleted.
    */
-  async removeItem(itemId: string): Promise<void> {
-    await this.client.execute(`DELETE FROM fts_items WHERE item_id = ?`, [itemId])
+  async removeItem(_itemId: string): Promise<void> {
+    await this.rebuildIndex()
   }
 }

@@ -40,6 +40,27 @@ describe('runMigrations — migrations 0004, 0005 and 0006', () => {
     expect(hasUnicode61).toBe(true)
   })
 
+  it('FTS migrations backfill with explicit items.rowid', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasCanonicalRowidInsert = client._executedSql.some((sql) =>
+      sql.includes('INSERT INTO fts_items(rowid, item_id, title, metadata, extracted_text)')
+    )
+    expect(hasCanonicalRowidInsert).toBe(true)
+  })
+
+  it('FTS corrective migration performs delete-all rebuild', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasDeleteAll = client._executedSql.some((sql) =>
+      sql.includes("INSERT INTO fts_items(fts_items) VALUES('delete-all')") ||
+      sql.includes("INSERT INTO fts_items(fts_items) VALUES ('delete-all')")
+    )
+    expect(hasDeleteAll).toBe(true)
+  })
+
   it('entities migration creates idx_entities_item_id index', async () => {
     const client = createMockDbClient()
     await runMigrations(client)
@@ -72,5 +93,44 @@ describe('runMigrations — migrations 0004, 0005 and 0006', () => {
 
     expect(hasTriplesTable).toBe(true)
     expect(hasTriplesIndex).toBe(true)
+  })
+
+  it('executes llm_results hardening migration with target_type and timestamp normalization', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasLlmResultsV2 = client._executedSql.some(
+      (sql) =>
+        sql.includes('CREATE TABLE llm_results_v2') &&
+        sql.includes('target_type TEXT NOT NULL') &&
+        sql.includes("CHECK(target_type IN ('asset', 'item', 'collection', 'unknown'))")
+    )
+    const hasTimestampNormalization = client._executedSql.some(
+      (sql) =>
+        sql.includes('CASE') &&
+        sql.includes('created_at < 1000000000000') &&
+        sql.includes('created_at * 1000')
+    )
+
+    expect(hasLlmResultsV2).toBe(true)
+    expect(hasTimestampNormalization).toBe(true)
+  })
+
+  it('executes layouts migration with blocks column and unique asset index', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasLayoutsTable = client._executedSql.some(
+      (sql) =>
+        sql.includes('CREATE TABLE IF NOT EXISTS layouts') &&
+        sql.includes('blocks TEXT NOT NULL') &&
+        sql.includes('image_width INTEGER NOT NULL')
+    )
+    const hasUniqueIndex = client._executedSql.some((sql) =>
+      sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_layouts_asset_id_unique')
+    )
+
+    expect(hasLayoutsTable).toBe(true)
+    expect(hasUniqueIndex).toBe(true)
   })
 })

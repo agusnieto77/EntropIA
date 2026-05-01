@@ -45,7 +45,7 @@ pub fn index_item_from_db(conn: &Connection, item_id: &str) -> Result<(), String
 
 /// Upsert a document into `fts_items`.
 ///
-/// FTS5 contentless tables don't support UPDATE — we delete then re-insert.
+/// The canonical identity of the index is `fts_items.rowid = items.rowid`.
 pub fn fts_index_item(
     conn: &Connection,
     item_id: &str,
@@ -263,6 +263,37 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].item_id, "item-1");
         assert_eq!(results[0].title, "Historia Colonial");
+    }
+
+    #[test]
+    fn fts_index_uses_items_rowid_as_canonical_identity() {
+        let conn = setup_fts_db();
+        conn.execute(
+            "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
+            params!["item-rowid", "col-a", "Contrato Rowid"],
+        )
+        .expect("insert item failed");
+
+        let item_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM items WHERE id = ?1",
+                params!["item-rowid"],
+                |row| row.get(0),
+            )
+            .expect("lookup item rowid failed");
+
+        fts_index_item(&conn, "item-rowid", "Contrato Rowid", "", "texto canonico")
+            .expect("index failed");
+
+        let fts_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM fts_items WHERE item_id = ?1",
+                params!["item-rowid"],
+                |row| row.get(0),
+            )
+            .expect("lookup fts rowid failed");
+
+        assert_eq!(fts_rowid, item_rowid);
     }
 
     #[test]
