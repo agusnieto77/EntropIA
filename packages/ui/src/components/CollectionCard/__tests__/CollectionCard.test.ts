@@ -64,12 +64,12 @@ describe('CollectionCard', () => {
 
   it('shows edit button when onedit is provided', () => {
     render(CollectionCard, { props: { ...baseProps, onedit: vi.fn() } })
-    expect(screen.getByTestId('edit-button')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit collection' })).toBeInTheDocument()
   })
 
   it('shows delete button when ondelete is provided', () => {
     render(CollectionCard, { props: { ...baseProps, ondelete: vi.fn() } })
-    expect(screen.getByTestId('delete-button')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete collection' })).toBeInTheDocument()
   })
 
   it('does not show edit/delete buttons when callbacks are not provided', () => {

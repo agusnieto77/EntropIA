@@ -83,6 +83,7 @@ describe('MetadataEditor', () => {
 
     const deleteBtns = screen.getAllByTestId('metadata-delete')
     expect(deleteBtns).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'Remove field' })[0]).not.toHaveTextContent('×')
 
     await fireEvent.click(deleteBtns[0]!)
 
@@ -135,5 +136,15 @@ describe('MetadataEditor', () => {
     await fireEvent.click(deleteBtns[0]!)
 
     expect(onchange).toHaveBeenCalledWith({ Year: '2024' })
+  })
+
+  it('renders icon-only delete buttons without textual multiplication signs', () => {
+    render(MetadataEditor, {
+      props: {
+        value: { Author: 'John' },
+      },
+    })
+
+    expect(screen.getByRole('button', { name: 'Remove field' })).not.toHaveTextContent('×')
   })
 })

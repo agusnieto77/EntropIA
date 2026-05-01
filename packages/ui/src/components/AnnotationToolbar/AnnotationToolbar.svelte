@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ActionIcon from '../Button/ActionIcon.svelte'
   import type { AnnotationTool, EditTool } from '../DocumentViewer/DocumentViewer.types'
 
   export interface AnnotationColorOption {
@@ -211,10 +212,11 @@
       type="button"
       class="annotation-toolbar__button annotation-toolbar__button--danger"
       aria-label="Delete selected annotation"
+      title="Delete selected annotation"
       disabled={!hasSelection}
       onclick={onDeleteSelected}
     >
-      ✕
+      <ActionIcon name="delete" size={18} />
     </button>
 
     <button

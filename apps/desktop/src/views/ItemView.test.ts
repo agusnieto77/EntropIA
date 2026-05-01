@@ -153,6 +153,9 @@ function createStore({
     extractions: {
       findByAsset: vi.fn().mockResolvedValue(null),
     },
+    transcriptions: {
+      findByAsset: vi.fn().mockResolvedValue(null),
+    },
     entities: {
       findByItemId: vi.fn().mockResolvedValue(entitiesRows),
       findByAssetId: vi.fn().mockResolvedValue(entitiesRows),
@@ -187,6 +190,9 @@ function createStore({
       addTopicToItem: vi.fn().mockResolvedValue(undefined),
       findByName: vi.fn().mockResolvedValue(null),
       removeTopicFromItem: vi.fn().mockResolvedValue(undefined),
+    },
+    layouts: {
+      findByAssetId: vi.fn().mockResolvedValue(null),
     },
   }
 }
@@ -265,15 +271,19 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 vi.mock('@entropia/ui', async () => {
+  const MockActionIcon = (await import('./__mocks__/MockActionIcon.svelte')).default
   const MockDocumentViewer = (await import('./__mocks__/MockDocumentViewer.svelte')).default
   const MockEntityViewer = (await import('./__mocks__/MockEntityViewer.svelte')).default
+  const MockButton = (await import('./__mocks__/MockButton.svelte')).default
+  const MockCard = (await import('./__mocks__/MockCard.svelte')).default
 
   return {
+    ActionIcon: MockActionIcon,
     DocumentViewer: MockDocumentViewer,
     MetadataEditor: () => null,
     NoteEditor: () => null,
-    Button: () => null,
-    Card: () => null,
+    Button: MockButton,
+    Card: MockCard,
     EntityViewer: MockEntityViewer,
     MapViewer: () => null,
     TopicEditor: () => null,
@@ -674,6 +684,13 @@ describe('ItemView note editing', () => {
   it('displays the correct note count', async () => {
     await renderItemViewWithNotes([sampleNote])
     expect(screen.getByText(/Notes \(1\)/)).toBeInTheDocument()
+  })
+
+  it('renders icon-only note action buttons with accessible names', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete note' })).toBeInTheDocument()
   })
 
   it('displays "No notes yet" when notes array is empty', async () => {
@@ -1416,6 +1433,7 @@ describe('ItemView entity editing UX', () => {
     await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
 
     expect(await screen.findByRole('dialog', { name: /Edit entity/i })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Close entity editor' })).toHaveLength(2)
 
     await fireEvent.input(screen.getByLabelText('Edit entity value'), {
       target: { value: 'Mar del Plata 1970' },
@@ -1437,7 +1455,11 @@ describe('ItemView entity editing UX', () => {
     await renderAnalysisWithEntities()
 
     await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
-    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const deleteBtn = screen.getByRole('button', { name: 'Delete entity' })
+    expect(deleteBtn.querySelector('svg')).toBeInTheDocument()
+    expect(deleteBtn).not.toHaveTextContent('Delete')
+
+    await fireEvent.click(deleteBtn)
 
     expect(storeRef.current.entities.delete).toHaveBeenCalledWith('entity-1')
   })

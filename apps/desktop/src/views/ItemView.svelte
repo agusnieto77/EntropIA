@@ -46,6 +46,7 @@
     MetadataEditor,
     NoteEditor,
     Button,
+    ActionIcon,
     Card,
     EntityViewer,
     MapViewer,
@@ -2035,11 +2036,23 @@
                   <p class="note-content">{note.content}</p>
                   <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
                   <div class="note-actions">
-                    <Button variant="ghost" size="sm" onclick={() => handleEditNote(note)}>
-                      Edit
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      iconOnly
+                      aria-label="Edit note"
+                      onclick={() => handleEditNote(note)}
+                    >
+                      <ActionIcon name="edit" />
                     </Button>
-                    <Button variant="ghost" size="sm" onclick={() => handleDeleteNote(note.id)}>
-                      Delete
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      iconOnly
+                      aria-label="Delete note"
+                      onclick={() => handleDeleteNote(note.id)}
+                    >
+                      <ActionIcon name="delete" />
                     </Button>
                   </div>
                 {/if}
@@ -2737,10 +2750,13 @@
                       <div class="entity-modal__header">
                         <h5>Edit entity</h5>
                         <button
-                          type="button"
                           class="entity-modal__close"
-                          onclick={cancelEditingEntity}>×</button
+                          type="button"
+                          aria-label="Close entity editor"
+                          onclick={cancelEditingEntity}
                         >
+                          <ActionIcon name="close" />
+                        </button>
                       </div>
 
                       <div class="entity-modal__body">
@@ -2774,13 +2790,18 @@
                       </div>
 
                       <div class="entity-modal__actions">
-                        <button
+                        <Button
                           type="button"
-                          class="nlp-btn entity-modal__danger"
+                          variant="danger"
+                          size="sm"
+                          iconOnly
+                          aria-label="Delete entity"
+                          title="Delete entity"
+                          class="entity-modal__danger"
                           onclick={() => editingEntityId && handleDeleteEntity(editingEntityId)}
                         >
-                          Delete
-                        </button>
+                          <ActionIcon name="delete" />
+                        </Button>
                         <div class="entity-modal__actions-right">
                           <button type="button" class="nlp-btn" onclick={cancelEditingEntity}
                             >Cancel</button
@@ -3848,12 +3869,27 @@
   }
 
   .entity-modal__close {
-    border: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: 24px;
-    line-height: 1;
     cursor: pointer;
+  }
+
+  .entity-modal__close:hover {
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+  }
+
+  .entity-modal__close:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .entity-modal__body {

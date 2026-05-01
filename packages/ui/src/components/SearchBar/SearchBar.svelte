@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ActionIcon } from '../Button'
   import type { SearchBarProps } from './SearchBar.types'
 
   let {
@@ -74,7 +75,7 @@
       onclick={handleClear}
       aria-label="Clear search"
     >
-      &times;
+      <ActionIcon name="close" size={14} />
     </button>
   {/if}
 </div>
@@ -142,12 +143,14 @@
     background-color: var(--color-surface-raised);
     color: var(--color-text-secondary);
     cursor: pointer;
-    font-size: var(--font-size-sm);
-    line-height: 1;
     transition:
       background-color var(--transition-base),
       color var(--transition-base),
       box-shadow var(--transition-base);
+  }
+
+  .search-bar__clear :global(svg) {
+    pointer-events: none;
   }
 
   .search-bar__clear:hover {

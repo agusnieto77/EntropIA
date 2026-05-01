@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ActionIcon, Button } from '../Button'
   import type { ItemCardProps } from './ItemCard.types'
 
   let {
@@ -33,7 +34,15 @@
             fill="currentColor"
             aria-hidden="true"
           >
-            <circle cx="12" cy="12" r="11" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3" />
+            <circle
+              cx="12"
+              cy="12"
+              r="11"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              opacity="0.3"
+            />
             <path d="M9.5 6.5l8 5.5-8 5.5V6.5z" />
           </svg>
         </div>
@@ -77,34 +86,19 @@
   </button>
 
   {#if showDelete}
-    <button
+    <Button
       class="item-card__delete"
-      type="button"
+      variant="secondary"
+      size="sm"
+      iconOnly
       aria-label={`Delete ${title}`}
       onclick={(e) => {
         e.stopPropagation()
         onDelete?.(e)
       }}
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M3 6h18" />
-        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-        <line x1="10" y1="11" x2="10" y2="17" />
-        <line x1="14" y1="11" x2="14" y2="17" />
-      </svg>
-    </button>
+      <ActionIcon name="delete" />
+    </Button>
   {/if}
 </div>
 
@@ -244,48 +238,33 @@
   }
 
   /* Delete button overlay */
-  .item-card__delete {
+  :global(.item-card__delete) {
     position: absolute;
     top: var(--space-2);
     right: var(--space-2);
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
-    cursor: pointer;
     opacity: 0;
     transition:
       opacity 0.15s ease,
       color 0.15s ease,
       background-color 0.15s ease,
       border-color 0.15s ease;
-    padding: 0;
     z-index: 1;
   }
 
-  .item-card:hover .item-card__delete,
-  .item-card:focus-within .item-card__delete,
-  .item-card__delete:focus-visible {
+  .item-card:hover :global(.item-card__delete),
+  .item-card:focus-within :global(.item-card__delete),
+  :global(.item-card__delete:focus-visible) {
     opacity: 1;
   }
 
-  .item-card__delete:hover {
+  :global(.item-card__delete:hover) {
     color: var(--color-danger);
-    background-color: var(--color-surface-raised);
     border-color: var(--color-danger);
   }
 
-  .item-card__delete:focus-visible {
+  :global(.item-card__delete:focus-visible) {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
-  }
-
-  .item-card__delete svg {
-    pointer-events: none;
   }
 </style>

@@ -1,7 +1,17 @@
 <script lang="ts">
+  import { ActionIcon, Button } from '../Button'
   import type { CollectionCardProps } from './CollectionCard.types'
 
-  let { id: _id, name, description, itemCount, updatedAt, onclick, onedit, ondelete }: CollectionCardProps = $props()
+  let {
+    id: _id,
+    name,
+    description,
+    itemCount,
+    updatedAt,
+    onclick,
+    onedit,
+    ondelete,
+  }: CollectionCardProps = $props()
 
   function formatRelativeDate(timestamp: number): string {
     const now = Date.now()
@@ -21,42 +31,52 @@
   const relativeDate = $derived(formatRelativeDate(updatedAt))
 </script>
 
-<div class="collection-card" role="button" tabindex="0" onclick={onclick} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onclick?.(); } }}>
+<div
+  class="collection-card"
+  role="button"
+  tabindex="0"
+  {onclick}
+  onkeydown={(e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onclick?.()
+    }
+  }}
+>
   <div class="collection-card__header">
     <h3 class="collection-card__name">{name}</h3>
     <span class="collection-card__badge">{itemCount} {itemLabel}</span>
     {#if onedit || ondelete}
       <div class="collection-card__actions">
         {#if onedit}
-          <button
-            class="collection-card__action-btn"
-            type="button"
-            title="Editar"
+          <Button
+            variant="ghost"
+            size="sm"
+            iconOnly
+            aria-label="Edit collection"
             data-testid="edit-button"
-            onclick={(e: MouseEvent) => { e.stopPropagation(); onedit(); }}
+            onclick={(e: MouseEvent) => {
+              e.stopPropagation()
+              onedit()
+            }}
           >
-            <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
-              <path d="m15 5 4 4"/>
-            </svg>
-          </button>
+            <ActionIcon name="edit" />
+          </Button>
         {/if}
         {#if ondelete}
-          <button
-            class="collection-card__action-btn collection-card__action-btn--danger"
-            type="button"
-            title="Eliminar"
+          <Button
+            variant="ghost"
+            size="sm"
+            iconOnly
+            aria-label="Delete collection"
             data-testid="delete-button"
-            onclick={(e: MouseEvent) => { e.stopPropagation(); ondelete(); }}
+            onclick={(e: MouseEvent) => {
+              e.stopPropagation()
+              ondelete()
+            }}
           >
-            <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 6h18"/>
-              <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-              <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-              <line x1="10" y1="11" x2="10" y2="17"/>
-              <line x1="14" y1="11" x2="14" y2="17"/>
-            </svg>
-          </button>
+            <ActionIcon name="delete" />
+          </Button>
         {/if}
       </div>
     {/if}
@@ -141,28 +161,6 @@
     display: flex;
     gap: var(--space-1);
     flex-shrink: 0;
-  }
-
-  .collection-card__action-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-1);
-    border: none;
-    background: none;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    border-radius: var(--radius-sm);
-    transition: color 0.15s ease, background-color 0.15s ease;
-  }
-
-  .collection-card__action-btn:hover {
-    color: var(--color-text-primary);
-    background-color: var(--color-surface-raised);
-  }
-
-  .collection-card__action-btn--danger:hover {
-    color: var(--color-danger, #ef4444);
   }
 
   .collection-card__date {

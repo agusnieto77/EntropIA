@@ -115,6 +115,24 @@ describe('DocumentViewer', () => {
       expect(screen.queryByTestId('pdf-controls')).not.toBeInTheDocument()
     })
 
+    it('renders delete selected annotation as the shared trash icon button', () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: 'ann-1',
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const deleteBtn = screen.getByRole('button', { name: /delete selected annotation/i })
+      expect(deleteBtn.querySelector('svg')).toBeInTheDocument()
+      expect(deleteBtn).not.toHaveTextContent('✕')
+    })
+
     it('renders image zoom controls', () => {
       render(DocumentViewer, {
         props: {

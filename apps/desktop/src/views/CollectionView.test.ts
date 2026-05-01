@@ -250,7 +250,8 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar asset' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -282,7 +283,8 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar asset' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -310,7 +312,8 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar asset' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -382,11 +385,22 @@ describe('CollectionView PDF thumbnail', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete PDF Document' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar asset' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
       expect(deletePdfThumbnail).toHaveBeenCalledWith(pdfAsset.id)
     })
+  })
+
+  it('renders the confirm delete action as the shared trash icon button', async () => {
+    await renderAndWaitForItems()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete PDF Document' }))
+
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar asset' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
+    expect(confirmBtn).not.toHaveTextContent('Eliminar')
   })
 })

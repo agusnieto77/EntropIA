@@ -7,6 +7,7 @@ export type ButtonSize = 'sm' | 'md' | 'lg'
 export interface ButtonProps extends HTMLButtonAttributes {
   variant?: ButtonVariant
   size?: ButtonSize
+  iconOnly?: boolean
   disabled?: boolean
   loading?: boolean
   type?: 'button' | 'submit' | 'reset'

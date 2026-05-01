@@ -4,6 +4,7 @@
   let {
     variant = 'primary',
     size = 'md',
+    iconOnly = false,
     disabled = false,
     loading = false,
     type = 'button',
@@ -16,6 +17,7 @@
 
 <button
   class="btn btn--{variant} btn--{size}"
+  class:btn--icon-only={iconOnly}
   class:btn--loading={loading}
   {type}
   disabled={isDisabled}
@@ -157,6 +159,30 @@
 
   .btn--loading {
     cursor: wait;
+  }
+
+  .btn--icon-only {
+    gap: 0;
+    aspect-ratio: 1;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .btn--icon-only.btn--sm {
+    width: var(--control-height-sm);
+  }
+
+  .btn--icon-only.btn--md {
+    width: var(--control-height-md);
+  }
+
+  .btn--icon-only.btn--lg {
+    width: var(--control-height-lg);
+  }
+
+  .btn--icon-only :global(svg) {
+    flex-shrink: 0;
+    pointer-events: none;
   }
 
   @keyframes spin {

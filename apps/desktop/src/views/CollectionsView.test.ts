@@ -103,4 +103,14 @@ describe('CollectionsView consumer compatibility', () => {
       )
     ).toBeInTheDocument()
   })
+
+  it('renders the confirm delete action as an icon-only trash button', async () => {
+    render(CollectionsView)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Delete collection' }))
+
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar colección' })
+    expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
+    expect(confirmBtn).not.toHaveTextContent('Eliminar')
+  })
 })

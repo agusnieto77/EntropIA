@@ -18,6 +18,7 @@
   let editDescription = $state('')
   let deletingId = $state<string | null>(null)
   let deletingName = $state('')
+  let deleting = $state(false)
 
   let filtered = $derived(
     searchQuery
@@ -101,28 +102,34 @@
   function handleDeleteRequest(id: string, name: string) {
     deletingId = id
     deletingName = name
+    deleting = false
   }
 
   function handleCancelDelete() {
+    if (deleting) return
     deletingId = null
     deletingName = ''
+    deleting = false
   }
 
   async function handleConfirmDelete() {
     if (!deletingId) return
     console.log('[Collections] deleting collection:', deletingId, deletingName)
     try {
+      deleting = true
       const store = getStore()
       await store.collections.delete(deletingId)
       console.log('[Collections] deleted successfully')
       deletingId = null
       deletingName = ''
+      deleting = false
       await loadCollections()
     } catch (e) {
       console.error('[Collections] ERROR deleting collection:', e)
       error = e instanceof Error ? e.message : String(e)
       deletingId = null
       deletingName = ''
+      deleting = false
     }
   }
 
@@ -245,8 +252,37 @@
             eliminarán todos sus items y datos asociados.
           </p>
           <div class="confirm-dialog__actions">
-            <Button variant="danger" onclick={handleConfirmDelete}>Eliminar</Button>
-            <Button variant="ghost" onclick={handleCancelDelete}>Cancelar</Button>
+            <button
+              type="button"
+              class="confirm-dialog__delete-button"
+              aria-label="Eliminar colección"
+              title={deleting ? 'Eliminando colección' : 'Eliminar colección'}
+              aria-busy={deleting}
+              onclick={handleConfirmDelete}
+              disabled={deleting}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 6h18" />
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                <line x1="10" y1="11" x2="10" y2="17" />
+                <line x1="14" y1="11" x2="14" y2="17" />
+              </svg>
+            </button>
+            <Button variant="ghost" onclick={handleCancelDelete} disabled={deleting}
+              >Cancelar</Button
+            >
           </div>
         </div>
       </Card>
@@ -356,6 +392,43 @@
     flex-wrap: wrap;
     gap: var(--space-2);
     justify-content: flex-end;
+  }
+
+  .confirm-dialog__delete-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    padding: 0;
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius-md);
+    background-color: var(--color-danger);
+    color: #ffffff;
+    cursor: pointer;
+    transition:
+      background-color var(--transition-base),
+      border-color var(--transition-base),
+      box-shadow var(--transition-base),
+      transform var(--transition-base);
+    box-shadow: 0 8px 18px rgba(225, 109, 123, 0.18);
+  }
+
+  .confirm-dialog__delete-button:hover:not(:disabled) {
+    background-color: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
+    transform: translateY(-1px);
+  }
+
+  .confirm-dialog__delete-button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .confirm-dialog__delete-button:disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
+    transform: none;
   }
 
   @media (max-width: 720px) {

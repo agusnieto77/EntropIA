@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ActionIcon, Button } from '../Button'
   import type { MetadataEditorProps } from './MetadataEditor.types'
 
   let { value, onchange }: MetadataEditorProps = $props()
@@ -92,15 +93,17 @@
         value={row.value}
         oninput={(e: Event) => handleValueInput(index, e)}
       />
-      <button
+      <Button
         class="metadata-editor__delete"
-        type="button"
+        variant="ghost"
+        size="sm"
+        iconOnly
         data-testid="metadata-delete"
         onclick={() => deleteRow(index)}
         aria-label="Remove field"
       >
-        &times;
-      </button>
+        <ActionIcon name="close" />
+      </Button>
     </div>
   {/each}
 
@@ -152,28 +155,16 @@
     flex: 0.6;
   }
 
-  .metadata-editor__delete {
+  :global(.metadata-editor__delete) {
     flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background-color: transparent;
     color: var(--color-text-secondary);
-    cursor: pointer;
-    font-size: var(--font-size-lg);
-    line-height: 1;
     transition:
       background-color 0.15s ease,
       color 0.15s ease,
       border-color 0.15s ease;
   }
 
-  .metadata-editor__delete:hover {
+  :global(.metadata-editor__delete:hover) {
     background-color: var(--color-danger);
     border-color: var(--color-danger);
     color: #ffffff;

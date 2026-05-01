@@ -76,6 +76,15 @@ describe('TopBar', () => {
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
   })
 
+  it('uses an icon-only clear button for global search', async () => {
+    render(TopBar)
+
+    const input = screen.getByRole('searchbox', { name: 'Buscar archivos' })
+    await fireEvent.input(input, { target: { value: 'acta' } })
+
+    expect(screen.getByRole('button', { name: 'Limpiar búsqueda' })).not.toHaveTextContent('×')
+  })
+
   it('shows results and navigates to the selected item', async () => {
     storeRef.current.items.searchGlobal.mockResolvedValueOnce([
       { id: 'item-1', title: 'Acta fundacional', collectionId: 'col-1' },

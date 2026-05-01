@@ -3,7 +3,13 @@ export { colors, spacing, typography, radius, shadows } from './tokens/index'
 
 // Components — Fase 0
 export { Button } from './components/Button/index'
-export type { ButtonProps, ButtonVariant, ButtonSize } from './components/Button/index'
+export { ActionIcon } from './components/Button/index'
+export type {
+  ButtonProps,
+  ButtonVariant,
+  ButtonSize,
+  ActionIconName,
+} from './components/Button/index'
 
 export { Input } from './components/Input/index'
 export type { InputProps, InputType } from './components/Input/index'

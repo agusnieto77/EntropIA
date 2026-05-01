@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ActionIcon } from '../Button'
   import type { TopicEditorProps } from './TopicEditor.types'
 
   let { topics = [], suggestions = [], onchange }: TopicEditorProps = $props()
@@ -20,7 +21,14 @@
   })
 
   function normalizeInput(raw: string): string[] {
-    return [...new Set(raw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean))]
+    return [
+      ...new Set(
+        raw
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean)
+      ),
+    ]
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -88,10 +96,10 @@
         <button
           type="button"
           class="topic-editor__chip-remove"
-          aria-label="Remove {topic}"
+          aria-label={`Remove topic ${topic}`}
           onclick={() => removeTopic(topic)}
         >
-          &times;
+          <ActionIcon name="close" size={14} />
         </button>
       </span>
     {/each}
@@ -112,7 +120,11 @@
     <ul class="topic-editor__suggestions">
       {#each filteredSuggestions as suggestion (suggestion)}
         <li>
-          <button type="button" class="topic-editor__suggestion" onmousedown={() => selectSuggestion(suggestion)}>
+          <button
+            type="button"
+            class="topic-editor__suggestion"
+            onmousedown={() => selectSuggestion(suggestion)}
+          >
             {suggestion}
           </button>
         </li>
@@ -170,9 +182,11 @@
     background: transparent;
     color: rgba(255, 255, 255, 0.8);
     cursor: pointer;
-    font-size: var(--font-size-md);
-    line-height: 1;
     transition: color 0.15s ease;
+  }
+
+  .topic-editor__chip-remove :global(svg) {
+    pointer-events: none;
   }
 
   .topic-editor__chip-remove:hover {
