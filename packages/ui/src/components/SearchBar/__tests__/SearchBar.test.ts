@@ -17,6 +17,12 @@ describe('SearchBar', () => {
     expect(input).toBeInTheDocument()
   })
 
+  it('uses an accessible name for the searchbox', () => {
+    render(SearchBar, { props: { placeholder: 'Search collections...' } })
+
+    expect(screen.getByRole('searchbox', { name: 'Search collections...' })).toBeInTheDocument()
+  })
+
   it('renders the search icon', () => {
     render(SearchBar, { props: {} })
     expect(screen.getByTestId('search-icon')).toBeInTheDocument()

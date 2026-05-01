@@ -53,7 +53,7 @@
     clearDebounceTimer()
   })
 
-  const showClear = $derived(internalValue.length > 0)
+  let showClear = $derived(internalValue.length > 0)
 </script>
 
 <div class="search-bar">
@@ -62,6 +62,7 @@
     class="search-bar__input"
     type="search"
     {placeholder}
+    aria-label={placeholder || 'Search'}
     value={internalValue}
     oninput={handleInput}
   />
@@ -83,24 +84,28 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
     transition:
-      border-color 0.15s ease,
-      box-shadow 0.15s ease;
+      border-color var(--transition-base),
+      box-shadow var(--transition-base),
+      background-color var(--transition-base);
   }
 
   .search-bar:focus-within {
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
+    box-shadow: var(--focus-ring);
+    background-color: var(--color-surface);
   }
 
   .search-bar__icon {
     flex-shrink: 0;
-    font-size: var(--font-size-md);
-    opacity: 0.5;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    opacity: 0.9;
   }
 
   .search-bar__input {
@@ -109,9 +114,10 @@
     outline: none;
     background: transparent;
     font-family: var(--font-sans);
-    font-size: var(--font-size-md);
+    font-size: var(--font-size-sm);
     color: var(--color-text-primary);
     min-width: 0;
+    line-height: var(--line-height-base);
   }
 
   .search-bar__input::placeholder {
@@ -128,23 +134,29 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: none;
     border-radius: var(--radius-full);
     background-color: var(--color-surface-raised);
     color: var(--color-text-secondary);
     cursor: pointer;
-    font-size: var(--font-size-md);
+    font-size: var(--font-size-sm);
     line-height: 1;
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
+      background-color var(--transition-base),
+      color var(--transition-base),
+      box-shadow var(--transition-base);
   }
 
   .search-bar__clear:hover {
-    background-color: var(--color-border);
+    background-color: var(--color-border-subtle);
     color: var(--color-text-primary);
+  }
+
+  .search-bar__clear:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 </style>

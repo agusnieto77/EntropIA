@@ -116,9 +116,18 @@ describe('CollectionView consumer compatibility', () => {
   it('uses SearchBar onsearch/onclear contract to call collection queries', async () => {
     render(CollectionView, { collectionId: 'col-1' })
 
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+
     await waitFor(() => {
       expect(storeRef.current.items.findByCollection).toHaveBeenCalledWith('col-1')
     })
+
+    expect(screen.getByRole('heading', { name: 'Documentos' })).toBeInTheDocument()
+    expect(
+      screen.getByText('Importá, explorá y mantené ordenados los assets de esta colección.')
+    ).toBeInTheDocument()
+    expect(screen.getByText('1 documento visible')).toBeInTheDocument()
 
     const searchInput = screen.getByRole('searchbox')
     await fireEvent.input(searchInput, { target: { value: 'acta' } })
@@ -133,6 +142,26 @@ describe('CollectionView consumer compatibility', () => {
     await waitFor(() => {
       expect(storeRef.current.items.findByCollection).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('shows the empty-state guidance when there are no items', async () => {
+    storeRef.current = createStore([])
+
+    render(CollectionView, { collectionId: 'col-1' })
+
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await waitFor(() => {
+      expect(storeRef.current.items.findByCollection).toHaveBeenCalledWith('col-1')
+    })
+
+    expect(screen.getByText('0 documentos visibles')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Todavía no hay documentos en esta colección. Importá archivos para empezar a trabajar.'
+      )
+    ).toBeInTheDocument()
   })
 })
 
@@ -190,7 +219,7 @@ describe('CollectionView asset deletion', () => {
 
     // Modal should appear
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText(/Are you sure you want to delete/)).toBeInTheDocument()
+    expect(screen.getByText(/¿Seguro que querés eliminar/)).toBeInTheDocument()
     expect(screen.getByText('uuid_acta.pdf')).toBeInTheDocument()
   })
 
@@ -202,7 +231,7 @@ describe('CollectionView asset deletion', () => {
 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
 
-    const cancelBtn = screen.getByRole('button', { name: 'Cancel' })
+    const cancelBtn = screen.getByRole('button', { name: 'Cancelar' })
     await fireEvent.click(cancelBtn)
 
     await waitFor(() => {
@@ -221,7 +250,7 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -253,7 +282,7 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -281,7 +310,7 @@ describe('CollectionView asset deletion', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete Acta' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {
@@ -353,7 +382,7 @@ describe('CollectionView PDF thumbnail', () => {
     const deleteBtn = screen.getByRole('button', { name: 'Delete PDF Document' })
     await fireEvent.click(deleteBtn)
 
-    const confirmBtn = screen.getByRole('button', { name: 'Delete' })
+    const confirmBtn = screen.getByRole('button', { name: 'Eliminar' })
     await fireEvent.click(confirmBtn)
 
     await waitFor(() => {

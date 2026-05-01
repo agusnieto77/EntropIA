@@ -1,8 +1,20 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
-  import { pickFiles, classifyFiles, importSingleFile, isScannedPdf, renderPdfPages, type ImportedFile } from '$lib/file-import'
-  import { getAssetUrl, deleteAssetFile, generatePdfThumbnail, deletePdfThumbnail } from '$lib/file-import'
+  import {
+    pickFiles,
+    classifyFiles,
+    importSingleFile,
+    isScannedPdf,
+    renderPdfPages,
+    type ImportedFile,
+  } from '$lib/file-import'
+  import {
+    getAssetUrl,
+    deleteAssetFile,
+    generatePdfThumbnail,
+    deletePdfThumbnail,
+  } from '$lib/file-import'
   import { appDataDir, join } from '@tauri-apps/api/path'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
@@ -23,6 +35,10 @@
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
   let unlistenAssetUpdate: (() => void) | null = null
+
+  let visibleCountLabel = $derived(
+    `${items.length} ${items.length === 1 ? 'documento visible' : 'documentos visibles'}`
+  )
 
   // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath, primaryAssetType }
   let itemAssetMeta = $state<
@@ -580,16 +596,13 @@
     // When an image is edited, the asset path changes to a new versioned file.
     // We must invalidate the cached thumbnail URL so the card shows the latest
     // version instead of a stale browser-cached image.
-    listen<{ itemId: string; assetId: string; path: string }>(
-      'asset:image-updated',
-      (event) => {
-        const { itemId: updatedItemId } = event.payload
-        // Invalidate the cached metadata for this item so the thumbnail
-        // is regenerated with the new path (which includes a cache-busting
-        // version number since edits create new files).
-        void loadItemAssets([updatedItemId])
-      }
-    )
+    listen<{ itemId: string; assetId: string; path: string }>('asset:image-updated', (event) => {
+      const { itemId: updatedItemId } = event.payload
+      // Invalidate the cached metadata for this item so the thumbnail
+      // is regenerated with the new path (which includes a cache-busting
+      // version number since edits create new files).
+      void loadItemAssets([updatedItemId])
+    })
       .then((unlisten) => {
         unlistenAssetUpdate = unlisten
       })
@@ -604,37 +617,50 @@
   })
 </script>
 
-<div class="collection-view" class:drag-active={dragActive}>
-  <div class="toolbar">
-    <SearchBar placeholder="Search items..." onsearch={handleSearch} onclear={handleClearSearch} />
-    <Button variant="primary" onclick={handleImport} disabled={importing}>
-      {importing ? 'Importing...' : '+ Import Document'}
-    </Button>
-    <Button variant="secondary" onclick={handleExportJson} disabled={exporting}>
-      {exporting ? 'Exporting...' : 'Export JSON'}
-    </Button>
-  </div>
+<div class="collection-view page-shell" class:drag-active={dragActive}>
+  <section class="page-header collection-view__header">
+    <div class="page-header__content">
+      <span class="page-header__eyebrow">Colección activa</span>
+      <h1>Documentos</h1>
+      <p>Importá, explorá y mantené ordenados los assets de esta colección.</p>
+      <span class="page-header__meta">{visibleCountLabel}</span>
+    </div>
+
+    <div class="page-toolbar collection-toolbar">
+      <SearchBar
+        placeholder="Buscar documentos..."
+        onsearch={handleSearch}
+        onclear={handleClearSearch}
+      />
+      <Button variant="primary" onclick={handleImport} disabled={importing}>
+        {importing ? 'Importando...' : '+ Importar documento'}
+      </Button>
+      <Button variant="secondary" onclick={handleExportJson} disabled={exporting}>
+        {exporting ? 'Exportando...' : 'Exportar JSON'}
+      </Button>
+    </div>
+  </section>
 
   {#if error}
-    <p class="error">{error}</p>
+    <p class="surface-message surface-message--error">{error}</p>
   {/if}
 
   {#if importNotice}
-    <p class="notice">{importNotice}</p>
+    <p class="surface-message surface-message--success">{importNotice}</p>
   {/if}
 
   {#if dragActive}
-    <div class="drop-hint">Drop files to import into this collection</div>
+    <div class="drop-hint">Soltá archivos acá para importarlos a esta colección.</div>
   {/if}
 
   {#if loading}
-    <p class="status">Loading...</p>
+    <p class="surface-message surface-message--center">Cargando documentos...</p>
   {:else if items.length === 0}
-    <div class="empty">
+    <div class="surface-message surface-message--center empty">
       <p>
         {searchQuery
-          ? 'No items match your search.'
-          : 'No documents yet. Import one to get started!'}
+          ? 'No encontramos documentos para esa búsqueda. Probá ajustando el texto o limpiando el filtro.'
+          : 'Todavía no hay documentos en esta colección. Importá archivos para empezar a trabajar.'}
       </p>
     </div>
   {:else}
@@ -646,7 +672,8 @@
           title={item.title}
           assetCount={meta.assetCount}
           thumbnailPath={meta.thumbnailUrl ?? undefined}
-          primaryAssetType={(meta.primaryAssetType as 'image' | 'pdf' | 'audio' | undefined) ?? undefined}
+          primaryAssetType={(meta.primaryAssetType as 'image' | 'pdf' | 'audio' | undefined) ??
+            undefined}
           onclick={() =>
             navigation.navigate({
               name: 'item',
@@ -679,10 +706,10 @@
           if (e.key === 'Escape') handleDeleteCancel()
         }}
       >
-        <h3 id="delete-modal-title" class="modal-title">Delete Asset</h3>
+        <h3 id="delete-modal-title" class="modal-title">Eliminar asset</h3>
         <p class="modal-message">
-          Are you sure you want to delete <strong>{pendingDeleteFilename}</strong>? This will also
-          remove associated OCR text and processing jobs. This action cannot be undone.
+          ¿Seguro que querés eliminar <strong>{pendingDeleteFilename}</strong>? También se borrarán
+          el texto OCR asociado y los jobs de procesamiento. Esta acción no se puede deshacer.
         </p>
 
         {#if deleteError}
@@ -691,10 +718,10 @@
 
         <div class="modal-actions">
           <Button variant="secondary" onclick={handleDeleteCancel} disabled={deleting}>
-            Cancel
+            Cancelar
           </Button>
           <Button variant="danger" onclick={handleDeleteConfirm} disabled={deleting}>
-            {deleting ? 'Deleting...' : 'Delete'}
+            {deleting ? 'Eliminando...' : 'Eliminar'}
           </Button>
         </div>
       </div>
@@ -704,44 +731,46 @@
 
 <style>
   .collection-view {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
+    min-height: 100%;
   }
-  .toolbar {
-    display: flex;
-    gap: var(--space-3);
+
+  .collection-view__header {
     align-items: center;
   }
+
+  .collection-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 1;
+  }
+
+  .collection-toolbar :global(.search-bar) {
+    min-width: min(100%, 340px);
+    flex: 1 1 280px;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--space-4);
   }
+
   .empty {
-    text-align: center;
-    padding: var(--space-8);
-    color: var(--color-text-secondary);
+    min-height: 220px;
   }
-  .status {
-    color: var(--color-text-secondary);
-    text-align: center;
-  }
-  .error {
-    color: var(--color-danger);
-  }
-  .notice {
-    color: var(--color-text-secondary);
-    font-size: var(--font-size-sm);
-  }
+
   .drop-hint {
-    padding: var(--space-3);
-    border: 1px dashed var(--color-primary);
-    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    border: 1px dashed var(--color-accent);
+    border-radius: var(--radius-lg);
     color: var(--color-text-secondary);
     text-align: center;
-    background: var(--color-primary-subtle);
+    background:
+      linear-gradient(180deg, rgba(124, 149, 255, 0.1), rgba(124, 149, 255, 0.05)),
+      var(--color-surface);
   }
+
   .collection-view.drag-active {
     outline: 1px dashed var(--color-primary);
     outline-offset: 6px;
@@ -801,5 +830,22 @@
     display: flex;
     gap: var(--space-3);
     justify-content: flex-end;
+  }
+
+  @media (max-width: 720px) {
+    .collection-toolbar {
+      width: 100%;
+      justify-content: stretch;
+    }
+
+    .collection-toolbar :global(.search-bar),
+    .collection-toolbar :global(.btn),
+    .modal-actions :global(.btn) {
+      width: 100%;
+    }
+
+    .modal-actions {
+      flex-direction: column-reverse;
+    }
   }
 </style>

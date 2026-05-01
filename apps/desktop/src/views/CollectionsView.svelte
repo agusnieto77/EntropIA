@@ -25,6 +25,10 @@
       : collections
   )
 
+  let visibleCountLabel = $derived(
+    `${filtered.length} ${filtered.length === 1 ? 'colección visible' : 'colecciones visibles'}`
+  )
+
   async function loadCollections() {
     try {
       loading = true
@@ -127,17 +131,26 @@
   })
 </script>
 
-<div class="collections-view">
-  <div class="toolbar">
-    <SearchBar
-      placeholder="Search collections..."
-      onsearch={(q) => (searchQuery = q)}
-      onclear={() => (searchQuery = '')}
-    />
-    <Button variant="primary" onclick={() => (showCreate = !showCreate)}>
-      {showCreate ? 'Cancel' : '+ New Collection'}
-    </Button>
-  </div>
+<div class="collections-view page-shell">
+  <section class="page-header">
+    <div class="page-header__content">
+      <span class="page-header__eyebrow">Biblioteca</span>
+      <h1>Colecciones</h1>
+      <p>Gestioná tus espacios de trabajo y organizá el archivo por tema.</p>
+      <span class="page-header__meta">{visibleCountLabel}</span>
+    </div>
+
+    <div class="page-toolbar collections-toolbar">
+      <SearchBar
+        placeholder="Buscar colecciones..."
+        onsearch={(q) => (searchQuery = q)}
+        onclear={() => (searchQuery = '')}
+      />
+      <Button variant="primary" onclick={() => (showCreate = !showCreate)}>
+        {showCreate ? 'Cancelar' : '+ Nueva colección'}
+      </Button>
+    </div>
+  </section>
 
   {#if showCreate}
     <Card>
@@ -148,25 +161,33 @@
           handleCreate()
         }}
       >
-        <Input type="text" placeholder="Collection name" bind:value={newName} />
-        <Input type="text" placeholder="Description (optional)" bind:value={newDescription} />
-        <Button variant="primary" type="submit" disabled={!newName.trim()}>Create</Button>
+        <div class="section-copy">
+          <h2>Nueva colección</h2>
+          <p>Creá un espacio para agrupar documentos, notas y análisis relacionados.</p>
+        </div>
+        <Input type="text" placeholder="Nombre de la colección" bind:value={newName} />
+        <Input type="text" placeholder="Descripción (opcional)" bind:value={newDescription} />
+        <div class="create-form__actions">
+          <Button variant="primary" type="submit" disabled={!newName.trim()}>Crear colección</Button
+          >
+          <Button variant="ghost" onclick={() => (showCreate = false)}>Cancelar</Button>
+        </div>
       </form>
     </Card>
   {/if}
 
   {#if error}
-    <p class="error">{error}</p>
+    <p class="surface-message surface-message--error">{error}</p>
   {/if}
 
   {#if loading}
-    <p class="status">Loading...</p>
+    <p class="surface-message surface-message--center">Cargando colecciones...</p>
   {:else if filtered.length === 0}
-    <div class="empty">
+    <div class="surface-message surface-message--center empty">
       <p>
         {searchQuery
-          ? 'No collections match your search.'
-          : 'No collections yet. Create one to get started!'}
+          ? 'No encontramos colecciones para esa búsqueda. Probá con otro nombre o limpiá el filtro.'
+          : 'Todavía no hay colecciones. Creá una para empezar a ordenar el material.'}
       </p>
     </div>
   {:else}
@@ -218,12 +239,13 @@
     <div class="confirm-overlay">
       <Card>
         <div class="confirm-dialog">
+          <h3 class="confirm-dialog__title">Eliminar colección</h3>
           <p class="confirm-dialog__message">
             ¿Estás seguro que querés eliminar la colección <strong>'{deletingName}'</strong>? Se
             eliminarán todos sus items y datos asociados.
           </p>
           <div class="confirm-dialog__actions">
-            <Button variant="primary" onclick={handleConfirmDelete}>Eliminar</Button>
+            <Button variant="danger" onclick={handleConfirmDelete}>Eliminar</Button>
             <Button variant="ghost" onclick={handleCancelDelete}>Cancelar</Button>
           </div>
         </div>
@@ -234,45 +256,71 @@
 
 <style>
   .collections-view {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
+    min-height: 100%;
   }
-  .toolbar {
+
+  .collections-toolbar {
     display: flex;
-    gap: var(--space-3);
     align-items: center;
+    justify-content: flex-end;
+    flex: 1;
   }
+
+  .collections-toolbar :global(.search-bar) {
+    min-width: min(100%, 320px);
+    flex: 1 1 260px;
+  }
+
   .create-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-3);
+    gap: var(--space-4);
+    padding: var(--space-4);
   }
+
+  .create-form__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .section-copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .section-copy h2 {
+    font-size: var(--font-size-lg);
+  }
+
+  .section-copy p {
+    max-width: 56ch;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--space-4);
   }
+
   .empty {
-    text-align: center;
-    padding: var(--space-8);
-    color: var(--color-text-secondary);
+    min-height: 220px;
   }
-  .status {
-    color: var(--color-text-secondary);
-    text-align: center;
-  }
+
   .edit-form {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-3);
+    padding: var(--space-4);
   }
+
   .edit-form__actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
   }
+
   .confirm-overlay {
     position: fixed;
     top: 0;
@@ -289,18 +337,42 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    padding: var(--space-4);
+    padding: var(--space-5);
+    min-width: min(100vw - 32px, 440px);
   }
+
+  .confirm-dialog__title {
+    margin: 0;
+  }
+
   .confirm-dialog__message {
     margin: 0;
     font-size: var(--font-size-base, 1rem);
     color: var(--color-text-primary);
   }
+
   .confirm-dialog__actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
+    justify-content: flex-end;
   }
-  .error {
-    color: var(--color-danger);
+
+  @media (max-width: 720px) {
+    .collections-toolbar {
+      width: 100%;
+      justify-content: stretch;
+    }
+
+    .collections-toolbar :global(.search-bar),
+    .collections-toolbar :global(.btn) {
+      width: 100%;
+    }
+
+    .create-form__actions :global(.btn),
+    .edit-form__actions :global(.btn),
+    .confirm-dialog__actions :global(.btn) {
+      width: 100%;
+    }
   }
 </style>

@@ -116,7 +116,7 @@
   {#if $navigation.canGoBack}
     <Button variant="ghost" size="sm" onclick={() => navigation.back()}>← Back</Button>
   {/if}
-  <nav class="breadcrumb">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
     {#each $navigation.breadcrumb as crumb, i}
       {#if i > 0}<span class="sep">/</span>{/if}
       <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
@@ -128,9 +128,14 @@
     type="button"
     onclick={() => navigation.navigate({ name: 'settings' })}
     title="Configuracion"
+    aria-label="Abrir configuración"
   >
     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
-      <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+      <path
+        fill-rule="evenodd"
+        d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+        clip-rule="evenodd"
+      />
     </svg>
   </button>
 
@@ -142,6 +147,7 @@
         class="global-search__input"
         type="search"
         placeholder="Buscar por nombre de archivo..."
+        aria-label="Buscar archivos"
         value={searchQuery}
         oninput={handleInput}
         onkeydown={handleKeydown}
@@ -185,21 +191,29 @@
 
 <style>
   .topbar {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto minmax(260px, 360px);
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-2) var(--space-4);
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--color-border-subtle);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--color-surface);
+    box-shadow: var(--shadow-sm);
   }
   .breadcrumb {
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
   }
   .crumb {
     color: var(--color-text-secondary);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .crumb.last {
     color: var(--color-text-primary);
@@ -213,49 +227,62 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
     padding: 0;
-    margin-left: auto;
-    border: 1px solid transparent;
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
-    background: none;
+    background: var(--color-surface-raised);
     color: var(--color-text-secondary);
     cursor: pointer;
-    transition: color 0.15s ease, background-color 0.15s ease;
+    transition:
+      color var(--transition-base),
+      background-color var(--transition-base),
+      border-color var(--transition-base),
+      box-shadow var(--transition-base);
   }
   .settings-btn:hover {
     color: var(--color-text-primary);
-    background: var(--color-surface-raised);
-    border-color: var(--color-border);
+    background: var(--color-surface-elevated);
+    border-color: var(--color-border-strong);
+  }
+  .settings-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .global-search {
     position: relative;
-    margin-left: var(--space-2);
-    width: 300px;
+    width: 100%;
+    min-width: 0;
   }
 
   .global-search__input-wrapper {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    padding: var(--space-1) var(--space-2);
-    background-color: var(--color-bg);
-    border: 1px solid var(--color-border);
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      border-color var(--transition-base),
+      box-shadow var(--transition-base),
+      background-color var(--transition-base);
   }
 
   .global-search__input-wrapper:focus-within {
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
+    box-shadow: var(--focus-ring);
+    background-color: var(--color-surface);
   }
 
   .global-search__icon {
     flex-shrink: 0;
     font-size: var(--font-size-sm);
-    opacity: 0.5;
+    color: var(--color-text-secondary);
+    opacity: 0.9;
   }
 
   .global-search__input {
@@ -267,6 +294,7 @@
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
     min-width: 0;
+    line-height: var(--line-height-base);
   }
 
   .global-search__input::placeholder {
@@ -282,8 +310,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: none;
     border-radius: var(--radius-full);
@@ -292,11 +320,21 @@
     cursor: pointer;
     font-size: var(--font-size-sm);
     line-height: 1;
+    transition:
+      background-color var(--transition-base),
+      color var(--transition-base),
+      box-shadow var(--transition-base);
   }
 
   .global-search__clear:hover {
-    background-color: var(--color-border);
+    background-color: var(--color-border-subtle);
     color: var(--color-text-primary);
+  }
+
+  .global-search__clear:focus-visible,
+  .global-search__result:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .global-search__dropdown {
@@ -305,10 +343,10 @@
     left: 0;
     right: 0;
     margin-top: var(--space-1);
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+    background-color: var(--color-surface-elevated);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.15));
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.15));
     max-height: 320px;
     overflow-y: auto;
     z-index: 200;
@@ -317,22 +355,24 @@
   .global-search__status {
     padding: var(--space-3);
     text-align: center;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
   }
 
   .global-search__result {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-1);
     width: 100%;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-3);
     border: none;
     background: none;
     cursor: pointer;
     text-align: left;
     font-family: var(--font-sans);
-    transition: background-color 0.1s ease;
+    transition:
+      background-color var(--transition-base),
+      box-shadow var(--transition-base);
   }
 
   .global-search__result:hover {
@@ -340,7 +380,7 @@
   }
 
   .global-search__result + .global-search__result {
-    border-top: 1px solid var(--color-border);
+    border-top: 1px solid var(--color-border-subtle);
   }
 
   .global-search__result-title {
@@ -351,6 +391,20 @@
 
   .global-search__result-collection {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
+  }
+
+  @media (max-width: 900px) {
+    .topbar {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .settings-btn {
+      justify-self: end;
+    }
+
+    .global-search {
+      grid-column: 1 / -1;
+    }
   }
 </style>

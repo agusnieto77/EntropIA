@@ -12,31 +12,32 @@ const {
   extractTextMock,
   getLayoutByAssetMock,
   clipboardWriteTextMock,
-} = vi.hoisted(
-  () => ({
-    nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
-    embedAssetMock: vi.fn<(_: string, __: string) => Promise<void>>(),
-    extractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
-    llmExtractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
-    llmExtractTriplesAssetMock: vi.fn<(_: string) => Promise<void>>(),
-    similarAssetsMock: vi.fn<
-      (_: string, __?: number) => Promise<
-        Array<{
-          assetId: string
-          itemId: string
-          title: string
-          collectionId: string
-          assetPath: string
-          assetType: string
-          similarity: number
-        }>
-      >
-    >(),
-    extractTextMock: vi.fn(),
-    getLayoutByAssetMock: vi.fn(),
-    clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
-  })
-)
+} = vi.hoisted(() => ({
+  nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
+  embedAssetMock: vi.fn<(_: string, __: string) => Promise<void>>(),
+  extractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
+  llmExtractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
+  llmExtractTriplesAssetMock: vi.fn<(_: string) => Promise<void>>(),
+  similarAssetsMock: vi.fn<
+    (
+      _: string,
+      __?: number
+    ) => Promise<
+      Array<{
+        assetId: string
+        itemId: string
+        title: string
+        collectionId: string
+        assetPath: string
+        assetType: string
+        similarity: number
+      }>
+    >
+  >(),
+  extractTextMock: vi.fn(),
+  getLayoutByAssetMock: vi.fn(),
+  clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
+}))
 
 type TripleRow = { subject: string; predicate: string; object: string }
 type AnnotationRow = {
@@ -81,9 +82,12 @@ type StoreOptions = {
       metadata: string
     }
   >
-  ftsSearchImpl?: (_query: string, _limit?: number) => Promise<Array<{ itemId: string; rank: number }>>
+  ftsSearchImpl?: (
+    _query: string,
+    _limit?: number
+  ) => Promise<Array<{ itemId: string; rank: number }>>
   ftsStatsTotal?: number
-    assetsRows?: Array<{
+  assetsRows?: Array<{
     id: string
     itemId: string
     path: string
@@ -366,6 +370,38 @@ describe('ItemView semantic triples panel', () => {
   })
 })
 
+describe('ItemView header hierarchy', () => {
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
+    similarAssetsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('shows item context with the active asset summary in the sidebar header', async () => {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-1',
+          itemId: 'item-1',
+          path: 'docs/acta.pdf',
+          type: 'pdf',
+          createdAt: Date.now(),
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    expect(await screen.findByText('Documento activo')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Acta histórica' })).toBeInTheDocument()
+    expect(screen.getByText('PDF · acta.pdf')).toBeInTheDocument()
+  })
+})
+
 describe('ItemView asset-level embedding and similarity', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
@@ -446,7 +482,9 @@ describe('ItemView asset-level embedding and similarity', () => {
     expect(await screen.findByTestId('similar-asset-asset-sim-2')).toBeInTheDocument()
     expect(screen.getByText('Carta manuscrita')).toBeInTheDocument()
     expect(screen.getByText('IMAGE · carta-manuscrita.jpg')).toBeInTheDocument()
-    expect(screen.getByText('asset asset-sim-2 · item item-2 · collection col-9')).toBeInTheDocument()
+    expect(
+      screen.getByText('asset asset-sim-2 · item item-2 · collection col-9')
+    ).toBeInTheDocument()
     expect(screen.getByText('archivo/carta-manuscrita.jpg')).toBeInTheDocument()
     expect(screen.getByText('91.3%')).toBeInTheDocument()
   })
@@ -1100,7 +1138,9 @@ describe('ItemView image annotations', () => {
     await fireEvent.click(await screen.findByTestId('layout-block-item-layout-block-0'))
 
     expect(screen.getByTestId('layout-inspector-label')).toHaveTextContent('title')
-    expect(screen.getByTestId('layout-inspector-overlay-source')).toHaveTextContent('Región matcheada')
+    expect(screen.getByTestId('layout-inspector-overlay-source')).toHaveTextContent(
+      'Región matcheada'
+    )
     expect(screen.getByTestId('layout-inspector-bbox')).toHaveTextContent('x:10 y:20 w:200 h:80')
     expect(screen.getByTestId('layout-inspector-content')).toHaveTextContent('Bloque título')
 
@@ -1177,7 +1217,9 @@ describe('ItemView image annotations', () => {
 
     const expectLayoutHeading = (page: number) =>
       expect(
-        screen.getAllByText(new RegExp(`Page ${page}`, 'i')).some((node) => node.textContent?.includes(`Page ${page}`))
+        screen
+          .getAllByText(new RegExp(`Page ${page}`, 'i'))
+          .some((node) => node.textContent?.includes(`Page ${page}`))
       ).toBe(true)
 
     expect(screen.getByText('Mostrando 1 de 1 bloques.')).toBeInTheDocument()

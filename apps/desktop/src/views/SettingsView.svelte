@@ -11,7 +11,7 @@
     type ModelInfo,
   } from '$lib/settings'
   import { llmIsAvailable } from '$lib/llm'
-  import { Button } from '@entropia/ui'
+  import { Button, Card, Input } from '@entropia/ui'
 
   // State
   let apiKey = $state('')
@@ -28,7 +28,19 @@
 
   // Save state
   let saving = $state(false)
-  let saveMessage = $state<string | null>(null)
+  let saveFeedback = $state<{ tone: 'success' | 'error'; text: string } | null>(null)
+
+  let currentModeLabel = $derived(
+    llmMode === 'local' ? 'Local' : llmMode === 'openrouter' ? 'OpenRouter' : 'Automático'
+  )
+
+  let currentModeDescription = $derived(
+    llmMode === 'local'
+      ? 'Procesa con el modelo local disponible en este equipo.'
+      : llmMode === 'openrouter'
+        ? 'Usa exclusivamente tu cuenta remota de OpenRouter.'
+        : 'Prioriza el modelo local y cae a OpenRouter cuando haga falta.'
+  )
 
   onMount(async () => {
     const [storedKey, storedModel, storedMode, isAvail] = await Promise.all([
@@ -54,7 +66,7 @@
 
   async function handleTestConnection() {
     if (!apiKey.trim()) {
-      testResult = { success: false, message: 'Ingresá una API key primero' }
+      testResult = { success: false, message: 'Ingresá una API key antes de probar la conexión.' }
       return
     }
     testing = true
@@ -64,7 +76,7 @@
       availableModels = models
       testResult = {
         success: true,
-        message: `Conexion exitosa — ${models.length} modelos disponibles`,
+        message: `Conexión lista · ${models.length} modelos disponibles.`,
       }
     } catch (e) {
       testResult = {
@@ -78,7 +90,7 @@
 
   async function handleSave() {
     saving = true
-    saveMessage = null
+    saveFeedback = null
     try {
       await Promise.all([
         settingsSet(SETTINGS_KEYS.OPENROUTER_API_KEY, apiKey.trim()),
@@ -86,12 +98,18 @@
         settingsSet(SETTINGS_KEYS.LLM_MODE, llmMode),
       ])
       maskedApiKey = maskKey(apiKey)
-      saveMessage = 'Configuracion guardada'
+      saveFeedback = {
+        tone: 'success',
+        text: 'Configuración guardada. Ya podés usar esta preferencia en toda la app.',
+      }
       setTimeout(() => {
-        saveMessage = null
+        saveFeedback = null
       }, 3000)
     } catch (e) {
-      saveMessage = `Error: ${e instanceof Error ? e.message : String(e)}`
+      saveFeedback = {
+        tone: 'error',
+        text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+      }
     } finally {
       saving = false
     }
@@ -102,232 +120,253 @@
   }
 </script>
 
-<div class="settings">
-  <h1 class="settings__title">Configuracion</h1>
+<div class="settings-view page-shell">
+  <section class="page-header settings-view__header">
+    <div class="page-header__content">
+      <span class="page-header__eyebrow">Preferencias</span>
+      <h1>Configuración</h1>
+      <p>Ajustá cómo EntropIA resuelve tareas locales y remotas de inteligencia artificial.</p>
+      <span class="page-header__meta">Modo actual: {currentModeLabel}</span>
+    </div>
 
-  <!-- LLM Mode -->
-  <section class="settings__section">
-    <h2 class="settings__section-title">Modo LLM</h2>
-    <p class="settings__description">
-      Elegí cómo procesar las tareas de inteligencia artificial.
-    </p>
-
-    <div class="settings__mode-options">
-      <label class="settings__radio" class:active={llmMode === 'local'}>
-        <input type="radio" name="llm_mode" value="local" bind:group={llmMode} />
-        <div class="settings__radio-content">
-          <strong>Local</strong>
-          <span class="settings__radio-desc">
-            Gemma local via llama.cpp. Sin conexion a internet.
-            {#if localAvailable}
-              <span class="settings__badge settings__badge--ok">Disponible</span>
-            {:else}
-              <span class="settings__badge settings__badge--warn">Modelo no encontrado</span>
-            {/if}
-          </span>
-        </div>
-      </label>
-
-      <label class="settings__radio" class:active={llmMode === 'openrouter'}>
-        <input type="radio" name="llm_mode" value="openrouter" bind:group={llmMode} />
-        <div class="settings__radio-content">
-          <strong>OpenRouter</strong>
-          <span class="settings__radio-desc">
-            API remota. Requiere API key y conexion a internet.
-          </span>
-        </div>
-      </label>
-
-      <label class="settings__radio" class:active={llmMode === 'auto'}>
-        <input type="radio" name="llm_mode" value="auto" bind:group={llmMode} />
-        <div class="settings__radio-content">
-          <strong>Auto</strong>
-          <span class="settings__radio-desc">
-            Intenta local primero, si no esta disponible usa OpenRouter.
-          </span>
-        </div>
-      </label>
+    <div class="page-toolbar settings-view__toolbar">
+      <Button variant="primary" onclick={handleSave} disabled={saving}>
+        {saving ? 'Guardando...' : 'Guardar cambios'}
+      </Button>
     </div>
   </section>
 
-  <!-- OpenRouter Config -->
-  <section class="settings__section">
-    <h2 class="settings__section-title">OpenRouter</h2>
-    <p class="settings__description">
-      Configura tu cuenta de OpenRouter para usar modelos remotos.
+  {#if saveFeedback}
+    <p
+      class="surface-message"
+      class:surface-message--error={saveFeedback.tone === 'error'}
+      class:surface-message--success={saveFeedback.tone === 'success'}
+    >
+      {saveFeedback.text}
     </p>
+  {/if}
 
-    <!-- API Key -->
-    <div class="settings__field">
-      <label class="settings__label" for="api-key">API Key</label>
-      <div class="settings__input-row">
-        {#if showApiKey}
-          <input
-            id="api-key"
-            type="text"
-            class="settings__input"
-            bind:value={apiKey}
-            placeholder="sk-or-v1-..."
-          />
-        {:else}
-          <input
-            id="api-key"
-            type="password"
-            class="settings__input"
-            bind:value={apiKey}
-            placeholder="sk-or-v1-..."
-          />
-        {/if}
-        <button
-          class="settings__icon-btn"
-          type="button"
-          onclick={() => (showApiKey = !showApiKey)}
-          title={showApiKey ? 'Ocultar' : 'Mostrar'}
-        >
-          {showApiKey ? '🙈' : '👁'}
-        </button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={handleTestConnection}
-          disabled={testing || !apiKey.trim()}
-        >
-          {testing ? 'Probando...' : 'Probar conexion'}
-        </Button>
+  <Card>
+    <section class="settings-card-section">
+      <div class="settings-card-section__copy">
+        <h2>Modo LLM</h2>
+        <p>{currentModeDescription}</p>
       </div>
-      {#if testResult}
-        <p
-          class="settings__test-result"
-          class:success={testResult.success}
-          class:error={!testResult.success}
-        >
-          {testResult.message}
-        </p>
-      {/if}
-    </div>
 
-    <!-- Model -->
-    <div class="settings__field">
-      <label class="settings__label" for="model">Modelo</label>
-      <input
-        id="model"
-        type="text"
-        class="settings__input"
-        bind:value={model}
-        placeholder="google/gemma-3-4b-it"
-      />
-      {#if availableModels.length > 0}
-        <div class="settings__model-list">
-          <p class="settings__model-list-title">Modelos populares disponibles:</p>
-          {#each availableModels
-            .filter((m) =>
-              m.id.includes('gemma') ||
-              m.id.includes('llama') ||
-              m.id.includes('mistral') ||
-              m.id.includes('qwen') ||
-              m.id.includes('claude') ||
-              m.id.includes('gpt')
-            )
-            .slice(0, 15) as m (m.id)}
-            <button
-              class="settings__model-option"
-              type="button"
-              class:selected={model === m.id}
-              onclick={() => handleModelSelect(m.id)}
-            >
-              <span class="settings__model-id">{m.id}</span>
-              <span class="settings__model-ctx">{Math.round(m.context_length / 1024)}k ctx</span>
-            </button>
-          {/each}
+      <div class="settings__mode-options">
+        <label class="settings__radio" class:active={llmMode === 'local'}>
+          <input type="radio" name="llm_mode" value="local" bind:group={llmMode} />
+          <div class="settings__radio-content">
+            <strong>Local</strong>
+            <span class="settings__radio-desc">
+              Gemma local vía llama.cpp. Sin conexión a internet.
+              {#if localAvailable}
+                <span class="settings__badge settings__badge--ok">Disponible</span>
+              {:else}
+                <span class="settings__badge settings__badge--warn">Modelo no encontrado</span>
+              {/if}
+            </span>
+          </div>
+        </label>
+
+        <label class="settings__radio" class:active={llmMode === 'openrouter'}>
+          <input type="radio" name="llm_mode" value="openrouter" bind:group={llmMode} />
+          <div class="settings__radio-content">
+            <strong>OpenRouter</strong>
+            <span class="settings__radio-desc">
+              API remota. Requiere API key y conexión a internet.
+            </span>
+          </div>
+        </label>
+
+        <label class="settings__radio" class:active={llmMode === 'auto'}>
+          <input type="radio" name="llm_mode" value="auto" bind:group={llmMode} />
+          <div class="settings__radio-content">
+            <strong>Automático</strong>
+            <span class="settings__radio-desc">
+              Prioriza el motor local y usa OpenRouter sólo como respaldo.
+            </span>
+          </div>
+        </label>
+      </div>
+    </section>
+  </Card>
+
+  <Card>
+    <section class="settings-card-section">
+      <div class="settings-card-section__copy">
+        <h2>OpenRouter</h2>
+        <p>Configurá la cuenta remota, validá el acceso y elegí el modelo por defecto.</p>
+      </div>
+
+      <div class="settings__field settings__field--stacked">
+        <label class="settings__label" for="api-key">API Key</label>
+        <div class="settings__input-row">
+          {#if showApiKey}
+            <input
+              id="api-key"
+              type="text"
+              class="settings__input"
+              bind:value={apiKey}
+              placeholder="sk-or-v1-..."
+            />
+          {:else}
+            <input
+              id="api-key"
+              type="password"
+              class="settings__input"
+              bind:value={apiKey}
+              placeholder="sk-or-v1-..."
+            />
+          {/if}
+          <button
+            class="settings__icon-btn"
+            type="button"
+            onclick={() => (showApiKey = !showApiKey)}
+            title={showApiKey ? 'Ocultar API key' : 'Mostrar API key'}
+            aria-label={showApiKey ? 'Ocultar API key' : 'Mostrar API key'}
+          >
+            {showApiKey ? '🙈' : '👁'}
+          </button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onclick={handleTestConnection}
+            disabled={testing || !apiKey.trim()}
+          >
+            {testing ? 'Probando...' : 'Probar conexión'}
+          </Button>
         </div>
-      {/if}
-    </div>
-  </section>
 
-  <!-- Save -->
-  <div class="settings__actions">
-    <Button variant="primary" onclick={handleSave} disabled={saving}>
-      {saving ? 'Guardando...' : 'Guardar configuracion'}
-    </Button>
-    {#if saveMessage}
-      <span class="settings__save-msg">{saveMessage}</span>
-    {/if}
-  </div>
+        {#if maskedApiKey}
+          <p class="settings__hint">Clave cargada: {maskedApiKey}</p>
+        {/if}
+
+        {#if testResult}
+          <p
+            class="surface-message settings__feedback"
+            class:surface-message--success={testResult.success}
+            class:surface-message--error={!testResult.success}
+          >
+            {testResult.message}
+          </p>
+        {/if}
+      </div>
+
+      <div class="settings__field settings__field--stacked">
+        <Input label="Modelo" type="text" bind:value={model} placeholder="google/gemma-3-4b-it" />
+
+        {#if availableModels.length > 0}
+          <div class="settings__model-list">
+            <p class="settings__model-list-title">Modelos sugeridos desde OpenRouter</p>
+            {#each availableModels
+              .filter((m) => m.id.includes('gemma') || m.id.includes('llama') || m.id.includes('mistral') || m.id.includes('qwen') || m.id.includes('claude') || m.id.includes('gpt'))
+              .slice(0, 15) as m (m.id)}
+              <button
+                class="settings__model-option"
+                type="button"
+                class:selected={model === m.id}
+                onclick={() => handleModelSelect(m.id)}
+              >
+                <span class="settings__model-id">{m.id}</span>
+                <span class="settings__model-ctx">{Math.round(m.context_length / 1024)}k ctx</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </section>
+  </Card>
 </div>
 
 <style>
-  .settings {
-    max-width: 680px;
-    margin: 0 auto;
-    padding: var(--space-4) 0;
+  .settings-view {
+    min-height: 100%;
   }
-  .settings__title {
-    font-size: var(--font-size-xl);
-    font-weight: var(--font-weight-bold);
-    margin-bottom: var(--space-6);
-    color: var(--color-text-primary);
+
+  .settings-view__toolbar {
+    justify-content: flex-end;
+    flex: 1;
   }
-  .settings__section {
-    margin-bottom: var(--space-6);
-    padding: var(--space-4);
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+
+  .settings-card-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
   }
-  .settings__section-title {
-    font-size: var(--font-size-lg);
-    font-weight: var(--font-weight-semibold);
-    margin-bottom: var(--space-1);
-    color: var(--color-text-primary);
+
+  .settings-card-section__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
   }
-  .settings__description {
+
+  .settings-card-section__copy p,
+  .settings__hint {
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
-    margin-bottom: var(--space-4);
   }
+
   .settings__mode-options {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-3);
   }
+
   .settings__radio {
     display: flex;
     align-items: flex-start;
-    gap: var(--space-2);
-    padding: var(--space-3);
-    border: 1px solid var(--color-border);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
     cursor: pointer;
-    transition: border-color 0.15s ease, background-color 0.15s ease;
+    background: var(--color-surface);
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease,
+      box-shadow 0.15s ease,
+      transform 0.15s ease;
   }
+
   .settings__radio:hover {
     background: var(--color-surface-raised);
+    transform: translateY(-1px);
   }
+
   .settings__radio.active {
     border-color: var(--color-accent);
-    background: rgba(108, 142, 245, 0.05);
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+    box-shadow: var(--shadow-sm);
   }
+
   .settings__radio input[type='radio'] {
     margin-top: 3px;
     accent-color: var(--color-accent);
   }
+
   .settings__radio-content {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-1);
   }
+
   .settings__radio-content strong {
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
   }
+
   .settings__radio-desc {
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
+    line-height: 1.5;
   }
+
   .settings__badge {
     display: inline-block;
-    padding: 1px 6px;
-    border-radius: var(--radius-sm);
+    margin-left: var(--space-2);
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
     font-size: 10px;
     font-weight: var(--font-weight-medium);
     vertical-align: middle;
@@ -340,72 +379,83 @@
     background: rgba(234, 179, 8, 0.15);
     color: #a16207;
   }
+
   .settings__field {
-    margin-bottom: var(--space-4);
-  }
-  .settings__label {
-    display: block;
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-medium);
-    color: var(--color-text-primary);
     margin-bottom: var(--space-1);
   }
+
+  .settings__field--stacked {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .settings__label {
+    display: block;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-secondary);
+    margin-bottom: var(--space-1);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
   .settings__input-row {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-2);
     align-items: center;
   }
+
   .settings__input {
     flex: 1;
-    padding: var(--space-2);
-    border: 1px solid var(--color-border);
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
-    background: var(--color-bg);
+    background: var(--color-surface-sunken);
     color: var(--color-text-primary);
     font-family: var(--font-mono, monospace);
     font-size: var(--font-size-sm);
   }
+
   .settings__input:focus {
     outline: none;
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
+    box-shadow: var(--focus-ring);
+    background: var(--color-surface);
   }
+
   .settings__icon-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: var(--control-height-md);
+    height: var(--control-height-md);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    background: var(--color-surface);
+    background: var(--color-surface-raised);
+    color: var(--color-text-secondary);
     cursor: pointer;
     font-size: 14px;
   }
+
   .settings__icon-btn:hover {
-    background: var(--color-surface-raised);
+    background: var(--color-surface-elevated);
   }
-  .settings__test-result {
-    margin-top: var(--space-2);
-    font-size: var(--font-size-sm);
-    padding: var(--space-2);
-    border-radius: var(--radius-md);
+
+  .settings__feedback {
+    margin: 0;
   }
-  .settings__test-result.success {
-    background: rgba(34, 197, 94, 0.1);
-    color: #16a34a;
-  }
-  .settings__test-result.error {
-    background: rgba(239, 68, 68, 0.1);
-    color: #dc2626;
-  }
+
   .settings__model-list {
-    margin-top: var(--space-2);
     max-height: 240px;
     overflow-y: auto;
-    border: 1px solid var(--color-border);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
+    background: var(--color-surface);
   }
+
   .settings__model-list-title {
     padding: var(--space-2) var(--space-3);
     font-size: var(--font-size-xs);
@@ -419,7 +469,7 @@
     width: 100%;
     padding: var(--space-2) var(--space-3);
     border: none;
-    background: none;
+    background: transparent;
     cursor: pointer;
     font-family: var(--font-sans);
     font-size: var(--font-size-sm);
@@ -429,27 +479,38 @@
   .settings__model-option:hover {
     background: var(--color-surface-raised);
   }
+
   .settings__model-option.selected {
-    background: rgba(108, 142, 245, 0.1);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
     font-weight: var(--font-weight-medium);
   }
+
   .settings__model-option + .settings__model-option {
-    border-top: 1px solid var(--color-border);
+    border-top: 1px solid var(--color-border-subtle);
   }
+
   .settings__model-id {
     color: var(--color-text-primary);
   }
+
   .settings__model-ctx {
     color: var(--color-text-muted);
     font-size: var(--font-size-xs);
   }
-  .settings__actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-  .settings__save-msg {
-    font-size: var(--font-size-sm);
-    color: #16a34a;
+
+  @media (max-width: 720px) {
+    .settings-view__toolbar,
+    .settings__input-row {
+      width: 100%;
+    }
+
+    .settings-view__toolbar :global(.btn),
+    .settings__input-row :global(.btn) {
+      width: 100%;
+    }
+
+    .settings__icon-btn {
+      flex: 0 0 auto;
+    }
   }
 </style>

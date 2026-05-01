@@ -11,13 +11,13 @@
     ...rest
   }: ButtonProps = $props()
 
-  const isDisabled = $derived(disabled || loading)
+  let isDisabled = $derived(disabled || loading)
 </script>
 
 <button
   class="btn btn--{variant} btn--{size}"
   class:btn--loading={loading}
-  type={type}
+  {type}
   disabled={isDisabled}
   aria-busy={loading}
   {...rest}
@@ -38,26 +38,40 @@
     align-items: center;
     justify-content: center;
     gap: var(--space-2);
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-4);
     border: 1px solid transparent;
     border-radius: var(--radius-md);
     font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
+    line-height: var(--line-height-tight);
     cursor: pointer;
-    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    transition:
+      background-color var(--transition-base),
+      border-color var(--transition-base),
+      color var(--transition-base),
+      box-shadow var(--transition-base),
+      transform var(--transition-base);
     position: relative;
     white-space: nowrap;
     user-select: none;
-    line-height: 1;
+    box-shadow: none;
   }
 
   .btn:disabled {
     cursor: not-allowed;
-    opacity: 0.5;
+    opacity: 0.48;
+    transform: none;
   }
 
   .btn:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
   }
 
   /* ─── Variants ─── */
@@ -65,6 +79,7 @@
     background-color: var(--color-accent);
     color: #ffffff;
     border-color: var(--color-accent);
+    box-shadow: 0 8px 18px rgba(124, 149, 255, 0.2);
   }
   .btn--primary:hover:not(:disabled) {
     background-color: var(--color-accent-hover);
@@ -72,13 +87,13 @@
   }
 
   .btn--secondary {
-    background-color: transparent;
+    background-color: var(--color-surface-raised);
     color: var(--color-text-primary);
-    border-color: var(--color-border);
+    border-color: var(--color-border-subtle);
   }
   .btn--secondary:hover:not(:disabled) {
-    background-color: var(--color-surface-raised);
-    border-color: var(--color-text-muted);
+    background-color: var(--color-surface-elevated);
+    border-color: var(--color-border-strong);
   }
 
   .btn--ghost {
@@ -95,27 +110,28 @@
     background-color: var(--color-danger);
     color: #ffffff;
     border-color: var(--color-danger);
+    box-shadow: 0 8px 18px rgba(225, 109, 123, 0.18);
   }
   .btn--danger:hover:not(:disabled) {
-    background-color: #c94e5a;
-    border-color: #c94e5a;
+    background-color: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
   }
 
   /* ─── Sizes ─── */
   .btn--sm {
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--font-size-sm);
-    height: 28px;
+    min-height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--font-size-xs);
   }
   .btn--md {
-    padding: var(--space-2) var(--space-4);
-    font-size: var(--font-size-md);
-    height: 36px;
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
   }
   .btn--lg {
-    padding: var(--space-3) var(--space-6);
+    min-height: var(--control-height-lg);
+    padding: 0 var(--space-6);
     font-size: var(--font-size-lg);
-    height: 44px;
   }
 
   /* ─── Spinner ─── */

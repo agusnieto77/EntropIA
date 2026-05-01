@@ -1,13 +1,7 @@
 <script lang="ts">
   import type { CardProps } from './Card.types'
 
-  let {
-    padding = 'md',
-    hoverable = false,
-    header,
-    children,
-    footer,
-  }: CardProps = $props()
+  let { padding = 'md', hoverable = false, header, children, footer }: CardProps = $props()
 </script>
 
 <div class="card card--padding-{padding}" class:card--hoverable={hoverable}>
@@ -32,17 +26,22 @@
 
 <style>
   .card {
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    background-color: var(--color-surface-elevated);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
     overflow: hidden;
-    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    transition:
+      box-shadow var(--transition-base),
+      border-color var(--transition-base),
+      background-color var(--transition-base);
   }
 
   .card--hoverable:hover {
     box-shadow: var(--shadow-md);
-    border-color: var(--color-text-muted);
+    border-color: var(--color-border-strong);
   }
 
   /* ─── Padding ─── */
@@ -66,20 +65,30 @@
 
   /* ─── Sections ─── */
   .card__header {
-    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border-subtle);
     font-family: var(--font-sans);
     font-weight: var(--font-weight-medium);
+    font-size: var(--font-size-sm);
     color: var(--color-text-primary);
   }
 
   .card__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
     font-family: var(--font-sans);
     color: var(--color-text-primary);
   }
 
   .card__footer {
-    border-top: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+    border-top: 1px solid var(--color-border-subtle);
     font-family: var(--font-sans);
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
   }
 </style>

@@ -35,13 +35,16 @@
     {@render children()}
   </main>
   <footer class="footer">
-    <span class="footer__version">EntropIA v. <b>β</b></span>
+    <div class="footer__brand">
+      <span class="footer__version">EntropIA β</span>
+      <span class="footer__caption">Archivo, OCR y análisis asistido.</span>
+    </div>
 
     <a
       class="footer__github"
       href={GITHUB_REPO_URL}
       onclick={openGithubRepo}
-      aria-label="Repositorio de EntropIA en GitHub"
+      aria-label="GitHub"
       title="Repositorio en GitHub"
     >
       <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -53,7 +56,7 @@
 
     <p class="footer__credits">
       Desarrollado por
-      <a href={HLAB_URL} onclick={openHlabWebsite}><b>HLab</b></a>
+      <a href={HLAB_URL} onclick={openHlabWebsite} aria-label="HLab"><b>HLab</b></a>
     </p>
   </footer>
 </div>
@@ -69,19 +72,35 @@
     overflow-y: auto;
     padding: var(--space-4);
   }
+
   .footer {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    border-top: 1px solid var(--color-border);
-    padding: var(--space-2) var(--space-4);
-    font-size: var(--font-size-sm);
+    gap: var(--space-3);
+    border-top: 1px solid var(--color-border-subtle);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
-    background: var(--color-surface);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--color-surface);
+  }
+
+  .footer__brand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
   }
 
   .footer__version {
-    text-align: left;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+  }
+
+  .footer__caption {
+    color: var(--color-text-muted);
   }
 
   .footer__credits {
@@ -98,7 +117,18 @@
     justify-self: center;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
     color: var(--color-text-secondary);
+    transition:
+      color var(--transition-base),
+      background-color var(--transition-base),
+      border-color var(--transition-base),
+      box-shadow var(--transition-base);
   }
 
   .footer__github svg {
@@ -109,6 +139,13 @@
 
   .footer__github:hover {
     color: var(--color-accent);
+    background: var(--color-surface-elevated);
+    border-color: var(--color-border-strong);
+  }
+
+  .footer__github:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .footer a:hover {
@@ -118,12 +155,12 @@
   @media (max-width: 720px) {
     .footer {
       grid-template-columns: 1fr;
-      gap: var(--space-1);
+      gap: var(--space-2);
       justify-items: center;
       text-align: center;
     }
 
-    .footer__version,
+    .footer__brand,
     .footer__credits {
       text-align: center;
     }

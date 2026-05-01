@@ -36,10 +36,10 @@
     llmExtractTriples,
     llmSummarizeAsset,
     llmCorrectOcrAsset,
-llmExtractTriplesAsset,
-  llmIsAvailable,
-  llmGetResult,
-} from '$lib/llm'
+    llmExtractTriplesAsset,
+    llmIsAvailable,
+    llmGetResult,
+  } from '$lib/llm'
   import { GeoStore } from '$lib/geo'
   import {
     DocumentViewer,
@@ -80,18 +80,20 @@ llmExtractTriplesAsset,
   const MAX_SIDEBAR_PCT = 50
   const DEFAULT_SIDEBAR_PCT = 33
 
-  let sidebarWidth = $state((() => {
-    try {
-      const stored = localStorage.getItem('entropia-sidebar-width')
-      if (stored !== null) {
-        const parsed = Number(stored)
-        if (!isNaN(parsed)) {
-          return Math.max(MIN_SIDEBAR_PCT, Math.min(MAX_SIDEBAR_PCT, parsed))
+  let sidebarWidth = $state(
+    (() => {
+      try {
+        const stored = localStorage.getItem('entropia-sidebar-width')
+        if (stored !== null) {
+          const parsed = Number(stored)
+          if (!isNaN(parsed)) {
+            return Math.max(MIN_SIDEBAR_PCT, Math.min(MAX_SIDEBAR_PCT, parsed))
+          }
         }
-      }
-    } catch {}
-    return DEFAULT_SIDEBAR_PCT
-  })())
+      } catch {}
+      return DEFAULT_SIDEBAR_PCT
+    })()
+  )
 
   let isDragging = $state(false)
   let itemViewEl: HTMLElement | undefined = $state()
@@ -115,7 +117,10 @@ llmExtractTriplesAsset,
       rafId = requestAnimationFrame(() => {
         const deltaX = lastClientX - startX
         const deltaPct = (deltaX / containerWidth) * 100
-        sidebarWidth = Math.max(MIN_SIDEBAR_PCT, Math.min(MAX_SIDEBAR_PCT, startWidthPct - deltaPct))
+        sidebarWidth = Math.max(
+          MIN_SIDEBAR_PCT,
+          Math.min(MAX_SIDEBAR_PCT, startWidthPct - deltaPct)
+        )
         rafId = null
       })
     }
@@ -315,9 +320,9 @@ llmExtractTriplesAsset,
   let entityActionError = $state<string | null>(null)
   let similarAssets = $state<SimilarAsset[]>([])
   let ftsQuery = $state('')
-  let ftsResults = $state<Array<{ itemId: string; title: string; rank: number; collectionId: string }>>(
-    []
-  )
+  let ftsResults = $state<
+    Array<{ itemId: string; title: string; rank: number; collectionId: string }>
+  >([])
   let ftsSearching = $state(false)
   let ftsSearchError = $state<string | null>(null)
   let ftsSearchTimer: ReturnType<typeof setTimeout> | null = null
@@ -542,12 +547,13 @@ llmExtractTriplesAsset,
   let layoutPages = $derived(getPagesFromLayout(assetLayout))
   let layoutPageOptions = $derived(
     viewerType === 'pdf' && assetLayout
-      ? Array.from({ length: Math.max(viewerTotalPages, layoutPages[layoutPages.length - 1] ?? 0) }, (_, index) => index + 1)
+      ? Array.from(
+          { length: Math.max(viewerTotalPages, layoutPages[layoutPages.length - 1] ?? 0) },
+          (_, index) => index + 1
+        )
       : []
   )
-  let layoutActivePage = $derived(
-    viewerType === 'pdf' ? viewerPage : (layoutPages[0] ?? 1)
-  )
+  let layoutActivePage = $derived(viewerType === 'pdf' ? viewerPage : (layoutPages[0] ?? 1))
   let layoutBlockCountsByPage = $derived(getBlockCountByPage(layoutBlocks))
   let layoutPageRegions = $derived(
     assetLayout
@@ -575,10 +581,16 @@ llmExtractTriplesAsset,
     }))
   )
   let layoutReferenceWidth = $derived(
-    layoutPageBlocks[0]?.imageWidth ?? layoutPageRegions[0]?.imageWidth ?? assetLayout?.imageWidth ?? 0
+    layoutPageBlocks[0]?.imageWidth ??
+      layoutPageRegions[0]?.imageWidth ??
+      assetLayout?.imageWidth ??
+      0
   )
   let layoutReferenceHeight = $derived(
-    layoutPageBlocks[0]?.imageHeight ?? layoutPageRegions[0]?.imageHeight ?? assetLayout?.imageHeight ?? 0
+    layoutPageBlocks[0]?.imageHeight ??
+      layoutPageRegions[0]?.imageHeight ??
+      assetLayout?.imageHeight ??
+      0
   )
   let hasLayoutData = $derived(Boolean(assetLayout && layoutBlocks.length > 0))
 
@@ -779,9 +791,7 @@ llmExtractTriplesAsset,
   }
 
   /** Adjust annotations after a rotation. Converted = new image dimensions. */
-  function adjustAnnotationsAfterRotation(
-    rotation: 'left' | 'right'
-  ) {
+  function adjustAnnotationsAfterRotation(rotation: 'left' | 'right') {
     annotations = annotations.map((a) => {
       if (rotation === 'right') {
         // 90° CW: new_x = 1 - old_y - old_height, new_y = old_x
@@ -798,9 +808,12 @@ llmExtractTriplesAsset,
   }
 
   /** Adjust annotations after a crop. Region is the crop area in normalized coords. */
-  function adjustAnnotationsAfterCrop(
-    region: { x: number; y: number; width: number; height: number }
-  ) {
+  function adjustAnnotationsAfterCrop(region: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }) {
     const { x: cx, y: cy, width: cw, height: ch } = region
     annotations = annotations
       .filter((a) => {
@@ -827,9 +840,7 @@ llmExtractTriplesAsset,
       })
   }
 
-  async function handleEditSelect(
-    region: { x: number; y: number; width: number; height: number }
-  ) {
+  async function handleEditSelect(region: { x: number; y: number; width: number; height: number }) {
     if (!selectedAsset || selectedAsset.type !== 'image') return
     if (imageNaturalW === 0 || imageNaturalH === 0) return
 
@@ -839,12 +850,15 @@ llmExtractTriplesAsset,
     const pixelRegion = normalizedToPixels(region, imageNaturalW, imageNaturalH)
 
     // Push current state onto undo stack before performing the edit
-    undoStack = [...undoStack, {
-      path: asset.path,
-      width: imageNaturalW,
-      height: imageNaturalH,
-      annotations: JSON.parse(JSON.stringify(annotations)),
-    }]
+    undoStack = [
+      ...undoStack,
+      {
+        path: asset.path,
+        width: imageNaturalW,
+        height: imageNaturalH,
+        annotations: JSON.parse(JSON.stringify(annotations)),
+      },
+    ]
 
     try {
       if (editTool === 'crop') {
@@ -884,12 +898,15 @@ llmExtractTriplesAsset,
     const asset = selectedAsset
 
     // Push current state onto undo stack before rotating
-    undoStack = [...undoStack, {
-      path: asset.path,
-      width: imageNaturalW,
-      height: imageNaturalH,
-      annotations: JSON.parse(JSON.stringify(annotations)),
-    }]
+    undoStack = [
+      ...undoStack,
+      {
+        path: asset.path,
+        width: imageNaturalW,
+        height: imageNaturalH,
+        annotations: JSON.parse(JSON.stringify(annotations)),
+      },
+    ]
 
     try {
       const result: ImageEditResult = await invoke('rotate_image', {
@@ -910,12 +927,15 @@ llmExtractTriplesAsset,
     const asset = selectedAsset
 
     // Push current state onto undo stack before rotating
-    undoStack = [...undoStack, {
-      path: asset.path,
-      width: imageNaturalW,
-      height: imageNaturalH,
-      annotations: JSON.parse(JSON.stringify(annotations)),
-    }]
+    undoStack = [
+      ...undoStack,
+      {
+        path: asset.path,
+        width: imageNaturalW,
+        height: imageNaturalH,
+        annotations: JSON.parse(JSON.stringify(annotations)),
+      },
+    ]
 
     try {
       const result: ImageEditResult = await invoke('rotate_image', {
@@ -944,9 +964,7 @@ llmExtractTriplesAsset,
     // Restore state from undo entry
     const store = getStore()
     await store.assets.updatePath(assetId, entry.path)
-    assets = assets.map((a) =>
-      a.id === assetId ? { ...a, path: entry.path } : a
-    )
+    assets = assets.map((a) => (a.id === assetId ? { ...a, path: entry.path } : a))
     annotations = entry.annotations
     selectedAnnotationId = null
     // Force image refresh
@@ -978,9 +996,7 @@ llmExtractTriplesAsset,
     const store = getStore()
     await store.assets.updatePath(assetId, result.path)
     // Update the local assets array with the new path
-    assets = assets.map((a) =>
-      a.id === assetId ? { ...a, path: result.path } : a
-    )
+    assets = assets.map((a) => (a.id === assetId ? { ...a, path: result.path } : a))
 
     // Force image refresh: bump version counter so the browser fetches the
     // new file (versioned paths already make the URL unique, but this helps
@@ -1087,9 +1103,20 @@ llmExtractTriplesAsset,
     return assetType ? assetType.toUpperCase() : 'ASSET'
   }
 
+  let activeAssetSummary = $derived(
+    selectedAsset
+      ? `${getAssetTypeLabel(selectedAsset.type)} · ${getAssetPathLabel(selectedAsset.path)}`
+      : 'Sin asset seleccionado'
+  )
+
   async function handleEmbedAsset() {
     if (!selectedAsset) {
-      nlpStore._setJobStatus(itemId, 'embed', 'error', 'Select an asset before generating embeddings.')
+      nlpStore._setJobStatus(
+        itemId,
+        'embed',
+        'error',
+        'Select an asset before generating embeddings.'
+      )
       nlpTick++
       return
     }
@@ -1123,9 +1150,9 @@ llmExtractTriplesAsset,
     try {
       const store = getStore()
       if (selectedAsset) {
-        entities = ((await store.entities.findByAssetId(itemId, selectedAsset.id)) as Entity[]).filter(
-          (entity) => entity.confidence == null || entity.confidence > 0.89
-        )
+        entities = (
+          (await store.entities.findByAssetId(itemId, selectedAsset.id)) as Entity[]
+        ).filter((entity) => entity.confidence == null || entity.confidence > 0.89)
       } else {
         entities = ((await store.entities.findByItemId(itemId)) as Entity[]).filter(
           (entity) => entity.confidence == null || entity.confidence > 0.89
@@ -1137,7 +1164,10 @@ llmExtractTriplesAsset,
   }
 
   function normalizeManualEntityValue(value: string) {
-    return value.trim().replace(/^["'“”‘’«»\-–—\s]+|["'“”‘’«»\-–—\s]+$/g, '').trim()
+    return value
+      .trim()
+      .replace(/^["'“”‘’«»\-–—\s]+|["'“”‘’«»\-–—\s]+$/g, '')
+      .trim()
   }
 
   function toEditableEntityType(entityType: Entity['entityType']): EditableEntityType {
@@ -1841,44 +1871,57 @@ llmExtractTriplesAsset,
 {:else if error && !item}
   <p class="error">{error}</p>
 {:else if item}
-  <div class="item-view" bind:this={itemViewEl} style="grid-template-columns: 1fr 6px {sidebarWidth}%">
+  <div
+    class="item-view"
+    bind:this={itemViewEl}
+    style="grid-template-columns: 1fr 6px {sidebarWidth}%"
+  >
     <div class="left-panel">
       {#if selectedAsset}
-<DocumentViewer
-path={selectedAsset.path}
-            assetUrl={viewerSrc}
-            type={viewerType}
-            {annotations}
-            {layoutRegions}
-            showLayoutOverlay={showLayout && layoutRegions.length > 0}
-            hoveredLayoutRegionId={layoutHoveredRegionId}
-            selectedLayoutRegionId={layoutSelectedRegionId}
-            {layoutReferenceWidth}
-            {layoutReferenceHeight}
-            {selectedAnnotationId}
-            {annotationTool}
-            {annotationColor}
-            {editTool}
-            canUndo={canUndo}
-            currentPage={viewerPage}
-            onAnnotationsChange={handleAnnotationsChange}
-            onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
-            onAnnotationToolChange={handleAnnotationToolChange}
-            onAnnotationColorChange={handleAnnotationColorChange}
-            onLayoutRegionHoverChange={(regionId) => {
-              syncLayoutHoverFromRegion(regionId)
-            }}
-            onLayoutRegionSelect={(regionId) => {
-              setSelectedLayoutRegion(regionId)
-            }}
-            onEditSelect={handleEditSelect}
-            onEditToolChange={(tool) => { editTool = tool; if (tool !== 'none') annotationTool = 'select' }}
-            onRotateLeft={handleRotateLeft}
-            onRotateRight={handleRotateRight}
-            onUndo={handleUndo}
-            onPageChange={(page, totalPages) => { viewerPage = page; viewerTotalPages = totalPages }}
-            onDimensionsChange={(dims) => { imageNaturalW = dims.width; imageNaturalH = dims.height }}
-          />
+        <DocumentViewer
+          path={selectedAsset.path}
+          assetUrl={viewerSrc}
+          type={viewerType}
+          {annotations}
+          {layoutRegions}
+          showLayoutOverlay={showLayout && layoutRegions.length > 0}
+          hoveredLayoutRegionId={layoutHoveredRegionId}
+          selectedLayoutRegionId={layoutSelectedRegionId}
+          {layoutReferenceWidth}
+          {layoutReferenceHeight}
+          {selectedAnnotationId}
+          {annotationTool}
+          {annotationColor}
+          {editTool}
+          {canUndo}
+          currentPage={viewerPage}
+          onAnnotationsChange={handleAnnotationsChange}
+          onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
+          onAnnotationToolChange={handleAnnotationToolChange}
+          onAnnotationColorChange={handleAnnotationColorChange}
+          onLayoutRegionHoverChange={(regionId) => {
+            syncLayoutHoverFromRegion(regionId)
+          }}
+          onLayoutRegionSelect={(regionId) => {
+            setSelectedLayoutRegion(regionId)
+          }}
+          onEditSelect={handleEditSelect}
+          onEditToolChange={(tool) => {
+            editTool = tool
+            if (tool !== 'none') annotationTool = 'select'
+          }}
+          onRotateLeft={handleRotateLeft}
+          onRotateRight={handleRotateRight}
+          onUndo={handleUndo}
+          onPageChange={(page, totalPages) => {
+            viewerPage = page
+            viewerTotalPages = totalPages
+          }}
+          onDimensionsChange={(dims) => {
+            imageNaturalW = dims.width
+            imageNaturalH = dims.height
+          }}
+        />
 
         {#if annotationSaveError}
           <p class="error">{annotationSaveError}</p>
@@ -1905,7 +1948,8 @@ path={selectedAsset.path}
           <button
             class="pagination-btn"
             disabled={selectedAssetIndex >= assets.length - 1}
-            onclick={() => (selectedAssetIndex = Math.min(assets.length - 1, selectedAssetIndex + 1))}
+            onclick={() =>
+              (selectedAssetIndex = Math.min(assets.length - 1, selectedAssetIndex + 1))}
             aria-label="Next page"
           >
             ›
@@ -1922,7 +1966,11 @@ path={selectedAsset.path}
     ></div>
 
     <div class="right-panel">
-      <h2 class="item-title">{item.title}</h2>
+      <header class="item-header">
+        <span class="item-header__eyebrow">Documento activo</span>
+        <h2 class="item-title">{item.title}</h2>
+        <p class="item-header__meta">{activeAssetSummary}</p>
+      </header>
 
       {#if error}
         <p class="error">{error}</p>
@@ -1937,16 +1985,26 @@ path={selectedAsset.path}
 
       <section class="section">
         <h3>Tópicos</h3>
-        <TopicEditor topics={itemTopics} suggestions={topicSuggestions} onchange={handleTopicsChange} />
+        <TopicEditor
+          topics={itemTopics}
+          suggestions={topicSuggestions}
+          onchange={handleTopicsChange}
+        />
       </section>
 
       <section class="section">
-<h3>Add Note{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
-          <NoteEditor onsave={handleSaveNote} />
-        </section>
+        <h3>
+          Add Note{#if assets.length > 1}
+            · Page {selectedAssetIndex + 1}{/if}
+        </h3>
+        <NoteEditor onsave={handleSaveNote} />
+      </section>
 
-        <section class="section">
-          <h3>Notes ({notes.length}){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+      <section class="section">
+        <h3>
+          Notes ({notes.length}){#if assets.length > 1}
+            · Page {selectedAssetIndex + 1}{/if}
+        </h3>
         {#if notes.length === 0}
           <p class="empty-text">No notes yet.</p>
         {:else}
@@ -1995,10 +2053,17 @@ path={selectedAsset.path}
         <section class="section">
           <div class="layout-section-header">
             <div>
-              <h3>Layout{#if viewerType === 'pdf'} · Page {layoutActivePage}{/if}</h3>
+              <h3>
+                Layout{#if viewerType === 'pdf'}
+                  · Page {layoutActivePage}{/if}
+              </h3>
               {#if assetLayout}
                 <p class="layout-meta">
-                  {assetLayout.model} · {viewerType === 'pdf' ? (layoutBlockCountsByPage[layoutActivePage] ?? 0) : layoutBlocks.length} bloques · {viewerType === 'pdf' ? layoutPageRegions.length : assetLayout.regions.length} regiones
+                  {assetLayout.model} · {viewerType === 'pdf'
+                    ? (layoutBlockCountsByPage[layoutActivePage] ?? 0)
+                    : layoutBlocks.length} bloques · {viewerType === 'pdf'
+                    ? layoutPageRegions.length
+                    : assetLayout.regions.length} regiones
                 </p>
               {/if}
             </div>
@@ -2037,7 +2102,11 @@ path={selectedAsset.path}
                   Página {layoutActivePage} de {layoutPageOptions.length}
                 </p>
 
-                <div class="layout-page-group" role="group" aria-label="Seleccionar página del layout">
+                <div
+                  class="layout-page-group"
+                  role="group"
+                  aria-label="Seleccionar página del layout"
+                >
                   {#each layoutPageOptions as page (page)}
                     <button
                       type="button"
@@ -2050,7 +2119,9 @@ path={selectedAsset.path}
                       }}
                     >
                       <span>P{page}</span>
-                      <span class="layout-page-chip__count">{layoutBlockCountsByPage[page] ?? 0}</span>
+                      <span class="layout-page-chip__count"
+                        >{layoutBlockCountsByPage[page] ?? 0}</span
+                      >
                     </button>
                   {/each}
                 </div>
@@ -2120,7 +2191,8 @@ path={selectedAsset.path}
                       <span class="layout-block-heading">
                         <span class="layout-block-label">{block.label}</span>
                         <span
-                          class:layout-block-source-badge--fallback={block.overlaySource === 'block'}
+                          class:layout-block-source-badge--fallback={block.overlaySource ===
+                            'block'}
                           class="layout-block-source-badge"
                         >
                           {overlayMeta.shortLabel}
@@ -2129,7 +2201,9 @@ path={selectedAsset.path}
                           <span class="layout-block-page-chip">P{block.page}</span>
                         {/if}
                       </span>
-                      <span class="layout-block-preview">{block.preview || 'Sin preview textual'}</span>
+                      <span class="layout-block-preview"
+                        >{block.preview || 'Sin preview textual'}</span
+                      >
                     </span>
                   </button>
                 {/each}
@@ -2137,7 +2211,9 @@ path={selectedAsset.path}
 
               <div class="layout-inspector" data-testid="layout-block-inspector">
                 {#if selectedLayoutBlock}
-                  {@const overlayMeta = getLayoutOverlaySourceMeta(selectedLayoutBlock.overlaySource)}
+                  {@const overlayMeta = getLayoutOverlaySourceMeta(
+                    selectedLayoutBlock.overlaySource
+                  )}
                   <div class="layout-inspector__header">
                     <div>
                       <p class="layout-inspector__eyebrow">Inspector</p>
@@ -2150,7 +2226,8 @@ path={selectedAsset.path}
                         class="layout-inspector__action"
                         data-testid="layout-inspector-copy-text"
                         disabled={!selectedLayoutBlock.content.trim()}
-                        onclick={() => copyLayoutInspectorValue(selectedLayoutBlock.content, 'Texto copiado.')}
+                        onclick={() =>
+                          copyLayoutInspectorValue(selectedLayoutBlock.content, 'Texto copiado.')}
                       >
                         Copiar texto
                       </button>
@@ -2158,7 +2235,11 @@ path={selectedAsset.path}
                         type="button"
                         class="layout-inspector__action"
                         data-testid="layout-inspector-copy-bbox"
-                        onclick={() => copyLayoutInspectorValue(formatLayoutBbox(selectedLayoutBlock.overlayBbox), 'BBox copiado.')}
+                        onclick={() =>
+                          copyLayoutInspectorValue(
+                            formatLayoutBbox(selectedLayoutBlock.overlayBbox),
+                            'BBox copiado.'
+                          )}
                       >
                         Copiar bbox
                       </button>
@@ -2166,7 +2247,11 @@ path={selectedAsset.path}
                         type="button"
                         class="layout-inspector__action"
                         data-testid="layout-inspector-copy-json"
-                        onclick={() => copyLayoutInspectorValue(serializeLayoutBlock(selectedLayoutBlock), 'JSON copiado.')}
+                        onclick={() =>
+                          copyLayoutInspectorValue(
+                            serializeLayoutBlock(selectedLayoutBlock),
+                            'JSON copiado.'
+                          )}
                       >
                         Copiar JSON
                       </button>
@@ -2176,7 +2261,9 @@ path={selectedAsset.path}
                   <div class="layout-inspector__grid">
                     <div>
                       <span class="layout-inspector__label">Label</span>
-                      <strong data-testid="layout-inspector-label">{selectedLayoutBlock.label}</strong>
+                      <strong data-testid="layout-inspector-label"
+                        >{selectedLayoutBlock.label}</strong
+                      >
                     </div>
                     <div>
                       <span class="layout-inspector__label">Orden</span>
@@ -2196,12 +2283,15 @@ path={selectedAsset.path}
                     </div>
                     <div>
                       <span class="layout-inspector__label">BBox overlay</span>
-                      <code data-testid="layout-inspector-bbox">{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code>
+                      <code data-testid="layout-inspector-bbox"
+                        >{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code
+                      >
                     </div>
                     <div class="layout-inspector__field layout-inspector__field--wide">
                       <span class="layout-inspector__label">Overlay source</span>
                       <strong
-                        class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource === 'block'}
+                        class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource ===
+                          'block'}
                         class="layout-inspector__source"
                         data-testid="layout-inspector-overlay-source"
                       >
@@ -2213,12 +2303,14 @@ path={selectedAsset.path}
 
                   <div class="layout-inspector__content">
                     <span class="layout-inspector__label">Texto / preview ampliado</span>
-                    <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content || 'Sin texto completo para este bloque.'}</pre>
+                    <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content ||
+                        'Sin texto completo para este bloque.'}</pre>
                   </div>
 
                   {#if layoutInspectorCopyMessage}
                     <p
-                      class:layout-inspector__message--error={layoutInspectorCopyMessage.tone === 'error'}
+                      class:layout-inspector__message--error={layoutInspectorCopyMessage.tone ===
+                        'error'}
                       class="layout-inspector__message"
                       data-testid="layout-inspector-copy-message"
                     >
@@ -2227,7 +2319,8 @@ path={selectedAsset.path}
                   {/if}
                 {:else}
                   <div class="layout-inspector__empty" data-testid="layout-inspector-empty">
-                    Seleccioná un bloque para ver label, orden, página, bbox, source y texto completo.
+                    Seleccioná un bloque para ver label, orden, página, bbox, source y texto
+                    completo.
                   </div>
                 {/if}
               </div>
@@ -2240,11 +2333,14 @@ path={selectedAsset.path}
         {@const ocr = getOcrState(selectedAsset.id)}
         {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
         <section class="section">
-          <h3>Text Extraction{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+          <h3>
+            Text Extraction{#if assets.length > 1}
+              · Page {selectedAssetIndex + 1}{/if}
+          </h3>
           <div class="ocr-item">
             <div class="ocr-item-header">
               <span class="ocr-filename">
-                {assets.length > 1 && assets.every(a => a.type === 'image')
+                {assets.length > 1 && assets.every((a) => a.type === 'image')
                   ? `Page ${selectedAssetIndex + 1}`
                   : (selectedAsset.path.split(/[/\\]/).pop() ?? 'Asset')}
               </span>
@@ -2266,24 +2362,32 @@ path={selectedAsset.path}
                   OCRH
                 </button>
                 {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
-<button
-  class="ocr-btn ocr-btn--correct"
-  disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
-  onclick={handleLlmCorrectOcr}
-  title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : 'LLM OCR correction (Gemma 4)'}
->
-OCRC
-</button>
+                  <button
+                    class="ocr-btn ocr-btn--correct"
+                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                    onclick={handleLlmCorrectOcr}
+                    title={!llmAvailable
+                      ? 'Gemma 4 not available'
+                      : ocr.status !== 'done'
+                        ? 'Extract text first'
+                        : 'LLM OCR correction (Gemma 4)'}
+                  >
+                    OCRC
+                  </button>
                 {/if}
                 {#if llmAvailable}
-                <button
-                  class="ocr-btn ocr-btn--summarize"
-                  disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
-                  onclick={handleLlmSummarize}
-                  title={!llmAvailable ? 'Gemma 4 not available' : ocr.status !== 'done' ? 'Extract text first' : 'Generate summary (Gemma 4)'}
-                >
-                  OCRR
-                </button>
+                  <button
+                    class="ocr-btn ocr-btn--summarize"
+                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                    onclick={handleLlmSummarize}
+                    title={!llmAvailable
+                      ? 'Gemma 4 not available'
+                      : ocr.status !== 'done'
+                        ? 'Extract text first'
+                        : 'Generate summary (Gemma 4)'}
+                  >
+                    OCRR
+                  </button>
                 {/if}
               </div>
             </div>
@@ -2298,7 +2402,10 @@ OCRC
             {:else if ocr.status === 'error'}
               <p class="ocr-error">Extraction failed: {ocr.error}</p>
             {:else if ocr.status === 'done'}
-              {@const editedText = (() => { void ocrTick; return ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? '' })()}
+              {@const editedText = (() => {
+                void ocrTick
+                return ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''
+              })()}
               {@const displayLength = editedText.length}
               <details class="ocr-result">
                 <summary>
@@ -2328,10 +2435,15 @@ OCRC
         {@const ts = getTranscriptionState(selectedAsset.id)}
         {@const busy = ts.status === 'pending' || ts.status === 'running'}
         <section class="section">
-          <h3>Audio Transcription{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+          <h3>
+            Audio Transcription{#if assets.length > 1}
+              · Page {selectedAssetIndex + 1}{/if}
+          </h3>
           <div class="ocr-item">
             <div class="ocr-item-header">
-              <span class="ocr-filename">&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span>
+              <span class="ocr-filename"
+                >&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span
+              >
               <div class="ocr-btn-group">
                 <button
                   class="ocr-btn"
@@ -2342,14 +2454,18 @@ OCRC
                   {busy ? 'Transcribing…' : 'Transcribe'}
                 </button>
                 {#if llmAvailable}
-                <button
-                  class="ocr-btn ocr-btn--summarize"
-                  disabled={getLlmState().status === 'running' || ts.status !== 'done'}
-                  onclick={handleLlmSummarize}
-                  title={!llmAvailable ? 'Gemma 4 not available' : ts.status !== 'done' ? 'Transcribe first' : 'Generate summary (Gemma 4)'}
-                >
-                  OCRR
-                </button>
+                  <button
+                    class="ocr-btn ocr-btn--summarize"
+                    disabled={getLlmState().status === 'running' || ts.status !== 'done'}
+                    onclick={handleLlmSummarize}
+                    title={!llmAvailable
+                      ? 'Gemma 4 not available'
+                      : ts.status !== 'done'
+                        ? 'Transcribe first'
+                        : 'Generate summary (Gemma 4)'}
+                  >
+                    OCRR
+                  </button>
                 {/if}
               </div>
             </div>
@@ -2394,11 +2510,18 @@ OCRC
       {/if}
 
       {#if selectedAsset}
-        {@const currentSummary = (() => { void summaryTick; return summaryTexts.get(selectedAsset.id) ?? null })()}
-        {@const isSummarizing = getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
+        {@const currentSummary = (() => {
+          void summaryTick
+          return summaryTexts.get(selectedAsset.id) ?? null
+        })()}
+        {@const isSummarizing =
+          getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
         {#if currentSummary || isSummarizing}
           <section class="section">
-            <h3>Resumen{#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h3>
+            <h3>
+              Resumen{#if assets.length > 1}
+                · Page {selectedAssetIndex + 1}{/if}
+            </h3>
             {#if isSummarizing}
               <p class="summary-status">Generando resumen…</p>
             {:else if currentSummary}
@@ -2454,7 +2577,10 @@ OCRC
                   <ul class="similar-list">
                     {#each ftsResults as result (result.itemId)}
                       <li class="similar-item">
-                        <button class="similar-item-btn" onclick={() => navigateToSimilarItem(result)}>
+                        <button
+                          class="similar-item-btn"
+                          onclick={() => navigateToSimilarItem(result)}
+                        >
                           <span class="similar-title">
                             {#each splitHighlightedSegments(result.title || result.itemId, ftsQuery) as segment, i (`${result.itemId}-seg-${i}-${segment.text}`)}
                               {#if segment.isMatch}
@@ -2534,7 +2660,7 @@ OCRC
                   NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
                 </button>
 
-<button
+                <button
                   class="nlp-btn"
                   disabled={!llmAvailable || nlp.triples === 'pending' || nlp.triples === 'running'}
                   onclick={handleLlmExtractTriples}
@@ -2548,7 +2674,9 @@ OCRC
               {/if}
 
               {#if !selectedAsset}
-                <p class="empty-text">Select an asset to run asset-level embeddings and similarity.</p>
+                <p class="empty-text">
+                  Select an asset to run asset-level embeddings and similarity.
+                </p>
               {/if}
 
               <!-- Map section (OpenStreetMap) -->
@@ -2589,11 +2717,15 @@ OCRC
                   {#if entityActionError}
                     <p class="error">{entityActionError}</p>
                   {/if}
-
                 </div>
 
                 {#if entityEditorOpen && editingEntityId}
-                  <div class="entity-modal" role="dialog" aria-modal="true" aria-label="Edit entity">
+                  <div
+                    class="entity-modal"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Edit entity"
+                  >
                     <button
                       type="button"
                       class="entity-modal__backdrop"
@@ -2604,7 +2736,11 @@ OCRC
                     <div class="entity-modal__panel">
                       <div class="entity-modal__header">
                         <h5>Edit entity</h5>
-                        <button type="button" class="entity-modal__close" onclick={cancelEditingEntity}>×</button>
+                        <button
+                          type="button"
+                          class="entity-modal__close"
+                          onclick={cancelEditingEntity}>×</button
+                        >
                       </div>
 
                       <div class="entity-modal__body">
@@ -2629,7 +2765,10 @@ OCRC
                             bind:value={editingEntityValue}
                             type="text"
                             aria-label="Edit entity value"
-                            onkeydown={(event) => event.key === 'Enter' && editingEntityId && void handleSaveEntity(editingEntityId)}
+                            onkeydown={(event) =>
+                              event.key === 'Enter' &&
+                              editingEntityId &&
+                              void handleSaveEntity(editingEntityId)}
                           />
                         </label>
                       </div>
@@ -2643,7 +2782,9 @@ OCRC
                           Delete
                         </button>
                         <div class="entity-modal__actions-right">
-                          <button type="button" class="nlp-btn" onclick={cancelEditingEntity}>Cancel</button>
+                          <button type="button" class="nlp-btn" onclick={cancelEditingEntity}
+                            >Cancel</button
+                          >
                           <button
                             type="button"
                             class="nlp-btn"
@@ -2659,9 +2800,15 @@ OCRC
               </div>
 
               <div class="triples-section">
-                <h4>Semantic Triples (S|P|O){#if assets.length > 1} · Page {selectedAssetIndex + 1}{/if}</h4>
+                <h4>
+                  Semantic Triples (S|P|O){#if assets.length > 1}
+                    · Page {selectedAssetIndex + 1}{/if}
+                </h4>
                 {#if triples.length === 0}
-                  <p class="empty-text">No triples extracted yet{#if assets.length > 1} for this page{/if}.</p>
+                  <p class="empty-text">
+                    No triples extracted yet{#if assets.length > 1}
+                      for this page{/if}.
+                  </p>
                 {:else}
                   <ul class="triples-list">
                     {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
@@ -2677,7 +2824,10 @@ OCRC
 
               {#if similarAssets.length > 0}
                 <div class="similar-section">
-                  <h4>Similar Assets{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
+                  <h4>
+                    Similar Assets{#if assets.length > 1}
+                      (by page {selectedAssetIndex + 1}){/if}
+                  </h4>
                   <ul class="similar-list">
                     {#each similarAssets.slice(0, 5) as asset (asset.assetId)}
                       <li class="similar-item">
@@ -2689,7 +2839,9 @@ OCRC
                           <span class="similar-item-main">
                             <span class="similar-title">{asset.title || asset.itemId}</span>
                             <span class="similar-meta">
-                              {getAssetTypeLabel(asset.assetType)} · {getAssetPathLabel(asset.assetPath)}
+                              {getAssetTypeLabel(asset.assetType)} · {getAssetPathLabel(
+                                asset.assetPath
+                              )}
                             </span>
                             <span class="similar-meta">
                               asset {asset.assetId} · item {asset.itemId} · collection {asset.collectionId}
@@ -2706,10 +2858,14 @@ OCRC
                 </div>
               {:else}
                 <div class="similar-section">
-                  <h4>Similar Assets{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
+                  <h4>
+                    Similar Assets{#if assets.length > 1}
+                      (by page {selectedAssetIndex + 1}){/if}
+                  </h4>
                   <p class="empty-text">
                     {#if selectedAsset}
-                      No similar assets yet. Generate embeddings for this asset to compare against the rest.
+                      No similar assets yet. Generate embeddings for this asset to compare against
+                      the rest.
                     {:else}
                       Select an asset to see asset-level similarity results.
                     {/if}
@@ -2744,6 +2900,24 @@ OCRC
     overflow-y: auto;
     padding: var(--space-3);
   }
+  .item-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-4);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 55%), var(--color-surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .item-header__eyebrow {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+  }
   .resize-handle {
     width: 6px;
     position: relative;
@@ -2759,7 +2933,9 @@ OCRC
     transform: translateX(-50%);
     width: 1px;
     background-color: var(--color-border);
-    transition: background-color 0.15s ease, width 0.15s ease;
+    transition:
+      background-color 0.15s ease,
+      width 0.15s ease;
   }
   .resize-handle:hover::before {
     background-color: var(--color-text-muted, var(--color-border));
@@ -2775,6 +2951,10 @@ OCRC
     font-size: var(--font-size-lg);
     font-weight: var(--font-weight-semibold);
     color: var(--color-text-primary);
+  }
+  .item-header__meta {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
   .section h3 {
     font-size: var(--font-size-sm);
@@ -3150,7 +3330,9 @@ OCRC
     color: var(--color-text-primary);
     font-size: var(--font-size-md);
     cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease;
   }
   .pagination-btn:hover:not(:disabled) {
     border-color: var(--color-primary);

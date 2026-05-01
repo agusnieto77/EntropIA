@@ -12,7 +12,7 @@
   }: InputProps = $props()
 
   const inputId = $props.id()
-  const hasError = $derived(!!error)
+  let hasError = $derived(!!error)
 
   function handleInput(e: Event) {
     const target = e.target as HTMLInputElement
@@ -30,21 +30,21 @@
   <input
     id={inputId}
     class="input-field__input"
-    type={type}
-    placeholder={placeholder}
-    disabled={disabled}
-    value={value}
+    {type}
+    {placeholder}
+    {disabled}
+    {value}
     oninput={handleInput}
     aria-invalid={hasError}
     aria-describedby={error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined}
   />
 
   {#if error}
-    <span class="input-field__error" id="{inputId}-error" role="alert">
+    <span class="input-field__error" id={`${inputId}-error`} role="alert">
       {error}
     </span>
   {:else if hint}
-    <span class="input-field__hint" id="{inputId}-hint">
+    <span class="input-field__hint" id={`${inputId}-hint`}>
       {hint}
     </span>
   {/if}
@@ -54,13 +54,13 @@
   .input-field {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--space-2);
     width: 100%;
   }
 
   .input-field__label {
     font-family: var(--font-sans);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
     font-weight: var(--font-weight-medium);
     color: var(--color-text-secondary);
     user-select: none;
@@ -68,39 +68,47 @@
 
   .input-field__input {
     width: 100%;
-    padding: var(--space-2) var(--space-3);
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
     font-family: var(--font-sans);
-    font-size: var(--font-size-md);
+    font-size: var(--font-size-sm);
     color: var(--color-text-primary);
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-md);
     outline: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      border-color var(--transition-base),
+      box-shadow var(--transition-base),
+      background-color var(--transition-base);
     box-sizing: border-box;
+    line-height: var(--line-height-base);
   }
 
   .input-field__input::placeholder {
     color: var(--color-text-muted);
   }
 
-  .input-field__input:focus {
+  .input-field__input:focus,
+  .input-field__input:focus-visible {
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
+    box-shadow: var(--focus-ring);
+    background-color: var(--color-surface);
   }
 
   .input-field__input:disabled {
     cursor: not-allowed;
-    opacity: 0.5;
-    background-color: var(--color-bg);
+    opacity: 0.56;
+    background-color: var(--color-surface-raised);
   }
 
   .input-field--error .input-field__input {
     border-color: var(--color-danger);
   }
 
-  .input-field--error .input-field__input:focus {
-    box-shadow: 0 0 0 2px rgba(224, 92, 106, 0.2);
+  .input-field--error .input-field__input:focus,
+  .input-field--error .input-field__input:focus-visible {
+    box-shadow: var(--focus-ring-danger);
   }
 
   .input-field__error {
@@ -112,7 +120,7 @@
   .input-field__hint {
     font-family: var(--font-sans);
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
   }
 
   .input-field--disabled .input-field__label {

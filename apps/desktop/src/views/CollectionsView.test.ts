@@ -68,6 +68,11 @@ describe('CollectionsView consumer compatibility', () => {
     render(CollectionsView)
 
     expect(await screen.findByText('Historia')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Colecciones' })).toBeInTheDocument()
+    expect(
+      screen.getByText('Gestioná tus espacios de trabajo y organizá el archivo por tema.')
+    ).toBeInTheDocument()
+    expect(screen.getByText('1 colección visible')).toBeInTheDocument()
     expect(await screen.findByText('7 items')).toBeInTheDocument()
     expect(await screen.findByText('Colección histórica')).toBeInTheDocument()
 
@@ -82,5 +87,20 @@ describe('CollectionsView consumer compatibility', () => {
         collectionName: 'Historia',
       })
     })
+  })
+
+  it('shows the empty-state guidance when there are no collections', async () => {
+    storeRef.current = createStore([], 0)
+
+    render(CollectionsView)
+
+    expect(screen.getByRole('heading', { name: 'Colecciones' })).toBeInTheDocument()
+    expect(screen.getByText('0 colecciones visibles')).toBeInTheDocument()
+
+    expect(
+      await screen.findByText(
+        'Todavía no hay colecciones. Creá una para empezar a ordenar el material.'
+      )
+    ).toBeInTheDocument()
   })
 })
