@@ -40,6 +40,10 @@
     `${items.length} ${items.length === 1 ? 'documento visible' : 'documentos visibles'}`
   )
 
+  let collectionTitle = $derived(
+    navigation.current.name === 'collection' ? navigation.current.collectionName : 'Documentos'
+  )
+
   // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath, primaryAssetType }
   let itemAssetMeta = $state<
     Map<
@@ -621,7 +625,7 @@
   <section class="page-header collection-view__header">
     <div class="page-header__content">
       <span class="page-header__eyebrow">Colección activa</span>
-      <h1>Documentos</h1>
+      <h1>{collectionTitle}</h1>
       <p>Importá, explorá y mantené ordenados los assets de esta colección.</p>
       <span class="page-header__meta">{visibleCountLabel}</span>
     </div>

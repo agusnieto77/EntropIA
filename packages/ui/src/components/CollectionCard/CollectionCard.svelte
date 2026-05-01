@@ -50,6 +50,7 @@
       <div class="collection-card__actions">
         {#if onedit}
           <Button
+            class="collection-card__edit-action"
             variant="ghost"
             size="sm"
             iconOnly
@@ -65,6 +66,7 @@
         {/if}
         {#if ondelete}
           <Button
+            class="collection-card__delete-action"
             variant="ghost"
             size="sm"
             iconOnly
@@ -161,6 +163,47 @@
     display: flex;
     gap: var(--space-1);
     flex-shrink: 0;
+  }
+
+  :global(.collection-card__edit-action) {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: #ffffff;
+    opacity: 0.88;
+  }
+
+  :global(.collection-card__delete-action) {
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--color-danger);
+    box-shadow: none;
+    opacity: 0.88;
+  }
+
+  :global(.collection-card__edit-action:hover:not(:disabled)),
+  :global(.collection-card__edit-action:focus-visible),
+  :global(.collection-card__edit-action:active),
+  :global(.collection-card__delete-action:hover:not(:disabled)),
+  :global(.collection-card__delete-action:focus-visible),
+  :global(.collection-card__delete-action:active) {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  :global(.collection-card__edit-action:hover:not(:disabled)),
+  :global(.collection-card__edit-action:focus-visible),
+  :global(.collection-card__edit-action:active) {
+    color: #ffffff;
+  }
+
+  :global(.collection-card__delete-action:hover:not(:disabled)),
+  :global(.collection-card__delete-action:focus-visible),
+  :global(.collection-card__delete-action:active) {
+    color: var(--color-danger);
   }
 
   .collection-card__date {

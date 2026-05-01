@@ -88,7 +88,7 @@
   {#if showDelete}
     <Button
       class="item-card__delete"
-      variant="secondary"
+      variant="ghost"
       size="sm"
       iconOnly
       aria-label={`Delete ${title}`}
@@ -210,6 +210,8 @@
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-3);
+    padding-right: calc(var(--space-3) + var(--control-height-sm) + var(--space-2));
+    min-height: calc(var(--control-height-sm) + var(--space-4));
   }
 
   .item-card__title {
@@ -240,9 +242,12 @@
   /* Delete button overlay */
   :global(.item-card__delete) {
     position: absolute;
-    top: var(--space-2);
+    bottom: var(--space-3);
     right: var(--space-2);
-    color: var(--color-text-muted);
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--color-danger);
+    box-shadow: none;
     opacity: 0;
     transition:
       opacity 0.15s ease,
@@ -259,8 +264,9 @@
   }
 
   :global(.item-card__delete:hover) {
+    background-color: transparent;
     color: var(--color-danger);
-    border-color: var(--color-danger);
+    border-color: transparent;
   }
 
   :global(.item-card__delete:focus-visible) {

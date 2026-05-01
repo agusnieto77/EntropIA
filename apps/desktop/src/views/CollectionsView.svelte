@@ -141,7 +141,7 @@
 <div class="collections-view page-shell">
   <section class="page-header">
     <div class="page-header__content">
-      <span class="page-header__eyebrow">Biblioteca</span>
+      <span class="page-header__eyebrow">Corpus</span>
       <h1>Colecciones</h1>
       <p>Gestioná tus espacios de trabajo y organizá el archivo por tema.</p>
       <span class="page-header__meta">{visibleCountLabel}</span>

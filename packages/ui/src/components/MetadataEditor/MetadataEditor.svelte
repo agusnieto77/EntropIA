@@ -94,7 +94,6 @@
         oninput={(e: Event) => handleValueInput(index, e)}
       />
       <Button
-        class="metadata-editor__delete"
         variant="ghost"
         size="sm"
         iconOnly
@@ -102,7 +101,7 @@
         onclick={() => deleteRow(index)}
         aria-label="Remove field"
       >
-        <ActionIcon name="close" />
+        <ActionIcon name="delete" />
       </Button>
     </div>
   {/each}
@@ -153,21 +152,6 @@
 
   .metadata-editor__value {
     flex: 0.6;
-  }
-
-  :global(.metadata-editor__delete) {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-    transition:
-      background-color 0.15s ease,
-      color 0.15s ease,
-      border-color 0.15s ease;
-  }
-
-  :global(.metadata-editor__delete:hover) {
-    background-color: var(--color-danger);
-    border-color: var(--color-danger);
-    color: #ffffff;
   }
 
   .metadata-editor__add {

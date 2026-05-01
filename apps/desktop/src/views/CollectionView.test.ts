@@ -123,7 +123,7 @@ describe('CollectionView consumer compatibility', () => {
       expect(storeRef.current.items.findByCollection).toHaveBeenCalledWith('col-1')
     })
 
-    expect(screen.getByRole('heading', { name: 'Documentos' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Colección' })).toBeInTheDocument()
     expect(
       screen.getByText('Importá, explorá y mantené ordenados los assets de esta colección.')
     ).toBeInTheDocument()
