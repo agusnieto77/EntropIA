@@ -46,29 +46,29 @@ const CONFIDENCE_THRESHOLD: f32 = 0.50;
 /// Unknown class IDs default to PlainText.
 /// Source: PaddleX PP-DocLayout inference.yml label_list (same for S and L variants).
 const LABEL_MAP: &[(usize, &str, LayoutCategory)] = &[
-    (0,  "doc_title",       LayoutCategory::Title),
-    (1,  "paragraph_title",  LayoutCategory::Title),
-    (2,  "text",             LayoutCategory::PlainText),
-    (3,  "abandoned",        LayoutCategory::Abandoned),
-    (4,  "figure_title",     LayoutCategory::Caption),
-    (5,  "figure_note",      LayoutCategory::Footnote),
-    (6,  "text",             LayoutCategory::PlainText),
-    (7,  "page_header",      LayoutCategory::Header),
-    (8,  "page_footer",      LayoutCategory::Footer),
-    (9,  "table",            LayoutCategory::Table),
-    (10, "table_caption",    LayoutCategory::Caption),
-    (11, "table_note",       LayoutCategory::Footnote),
-    (12, "image",            LayoutCategory::Figure),
-    (13, "chart",            LayoutCategory::Figure),
-    (14, "vision_footnote",  LayoutCategory::Footnote),
-    (15, "formula",          LayoutCategory::Abandoned),
-    (16, "seal",             LayoutCategory::Abandoned),
-    (17, "paragraph_title",  LayoutCategory::Title),
-    (18, "code",             LayoutCategory::Code),
-    (19, "reference",        LayoutCategory::Reference),
-    (20, "abstract",         LayoutCategory::PlainText),
-    (21, "page_number",      LayoutCategory::Footer),
-    (22, "text",             LayoutCategory::PlainText),
+    (0, "doc_title", LayoutCategory::Title),
+    (1, "paragraph_title", LayoutCategory::Title),
+    (2, "text", LayoutCategory::PlainText),
+    (3, "abandoned", LayoutCategory::Abandoned),
+    (4, "figure_title", LayoutCategory::Caption),
+    (5, "figure_note", LayoutCategory::Footnote),
+    (6, "text", LayoutCategory::PlainText),
+    (7, "page_header", LayoutCategory::Header),
+    (8, "page_footer", LayoutCategory::Footer),
+    (9, "table", LayoutCategory::Table),
+    (10, "table_caption", LayoutCategory::Caption),
+    (11, "table_note", LayoutCategory::Footnote),
+    (12, "image", LayoutCategory::Figure),
+    (13, "chart", LayoutCategory::Figure),
+    (14, "vision_footnote", LayoutCategory::Footnote),
+    (15, "formula", LayoutCategory::Abandoned),
+    (16, "seal", LayoutCategory::Abandoned),
+    (17, "paragraph_title", LayoutCategory::Title),
+    (18, "code", LayoutCategory::Code),
+    (19, "reference", LayoutCategory::Reference),
+    (20, "abstract", LayoutCategory::PlainText),
+    (21, "page_number", LayoutCategory::Footer),
+    (22, "text", LayoutCategory::PlainText),
 ];
 
 /// Default model input size. PP-DocLayout-L uses 640×640.
@@ -103,7 +103,12 @@ fn initialize_ort(model_dir: PathBuf) -> Result<(), String> {
 
     ort::init_from(dylib_path.display().to_string())
         .commit()
-        .map_err(|e| format!("Failed to initialize ORT from {}: {e}", dylib_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "Failed to initialize ORT from {}: {e}",
+                dylib_path.display()
+            )
+        })?;
 
     Ok(())
 }
@@ -274,7 +279,12 @@ impl OnnxLayoutEngine {
 
         let model_dir = model_path
             .parent()
-            .ok_or_else(|| format!("Model path has no parent directory: {}", model_path.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "Model path has no parent directory: {}",
+                    model_path.display()
+                )
+            })?
             .to_path_buf();
 
         ensure_ort_init(&model_dir)?;
@@ -293,8 +303,14 @@ impl OnnxLayoutEngine {
             let input_info = &session.inputs[0];
             match &input_info.input_type {
                 ort::value::ValueType::Tensor { shape, .. } => {
-                    let h = shape.get(2).map(|&d| if d > 0 { d as u32 } else { DEFAULT_INPUT_SIZE }).unwrap_or(DEFAULT_INPUT_SIZE);
-                    let w = shape.get(3).map(|&d| if d > 0 { d as u32 } else { DEFAULT_INPUT_SIZE }).unwrap_or(DEFAULT_INPUT_SIZE);
+                    let h = shape
+                        .get(2)
+                        .map(|&d| if d > 0 { d as u32 } else { DEFAULT_INPUT_SIZE })
+                        .unwrap_or(DEFAULT_INPUT_SIZE);
+                    let w = shape
+                        .get(3)
+                        .map(|&d| if d > 0 { d as u32 } else { DEFAULT_INPUT_SIZE })
+                        .unwrap_or(DEFAULT_INPUT_SIZE);
                     (h, w)
                 }
                 _ => (DEFAULT_INPUT_SIZE, DEFAULT_INPUT_SIZE),
@@ -327,7 +343,10 @@ impl OnnxLayoutEngine {
     /// accordingly.
     pub fn detect(&self, image_bytes: &[u8]) -> Result<Vec<LayoutRegion>, String> {
         let (target_h, target_w) = self.model_input_size;
-        eprintln!("[ocr/layout_onnx] detect(): input_size=({target_h},{target_w}), image_bytes_len={}", image_bytes.len());
+        eprintln!(
+            "[ocr/layout_onnx] detect(): input_size=({target_h},{target_w}), image_bytes_len={}",
+            image_bytes.len()
+        );
 
         // 1. Preprocess: decode, resize, normalize, build all 3 input tensors
         let (input_tensor, im_shape, scale_factor, (orig_w, orig_h)) =
@@ -339,10 +358,14 @@ impl OnnxLayoutEngine {
         // inputs by NAME, not position. We use ort::inputs! with explicit names to
         // avoid "Missing Input" errors if the ORT runtime changes input order.
         let (num_dets, detections_data) = {
-            let mut session = self.session.lock().map_err(|_| "Layout session mutex poisoned")?;
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|_| "Layout session mutex poisoned")?;
 
             // Get output names before inference (they're session metadata)
-            let output_names: Vec<String> = session.outputs.iter().map(|o| o.name.clone()).collect();
+            let output_names: Vec<String> =
+                session.outputs.iter().map(|o| o.name.clone()).collect();
 
             // Get input names so we can bind tensors by name
             let input_names: Vec<String> = session.inputs.iter().map(|i| i.name.clone()).collect();
@@ -374,13 +397,15 @@ impl OnnxLayoutEngine {
                 let name = &output_names[i];
                 // Output 1 (count) is int32 — handle separately
                 if i == 1 && outputs.len() == 2 {
-                    let count_arr = outputs[i].try_extract_array::<i32>()
+                    let count_arr = outputs[i]
+                        .try_extract_array::<i32>()
                         .map_err(|e| format!("Failed to extract detection count: {e}"))?;
                     num_dets = count_arr.first().copied().unwrap_or(0) as usize;
                     eprintln!("[ocr/layout_onnx] Output 1 ({name}): num_dets={num_dets}");
                 } else {
-                    let arr = outputs[i].try_extract_array::<f32>()
-                        .map_err(|e| format!("Failed to extract layout output tensor {i} ({name}): {e}"))?;
+                    let arr = outputs[i].try_extract_array::<f32>().map_err(|e| {
+                        format!("Failed to extract layout output tensor {i} ({name}): {e}")
+                    })?;
                     eprintln!(
                         "[ocr/layout_onnx] Output {i} ({name}): shape={:?}",
                         arr.shape()
@@ -393,42 +418,48 @@ impl OnnxLayoutEngine {
         }; // session lock dropped here
 
         // 3. Parse PicoDet output: [N, 6] with [class_id, score, x1, y1, x2, y2]
-        let dets = detections_data.ok_or_else(|| "No detection output tensor from model".to_string())?;
+        let dets =
+            detections_data.ok_or_else(|| "No detection output tensor from model".to_string())?;
         let mut detections = Vec::new();
 
         eprintln!(
             "[ocr/layout_onnx] Output shape: {:?}, num_dets from count output: {}",
-            dets.shape(), num_dets
+            dets.shape(),
+            num_dets
         );
 
         // The output may be [N, 6] or could have a batch dimension [1, N, 6]
         let dets_2d: Vec<[f32; 6]> = if dets.shape().len() == 3 && dets.shape()[2] == 6 {
             // [1, N, 6] — squeeze batch dimension
-            (0..dets.shape()[1]).map(|i| {
-                let row: [f32; 6] = [
-                    dets[[0, i, 0]],
-                    dets[[0, i, 1]],
-                    dets[[0, i, 2]],
-                    dets[[0, i, 3]],
-                    dets[[0, i, 4]],
-                    dets[[0, i, 5]],
-                ];
-                row
-            }).collect()
+            (0..dets.shape()[1])
+                .map(|i| {
+                    let row: [f32; 6] = [
+                        dets[[0, i, 0]],
+                        dets[[0, i, 1]],
+                        dets[[0, i, 2]],
+                        dets[[0, i, 3]],
+                        dets[[0, i, 4]],
+                        dets[[0, i, 5]],
+                    ];
+                    row
+                })
+                .collect()
         } else if dets.shape().len() == 2 && dets.shape()[1] == 6 {
             // [N, 6] — already 2D
             let n = dets.shape()[0].min(num_dets.max(dets.shape()[0]));
-            (0..n).map(|i| {
-                let row: [f32; 6] = [
-                    dets[[i, 0]],
-                    dets[[i, 1]],
-                    dets[[i, 2]],
-                    dets[[i, 3]],
-                    dets[[i, 4]],
-                    dets[[i, 5]],
-                ];
-                row
-            }).collect()
+            (0..n)
+                .map(|i| {
+                    let row: [f32; 6] = [
+                        dets[[i, 0]],
+                        dets[[i, 1]],
+                        dets[[i, 2]],
+                        dets[[i, 3]],
+                        dets[[i, 4]],
+                        dets[[i, 5]],
+                    ];
+                    row
+                })
+                .collect()
         } else {
             // Fallback: try to reshape and parse
             eprintln!(
@@ -438,17 +469,19 @@ impl OnnxLayoutEngine {
             let total = dets.len();
             if total >= 6 && total % 6 == 0 {
                 let n = total / 6;
-                (0..n).map(|i| {
-                    let row: [f32; 6] = [
-                        dets[[i * 6]],
-                        dets[[i * 6 + 1]],
-                        dets[[i * 6 + 2]],
-                        dets[[i * 6 + 3]],
-                        dets[[i * 6 + 4]],
-                        dets[[i * 6 + 5]],
-                    ];
-                    row
-                }).collect()
+                (0..n)
+                    .map(|i| {
+                        let row: [f32; 6] = [
+                            dets[[i * 6]],
+                            dets[[i * 6 + 1]],
+                            dets[[i * 6 + 2]],
+                            dets[[i * 6 + 3]],
+                            dets[[i * 6 + 4]],
+                            dets[[i * 6 + 5]],
+                        ];
+                        row
+                    })
+                    .collect()
             } else {
                 return Err(format!(
                     "Cannot parse detection output with shape {:?}",
@@ -475,7 +508,10 @@ impl OnnxLayoutEngine {
 
             if score >= CONFIDENCE_THRESHOLD && x2 > x1 && y2 > y1 {
                 detections.push(RawDetection {
-                    x1, y1, x2, y2,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
                     score,
                     class_id,
                 });
@@ -510,18 +546,30 @@ impl OnnxLayoutEngine {
             eprintln!(
                 "[ocr/layout_onnx] max_coord={:.1} → coords likely in {} space",
                 max_coord,
-                if likely_original_space { "ORIGINAL" } else { "MODEL_INPUT (need scaling)" }
+                if likely_original_space {
+                    "ORIGINAL"
+                } else {
+                    "MODEL_INPUT (need scaling)"
+                }
             );
         }
 
         // Detect coordinate space: if any coord exceeds the model input size, the model
         // already applied scale_factor and we must NOT scale again. Otherwise, scale.
-        let needs_scaling = !detections.iter().any(|d| {
-            d.x2 > target_w as f32 || d.y2 > target_h as f32
-        });
+        let needs_scaling = !detections
+            .iter()
+            .any(|d| d.x2 > target_w as f32 || d.y2 > target_h as f32);
 
-        let scale_y = if needs_scaling { orig_h as f32 / target_h as f32 } else { 1.0 };
-        let scale_x = if needs_scaling { orig_w as f32 / target_w as f32 } else { 1.0 };
+        let scale_y = if needs_scaling {
+            orig_h as f32 / target_h as f32
+        } else {
+            1.0
+        };
+        let scale_x = if needs_scaling {
+            orig_w as f32 / target_w as f32
+        } else {
+            1.0
+        };
 
         eprintln!(
             "[ocr/layout_onnx] Coordinate handling: needs_scaling={}, scale_x={:.3}, scale_y={:.3}",
@@ -588,7 +636,10 @@ pub fn create_layout_engine(app_handle: &tauri::AppHandle) -> Option<OnnxLayoutE
             }
         };
         if clean.exists() {
-            eprintln!("[ocr/layout_onnx] Found layout model at: {}", clean.display());
+            eprintln!(
+                "[ocr/layout_onnx] Found layout model at: {}",
+                clean.display()
+            );
             match OnnxLayoutEngine::new(&clean) {
                 Ok(engine) => return Some(engine),
                 Err(e) => {
@@ -605,7 +656,10 @@ pub fn create_layout_engine(app_handle: &tauri::AppHandle) -> Option<OnnxLayoutE
             .join("ocr")
             .join(MODEL_FILENAME);
         if dev_path.exists() {
-            eprintln!("[ocr/layout_onnx] Found layout model at dev path: {}", dev_path.display());
+            eprintln!(
+                "[ocr/layout_onnx] Found layout model at dev path: {}",
+                dev_path.display()
+            );
             match OnnxLayoutEngine::new(&dev_path) {
                 Ok(engine) => return Some(engine),
                 Err(e) => {

@@ -45,17 +45,17 @@ pub struct OcrOutput {
 /// Layout category from document layout detection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum LayoutCategory {
-    Title,       // doc_title, paragraph_title → "## " prefix
-    PlainText,   // text, abstract → as-is
-    Table,       // table → "---\n...\n---" wrapper
-    Figure,      // image, chart → skip in text output
-    Caption,     // figure_title, table_caption → as-is
-    Footnote,    // vision_footnote, figure_note, table_note → "Note: " prefix
-    Header,      // page_header → skip
-    Footer,      // page_footer, page_number → skip
-    Code,        // code → code block markers
-    Reference,   // reference → as-is
-    Abandoned,   // abandoned, seal, formula → skip
+    Title,     // doc_title, paragraph_title → "## " prefix
+    PlainText, // text, abstract → as-is
+    Table,     // table → "---\n...\n---" wrapper
+    Figure,    // image, chart → skip in text output
+    Caption,   // figure_title, table_caption → as-is
+    Footnote,  // vision_footnote, figure_note, table_note → "Note: " prefix
+    Header,    // page_header → skip
+    Footer,    // page_footer, page_number → skip
+    Code,      // code → code block markers
+    Reference, // reference → as-is
+    Abandoned, // abandoned, seal, formula → skip
 }
 
 /// A single layout region detected by the layout engine.

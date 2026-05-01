@@ -34,12 +34,9 @@ pub struct ImageEditResult {
 ///   `photo_v2.jpg` → `photo_v4.jpg` (if _v3 exists but _v4 doesn't)
 fn next_version_path(path: &str, force_extension: Option<&str>) -> String {
     let p = Path::new(path);
-    let ext = force_extension
-        .unwrap_or_else(|| p.extension().and_then(|e| e.to_str()).unwrap_or(""));
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("image");
+    let ext =
+        force_extension.unwrap_or_else(|| p.extension().and_then(|e| e.to_str()).unwrap_or(""));
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
     let dir = p.parent().unwrap_or(Path::new("."));
 
     // Parse existing version suffix: "photo" → (photo, 2), "photo_v2" → (photo, 3)

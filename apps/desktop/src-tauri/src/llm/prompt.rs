@@ -3,9 +3,7 @@
 /// `gemma_prompt` wraps for local Gemma; OpenRouter uses the raw text directly.
 
 fn gemma_prompt(instruction: &str) -> String {
-    format!(
-        "<start_of_turn>user\n{instruction}<end_of_turn>\n<start_of_turn>model\n"
-    )
+    format!("<start_of_turn>user\n{instruction}<end_of_turn>\n<start_of_turn>model\n")
 }
 
 // ---------------------------------------------------------------------------

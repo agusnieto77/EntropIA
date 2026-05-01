@@ -231,7 +231,11 @@ fn same_entity_family(a: &EntityType, b: &EntityType) -> bool {
 fn prefer_better_entity(a: Entity, b: Entity) -> Entity {
     let a_score = entity_quality_score(&a);
     let b_score = entity_quality_score(&b);
-    if b_score > a_score { b } else { a }
+    if b_score > a_score {
+        b
+    } else {
+        a
+    }
 }
 
 fn entity_quality_score(entity: &Entity) -> usize {
@@ -290,7 +294,10 @@ mod tests {
         let entities = engine.extract(text).expect("hybrid extract should work");
 
         // Dates come only from rule-based (RegEx)
-        let dates: Vec<&Entity> = entities.iter().filter(|e| e.entity_type == EntityType::Date).collect();
+        let dates: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Date)
+            .collect();
         assert!(!dates.is_empty(), "Should detect dates from RegEx");
         for date in &dates {
             assert_eq!(
@@ -310,11 +317,23 @@ mod tests {
         let entities = engine.extract(text).expect("hybrid extract should work");
 
         // Without ML engines, rule-based is the last-resort fallback for core types
-        let persons: Vec<&Entity> = entities.iter().filter(|e| e.entity_type == EntityType::Person).collect();
-        let places: Vec<&Entity> = entities.iter().filter(|e| e.entity_type == EntityType::Place).collect();
+        let persons: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .collect();
+        let places: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Place)
+            .collect();
 
-        assert!(!persons.is_empty(), "Should detect persons from rule-based fallback");
-        assert!(!places.is_empty(), "Should detect places from rule-based fallback");
+        assert!(
+            !persons.is_empty(),
+            "Should detect persons from rule-based fallback"
+        );
+        assert!(
+            !places.is_empty(),
+            "Should detect places from rule-based fallback"
+        );
 
         for person in &persons {
             assert_eq!(
@@ -345,7 +364,10 @@ mod tests {
         let text = "El Cabildo de Buenos Aires y la Real Audiencia.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
-        let institutions: Vec<&Entity> = entities.iter().filter(|e| e.entity_type == EntityType::Institution).collect();
+        let institutions: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Institution)
+            .collect();
         assert!(
             !institutions.is_empty(),
             "Should detect institutions from rule-based (Cabildo, Real Audiencia)"
@@ -361,7 +383,10 @@ mod tests {
         let text = "El 25 de mayo de 1810 fue una fecha importante.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
-        let dates: Vec<&Entity> = entities.iter().filter(|e| e.entity_type == EntityType::Date).collect();
+        let dates: Vec<&Entity> = entities
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Date)
+            .collect();
         for date in &dates {
             assert_eq!(
                 date.source,
@@ -375,8 +400,22 @@ mod tests {
     #[test]
     fn dedup_entities_removes_overlapping_duplicates() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Organization, "Gremio de la Construcción", 10, 40, 0.95, EntitySource::Onnx),
-            entity(EntityType::Organization, "Gremio de la Construcción", 10, 40, 0.92, EntitySource::Spacy),
+            entity(
+                EntityType::Organization,
+                "Gremio de la Construcción",
+                10,
+                40,
+                0.95,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Organization,
+                "Gremio de la Construcción",
+                10,
+                40,
+                0.92,
+                EntitySource::Spacy,
+            ),
         ]);
 
         assert_eq!(
@@ -390,8 +429,22 @@ mod tests {
     #[test]
     fn dedup_entities_keeps_longer_entity_on_overlap() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Place, "MAR DEL PL", 0, 10, 0.82, EntitySource::Onnx),
-            entity(EntityType::Place, "Mar del Plata", 0, 13, 0.91, EntitySource::Onnx),
+            entity(
+                EntityType::Place,
+                "MAR DEL PL",
+                0,
+                10,
+                0.82,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Place,
+                "Mar del Plata",
+                0,
+                13,
+                0.91,
+                EntitySource::Onnx,
+            ),
         ]);
 
         assert_eq!(deduped.len(), 1, "Should keep the more complete entity");
@@ -405,21 +458,67 @@ mod tests {
     #[test]
     fn dedup_entities_collapses_case_and_punctuation_variants() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Place, "MAR DEL PLATA", 100, 113, 0.86, EntitySource::Onnx),
-            entity(EntityType::Place, "Mar del Plata", 101, 114, 0.93, EntitySource::Onnx),
-            entity(EntityType::Place, "Mar del Plata.", 101, 115, 0.90, EntitySource::Spacy),
+            entity(
+                EntityType::Place,
+                "MAR DEL PLATA",
+                100,
+                113,
+                0.86,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Place,
+                "Mar del Plata",
+                101,
+                114,
+                0.93,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Place,
+                "Mar del Plata.",
+                101,
+                115,
+                0.90,
+                EntitySource::Spacy,
+            ),
         ]);
 
-        assert_eq!(deduped.len(), 1, "Expected variant duplicates to collapse: {deduped:?}");
+        assert_eq!(
+            deduped.len(),
+            1,
+            "Expected variant duplicates to collapse: {deduped:?}"
+        );
         assert_eq!(deduped[0].value, "Mar del Plata");
     }
 
     #[test]
     fn dedup_entities_collapses_repeated_mentions_globally() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Place, "Mar del Plata", 10, 23, 0.88, EntitySource::Onnx),
-            entity(EntityType::Place, "Mar del Plata", 210, 223, 0.93, EntitySource::Onnx),
-            entity(EntityType::Place, "MAR DEL PLATA", 410, 423, 0.84, EntitySource::Spacy),
+            entity(
+                EntityType::Place,
+                "Mar del Plata",
+                10,
+                23,
+                0.88,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Place,
+                "Mar del Plata",
+                210,
+                223,
+                0.93,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Place,
+                "MAR DEL PLATA",
+                410,
+                423,
+                0.84,
+                EntitySource::Spacy,
+            ),
         ]);
 
         assert_eq!(
@@ -433,8 +532,22 @@ mod tests {
     #[test]
     fn dedup_entities_keeps_repeated_mentions_of_different_families() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Place, "Córdoba", 10, 17, 0.92, EntitySource::Onnx),
-            entity(EntityType::Organization, "Córdoba", 200, 207, 0.90, EntitySource::Onnx),
+            entity(
+                EntityType::Place,
+                "Córdoba",
+                10,
+                17,
+                0.92,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Organization,
+                "Córdoba",
+                200,
+                207,
+                0.90,
+                EntitySource::Onnx,
+            ),
         ]);
 
         assert_eq!(deduped.len(), 2);
@@ -443,11 +556,29 @@ mod tests {
     #[test]
     fn dedup_entities_preserves_different_type_overlaps() {
         let deduped = dedup_entities(vec![
-            entity(EntityType::Person, "O'Neill", 50, 57, 0.90, EntitySource::Onnx),
-            entity(EntityType::Date, "21 de agosto de 1970", 0, 20, 1.0, EntitySource::RuleBased),
+            entity(
+                EntityType::Person,
+                "O'Neill",
+                50,
+                57,
+                0.90,
+                EntitySource::Onnx,
+            ),
+            entity(
+                EntityType::Date,
+                "21 de agosto de 1970",
+                0,
+                20,
+                1.0,
+                EntitySource::RuleBased,
+            ),
         ]);
 
-        assert_eq!(deduped.len(), 2, "Different types should not deduplicate against each other");
+        assert_eq!(
+            deduped.len(),
+            2,
+            "Different types should not deduplicate against each other"
+        );
     }
 
     #[test]

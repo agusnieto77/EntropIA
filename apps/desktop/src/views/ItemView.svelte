@@ -23,10 +23,11 @@
   import {
     NlpStore,
     indexFts,
-    embedItem,
+    embedAsset,
     extractEntities,
     extractEntitiesForAsset,
-    similarItems as fetchSimilarItems,
+    similarAssets as fetchSimilarAssets,
+    type SimilarAsset,
   } from '$lib/nlp'
   import {
     LlmStore,
@@ -234,9 +235,7 @@ llmExtractTriplesAsset,
       const jobs: Array<[string, () => Promise<unknown>]> = [
         ['ner', () => extractEntitiesForAsset(itemId, assetId)],
         ['fts', () => indexFts(itemId)],
-        // Item-level embedding: similar_items reads from vec_items, not vec_assets.
-        // Using embedItem ensures Similar Items refreshes after text correction.
-        ['embed', () => embedItem(itemId)],
+        ['embed', () => embedAsset(itemId, assetId)],
       ]
 
       try {
@@ -314,9 +313,7 @@ llmExtractTriplesAsset,
   let editingEntityType = $state<EditableEntityType>('organization')
   let entityEditorOpen = $state(false)
   let entityActionError = $state<string | null>(null)
-  let similarItems = $state<
-    Array<{ itemId: string; title: string; collectionId: string; similarity: number }>
-  >([])
+  let similarAssets = $state<SimilarAsset[]>([])
   let ftsQuery = $state('')
   let ftsResults = $state<Array<{ itemId: string; title: string; rank: number; collectionId: string }>>(
     []
@@ -1082,11 +1079,25 @@ llmExtractTriplesAsset,
     }
   }
 
-  async function handleEmbedItem() {
+  function getAssetPathLabel(path: string) {
+    return path.split(/[/\\]/).pop() ?? path
+  }
+
+  function getAssetTypeLabel(assetType: string) {
+    return assetType ? assetType.toUpperCase() : 'ASSET'
+  }
+
+  async function handleEmbedAsset() {
+    if (!selectedAsset) {
+      nlpStore._setJobStatus(itemId, 'embed', 'error', 'Select an asset before generating embeddings.')
+      nlpTick++
+      return
+    }
+
     nlpStore._setJobStatus(itemId, 'embed', 'pending')
     nlpTick++
     try {
-      await embedItem(itemId)
+      await embedAsset(itemId, selectedAsset.id)
     } catch (e) {
       nlpStore._setJobStatus(itemId, 'embed', 'error', e instanceof Error ? e.message : 'Failed')
       nlpTick++
@@ -1213,17 +1224,16 @@ llmExtractTriplesAsset,
     }
   }
 
-  async function loadSimilarItems() {
+  async function loadSimilarAssets() {
+    if (!selectedAsset) {
+      similarAssets = []
+      return
+    }
+
     try {
-      const results = await fetchSimilarItems(itemId, 5)
-      similarItems = results.map((r) => ({
-        itemId: r.itemId,
-        title: r.title,
-        collectionId: r.collectionId,
-        similarity: r.similarity,
-      }))
+      similarAssets = await fetchSimilarAssets(selectedAsset.id, 5)
     } catch {
-      similarItems = []
+      similarAssets = []
     }
   }
 
@@ -1503,9 +1513,7 @@ llmExtractTriplesAsset,
       ])
       item = loadedItem
       assets = loadedAssets
-      // Asset-scoped data (notes, entities, triples) will be loaded by the selectedAsset effect
-      // Load item-scoped data (similar items, topics) - not asset-dependent
-      void loadSimilarItems()
+      // Asset-scoped data (notes, entities, triples, similar assets) will be loaded by the selectedAsset effect
       void loadTopics()
       void loadTopicSuggestions()
     } catch (e) {
@@ -1703,6 +1711,7 @@ llmExtractTriplesAsset,
     if (!asset) return
     void loadEntities()
     void loadTriples()
+    void loadSimilarAssets()
     // Load persisted LLM results for this asset so previous
     // asset-level results (summarize, correct_ocr, etc.) are visible.
     llmStore.loadPersistedResults(asset.id, 'asset')
@@ -1758,7 +1767,7 @@ llmExtractTriplesAsset,
             loadEntities()
           }
           if (job === 'embed' && status === 'done' && id === itemId) {
-            loadSimilarItems()
+            loadSimilarAssets()
           }
           if (job === 'triples' && status === 'done' && id === itemId) {
             loadTriples()
@@ -2409,7 +2418,7 @@ OCRC
               analysisOpen = !analysisOpen
               if (analysisOpen) {
                 loadEntities()
-                loadSimilarItems()
+                loadSimilarAssets()
                 loadTriples()
                 loadFtsStats()
                 loadGeoMarkers()
@@ -2511,8 +2520,8 @@ OCRC
 
                 <button
                   class="nlp-btn"
-                  disabled={nlp.embed === 'pending' || nlp.embed === 'running'}
-                  onclick={handleEmbedItem}
+                  disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
+                  onclick={handleEmbedAsset}
                 >
                   EMBED <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
                 </button>
@@ -2536,6 +2545,10 @@ OCRC
 
               {#if nlp.errors?.embed}
                 <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
+              {/if}
+
+              {#if !selectedAsset}
+                <p class="empty-text">Select an asset to run asset-level embeddings and similarity.</p>
               {/if}
 
               <!-- Map section (OpenStreetMap) -->
@@ -2662,18 +2675,30 @@ OCRC
                 {/if}
               </div>
 
-              {#if similarItems.length > 0}
+              {#if similarAssets.length > 0}
                 <div class="similar-section">
-                  <h4>Similar Items{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
+                  <h4>Similar Assets{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
                   <ul class="similar-list">
-                    {#each similarItems.slice(0, 5) as item (item.itemId)}
+                    {#each similarAssets.slice(0, 5) as asset (asset.assetId)}
                       <li class="similar-item">
                         <button
                           class="similar-item-btn"
-                          onclick={() => navigateToSimilarItem(item)}
+                          onclick={() => navigateToSimilarItem(asset)}
+                          data-testid={`similar-asset-${asset.assetId}`}
                         >
-                          <span class="similar-title">{item.title || item.itemId}</span>
-                          <span class="similar-score">({(item.similarity * 100).toFixed(1)}%)</span>
+                          <span class="similar-item-main">
+                            <span class="similar-title">{asset.title || asset.itemId}</span>
+                            <span class="similar-meta">
+                              {getAssetTypeLabel(asset.assetType)} · {getAssetPathLabel(asset.assetPath)}
+                            </span>
+                            <span class="similar-meta">
+                              asset {asset.assetId} · item {asset.itemId} · collection {asset.collectionId}
+                            </span>
+                            {#if asset.assetPath && getAssetPathLabel(asset.assetPath) !== asset.assetPath}
+                              <span class="similar-meta similar-meta--path">{asset.assetPath}</span>
+                            {/if}
+                          </span>
+                          <span class="similar-score">{(asset.similarity * 100).toFixed(1)}%</span>
                         </button>
                       </li>
                     {/each}
@@ -2681,9 +2706,13 @@ OCRC
                 </div>
               {:else}
                 <div class="similar-section">
-                  <h4>Similar Items{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
+                  <h4>Similar Assets{#if assets.length > 1} (by page {selectedAssetIndex + 1}){/if}</h4>
                   <p class="empty-text">
-                    No embeddings yet. Generate embeddings to find similar items.
+                    {#if selectedAsset}
+                      No similar assets yet. Generate embeddings for this asset to compare against the rest.
+                    {:else}
+                      Select an asset to see asset-level similarity results.
+                    {/if}
                   </p>
                 </div>
               {/if}
@@ -3775,9 +3804,9 @@ OCRC
   .similar-item-btn {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     width: 100%;
-    padding: var(--space-1) var(--space-2);
+    padding: var(--space-2);
     background: none;
     border: none;
     color: inherit;
@@ -3791,12 +3820,36 @@ OCRC
     background: transparent;
   }
 
+  .similar-item-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .similar-title {
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-medium);
+    word-break: break-word;
+  }
+
+  .similar-meta {
+    color: var(--color-text-secondary);
+    word-break: break-word;
+  }
+
+  .similar-meta--path {
+    color: var(--color-text-tertiary, var(--color-text-secondary));
+    opacity: 0.8;
+  }
+
   .similar-score {
     font-size: var(--font-size-xs);
     color: var(--color-text-tertiary, var(--color-text-secondary));
-    opacity: 0.7;
+    opacity: 0.9;
     white-space: nowrap;
     margin-left: var(--space-2);
+    font-weight: var(--font-weight-medium);
   }
 
   .triples-list {

@@ -3,8 +3,8 @@ pub mod engine;
 pub mod openrouter;
 pub mod prompt;
 
-use std::path::PathBuf;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,29 +59,51 @@ fn llm_job_prefix(use_cloud: bool, job: &LlmJob) -> String {
 
 #[derive(Debug)]
 pub enum LlmJob {
-    CorrectOcr { item_id: String },
-    ExtractEntities { item_id: String },
+    CorrectOcr {
+        item_id: String,
+    },
+    ExtractEntities {
+        item_id: String,
+    },
     #[allow(dead_code)] // Future: entity consolidation via LLM review (not yet wired)
     ConsolidateEntities {
         item_id: String,
         candidate_entities_json: String,
     },
-    ExtractTriples { item_id: String },
-    Summarize { item_id: String },
-    Classify { item_id: String, categories: Vec<String> },
-    Ask { collection_id: String, question: String },
+    ExtractTriples {
+        item_id: String,
+    },
+    Summarize {
+        item_id: String,
+    },
+    Classify {
+        item_id: String,
+        categories: Vec<String>,
+    },
+    Ask {
+        collection_id: String,
+        question: String,
+    },
     // Asset-level variants — operate on a single asset/page instead of the whole item.
     // These use get_asset_text() which only fetches text for the specified asset,
     // avoiding context-window overflow on multi-page documents.
-    CorrectOcrAsset { asset_id: String },
-    ExtractEntitiesAsset { asset_id: String },
+    CorrectOcrAsset {
+        asset_id: String,
+    },
+    ExtractEntitiesAsset {
+        asset_id: String,
+    },
     #[allow(dead_code)] // Future: entity consolidation via LLM review (not yet wired)
     ConsolidateEntitiesAsset {
         asset_id: String,
         candidate_entities_json: String,
     },
-    ExtractTriplesAsset { asset_id: String },
-    SummarizeAsset { asset_id: String },
+    ExtractTriplesAsset {
+        asset_id: String,
+    },
+    SummarizeAsset {
+        asset_id: String,
+    },
 }
 
 impl LlmJob {
@@ -137,7 +159,6 @@ impl LlmJob {
             | LlmJob::SummarizeAsset { .. } => LLM_TARGET_ASSET,
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -591,10 +612,9 @@ fn parse_triples_json(raw: &str, log_prefix: &str) -> Vec<LlmTriple> {
         } else {
             normalized_content.clone()
         }
-    } else if let (Some(start), Some(end)) = (
-        normalized_content.find('{'),
-        normalized_content.rfind('}'),
-    ) {
+    } else if let (Some(start), Some(end)) =
+        (normalized_content.find('{'), normalized_content.rfind('}'))
+    {
         format!("[{}]", &normalized_content[start..=end])
     } else {
         normalized_content.clone()
@@ -604,12 +624,7 @@ fn parse_triples_json(raw: &str, log_prefix: &str) -> Vec<LlmTriple> {
     // With #[serde(default)] on LlmTriple, incomplete triples become empty-string fields
     // instead of causing a parse error.
     match serde_json::from_str::<Vec<LlmTriple>>(&json_candidate) {
-        Ok(triples) => dedupe_triples(
-            triples
-                .into_iter()
-                .filter_map(LlmTriple::cleaned)
-                .collect(),
-        ),
+        Ok(triples) => dedupe_triples(triples.into_iter().filter_map(LlmTriple::cleaned).collect()),
         Err(_) => {
             // Fast path failed — parse each object individually so one bad triple
             // doesn't spoil the rest. Gemma sometimes omits fields or produces
@@ -829,7 +844,10 @@ impl LlmQueue {
                 n_threads: None,
                 seed: 1234,
             };
-            eprintln!("{LLM_LOCAL_PREFIX} Scheduling background warmup: {}", model_path.display());
+            eprintln!(
+                "{LLM_LOCAL_PREFIX} Scheduling background warmup: {}",
+                model_path.display()
+            );
 
             let warmup_model_path = model_path.clone();
             let warmup_available = available.clone();
@@ -860,8 +878,7 @@ impl LlmQueue {
             // Open dedicated DB connection for the worker
             let conn = match rusqlite::Connection::open(&db_path) {
                 Ok(c) => {
-                    let _ =
-                        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
                     c
                 }
                 Err(e) => {
@@ -891,11 +908,11 @@ impl LlmQueue {
                 let id = job.target_id().to_string();
 
                 // Read LLM mode from settings on each job (< 1ms, allows hot-reload)
-                let llm_mode = settings::get_setting(&conn, "llm_mode")
-                    .unwrap_or_else(|| "local".to_string());
+                let llm_mode =
+                    settings::get_setting(&conn, "llm_mode").unwrap_or_else(|| "local".to_string());
 
-                let api_key = settings::get_setting(&conn, "openrouter_api_key")
-                    .unwrap_or_default();
+                let api_key =
+                    settings::get_setting(&conn, "openrouter_api_key").unwrap_or_default();
                 let remote_model = settings::get_setting(&conn, "openrouter_model")
                     .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
                 let use_openrouter = match llm_mode.as_str() {
@@ -923,58 +940,64 @@ impl LlmQueue {
                     eprintln!("{job_log_prefix} Running job '{job_name}' for {id} via remote API");
                     let client = OpenRouterClient::new(api_key, remote_model);
                     match prepare_remote_job_request(&conn, &job, client.n_ctx()) {
-                        Ok(request) => match client.generate(&request.prompt, request.max_tokens).await {
-                            Ok(output) if request.truncate_to_sentence_boundary => {
-                                Ok(truncate_to_sentence_boundary(&output))
+                        Ok(request) => {
+                            match client.generate(&request.prompt, request.max_tokens).await {
+                                Ok(output) if request.truncate_to_sentence_boundary => {
+                                    Ok(truncate_to_sentence_boundary(&output))
+                                }
+                                Ok(output) => Ok(output),
+                                Err(e) => Err(e),
                             }
-                            Ok(output) => Ok(output),
-                            Err(e) => Err(e),
-                        },
+                        }
                         Err(e) => Err(e),
                     }
                 } else {
                     // Local engine path
                     if engine.is_none() && init_error.is_none() {
                         match init_rx.take() {
-                            Some(rx) => match rx.await {
-                                Ok(Ok(resolved_engine)) => {
-                                    engine = Some(resolved_engine);
-                                }
-                                Ok(Err(error)) => {
-                                    eprintln!("{LLM_LOCAL_PREFIX} {error}");
-                                    init_error = Some(error);
-                                }
-                                Err(_) => {
-                                    let fallback_model_path = model_path.clone();
-                                    eprintln!("{LLM_LOCAL_PREFIX} Warmup channel closed before completion; falling back to lazy init");
-                                    match tokio::task::spawn_blocking(move || {
-                                        LlmEngine::init(LlmConfig {
-                                            model_path: fallback_model_path,
-                                            n_ctx: 4096,
-                                            n_threads: None,
-                                            seed: 1234,
+                            Some(rx) => {
+                                match rx.await {
+                                    Ok(Ok(resolved_engine)) => {
+                                        engine = Some(resolved_engine);
+                                    }
+                                    Ok(Err(error)) => {
+                                        eprintln!("{LLM_LOCAL_PREFIX} {error}");
+                                        init_error = Some(error);
+                                    }
+                                    Err(_) => {
+                                        let fallback_model_path = model_path.clone();
+                                        eprintln!("{LLM_LOCAL_PREFIX} Warmup channel closed before completion; falling back to lazy init");
+                                        match tokio::task::spawn_blocking(move || {
+                                            LlmEngine::init(LlmConfig {
+                                                model_path: fallback_model_path,
+                                                n_ctx: 4096,
+                                                n_threads: None,
+                                                seed: 1234,
+                                            })
                                         })
-                                    }).await {
-                                        Ok(Ok(resolved_engine)) => {
-                                            eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
-                                            available.store(true, Ordering::Relaxed);
-                                            engine = Some(resolved_engine);
-                                        }
-                                        Ok(Err(error)) => {
-                                            eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
-                                            init_error = Some(format!(
+                                        .await
+                                        {
+                                            Ok(Ok(resolved_engine)) => {
+                                                eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
+                                                available.store(true, Ordering::Relaxed);
+                                                engine = Some(resolved_engine);
+                                            }
+                                            Ok(Err(error)) => {
+                                                eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
+                                                init_error = Some(format!(
                                                 "Engine unavailable after lazy fallback: {error}"
                                             ));
-                                        }
-                                        Err(error) => {
-                                            eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
-                                            init_error = Some(format!(
-                                                "Engine lazy fallback panicked: {error}"
-                                            ));
+                                            }
+                                            Err(error) => {
+                                                eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
+                                                init_error = Some(format!(
+                                                    "Engine lazy fallback panicked: {error}"
+                                                ));
+                                            }
                                         }
                                     }
                                 }
-                            },
+                            }
                             None => {
                                 let fallback_model_path = model_path.clone();
                                 eprintln!("{LLM_LOCAL_PREFIX} Warmup result unavailable; falling back to lazy init");
@@ -985,9 +1008,13 @@ impl LlmQueue {
                                         n_threads: None,
                                         seed: 1234,
                                     })
-                                }).await {
+                                })
+                                .await
+                                {
                                     Ok(Ok(resolved_engine)) => {
-                                        eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
+                                        eprintln!(
+                                            "{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)"
+                                        );
                                         available.store(true, Ordering::Relaxed);
                                         engine = Some(resolved_engine);
                                     }
@@ -999,21 +1026,20 @@ impl LlmQueue {
                                     }
                                     Err(error) => {
                                         eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
-                                        init_error = Some(format!(
-                                            "Engine lazy fallback panicked: {error}"
-                                        ));
+                                        init_error =
+                                            Some(format!("Engine lazy fallback panicked: {error}"));
                                     }
                                 }
                             }
                         }
                     }
 
-                    eprintln!("{job_log_prefix} Running job '{job_name}' for {id} via local engine");
+                    eprintln!(
+                        "{job_log_prefix} Running job '{job_name}' for {id} via local engine"
+                    );
 
                     match &engine {
-                        Some(e) => {
-                            tokio::task::block_in_place(|| process_job(e, &conn, &job))
-                        }
+                        Some(e) => tokio::task::block_in_place(|| process_job(e, &conn, &job)),
                         None => {
                             emit_error(
                                 &app_handle,
@@ -1031,7 +1057,9 @@ impl LlmQueue {
                 match result {
                     Ok(output) => {
                         // Persist result to database (non-fatal if it fails)
-                        if let Err(e) = persist_result(&conn, job.target_type(), &id, job_name, &output) {
+                        if let Err(e) =
+                            persist_result(&conn, job.target_type(), &id, job_name, &output)
+                        {
                             eprintln!("{job_log_prefix} Warning: failed to persist result for {id}/{job_name}: {e}");
                         }
 
@@ -1102,7 +1130,12 @@ fn truncate_to_sentence_boundary(text: &str) -> String {
     }
 
     // If the text already ends with a sentence-ending punctuation, it's fine.
-    if trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?') || trimmed.ends_with('。') || trimmed.ends_with('！') {
+    if trimmed.ends_with('.')
+        || trimmed.ends_with('!')
+        || trimmed.ends_with('?')
+        || trimmed.ends_with('。')
+        || trimmed.ends_with('！')
+    {
         return trimmed.to_string();
     }
 
@@ -1115,7 +1148,7 @@ fn truncate_to_sentence_boundary(text: &str) -> String {
     } else {
         // No sentence boundary found at all — return as-is (better than nothing)
         trimmed.to_string()
-}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,7 +1181,8 @@ fn truncate_text_for_context(n_ctx: u32, max_tokens: i32, text: &str) -> String 
 
     // Collect chars up to budget, then try to cut at the last sentence boundary
     let truncated: String = text.chars().take(budget_chars).collect();
-    if let Some(pos) = truncated.rfind(|c: char| c == '.' || c == '\n' || c == '！' || c == '。') {
+    if let Some(pos) = truncated.rfind(|c: char| c == '.' || c == '\n' || c == '！' || c == '。')
+    {
         // Keep up to and including the sentence boundary char
         truncated[..=pos].to_string()
     } else {
@@ -1166,7 +1200,11 @@ const MAX_ASK_CONTEXT_CHARS: usize = 6000;
 /// Maximum characters per individual document snippet (~400 tokens).
 const MAX_SNIPPET_CHARS: usize = 1200;
 
-fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) -> Result<String, String> {
+fn process_job(
+    engine: &LlmEngine,
+    conn: &rusqlite::Connection,
+    job: &LlmJob,
+) -> Result<String, String> {
     let n_ctx = engine.n_ctx();
     let log_prefix = llm_job_prefix(false, job);
 
@@ -1225,7 +1263,10 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             Ok(truncate_to_sentence_boundary(&result))
         }
 
-        LlmJob::Classify { item_id, categories } => {
+        LlmJob::Classify {
+            item_id,
+            categories,
+        } => {
             let text = text_provider::get_item_text(conn, item_id)?;
             if text.is_empty() {
                 return Err("No text available for classification".to_string());
@@ -1235,7 +1276,10 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
             engine.generate(&p, max_tokens_for(job), &log_prefix)
         }
 
-        LlmJob::Ask { collection_id, question } => {
+        LlmJob::Ask {
+            collection_id,
+            question,
+        } => {
             // Gather context from FTS search over the collection
             let context = gather_collection_context(conn, collection_id, question)?;
             if context.is_empty() {
@@ -1247,7 +1291,6 @@ fn process_job(engine: &LlmEngine, conn: &rusqlite::Connection, job: &LlmJob) ->
         }
 
         // ── Asset-level variants (single page/asset, avoids context overflow) ──
-
         LlmJob::CorrectOcrAsset { asset_id } => {
             let text = text_provider::get_asset_text(conn, asset_id)?;
             if text.is_empty() {
@@ -1469,7 +1512,10 @@ fn prepare_remote_job_request(
             })
         }
 
-        LlmJob::Classify { item_id, categories } => {
+        LlmJob::Classify {
+            item_id,
+            categories,
+        } => {
             let text = text_provider::get_item_text(conn, item_id)?;
             if text.is_empty() {
                 return Err("No text available for classification".to_string());
@@ -1482,7 +1528,10 @@ fn prepare_remote_job_request(
             })
         }
 
-        LlmJob::Ask { collection_id, question } => {
+        LlmJob::Ask {
+            collection_id,
+            question,
+        } => {
             let context = gather_collection_context(conn, collection_id, question)?;
             if context.is_empty() {
                 return Err("No relevant documents found for this question".to_string());
@@ -1596,7 +1645,13 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO assets (id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["asset-1", "shared-id", "/tmp/a.pdf", "pdf", 1_710_000_000_000_i64],
+            params![
+                "asset-1",
+                "shared-id",
+                "/tmp/a.pdf",
+                "pdf",
+                1_710_000_000_000_i64
+            ],
         )
         .unwrap();
 
@@ -1630,9 +1685,21 @@ mod tests {
         };
 
         assert_eq!(rows.len(), 3);
-        assert!(rows.contains(&("shared-id".to_string(), "item".to_string(), 1_710_000_000_000_i64)));
-        assert!(rows.contains(&("asset-1".to_string(), "asset".to_string(), 1_710_000_000_123_i64)));
-        assert!(rows.contains(&("ghost-1".to_string(), "unknown".to_string(), 1_710_000_001_000_i64)));
+        assert!(rows.contains(&(
+            "shared-id".to_string(),
+            "item".to_string(),
+            1_710_000_000_000_i64
+        )));
+        assert!(rows.contains(&(
+            "asset-1".to_string(),
+            "asset".to_string(),
+            1_710_000_000_123_i64
+        )));
+        assert!(rows.contains(&(
+            "ghost-1".to_string(),
+            "unknown".to_string(),
+            1_710_000_001_000_i64
+        )));
     }
 
     #[test]

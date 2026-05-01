@@ -74,7 +74,9 @@ mod tests {
         let result = TesseractProvider::init("spa+eng", None);
         assert!(result.is_err(), "Expected init to fail without tessdata");
         assert!(
-            result.unwrap_err().contains("Failed to initialize Tesseract"),
+            result
+                .unwrap_err()
+                .contains("Failed to initialize Tesseract"),
             "Error should mention Tesseract init failure"
         );
     }

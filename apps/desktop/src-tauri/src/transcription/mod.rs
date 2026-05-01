@@ -10,7 +10,7 @@ use crate::path_utils::normalize_windows_path;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
 // ── Event payloads ──────────────────────────────────────────────────────────
 
@@ -77,20 +77,22 @@ impl TranscriptionQueue {
         app_handle: AppHandle,
     ) {
         // Resolve script path: try Resource directory first (production), then source (dev)
-        let script_path = normalize_windows_path(app_handle
-            .path()
-            .resolve("scripts/transcribe.py", BaseDirectory::Resource)
-            .unwrap_or_else(|_| {
-                // Dev fallback: look relative to the src-tauri directory
-                let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("resources/scripts/transcribe.py");
-                if dev_path.exists() {
-                    dev_path
-                } else {
-                    // Last resort
-                    std::path::PathBuf::from("scripts/transcribe.py")
-                }
-            }));
+        let script_path = normalize_windows_path(
+            app_handle
+                .path()
+                .resolve("scripts/transcribe.py", BaseDirectory::Resource)
+                .unwrap_or_else(|_| {
+                    // Dev fallback: look relative to the src-tauri directory
+                    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/scripts/transcribe.py");
+                    if dev_path.exists() {
+                        dev_path
+                    } else {
+                        // Last resort
+                        std::path::PathBuf::from("scripts/transcribe.py")
+                    }
+                }),
+        );
 
         // Resolve model cache directory inside app data (avoids HuggingFace symlink
         // issues on Windows — WinError 448 "untrusted mount point" on reparse points)
@@ -100,7 +102,10 @@ impl TranscriptionQueue {
             .expect("Failed to get app data dir for model cache")
             .join("hf_cache");
         std::fs::create_dir_all(&model_cache_dir).unwrap_or_else(|e| {
-            eprintln!("[transcription] Warning: could not create model cache dir {}: {e}", model_cache_dir.display());
+            eprintln!(
+                "[transcription] Warning: could not create model cache dir {}: {e}",
+                model_cache_dir.display()
+            );
         });
         std::thread::Builder::new()
             .name("transcription-worker".to_string())
@@ -284,13 +289,13 @@ fn process_job(
     eprintln!("[transcription] Transcribing: {}", job.asset_path);
     emit_progress(app_handle, &job.asset_id, 30, "transcribing");
 
-    let result = engine
-        .transcribe(&job.asset_path, 0)?; // duration_ms comes from Python output
+    let result = engine.transcribe(&job.asset_path, 0)?; // duration_ms comes from Python output
 
     emit_progress(app_handle, &job.asset_id, 80, "saving");
 
     // Stage 2 — persist to SQLite
-    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, "faster-whisper/base")? {
+    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, "faster-whisper/base")?
+    {
         // Asset-level NER + triples: only re-extract for the transcribed asset,
         // not the entire item. Avoids reprocessing unchanged pages.
         let nlp_queue = app_handle.state::<NlpQueue>();
@@ -316,16 +321,19 @@ fn process_job(
                 item_id
             );
         }
-        // Item-level embedding: powers Similar Items (vec_items).
-        // Without this, similar_items returns empty results for transcribed items.
-        if let Err(e) = nlp_queue.submit(NlpJob::ComputeEmbedding {
+        // Asset-level embedding keeps similarity in sync for the specific
+        // transcribed asset.
+        if let Err(e) = nlp_queue.submit(NlpJob::ComputeAssetEmbedding {
             item_id: item_id.clone(),
+            asset_id: job.asset_id.clone(),
         }) {
-            eprintln!("[nlp] Failed to auto-enqueue ComputeEmbedding after transcription save: {e}");
+            eprintln!(
+                "[nlp] Failed to auto-enqueue ComputeAssetEmbedding after transcription save: {e}"
+            );
         } else {
             eprintln!(
-                "[nlp] Auto-enqueued ComputeEmbedding after transcription save: item_id={}",
-                item_id
+                "[nlp] Auto-enqueued ComputeAssetEmbedding after transcription save: asset_id={}, item_id={}",
+                job.asset_id, item_id
             );
         }
     }

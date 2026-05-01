@@ -6,8 +6,8 @@ use std::os::windows::process::CommandExt;
 
 use serde::Deserialize;
 
-use crate::python_discovery;
 use super::types::{sanitize_entity_value, Entity, EntitySource, EntityType, NerConfig, NerEngine};
+use crate::python_discovery;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -112,7 +112,9 @@ impl SpacyNerEngine {
             Some(path) => report
                 .issues
                 .push(format!("Python interpreter not found: {}", path.display())),
-            None => report.issues.push("Python path is not configured".to_string()),
+            None => report
+                .issues
+                .push("Python path is not configured".to_string()),
         }
 
         match &report.script_path {
@@ -120,11 +122,15 @@ impl SpacyNerEngine {
             Some(path) => report
                 .issues
                 .push(format!("spaCy NER script not found: {}", path.display())),
-            None => report.issues.push("spaCy script path is not configured".to_string()),
+            None => report
+                .issues
+                .push("spaCy script path is not configured".to_string()),
         }
 
         if report.model_name.is_none() {
-            report.warnings.push("No spaCy model configured — using es_core_news_lg by default".to_string());
+            report
+                .warnings
+                .push("No spaCy model configured — using es_core_news_lg by default".to_string());
         }
 
         report
@@ -145,10 +151,16 @@ impl SpacyNerEngine {
             .unwrap_or_else(|| "es_core_news_lg".to_string());
 
         if !python_path.exists() {
-            return Err(format!("spaCy Python interpreter not found: {}", python_path.display()));
+            return Err(format!(
+                "spaCy Python interpreter not found: {}",
+                python_path.display()
+            ));
         }
         if !script_path.exists() {
-            return Err(format!("spaCy NER script not found: {}", script_path.display()));
+            return Err(format!(
+                "spaCy NER script not found: {}",
+                script_path.display()
+            ));
         }
 
         eprintln!(

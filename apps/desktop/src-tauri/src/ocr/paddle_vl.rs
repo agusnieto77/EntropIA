@@ -175,7 +175,8 @@ impl PaddleVlEngine {
 
         eprintln!(
             "[paddle_vl] Waiting for PaddleVL (timeout: {}s, progress logs every {}s)...",
-            Self::PADDLE_VL_TIMEOUT_SECS, Self::PROGRESS_LOG_INTERVAL_SECS
+            Self::PADDLE_VL_TIMEOUT_SECS,
+            Self::PROGRESS_LOG_INTERVAL_SECS
         );
 
         // Wait for the process with a timeout using polling.
@@ -224,8 +225,16 @@ impl PaddleVlEngine {
                              Stdout: {}",
                             self.config.python_path.display(),
                             self.config.script_path.display(),
-                            if stderr.len() > 500 { &stderr[..500] } else { &stderr },
-                            if stdout.len() > 500 { &stdout[..500] } else { &stdout },
+                            if stderr.len() > 500 {
+                                &stderr[..500]
+                            } else {
+                                &stderr
+                            },
+                            if stdout.len() > 500 {
+                                &stdout[..500]
+                            } else {
+                                &stdout
+                            },
                         ));
                     }
 
@@ -250,7 +259,11 @@ impl PaddleVlEngine {
                             "Failed to parse PaddleVL JSON: {e}\n\
                              Extracted: {preview}\n\
                              Stderr: {}",
-                            if stderr.len() > 500 { &stderr[..500] } else { &stderr }
+                            if stderr.len() > 500 {
+                                &stderr[..500]
+                            } else {
+                                &stderr
+                            }
                         )
                     })?;
 
@@ -348,10 +361,18 @@ fn score_python_candidate(path: &Path) -> i32 {
     let mut score = 0;
 
     // Strong signals: name contains paddle/ocr/vl/pp keywords
-    if path_str.contains("ppocrvl") { score += 100; }
-    if path_str.contains("paddle") { score += 50; }
-    if path_str.contains("pp3") || path_str.contains("ppv") { score += 30; }
-    if path_str.contains("ocr") { score += 20; }
+    if path_str.contains("ppocrvl") {
+        score += 100;
+    }
+    if path_str.contains("paddle") {
+        score += 50;
+    }
+    if path_str.contains("pp3") || path_str.contains("ppv") {
+        score += 30;
+    }
+    if path_str.contains("ocr") {
+        score += 20;
+    }
 
     // Bonus for being in an envs/ subdirectory (dedicated env)
     if path_str.contains("\\envs\\") || path_str.contains("/envs/") {
@@ -360,7 +381,8 @@ fn score_python_candidate(path: &Path) -> i32 {
 
     // Penalty for being the base Conda Python (no envs/ in path, root of conda dir)
     // These tend to have many unrelated packages and slower imports.
-    if !path_str.contains("\\envs\\") && !path_str.contains("/envs/")
+    if !path_str.contains("\\envs\\")
+        && !path_str.contains("/envs/")
         && (path_str.contains("miniconda") || path_str.contains("anaconda"))
     {
         score -= 10;
@@ -413,7 +435,10 @@ pub fn create_paddle_vl_engine(
             if path.exists() {
                 path.clone()
             } else {
-                eprintln!("[paddle_vl] Resource path does not exist: {}, trying dev fallback", path.display());
+                eprintln!(
+                    "[paddle_vl] Resource path does not exist: {}, trying dev fallback",
+                    path.display()
+                );
                 let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("resources/scripts/paddle_vl.py");
                 if dev_path.exists() {
@@ -443,7 +468,9 @@ pub fn create_paddle_vl_engine(
     let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
         Some(p) => p,
         None => {
-            eprintln!("[paddle_vl] No Python with paddleocr found — PaddleVL OCR will be unavailable.");
+            eprintln!(
+                "[paddle_vl] No Python with paddleocr found — PaddleVL OCR will be unavailable."
+            );
             return None;
         }
     };
@@ -466,7 +493,8 @@ mod tests {
 
     #[test]
     fn test_extract_sentinel_json() {
-        let output = "some noise\n===VL_JSON_BEGIN==={\"text\":\"hello\"}\n===VL_JSON_END===\nmore noise";
+        let output =
+            "some noise\n===VL_JSON_BEGIN==={\"text\":\"hello\"}\n===VL_JSON_END===\nmore noise";
         let extracted = extract_sentinel_json(output);
         assert_eq!(extracted, r#"{"text":"hello"}"#);
     }

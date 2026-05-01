@@ -4,20 +4,34 @@ import ItemView from './ItemView.svelte'
 
 const {
   nlpEventHandlers,
+  embedAssetMock,
   extractTriplesMock,
   llmExtractTriplesMock,
   llmExtractTriplesAssetMock,
-  similarItemsMock,
+  similarAssetsMock,
   extractTextMock,
   getLayoutByAssetMock,
   clipboardWriteTextMock,
 } = vi.hoisted(
   () => ({
     nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
+    embedAssetMock: vi.fn<(_: string, __: string) => Promise<void>>(),
     extractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
     llmExtractTriplesMock: vi.fn<(_: string) => Promise<void>>(),
     llmExtractTriplesAssetMock: vi.fn<(_: string) => Promise<void>>(),
-    similarItemsMock: vi.fn<(_: string, __?: number) => Promise<Array<{ itemId: string }>>>(),
+    similarAssetsMock: vi.fn<
+      (_: string, __?: number) => Promise<
+        Array<{
+          assetId: string
+          itemId: string
+          title: string
+          collectionId: string
+          assetPath: string
+          assetType: string
+          similarity: number
+        }>
+      >
+    >(),
     extractTextMock: vi.fn(),
     getLayoutByAssetMock: vi.fn(),
     clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
@@ -206,9 +220,9 @@ vi.mock('$lib/nlp', async () => {
   return {
     ...actual,
     extractTriples: extractTriplesMock,
-    similarItems: similarItemsMock,
+    similarAssets: similarAssetsMock,
     indexFts: vi.fn().mockResolvedValue(undefined),
-    embedItem: vi.fn().mockResolvedValue(undefined),
+    embedAsset: embedAssetMock,
     extractEntities: vi.fn().mockResolvedValue(undefined),
   }
 })
@@ -273,10 +287,11 @@ beforeEach(() => {
 describe('ItemView semantic triples panel', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
-    similarItemsMock.mockReset().mockResolvedValue([])
+    similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
 
@@ -351,13 +366,100 @@ describe('ItemView semantic triples panel', () => {
   })
 })
 
-describe('ItemView full-text search in Analysis panel', () => {
+describe('ItemView asset-level embedding and similarity', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
-    similarItemsMock.mockReset().mockResolvedValue([])
+    similarAssetsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  async function openAnalysis(store = createStore()) {
+    storeRef.current = store
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+    await fireEvent.click(await screen.findByRole('button', { name: /Analysis/i }))
+  }
+
+  it('calls embedAsset for the selected asset when clicking EMBED', async () => {
+    await openAnalysis(
+      createStore({
+        assetsRows: [
+          {
+            id: 'asset-embed-1',
+            itemId: 'item-1',
+            path: 'docs/acta-1.pdf',
+            type: 'pdf',
+            createdAt: 1,
+          },
+        ],
+      })
+    )
+
+    await fireEvent.click(await screen.findByRole('button', { name: /EMBED/i }))
+
+    expect(embedAssetMock).toHaveBeenCalledWith('item-1', 'asset-embed-1')
+  })
+
+  it('disables EMBED and shows a graceful hint when no asset is selected', async () => {
+    storeRef.current = createStore({ assetsRows: [] })
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    expect(screen.queryByRole('button', { name: /EMBED/i })).not.toBeInTheDocument()
+    expect(embedAssetMock).not.toHaveBeenCalled()
+  })
+
+  it('loads and renders similar assets with asset-level context', async () => {
+    similarAssetsMock.mockResolvedValue([
+      {
+        assetId: 'asset-sim-2',
+        itemId: 'item-2',
+        title: 'Carta manuscrita',
+        collectionId: 'col-9',
+        assetPath: 'archivo/carta-manuscrita.jpg',
+        assetType: 'image',
+        similarity: 0.913,
+      },
+    ])
+
+    await openAnalysis(
+      createStore({
+        assetsRows: [
+          {
+            id: 'asset-source-1',
+            itemId: 'item-1',
+            path: 'docs/acta-1.pdf',
+            type: 'pdf',
+            createdAt: 1,
+          },
+        ],
+      })
+    )
+
+    await waitFor(() => {
+      expect(similarAssetsMock).toHaveBeenCalledWith('asset-source-1', 5)
+    })
+
+    expect(await screen.findByText('Similar Assets')).toBeInTheDocument()
+    expect(await screen.findByTestId('similar-asset-asset-sim-2')).toBeInTheDocument()
+    expect(screen.getByText('Carta manuscrita')).toBeInTheDocument()
+    expect(screen.getByText('IMAGE · carta-manuscrita.jpg')).toBeInTheDocument()
+    expect(screen.getByText('asset asset-sim-2 · item item-2 · collection col-9')).toBeInTheDocument()
+    expect(screen.getByText('archivo/carta-manuscrita.jpg')).toBeInTheDocument()
+    expect(screen.getByText('91.3%')).toBeInTheDocument()
+  })
+})
+
+describe('ItemView full-text search in Analysis panel', () => {
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
+    similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
 
@@ -516,8 +618,9 @@ describe('ItemView note editing', () => {
 
   beforeEach(() => {
     nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
-    similarItemsMock.mockReset().mockResolvedValue([])
+    similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
 
@@ -661,10 +764,11 @@ describe('ItemView image annotations', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
-    similarItemsMock.mockReset().mockResolvedValue([])
+    similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
     getLayoutByAssetMock.mockReset().mockResolvedValue(null)
   })
@@ -1236,10 +1340,11 @@ describe('ItemView image annotations', () => {
 describe('ItemView entity editing UX', () => {
   beforeEach(() => {
     nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
     llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
-    similarItemsMock.mockReset().mockResolvedValue([])
+    similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
   })
 

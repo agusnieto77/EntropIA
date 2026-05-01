@@ -46,8 +46,8 @@ fn overlaps(a: &Entity, b: &Entity) -> bool {
 
 fn exactish_duplicate(a: &Entity, b: &Entity) -> bool {
     let same_value = normalized_value(&a.value) == normalized_value(&b.value);
-    let close_offsets = a.start_offset.abs_diff(b.start_offset) <= 2
-        && a.end_offset.abs_diff(b.end_offset) <= 2;
+    let close_offsets =
+        a.start_offset.abs_diff(b.start_offset) <= 2 && a.end_offset.abs_diff(b.end_offset) <= 2;
     same_value && (close_offsets || a.entity_type == b.entity_type)
 }
 
@@ -108,14 +108,23 @@ fn is_rule_based_date(entity: &Entity) -> bool {
 fn is_rule_based_institution_like(winner: &Entity, loser: &Entity) -> bool {
     winner.source == EntitySource::RuleBased
         && winner.entity_type == EntityType::Institution
-        && matches!(loser.entity_type, EntityType::Institution | EntityType::Organization)
+        && matches!(
+            loser.entity_type,
+            EntityType::Institution | EntityType::Organization
+        )
 }
 
 fn prefer_onnx_core_entity(existing: &Entity, candidate: &Entity) -> bool {
     candidate.source == EntitySource::Onnx
         && existing.source != EntitySource::Onnx
         && existing.source != EntitySource::Spacy
-        && matches!(candidate.entity_type, EntityType::Person | EntityType::Place | EntityType::Organization | EntityType::Institution)
+        && matches!(
+            candidate.entity_type,
+            EntityType::Person
+                | EntityType::Place
+                | EntityType::Organization
+                | EntityType::Institution
+        )
         && same_core_entity_family(&existing.entity_type, &candidate.entity_type)
         && candidate.confidence >= existing.confidence + CORE_BETO_ONNX_BONUS_THRESHOLD
 }
@@ -190,8 +199,22 @@ mod tests {
     #[test]
     fn rule_based_date_beats_onnx_overlap() {
         let merged = merge_entities(
-            vec![entity(EntityType::Date, "25/05/1810", 10, 20, 1.0, EntitySource::RuleBased)],
-            vec![entity(EntityType::Date, "25/05/1810", 10, 20, 0.92, EntitySource::Onnx)],
+            vec![entity(
+                EntityType::Date,
+                "25/05/1810",
+                10,
+                20,
+                1.0,
+                EntitySource::RuleBased,
+            )],
+            vec![entity(
+                EntityType::Date,
+                "25/05/1810",
+                10,
+                20,
+                0.92,
+                EntitySource::Onnx,
+            )],
         );
 
         assert_eq!(merged.len(), 1);

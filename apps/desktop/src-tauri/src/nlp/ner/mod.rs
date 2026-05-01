@@ -100,19 +100,16 @@ impl NerRegistry {
                 Some(onnx) => onnx.extract(text),
                 None => self.rule_based.extract(text),
             },
-            NerEngineKind::Hybrid => HybridNerEngine::new(
-                &self.rule_based,
-                self.onnx.as_ref(),
-                self.spacy.as_ref(),
-            )
-            .extract(text),
+            NerEngineKind::Hybrid => {
+                HybridNerEngine::new(&self.rule_based, self.onnx.as_ref(), self.spacy.as_ref())
+                    .extract(text)
+            }
             NerEngineKind::Spacy => match self.spacy.as_ref() {
                 Some(spacy) => spacy.extract(text),
                 None => self.rule_based.extract(text),
             },
         }
     }
-
 }
 
 #[allow(dead_code)]
@@ -222,10 +219,8 @@ pub fn apply_llm_review(
         serde_json::from_str::<Vec<ReviewedEntity>>(slice)
             .map_err(|e| format!("Failed to parse LLM entity review array: {e}"))?
     } else {
-        vec![
-            serde_json::from_str::<ReviewedEntity>(slice)
-                .map_err(|e| format!("Failed to parse LLM entity review object: {e}"))?,
-        ]
+        vec![serde_json::from_str::<ReviewedEntity>(slice)
+            .map_err(|e| format!("Failed to parse LLM entity review object: {e}"))?]
     };
 
     let mut deduped_keys = std::collections::HashSet::new();
@@ -308,7 +303,10 @@ pub fn extract_and_store(
     let batch = extract_candidates_for_item(conn, item_id, registry)?;
 
     if batch.text.trim().is_empty() {
-        eprintln!("[nlp/ner] Extract skipped: item_id={}, no text available", item_id);
+        eprintln!(
+            "[nlp/ner] Extract skipped: item_id={}, no text available",
+            item_id
+        );
     }
 
     persist_entities_for_item(conn, item_id, &batch.entities)
@@ -329,7 +327,10 @@ pub fn extract_and_store_for_asset(
     let batch = extract_candidates_for_asset(conn, item_id, asset_id, registry)?;
 
     if batch.text.trim().is_empty() {
-        eprintln!("[nlp/ner] Asset-level extract skipped: asset_id={}, no text available", asset_id);
+        eprintln!(
+            "[nlp/ner] Asset-level extract skipped: asset_id={}, no text available",
+            asset_id
+        );
     }
 
     persist_entities_for_asset(conn, item_id, asset_id, &batch.entities)
@@ -344,18 +345,20 @@ fn collect_candidate_entities(
         return Ok(Vec::new());
     }
 
-    registry
-        .extract(text)
-        .map(|entities| {
-            entities
-                .into_iter()
-                .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
-                .filter(|entity| !is_suppressed_by_protected(entity, protected_entities))
-                .collect::<Vec<_>>()
-        })
+    registry.extract(text).map(|entities| {
+        entities
+            .into_iter()
+            .filter(|entity| entity.confidence > MIN_ENTITY_CONFIDENCE)
+            .filter(|entity| !is_suppressed_by_protected(entity, protected_entities))
+            .collect::<Vec<_>>()
+    })
 }
 
-fn insert_entities_for_item(conn: &Connection, item_id: &str, entities: &[Entity]) -> Result<(), String> {
+fn insert_entities_for_item(
+    conn: &Connection,
+    item_id: &str,
+    entities: &[Entity],
+) -> Result<(), String> {
     for entity in entities {
         conn.execute(
             r#"
@@ -430,7 +433,11 @@ fn delete_automatic_entities(conn: &Connection, item_id: &str) -> Result<(), Str
 
 /// Delete automatic entities for a specific asset, preserving manual entities
 /// and entities that belong to other assets or the item level.
-fn delete_automatic_entities_for_asset(conn: &Connection, item_id: &str, asset_id: &str) -> Result<(), String> {
+fn delete_automatic_entities_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+) -> Result<(), String> {
     conn.execute(
         "DELETE FROM entities WHERE item_id = ?1 AND asset_id = ?2 AND COALESCE(source, '') NOT IN ('manual', 'manual_deleted')",
         params![item_id, asset_id],
@@ -746,7 +753,9 @@ mod tests {
             .expect("hybrid registry should fall back to rule-based NER");
 
         assert!(
-            entities.iter().any(|entity| entity.entity_type == EntityType::Person),
+            entities
+                .iter()
+                .any(|entity| entity.entity_type == EntityType::Person),
             "fallback should still detect person entities"
         );
     }
@@ -906,7 +915,10 @@ mod tests {
             )
             .expect("manual entity count should be queryable");
 
-        assert_eq!(count, 1, "manual entity should survive and suppress regenerated duplicate");
+        assert_eq!(
+            count, 1,
+            "manual entity should survive and suppress regenerated duplicate"
+        );
     }
 
     #[test]
@@ -946,7 +958,10 @@ mod tests {
             )
             .expect("suppressed entity count should be queryable");
 
-        assert_eq!(count, 0, "manual_deleted tombstone should block regenerated entity");
+        assert_eq!(
+            count, 0,
+            "manual_deleted tombstone should block regenerated entity"
+        );
     }
 
     #[test]

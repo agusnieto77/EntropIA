@@ -7,9 +7,9 @@ pub mod tesseract;
 pub mod paddle;
 
 mod engine;
-mod pdf;
-pub mod paddle_vl;
 pub mod layout_onnx;
+pub mod paddle_vl;
+mod pdf;
 pub mod reading_order;
 
 // Dev-only visualization helpers for debugging layout detection.
@@ -17,13 +17,13 @@ pub mod reading_order;
 #[cfg(debug_assertions)]
 mod debug_viz;
 
-use provider::{LayoutCategory, OcrProvider};
-use pdf::{extract_pdf_text, is_quality_text, pdf_page_count, init_pdfium_path};
-use paddle_vl::{PaddleVlEngine, PaddleVlOutput, create_paddle_vl_engine};
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+use paddle_vl::{create_paddle_vl_engine, PaddleVlEngine, PaddleVlOutput};
+use pdf::{extract_pdf_text, init_pdfium_path, is_quality_text, pdf_page_count};
+use provider::{LayoutCategory, OcrProvider};
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 // ── Event payloads ──────────────────────────────────────────────────────────
@@ -103,25 +103,27 @@ impl LayoutPersistencePayload {
         self.image_width = self.image_width.max(output.image_width);
         self.image_height = self.image_height.max(output.image_height);
 
-        self.regions.extend(output.regions.iter().map(|region| PersistedLayoutRegion {
-            page,
-            image_width: output.image_width,
-            image_height: output.image_height,
-            category: region.category.clone(),
-            bbox: region.bbox.clone(),
-            confidence: region.confidence,
-        }));
+        self.regions
+            .extend(output.regions.iter().map(|region| PersistedLayoutRegion {
+                page,
+                image_width: output.image_width,
+                image_height: output.image_height,
+                category: region.category.clone(),
+                bbox: region.bbox.clone(),
+                confidence: region.confidence,
+            }));
 
-        self.blocks.extend(output.blocks.iter().map(|block| PersistedLayoutBlock {
-            page,
-            image_width: output.image_width,
-            image_height: output.image_height,
-            label: block.label.clone(),
-            content: block.content.clone(),
-            bbox: block.bbox.clone(),
-            order: block.order,
-            group_id: block.group_id,
-        }));
+        self.blocks
+            .extend(output.blocks.iter().map(|block| PersistedLayoutBlock {
+                page,
+                image_width: output.image_width,
+                image_height: output.image_height,
+                label: block.label.clone(),
+                content: block.content.clone(),
+                bbox: block.bbox.clone(),
+                order: block.order,
+                group_id: block.group_id,
+            }));
     }
 }
 
@@ -206,7 +208,7 @@ pub struct OcrJob {
 pub enum OcrMode {
     #[default]
     Light, // Plain OCR (PaddleOCR/Tesseract)
-    High,  // PaddleOCR-VL only
+    High, // PaddleOCR-VL only
 }
 
 /// Handle for submitting jobs to the background OCR worker.
@@ -390,18 +392,19 @@ impl OcrQueue {
                                         item_id
                                     );
                                 }
-                                // Item-level embedding: powers Similar Items (vec_items).
-                                // Without this, similar_items returns empty results.
-                                if let Err(e) = nlp_queue.submit(NlpJob::ComputeEmbedding {
+                                // Asset-level embedding keeps similarity in sync for the
+                                // specific page/audio chunk that changed.
+                                if let Err(e) = nlp_queue.submit(NlpJob::ComputeAssetEmbedding {
                                     item_id: item_id.clone(),
+                                    asset_id: asset_id.clone(),
                                 }) {
                                     eprintln!(
-                                        "[nlp] Failed to auto-enqueue ComputeEmbedding after OCR save: {e}"
+                                        "[nlp] Failed to auto-enqueue ComputeAssetEmbedding after OCR save: {e}"
                                     );
                                 } else {
                                     eprintln!(
-                                        "[nlp] Auto-enqueued ComputeEmbedding after OCR save: item_id={}",
-                                        item_id
+                                        "[nlp] Auto-enqueued ComputeAssetEmbedding after OCR save: asset_id={}, item_id={}",
+                                        asset_id, item_id
                                     );
                                 }
                             }
@@ -583,8 +586,11 @@ fn save_layout(
 }
 
 fn delete_layout(conn: &rusqlite::Connection, asset_id: &str) -> Result<(), String> {
-    conn.execute("DELETE FROM layouts WHERE asset_id = ?1", rusqlite::params![asset_id])
-        .map_err(|e| format!("Failed to delete stale layout: {e}"))?;
+    conn.execute(
+        "DELETE FROM layouts WHERE asset_id = ?1",
+        rusqlite::params![asset_id],
+    )
+    .map_err(|e| format!("Failed to delete stale layout: {e}"))?;
     Ok(())
 }
 
@@ -682,7 +688,9 @@ fn maybe_downscale_for_paddlevl(bytes: &[u8]) -> Vec<u8> {
     let img = match image::load_from_memory(bytes) {
         Ok(img) => img,
         Err(e) => {
-            eprintln!("[OCRH] Could not decode image for downscale check: {e}. Using original bytes.");
+            eprintln!(
+                "[OCRH] Could not decode image for downscale check: {e}. Using original bytes."
+            );
             return bytes.to_vec();
         }
     };
@@ -697,7 +705,9 @@ fn maybe_downscale_for_paddlevl(bytes: &[u8]) -> Vec<u8> {
     if !exceeds_dim && !exceeds_pixels {
         eprintln!(
             "[OCRH] Image size {}x{} ({:.2} MP) OK, no downscale needed",
-            w, h, total_pixels as f64 / 1_000_000.0
+            w,
+            h,
+            total_pixels as f64 / 1_000_000.0
         );
         return bytes.to_vec();
     }
@@ -711,8 +721,12 @@ fn maybe_downscale_for_paddlevl(bytes: &[u8]) -> Vec<u8> {
 
     eprintln!(
         "[OCRH] Downscaling {}x{} ({:.2} MP) → {}x{} ({:.2} MP) for PaddleVL",
-        w, h, total_pixels as f64 / 1_000_000.0,
-        new_w, new_h, (new_w as u64 * new_h as u64) as f64 / 1_000_000.0
+        w,
+        h,
+        total_pixels as f64 / 1_000_000.0,
+        new_w,
+        new_h,
+        (new_w as u64 * new_h as u64) as f64 / 1_000_000.0
     );
 
     // Triangle filter = good balance of quality vs speed for document images
@@ -757,7 +771,9 @@ fn should_bypass_layout(
         if regions.is_empty() {
             eprintln!("[OCRL] Bypassing layout: 0 regions detected");
         } else {
-            eprintln!("[OCRL] Bypassing layout: only 1 region detected (insufficient segmentation)");
+            eprintln!(
+                "[OCRL] Bypassing layout: only 1 region detected (insufficient segmentation)"
+            );
         }
         return true;
     }
@@ -773,7 +789,8 @@ fn should_bypass_layout(
         if ratio > 0.60 {
             eprintln!(
                 "[OCRL] Bypassing layout: region {:?} covers {:.1}% of the image (>60% threshold)",
-                region.label, ratio * 100.0
+                region.label,
+                ratio * 100.0
             );
             return true;
         }
@@ -845,8 +862,28 @@ async fn process_job(
         .map_err(|e| format!("Failed to read {}: {e}", job.asset_path))?;
 
     match job.asset_type.as_str() {
-        "pdf" => process_pdf(provider, &file_bytes, &asset_id, app_handle, paddle_vl_engine, &job.mode).await,
-        _ => process_image(provider, &file_bytes, &asset_id, app_handle, paddle_vl_engine, &job.mode).await,
+        "pdf" => {
+            process_pdf(
+                provider,
+                &file_bytes,
+                &asset_id,
+                app_handle,
+                paddle_vl_engine,
+                &job.mode,
+            )
+            .await
+        }
+        _ => {
+            process_image(
+                provider,
+                &file_bytes,
+                &asset_id,
+                app_handle,
+                paddle_vl_engine,
+                &job.mode,
+            )
+            .await
+        }
     }
 }
 
@@ -890,16 +927,17 @@ async fn process_pdf(
         }
         _ => {
             // Native text failed quality check — render ALL pages and OCR them.
-            eprintln!("[pdf] Native text failed quality check, falling back to multi-page PDF→image→OCR");
+            eprintln!(
+                "[pdf] Native text failed quality check, falling back to multi-page PDF→image→OCR"
+            );
 
             // Get page count in a blocking task (pdfium interaction)
             let pdf_bytes_for_count = bytes.to_vec();
-            let page_count = tokio::task::spawn_blocking(move || {
-                pdf_page_count(&pdf_bytes_for_count)
-            })
-            .await
-            .map_err(|e| format!("PDF page count task panicked: {e}"))?
-            .map_err(|e| format!("Failed to get PDF page count: {e}"))?;
+            let page_count =
+                tokio::task::spawn_blocking(move || pdf_page_count(&pdf_bytes_for_count))
+                    .await
+                    .map_err(|e| format!("PDF page count task panicked: {e}"))?
+                    .map_err(|e| format!("Failed to get PDF page count: {e}"))?;
 
             eprintln!("[pdf] Processing {page_count} page(s) via OCR fallback");
 
@@ -911,7 +949,12 @@ async fn process_pdf(
             for page_idx in 0..page_count {
                 // Progress: 60% base + (page_idx / page_count) * 35% range
                 let pct = 60 + ((page_idx as u8 * 35) / page_count.max(1) as u8);
-                emit_progress(app_handle, asset_id, pct.min(95), &format!("ocr_page_{}", page_idx + 1));
+                emit_progress(
+                    app_handle,
+                    asset_id,
+                    pct.min(95),
+                    &format!("ocr_page_{}", page_idx + 1),
+                );
 
                 // Render this page
                 let pdf_bytes_for_render = bytes.to_vec();
@@ -1010,12 +1053,14 @@ async fn process_pdf(
                 let (output, page_layout) = output;
 
                 if let Some(vl_output) = page_layout {
-                    let page_num = u32::try_from(page_idx + 1)
-                        .map_err(|_| format!("PDF page index {} does not fit into u32", page_idx + 1))?;
+                    let page_num = u32::try_from(page_idx + 1).map_err(|_| {
+                        format!("PDF page index {} does not fit into u32", page_idx + 1)
+                    })?;
                     if let Some(layout) = layout_payload.as_mut() {
                         layout.push_page(page_num, &vl_output);
                     } else {
-                        layout_payload = Some(LayoutPersistencePayload::from_page(page_num, &vl_output));
+                        layout_payload =
+                            Some(LayoutPersistencePayload::from_page(page_num, &vl_output));
                     }
                 }
 
@@ -1066,7 +1111,9 @@ async fn process_image(
 ) -> Result<ProcessedOcrOutput, String> {
     match mode {
         OcrMode::Light => process_image_light(provider, bytes, asset_id, app_handle).await,
-        OcrMode::High => process_image_high(provider, bytes, asset_id, app_handle, paddle_vl_engine).await,
+        OcrMode::High => {
+            process_image_high(provider, bytes, asset_id, app_handle, paddle_vl_engine).await
+        }
     }
 }
 
@@ -1086,12 +1133,10 @@ async fn process_image_light(
     let provider_clone = Arc::clone(provider);
     let bytes_owned = bytes.to_vec();
 
-    let mut output = tokio::task::spawn_blocking(move || {
-        provider_clone.recognize(&bytes_owned)
-    })
-    .await
-    .map_err(|e| format!("OCR task panicked: {e}"))?
-    .map_err(|e| format!("OCR inference failed: {e}"))?;
+    let mut output = tokio::task::spawn_blocking(move || provider_clone.recognize(&bytes_owned))
+        .await
+        .map_err(|e| format!("OCR task panicked: {e}"))?
+        .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     // Reorder regions by reading order (columns left-to-right, top-to-bottom)
     // This matches the algorithm in orden_lectura.py
@@ -1101,7 +1146,9 @@ async fn process_image_light(
             let (img_w, img_h) = (img.width(), img.height());
             output.regions = reading_order::reorder_ocr_regions(&output.regions, img_w, img_h);
             // Rebuild text from reordered regions
-            output.text = output.regions.iter()
+            output.text = output
+                .regions
+                .iter()
                 .map(|r| r.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -1160,10 +1207,8 @@ async fn process_image_high(
             let vl_bytes = maybe_downscale_for_paddlevl(&bytes_owned);
 
             // Write bytes to a temp file for PaddleVL subprocess
-            let temp_path = std::env::temp_dir().join(format!(
-                "entropia_paddlevl_{}.png",
-                uuid::Uuid::new_v4()
-            ));
+            let temp_path = std::env::temp_dir()
+                .join(format!("entropia_paddlevl_{}.png", uuid::Uuid::new_v4()));
 
             if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
                 eprintln!(
@@ -1203,7 +1248,10 @@ async fn process_image_high(
                             original_height,
                         );
                     }
-                    eprintln!("[OCRH] PaddleVL detected {} blocks for {asset_id_owned}", vl_output.blocks.len());
+                    eprintln!(
+                        "[OCRH] PaddleVL detected {} blocks for {asset_id_owned}",
+                        vl_output.blocks.len()
+                    );
                     Ok(ProcessedOcrOutput {
                         ocr: ocr_output_from_paddlevl(&vl_output),
                         layout: Some(LayoutPersistencePayload::from_page(1, &vl_output)),
@@ -1232,12 +1280,10 @@ async fn process_image_high(
     let provider_clone = Arc::clone(provider);
     let bytes_owned = bytes.to_vec();
 
-    let output = tokio::task::spawn_blocking(move || {
-        provider_clone.recognize(&bytes_owned)
-    })
-    .await
-    .map_err(|e| format!("OCR task panicked: {e}"))?
-    .map_err(|e| format!("OCR inference failed: {e}"))?;
+    let output = tokio::task::spawn_blocking(move || provider_clone.recognize(&bytes_owned))
+        .await
+        .map_err(|e| format!("OCR task panicked: {e}"))?
+        .map_err(|e| format!("OCR inference failed: {e}"))?;
 
     emit_progress(app_handle, asset_id, 100, "done");
     Ok(ProcessedOcrOutput {
@@ -1261,8 +1307,8 @@ fn emit_progress(app_handle: &AppHandle, asset_id: &str, pct: u8, stage: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ocr::provider::{BoundingBox, LayoutCategory};
     use crate::ocr::paddle_vl::{PaddleVlBbox, PaddleVlBlock, PaddleVlOutput, PaddleVlRegion};
+    use crate::ocr::provider::{BoundingBox, LayoutCategory};
 
     #[test]
     fn test_format_region_text_title() {
@@ -1339,29 +1385,51 @@ mod tests {
     #[test]
     fn test_crop_region_basic() {
         // Create a 200x200 white image
-        let img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(200, 200, image::Rgba([255, 255, 255, 255]))
-        );
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            200,
+            200,
+            image::Rgba([255, 255, 255, 255]),
+        ));
 
-        let bbox = BoundingBox { x: 50, y: 50, width: 100, height: 100 };
+        let bbox = BoundingBox {
+            x: 50,
+            y: 50,
+            width: 100,
+            height: 100,
+        };
         let cropped = crop_region(&img, &bbox);
 
         assert!(cropped.is_some(), "Crop should succeed for valid bbox");
         let cropped = cropped.unwrap();
         // Should be larger than 100x100 due to 15% padding (now 30px on each side)
         // Total expected: 100 + 30 + 30 = 160 (or clamped to image bounds)
-        assert!(cropped.width() >= 100, "Cropped width should be at least 100, got {}", cropped.width());
-        assert!(cropped.height() >= 100, "Cropped height should be at least 100, got {}", cropped.height());
+        assert!(
+            cropped.width() >= 100,
+            "Cropped width should be at least 100, got {}",
+            cropped.width()
+        );
+        assert!(
+            cropped.height() >= 100,
+            "Cropped height should be at least 100, got {}",
+            cropped.height()
+        );
     }
 
     #[test]
     fn test_crop_region_at_edge() {
-        let img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(200, 200, image::Rgba([255, 255, 255, 255]))
-        );
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            200,
+            200,
+            image::Rgba([255, 255, 255, 255]),
+        ));
 
         // Region near the top-left corner — padding should be clamped
-        let bbox = BoundingBox { x: 0, y: 0, width: 50, height: 50 };
+        let bbox = BoundingBox {
+            x: 0,
+            y: 0,
+            width: 50,
+            height: 50,
+        };
         let cropped = crop_region(&img, &bbox);
 
         assert!(cropped.is_some(), "Crop at edge should succeed");
@@ -1371,33 +1439,52 @@ mod tests {
     fn test_crop_region_too_small() {
         // A region that after 5px margin on each side is still < 10px
         // should be skipped — too small for useful OCR.
-        let _tiny_img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(15, 15, image::Rgba([255, 255, 255, 255]))
-        );
+        let _tiny_img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            15,
+            15,
+            image::Rgba([255, 255, 255, 255]),
+        ));
         // 3x3 region + 5px margin each side in a 15x15 image:
         //   x1 = max(5-5, 0) = 0, x2 = min(5+3+5, 15) = 13 → width = 13
         // That's >= 10, so we need an even smaller image:
-        let micro_img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 255, 255, 255]))
-        );
+        let micro_img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            8,
+            image::Rgba([255, 255, 255, 255]),
+        ));
         // 2x2 region + 5px margin clamped to 8x8 image:
         //   x1 = max(3-5, 0) = 0, x2 = min(3+2+5, 8) = 8 → width = 8
         //   8 < 10 → skipped
-        let bbox = BoundingBox { x: 3, y: 3, width: 2, height: 2 };
+        let bbox = BoundingBox {
+            x: 3,
+            y: 3,
+            width: 2,
+            height: 2,
+        };
         let cropped = crop_region(&micro_img, &bbox);
 
-        assert!(cropped.is_none(), "Region that crops to <10px after margin should be skipped");
+        assert!(
+            cropped.is_none(),
+            "Region that crops to <10px after margin should be skipped"
+        );
     }
 
     #[test]
     fn test_crop_region_margin_is_5px() {
         // Verify the margin is exactly 5px on each side.
-        let img = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_pixel(500, 500, image::Rgba([255, 255, 255, 255]))
-        );
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            500,
+            500,
+            image::Rgba([255, 255, 255, 255]),
+        ));
 
         // 50x50 region at center — 5px margin each side → 60x60 crop
-        let bbox = BoundingBox { x: 200, y: 200, width: 50, height: 50 };
+        let bbox = BoundingBox {
+            x: 200,
+            y: 200,
+            width: 50,
+            height: 50,
+        };
         let cropped = crop_region(&img, &bbox).expect("crop should succeed");
 
         assert_eq!(cropped.width(), 60, "50px + 5px + 5px = 60px width");
@@ -1547,24 +1634,30 @@ mod tests {
         save_layout(&conn, "asset-1", &payload).expect("second upsert");
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM layouts WHERE asset_id = ?1",
+                ["asset-1"],
+                |row| row.get(0),
+            )
             .expect("count row");
         assert_eq!(count, 1, "layout upsert should keep one row per asset");
 
         let blocks_json: String = conn
-            .query_row("SELECT blocks FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT blocks FROM layouts WHERE asset_id = ?1",
+                ["asset-1"],
+                |row| row.get(0),
+            )
             .expect("blocks json");
         assert!(blocks_json.contains("texto"));
 
         delete_layout(&conn, "asset-1").expect("delete layout");
         let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM layouts WHERE asset_id = ?1", ["asset-1"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM layouts WHERE asset_id = ?1",
+                ["asset-1"],
+                |row| row.get(0),
+            )
             .expect("remaining row count");
         assert_eq!(remaining, 0);
     }

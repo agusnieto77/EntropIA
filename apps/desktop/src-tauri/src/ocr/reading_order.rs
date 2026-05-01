@@ -52,11 +52,15 @@ pub fn compute_reading_order(regions: &mut [LayoutRegion], _image_width: u32) ->
         }
         result_columns.push(col_indices);
     }
-    ReadingOrder { columns: result_columns }
+    ReadingOrder {
+        columns: result_columns,
+    }
 }
 
 fn fill_vertical_gaps(regions: &mut [LayoutRegion]) {
-    if regions.len() < 2 { return; }
+    if regions.len() < 2 {
+        return;
+    }
     let mut sorted_indices: Vec<usize> = (0..regions.len()).collect();
     sorted_indices.sort_by_key(|&i| regions[i].bbox.y);
     for window in sorted_indices.windows(2) {
@@ -71,13 +75,19 @@ fn fill_vertical_gaps(regions: &mut [LayoutRegion]) {
         let overlap_left = a_left.max(b_left);
         let overlap_right = a_right.min(b_right);
         let overlap = overlap_right - overlap_left;
-        if overlap <= 0 { continue; }
+        if overlap <= 0 {
+            continue;
+        }
         let narrower = (above.bbox.width.min(below.bbox.width)) as f32;
-        if narrower <= 0.0 || (overlap as f32 / narrower) < GAP_ALIGNMENT_RATIO { continue; }
+        if narrower <= 0.0 || (overlap as f32 / narrower) < GAP_ALIGNMENT_RATIO {
+            continue;
+        }
         let above_bottom = above.bbox.y + above.bbox.height as i32;
         let below_top = below.bbox.y;
         let gap = below_top - above_bottom;
-        if gap < MIN_GAP_FOR_FILLING { continue; }
+        if gap < MIN_GAP_FOR_FILLING {
+            continue;
+        }
         let gap_center_x = (overlap_left + overlap_right) / 2;
         let above_center_x = above.bbox.x + (above.bbox.width as i32) / 2;
         let below_center_x = below.bbox.x + (below.bbox.width as i32) / 2;
@@ -97,24 +107,39 @@ const FULL_WIDTH_RATIO: f32 = 0.6;
 
 fn group_columns(regions: &[LayoutRegion]) -> Vec<ColumnGroup> {
     let n = regions.len();
-    if n == 0 { return vec![]; }
-    let centers: Vec<i32> = regions.iter().map(|r| r.bbox.x + (r.bbox.width as i32) / 2).collect();
+    if n == 0 {
+        return vec![];
+    }
+    let centers: Vec<i32> = regions
+        .iter()
+        .map(|r| r.bbox.x + (r.bbox.width as i32) / 2)
+        .collect();
     let min_x = regions.iter().map(|r| r.bbox.x).min().unwrap_or(0);
-    let max_x = regions.iter().map(|r| r.bbox.x + r.bbox.width as i32).max().unwrap_or(0);
+    let max_x = regions
+        .iter()
+        .map(|r| r.bbox.x + r.bbox.width as i32)
+        .max()
+        .unwrap_or(0);
     let total_span = (max_x - min_x).max(1) as f32;
     let mut parent: Vec<usize> = (0..n).collect();
     fn find(parent: &mut [usize], i: usize) -> usize {
-        if parent[i] != i { parent[i] = find(parent, parent[i]); }
+        if parent[i] != i {
+            parent[i] = find(parent, parent[i]);
+        }
         parent[i]
     }
     fn union(parent: &mut [usize], a: usize, b: usize) {
         let ra = find(parent, a);
         let rb = find(parent, b);
-        if ra != rb { parent[ra] = rb; }
+        if ra != rb {
+            parent[ra] = rb;
+        }
     }
     for i in 0..n {
         for j in (i + 1)..n {
-            if (centers[i] - centers[j]).abs() <= COLUMN_CENTER_THRESHOLD { union(&mut parent, i, j); }
+            if (centers[i] - centers[j]).abs() <= COLUMN_CENTER_THRESHOLD {
+                union(&mut parent, i, j);
+            }
         }
     }
     let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
@@ -141,22 +166,34 @@ fn group_columns(regions: &[LayoutRegion]) -> Vec<ColumnGroup> {
             let mut best_col = 0;
             let mut best_center = i32::MAX;
             for (col_idx, group) in merged_groups.iter().enumerate() {
-                let avg_center = group.iter().map(|&i| centers[i]).sum::<i32>() / group.len() as i32;
+                let avg_center =
+                    group.iter().map(|&i| centers[i]).sum::<i32>() / group.len() as i32;
                 let dist = (s_center - avg_center).abs();
                 if dist < best_dist || (dist == best_dist && avg_center < best_center) {
-                    best_dist = dist; best_col = col_idx; best_center = avg_center;
+                    best_dist = dist;
+                    best_col = col_idx;
+                    best_center = avg_center;
                 }
             }
             merged_groups[best_col].push(singleton_idx);
         }
     } else {
-        for idx in singletons { merged_groups.push(vec![idx]); }
+        for idx in singletons {
+            merged_groups.push(vec![idx]);
+        }
     }
-    let mut columns: Vec<ColumnGroup> = merged_groups.into_iter().map(|mut indices| {
-        indices.sort_by_key(|&i| regions[i].bbox.y);
-        let avg_center = indices.iter().map(|&i| centers[i]).sum::<i32>() / indices.len() as i32;
-        ColumnGroup { avg_center, indices }
-    }).collect();
+    let mut columns: Vec<ColumnGroup> = merged_groups
+        .into_iter()
+        .map(|mut indices| {
+            indices.sort_by_key(|&i| regions[i].bbox.y);
+            let avg_center =
+                indices.iter().map(|&i| centers[i]).sum::<i32>() / indices.len() as i32;
+            ColumnGroup {
+                avg_center,
+                indices,
+            }
+        })
+        .collect();
     columns.sort_by_key(|c| c.avg_center);
     columns
 }
@@ -233,22 +270,25 @@ pub fn reorder_ocr_regions(
     let img_h = img_height as f32;
 
     // Build OcrItem structs from regions with bboxes
-    let items: Vec<OcrItem> = with_bbox.iter().map(|(idx, r)| {
-        let b = r.bbox.as_ref().unwrap();
-        let x1 = b.x as f32;
-        let y1 = b.y as f32;
-        let w = b.width as f32;
-        let h = b.height as f32;
-        OcrItem {
-            idx: *idx,
-            x1,
-            x2: x1 + w,
-            y1,
-            y2: y1 + h,
-            w: w.max(1.0),
-            h: h.max(1.0),
-        }
-    }).collect();
+    let items: Vec<OcrItem> = with_bbox
+        .iter()
+        .map(|(idx, r)| {
+            let b = r.bbox.as_ref().unwrap();
+            let x1 = b.x as f32;
+            let y1 = b.y as f32;
+            let w = b.width as f32;
+            let h = b.height as f32;
+            OcrItem {
+                idx: *idx,
+                x1,
+                x2: x1 + w,
+                y1,
+                y2: y1 + h,
+                w: w.max(1.0),
+                h: h.max(1.0),
+            }
+        })
+        .collect();
 
     // ── Step 1: Separate top-wide items (headers) ──────────────────────────
     let mut top_wide: Vec<OcrItem> = Vec::new();
@@ -265,7 +305,11 @@ pub fn reorder_ocr_regions(
     }
 
     // Sort headers top-to-bottom
-    top_wide.sort_by(|a, b| a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal).then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal)));
+    top_wide.sort_by(|a, b| {
+        a.y1.partial_cmp(&b.y1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal))
+    });
 
     // ── Step 2: Group remaining items into columns ────────────────────────
     let columns = group_ocr_columns(&column_candidates, img_w);
@@ -321,7 +365,8 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
     // Sort items by (x1, y1) for deterministic column assignment
     let mut sorted: Vec<&OcrItem> = items.iter().collect();
     sorted.sort_by(|a, b| {
-        a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal)
+        a.x1.partial_cmp(&b.x1)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal))
     });
 
@@ -356,7 +401,11 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
     }
 
     // ── Defensive merge: columns closer than tolerance * 0.8 ───────────────
-    columns.sort_by(|a, b| a.anchor.partial_cmp(&b.anchor).unwrap_or(std::cmp::Ordering::Equal));
+    columns.sort_by(|a, b| {
+        a.anchor
+            .partial_cmp(&b.anchor)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut merged: Vec<OcrColumn> = Vec::new();
     for col in columns {
@@ -379,7 +428,8 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
     // Sort items within each column by (y1, x1)
     for col in &mut merged {
         col.items.sort_by(|a, b| {
-            a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal)
+            a.y1.partial_cmp(&b.y1)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal))
         });
     }
@@ -389,7 +439,8 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
     let min_items_for_main = (total * 0.08).ceil() as usize;
     let min_for_main = 4usize.max(min_items_for_main);
 
-    let main_cols: Vec<usize> = merged.iter()
+    let main_cols: Vec<usize> = merged
+        .iter()
         .enumerate()
         .filter(|(_, c)| c.items.len() >= min_for_main)
         .map(|(i, _)| i)
@@ -408,11 +459,14 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
         for noise_idx in noise_cols.iter().rev() {
             let noise_col = &merged[*noise_idx];
             // Find nearest main column by anchor distance
-            let nearest_main = main_cols.iter().min_by_key(|&&mi| {
-                let dist = (noise_col.anchor - merged[mi].anchor).abs();
-                // Use ordered float comparison — we don't need exact ordering of NaNs
-                ordered_float(dist)
-            }).unwrap();
+            let nearest_main = main_cols
+                .iter()
+                .min_by_key(|&&mi| {
+                    let dist = (noise_col.anchor - merged[mi].anchor).abs();
+                    // Use ordered float comparison — we don't need exact ordering of NaNs
+                    ordered_float(dist)
+                })
+                .unwrap();
 
             absorbed.push((*nearest_main, noise_col.items.clone()));
         }
@@ -434,21 +488,30 @@ fn group_ocr_columns(items: &[OcrItem], img_w: f32) -> Vec<OcrColumn> {
         // Re-sort items within each column after absorption
         for col in &mut merged {
             col.items.sort_by(|a, b| {
-                a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal)
+                a.y1.partial_cmp(&b.y1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
                     .then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal))
             });
         }
     }
 
     // Final: sort columns left-to-right by anchor
-    merged.sort_by(|a, b| a.anchor.partial_cmp(&b.anchor).unwrap_or(std::cmp::Ordering::Equal));
+    merged.sort_by(|a, b| {
+        a.anchor
+            .partial_cmp(&b.anchor)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     merged
 }
 
 /// Helper for ordering f32 values (treats NaN as greater than everything).
 fn ordered_float(f: f32) -> u64 {
-    if f.is_nan() { u64::MAX } else { f.to_bits() as u64 }
+    if f.is_nan() {
+        u64::MAX
+    } else {
+        f.to_bits() as u64
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -458,15 +521,37 @@ mod tests {
     use super::*;
     use crate::ocr::provider::{BoundingBox, LayoutCategory};
 
-    fn make_layout_region(label: LayoutCategory, x: i32, y: i32, w: u32, h: u32, confidence: f32) -> LayoutRegion {
-        LayoutRegion { label, bbox: BoundingBox { x, y, width: w, height: h }, confidence, order: 0 }
+    fn make_layout_region(
+        label: LayoutCategory,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        confidence: f32,
+    ) -> LayoutRegion {
+        LayoutRegion {
+            label,
+            bbox: BoundingBox {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            confidence,
+            order: 0,
+        }
     }
 
     fn make_ocr_region(text: &str, x: i32, y: i32, w: u32, h: u32, confidence: f32) -> OcrRegion {
         OcrRegion {
             text: text.to_string(),
             confidence,
-            bbox: Some(BoundingBox { x, y, width: w, height: h }),
+            bbox: Some(BoundingBox {
+                x,
+                y,
+                width: w,
+                height: h,
+            }),
             column: None,
         }
     }
@@ -538,11 +623,13 @@ mod tests {
 
         let ordered = reorder_ocr_regions(&regions, 800, 500);
         // Left column should come before right column
-        let left_lines: Vec<&str> = ordered.iter()
+        let left_lines: Vec<&str> = ordered
+            .iter()
             .filter(|r| r.bbox.as_ref().unwrap().x < 300)
             .map(|r| r.text.as_str())
             .collect();
-        let right_lines: Vec<&str> = ordered.iter()
+        let right_lines: Vec<&str> = ordered
+            .iter()
             .filter(|r| r.bbox.as_ref().unwrap().x >= 300)
             .map(|r| r.text.as_str())
             .collect();
@@ -553,7 +640,10 @@ mod tests {
         // All left lines should appear before all right lines
         let left_end = ordered.iter().position(|r| r.text == "L-bottom").unwrap();
         let right_start = ordered.iter().position(|r| r.text == "R-top").unwrap();
-        assert!(left_end < right_start, "Left column should come before right column");
+        assert!(
+            left_end < right_start,
+            "Left column should come before right column"
+        );
     }
 
     #[test]
@@ -562,37 +652,46 @@ mod tests {
         let regions = vec![
             make_ocr_region("body-L", 50, 200, 300, 30, 0.9),
             make_ocr_region("body-R", 450, 200, 300, 30, 0.9),
-            make_ocr_region("HEADER", 50, 30, 700, 30, 0.95),  // wide header spanning full width
+            make_ocr_region("HEADER", 50, 30, 700, 30, 0.95), // wide header spanning full width
         ];
 
         let ordered = reorder_ocr_regions(&regions, 800, 500);
         // Header should come first
         assert_eq!(ordered[0].text, "HEADER");
         // Then body lines
-        assert!(ordered.iter().position(|r| r.text == "body-L").unwrap()
-                < ordered.iter().position(|r| r.text == "body-R").unwrap());
+        assert!(
+            ordered.iter().position(|r| r.text == "body-L").unwrap()
+                < ordered.iter().position(|r| r.text == "body-R").unwrap()
+        );
     }
 
     #[test]
     fn test_ocr_regions_without_bbox_preserved() {
         let regions = vec![
             make_ocr_region("with-box", 50, 100, 300, 30, 0.9),
-            OcrRegion { text: "no-box".to_string(), confidence: 0.5, bbox: None, column: None },
+            OcrRegion {
+                text: "no-box".to_string(),
+                confidence: 0.5,
+                bbox: None,
+                column: None,
+            },
         ];
 
         let ordered = reorder_ocr_regions(&regions, 400, 500);
         // Region with bbox should come first, region without bbox at end
         assert_eq!(ordered.len(), 2);
-        assert!(ordered.iter().any(|r| r.text == "with-box" && r.bbox.is_some()));
-        assert!(ordered.iter().any(|r| r.text == "no-box" && r.bbox.is_none()));
+        assert!(ordered
+            .iter()
+            .any(|r| r.text == "with-box" && r.bbox.is_some()));
+        assert!(ordered
+            .iter()
+            .any(|r| r.text == "no-box" && r.bbox.is_none()));
     }
 
     #[test]
     fn test_ocr_too_few_regions_unchanged() {
         // Only 1 region with bbox — should return as-is
-        let regions = vec![
-            make_ocr_region("only", 50, 100, 300, 30, 0.9),
-        ];
+        let regions = vec![make_ocr_region("only", 50, 100, 300, 30, 0.9)];
         let ordered = reorder_ocr_regions(&regions, 400, 500);
         assert_eq!(ordered[0].text, "only");
     }
@@ -601,9 +700,9 @@ mod tests {
     fn test_ocr_noise_column_compaction() {
         // 10 items in column 1 (x~50), 1 noise item in column 2 (x~200)
         // The noise item should merge into column 1
-        let mut regions: Vec<OcrRegion> = (0..10).map(|i| {
-            make_ocr_region(&format!("main-{i}"), 50, 100 + i * 40, 120, 30, 0.9)
-        }).collect();
+        let mut regions: Vec<OcrRegion> = (0..10)
+            .map(|i| make_ocr_region(&format!("main-{i}"), 50, 100 + i * 40, 120, 30, 0.9))
+            .collect();
         // Noise item — single line far to the right but close enough
         regions.push(make_ocr_region("noise", 200, 150, 80, 30, 0.8));
 

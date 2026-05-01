@@ -165,7 +165,9 @@ impl OnnxNerEngine {
                     .push(format!("Missing model.onnx at {}", model_path.display()));
             }
         } else {
-            report.issues.push("Model path is not configured".to_string());
+            report
+                .issues
+                .push("Model path is not configured".to_string());
         }
 
         if let Some(tokenizer_path) = &report.tokenizer_path {
@@ -227,9 +229,12 @@ impl OnnxNerEngine {
             return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
         }
 
-        let model_dir = model_path
-            .parent()
-            .ok_or_else(|| format!("ONNX model has no parent directory: {}", model_path.display()))?;
+        let model_dir = model_path.parent().ok_or_else(|| {
+            format!(
+                "ONNX model has no parent directory: {}",
+                model_path.display()
+            )
+        })?;
 
         ORT_INIT
             .get_or_init(|| initialize_ort(model_dir.to_path_buf()))
@@ -393,9 +398,15 @@ impl OnnxNerEngine {
 
             let window_offsets = offsets[start_token..end_token]
                 .iter()
-                .map(|(start, end)| (start.saturating_sub(start_byte), end.saturating_sub(start_byte)))
+                .map(|(start, end)| {
+                    (
+                        start.saturating_sub(start_byte),
+                        end.saturating_sub(start_byte),
+                    )
+                })
                 .collect::<Vec<_>>();
-            let window_special = encoding.get_special_tokens_mask()[start_token..end_token].to_vec();
+            let window_special =
+                encoding.get_special_tokens_mask()[start_token..end_token].to_vec();
             let window_tokens = encoding.get_tokens()[start_token..end_token].to_vec();
 
             let mut window_entities = decode_entities_from_parts(
@@ -646,8 +657,11 @@ fn count_tokens_without_specials(tokenizer: &Tokenizer, text: &str) -> Result<us
 }
 
 fn array_from_u32(values: &[u32]) -> Result<Array2<i64>, String> {
-    Array2::from_shape_vec((1, values.len()), values.iter().map(|v| *v as i64).collect())
-        .map_err(|e| format!("Failed to build ONNX input tensor: {e}"))
+    Array2::from_shape_vec(
+        (1, values.len()),
+        values.iter().map(|v| *v as i64).collect(),
+    )
+    .map_err(|e| format!("Failed to build ONNX input tensor: {e}"))
 }
 
 fn initialize_ort(model_dir: PathBuf) -> Result<(), String> {
@@ -667,7 +681,12 @@ fn initialize_ort(model_dir: PathBuf) -> Result<(), String> {
 
     ort::init_from(dylib_path.display().to_string())
         .commit()
-        .map_err(|e| format!("Failed to initialize ORT from {}: {e}", dylib_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "Failed to initialize ORT from {}: {e}",
+                dylib_path.display()
+            )
+        })?;
 
     Ok(())
 }
@@ -796,7 +815,10 @@ fn decode_entities_from_parts(
 
     let mut token_predictions = Vec::new();
 
-    for token_idx in 0..logits.shape()[1].min(offsets.len()).min(special_tokens.len()) {
+    for token_idx in 0..logits.shape()[1]
+        .min(offsets.len())
+        .min(special_tokens.len())
+    {
         let (start, end) = offsets[token_idx];
         let piece = tokens
             .get(token_idx)
@@ -849,7 +871,10 @@ fn best_label(logits: &ArrayViewD<'_, f32>, token_idx: usize, labels: &[String])
         }
     }
 
-    (labels[best_idx].clone(), softmax_confidence(&logit_row, best_idx))
+    (
+        labels[best_idx].clone(),
+        softmax_confidence(&logit_row, best_idx),
+    )
 }
 
 fn softmax_confidence(logits: &[f32], best_idx: usize) -> f32 {
@@ -857,10 +882,7 @@ fn softmax_confidence(logits: &[f32], best_idx: usize) -> f32 {
         return 0.0;
     }
 
-    let max_logit = logits
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+    let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let denom = logits
         .iter()
         .map(|logit| (*logit - max_logit).exp())
@@ -875,9 +897,10 @@ fn softmax_confidence(logits: &[f32], best_idx: usize) -> f32 {
 
 fn entity_threshold(entity_type: &EntityType, configured_threshold: f32) -> f32 {
     match entity_type {
-        EntityType::Person | EntityType::Place | EntityType::Organization | EntityType::Institution => {
-            configured_threshold.min(CORE_ENTITY_THRESHOLD)
-        }
+        EntityType::Person
+        | EntityType::Place
+        | EntityType::Organization
+        | EntityType::Institution => configured_threshold.min(CORE_ENTITY_THRESHOLD),
         _ => configured_threshold.max(NON_CORE_ENTITY_THRESHOLD),
     }
 }
@@ -906,8 +929,6 @@ fn parse_bio_label(label: &str) -> Option<DecodedTag> {
 
     Some(DecodedTag { bio, entity_type })
 }
-
-
 
 /// Aggregate token predictions into entities, respecting BIO tagging:
 ///
@@ -1059,7 +1080,8 @@ fn flush_entity(
         return;
     };
 
-    let (aligned_start, aligned_end) = align_entity_span_to_source(chunk, current.local_start, current.local_end);
+    let (aligned_start, aligned_end) =
+        align_entity_span_to_source(chunk, current.local_start, current.local_end);
 
     let span_value = chunk
         .get(aligned_start..aligned_end)
@@ -1263,10 +1285,7 @@ fn surface_form_score(value: &str) -> usize {
 }
 
 fn contains_suspicious_surface_artifacts(value: &str) -> bool {
-    value.contains('�')
-        || value.contains('Ã')
-        || value.contains('Â')
-        || value.contains("â€")
+    value.contains('�') || value.contains('Ã') || value.contains('Â') || value.contains("â€")
 }
 
 fn should_drop_entity_value(value: &str) -> bool {
@@ -1276,7 +1295,6 @@ fn should_drop_entity_value(value: &str) -> bool {
         || trimmed.chars().all(|ch| !ch.is_alphanumeric())
         || trimmed.chars().filter(|ch| ch.is_alphanumeric()).count() <= 1
 }
-
 
 pub fn consolidate_onnx_entities(mut entities: Vec<Entity>) -> Vec<Entity> {
     entities.sort_by_key(|entity| (entity.start_offset, entity.end_offset));
@@ -1313,8 +1331,8 @@ fn overlaps(a: &Entity, b: &Entity) -> bool {
 fn is_near_duplicate(a: &Entity, b: &Entity) -> bool {
     let a_norm = normalize_entity_value(&a.value);
     let b_norm = normalize_entity_value(&b.value);
-    let close_offsets = a.start_offset.abs_diff(b.start_offset) <= 24
-        || a.end_offset.abs_diff(b.end_offset) <= 24;
+    let close_offsets =
+        a.start_offset.abs_diff(b.start_offset) <= 24 || a.end_offset.abs_diff(b.end_offset) <= 24;
 
     close_offsets
         && (a_norm == b_norm
@@ -1360,10 +1378,14 @@ fn normalize_entity_type(entity_type: EntityType, value: &str) -> EntityType {
 }
 
 fn looks_like_institution(value: &str) -> bool {
-    let normalized = value.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
-    institution_keywords()
-        .iter()
-        .any(|keyword| normalized.get(..keyword.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(keyword)))
+    let normalized = value
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .trim();
+    institution_keywords().iter().any(|keyword| {
+        normalized
+            .get(..keyword.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(keyword))
+    })
 }
 
 fn institution_keywords() -> &'static [&'static str] {
@@ -1376,7 +1398,6 @@ fn institution_keywords() -> &'static [&'static str] {
         "Audiencia",
     ]
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1507,7 +1528,11 @@ mod tests {
             "ner",
         );
 
-        assert_eq!(entities.len(), 1, "B-PER + I-PER should merge into one entity");
+        assert_eq!(
+            entities.len(),
+            1,
+            "B-PER + I-PER should merge into one entity"
+        );
         assert_eq!(entities[0].value, "Manuel Belgrano");
     }
 
@@ -1613,20 +1638,22 @@ mod tests {
         let entities = aggregate_simple_entities(
             "Belgrano",
             10,
-            vec![
-                TokenPrediction {
-                    bio: BioTag::Inside,
-                    entity_type: EntityType::Person,
-                    start: 0,
-                    end: 8,
-                    score: 0.85,
-                    piece: "Belgrano".to_string(),
-                },
-            ],
+            vec![TokenPrediction {
+                bio: BioTag::Inside,
+                entity_type: EntityType::Person,
+                start: 0,
+                end: 8,
+                score: 0.85,
+                piece: "Belgrano".to_string(),
+            }],
             "ner",
         );
 
-        assert_eq!(entities.len(), 1, "Orphan I-PER should still create an entity");
+        assert_eq!(
+            entities.len(),
+            1,
+            "Orphan I-PER should still create an entity"
+        );
         assert_eq!(entities[0].entity_type, EntityType::Person);
     }
 
@@ -1827,10 +1854,7 @@ mod tests {
     #[test]
     fn reconstruct_from_punctuation_only_tokens() {
         // Punctuation tokens should append without extra spaces
-        let value = reconstruct_from_pieces(&[
-            "▁Cabildo".to_string(),
-            ",".to_string(),
-        ]);
+        let value = reconstruct_from_pieces(&["▁Cabildo".to_string(), ",".to_string()]);
 
         // The comma should not get a space before it when appended after a word
         // Actually, in TokenPrediction land the punctuation token's offsets
@@ -1915,7 +1939,10 @@ mod tests {
     #[test]
     fn softmax_confidence_is_normalized_probability() {
         let confidence = softmax_confidence(&[1.0, 3.0, 0.5], 1);
-        assert!(confidence > 0.75, "expected high confidence, got {confidence}");
+        assert!(
+            confidence > 0.75,
+            "expected high confidence, got {confidence}"
+        );
         assert!(confidence < 1.0, "softmax confidence should stay below 1");
     }
 
@@ -1941,7 +1968,13 @@ mod tests {
         });
 
         assert!(!report.is_ready());
-        assert!(report.issues.iter().any(|issue| issue.contains("Model path")));
-        assert!(report.issues.iter().any(|issue| issue.contains("Tokenizer path")));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Model path")));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Tokenizer path")));
     }
 }

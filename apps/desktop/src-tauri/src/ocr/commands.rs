@@ -1,5 +1,4 @@
 /// Tauri IPC commands for OCR operations.
-
 use super::{update_extraction_text, OcrQueue};
 use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;
@@ -60,7 +59,10 @@ pub async fn update_extraction_text_cmd(
     db: State<'_, AppDbState>,
     _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<(), String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock poisoned: {e}"))?;
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock poisoned: {e}"))?;
     update_extraction_text(&conn, &asset_id, &text_content)?;
 
     Ok(())
@@ -107,8 +109,8 @@ pub async fn generate_pdf_thumbnail(
     // Read PDF and render thumbnail in a blocking task
     // (pdfium is CPU-intensive and must not block the async runtime)
     let result_path = tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&asset_path)
-            .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+        let bytes =
+            std::fs::read(&asset_path).map_err(|e| format!("Failed to read PDF file: {e}"))?;
 
         let png_data = super::pdf::render_pdf_thumbnail(&bytes)?;
 
@@ -158,16 +160,17 @@ pub async fn delete_pdf_thumbnail(
 /// Returns `true` if the PDF has insufficient native text (likely scanned/image-only)
 /// and should be split into per-page image assets during import.
 #[tauri::command]
-pub async fn is_scanned_pdf(asset_path: String, app_handle: tauri::AppHandle) -> Result<bool, String> {
+pub async fn is_scanned_pdf(
+    asset_path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<bool, String> {
     // Ensure Pdfium is initialized
     super::pdf::init_pdfium_path(&app_handle);
 
-    let bytes = tokio::task::spawn_blocking(move || {
-        std::fs::read(&asset_path)
-    })
-    .await
-    .map_err(|e| format!("Failed to read PDF file: {e}"))?
-    .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+    let bytes = tokio::task::spawn_blocking(move || std::fs::read(&asset_path))
+        .await
+        .map_err(|e| format!("Failed to read PDF file: {e}"))?
+        .map_err(|e| format!("Failed to read PDF file: {e}"))?;
 
     let is_scanned = tokio::task::spawn_blocking(move || {
         // Try native text extraction first
@@ -215,15 +218,18 @@ pub async fn render_pdf_pages(
 
     // Read PDF and render pages in a blocking task
     let pages = tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&pdf_path)
-            .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+        let bytes =
+            std::fs::read(&pdf_path).map_err(|e| format!("Failed to read PDF file: {e}"))?;
 
         // Check if PDF has quality text (skip rendering if it's a text PDF)
         // This is a safety check — the frontend should only call this for scanned PDFs
         let native_text = super::pdf::extract_pdf_text(&bytes);
         if let Ok(ref text) = native_text {
             if super::pdf::is_quality_text(text) {
-                return Err("PDF has quality native text — not a scanned PDF. Use as PDF asset instead.".to_string());
+                return Err(
+                    "PDF has quality native text — not a scanned PDF. Use as PDF asset instead."
+                        .to_string(),
+                );
             }
         }
 

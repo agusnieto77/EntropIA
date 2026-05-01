@@ -23,7 +23,12 @@ impl NerEngine for RuleBasedNerEngine {
         collect_matches(&PLACE_RE, text, EntityType::Place, &mut entities);
         collect_matches(&DATE_WRITTEN_RE, text, EntityType::Date, &mut entities);
         collect_matches(&DATE_NUMERIC_RE, text, EntityType::Date, &mut entities);
-        collect_matches(&INSTITUTION_RE, text, EntityType::Institution, &mut entities);
+        collect_matches(
+            &INSTITUTION_RE,
+            text,
+            EntityType::Institution,
+            &mut entities,
+        );
 
         entities.sort_by_key(|e| e.start_offset);
         Ok(entities)
@@ -101,7 +106,9 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
 "#;
 
     fn extract_entities(text: &str) -> Vec<Entity> {
-        RuleBasedNerEngine::new().extract(text).expect("rule-based NER should work")
+        RuleBasedNerEngine::new()
+            .extract(text)
+            .expect("rule-based NER should work")
     }
 
     #[test]
@@ -111,7 +118,10 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .collect();
-        assert!(!persons.is_empty(), "Expected at least one PERSON in colonial fixture");
+        assert!(
+            !persons.is_empty(),
+            "Expected at least one PERSON in colonial fixture"
+        );
         let values: Vec<&str> = persons.iter().map(|e| e.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("Manuel Belgrano")),
@@ -126,7 +136,10 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             .iter()
             .filter(|e| e.entity_type == EntityType::Place)
             .collect();
-        assert!(!places.is_empty(), "Expected at least one PLACE in colonial fixture");
+        assert!(
+            !places.is_empty(),
+            "Expected at least one PLACE in colonial fixture"
+        );
 
         let values: Vec<&str> = places.iter().map(|e| e.value.as_str()).collect();
         assert!(
@@ -146,7 +159,10 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             .iter()
             .filter(|e| e.entity_type == EntityType::Date)
             .collect();
-        assert!(!dates.is_empty(), "Expected at least one DATE in colonial fixture");
+        assert!(
+            !dates.is_empty(),
+            "Expected at least one DATE in colonial fixture"
+        );
         let values: Vec<&str> = dates.iter().map(|e| e.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("15 de mayo de 1810")),
@@ -187,7 +203,9 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
         let has_person = entities.iter().any(|e| e.entity_type == EntityType::Person);
         let has_place = entities.iter().any(|e| e.entity_type == EntityType::Place);
         let has_date = entities.iter().any(|e| e.entity_type == EntityType::Date);
-        let has_institution = entities.iter().any(|e| e.entity_type == EntityType::Institution);
+        let has_institution = entities
+            .iter()
+            .any(|e| e.entity_type == EntityType::Institution);
         assert!(has_person, "Missing PERSON entities");
         assert!(has_place, "Missing PLACE entities");
         assert!(has_date, "Missing DATE entities");
@@ -201,7 +219,10 @@ Entre Ríos. La Audiencia Real emitió su resolución el 01/11/1820.
             .iter()
             .filter(|e| e.entity_type == EntityType::Person)
             .collect();
-        assert!(persons.len() >= 2, "Expected ≥2 persons in ecclesiastical fixture");
+        assert!(
+            persons.len() >= 2,
+            "Expected ≥2 persons in ecclesiastical fixture"
+        );
         let values: Vec<&str> = persons.iter().map(|e| e.value.as_str()).collect();
         assert!(
             values.iter().any(|v| v.contains("Bartolomé")),

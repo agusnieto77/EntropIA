@@ -39,7 +39,10 @@ mod tests {
         #[cfg(windows)]
         {
             let path = PathBuf::from(r"\\?\C:\tmp\file.txt");
-            assert_eq!(normalize_windows_path(path), PathBuf::from(r"C:\tmp\file.txt"));
+            assert_eq!(
+                normalize_windows_path(path),
+                PathBuf::from(r"C:\tmp\file.txt")
+            );
         }
     }
 }

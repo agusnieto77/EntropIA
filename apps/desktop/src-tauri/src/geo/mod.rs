@@ -106,8 +106,7 @@ impl GeoQueue {
         tauri::async_runtime::spawn(async move {
             let conn = match rusqlite::Connection::open(&db_path) {
                 Ok(c) => {
-                    let _ =
-                        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
                     c
                 }
                 Err(e) => {
@@ -125,24 +124,33 @@ impl GeoQueue {
                 match job {
                     GeoJob::GeocodeEntity { entity_id } => {
                         match fetch_geocode_candidate(&conn, &entity_id) {
-                            Ok(Some(candidate)) => match nominatim_search(&client, &candidate.value).await {
-                                Ok(Some(result)) => {
-                                    let lat: f64 = match result.lat.parse() {
-                                        Ok(v) => v,
-                                        Err(_) => {
-                                            emit_error(&app_handle, &entity_id, "Invalid latitude from Nominatim");
-                                            continue;
-                                        }
-                                    };
-                                    let lon: f64 = match result.lon.parse() {
-                                        Ok(v) => v,
-                                        Err(_) => {
-                                            emit_error(&app_handle, &entity_id, "Invalid longitude from Nominatim");
-                                            continue;
-                                        }
-                                    };
+                            Ok(Some(candidate)) => {
+                                match nominatim_search(&client, &candidate.value).await {
+                                    Ok(Some(result)) => {
+                                        let lat: f64 = match result.lat.parse() {
+                                            Ok(v) => v,
+                                            Err(_) => {
+                                                emit_error(
+                                                    &app_handle,
+                                                    &entity_id,
+                                                    "Invalid latitude from Nominatim",
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        let lon: f64 = match result.lon.parse() {
+                                            Ok(v) => v,
+                                            Err(_) => {
+                                                emit_error(
+                                                    &app_handle,
+                                                    &entity_id,
+                                                    "Invalid longitude from Nominatim",
+                                                );
+                                                continue;
+                                            }
+                                        };
 
-                                    match conn.execute(
+                                        match conn.execute(
                                         "UPDATE entities SET latitude = ?1, longitude = ?2, geo_status = 'resolved' WHERE id = ?3",
                                         params![lat, lon, &entity_id],
                                     ) {
@@ -157,15 +165,16 @@ impl GeoQueue {
                                         ),
                                         Err(e) => emit_error(&app_handle, &entity_id, &format!("Failed to update entity coordinates: {e}")),
                                     }
-                                }
-                                Ok(None) => {
-                                    let _ = conn.execute(
+                                    }
+                                    Ok(None) => {
+                                        let _ = conn.execute(
                                         "UPDATE entities SET geo_status = 'not_found' WHERE id = ?1",
                                         params![&entity_id],
                                     );
+                                    }
+                                    Err(e) => emit_error(&app_handle, &entity_id, &e),
                                 }
-                                Err(e) => emit_error(&app_handle, &entity_id, &e),
-                            },
+                            }
                             Ok(None) => {}
                             Err(e) => emit_error(&app_handle, &entity_id, &e),
                         }
@@ -192,14 +201,22 @@ impl GeoQueue {
                                     let lat: f64 = match result.lat.parse() {
                                         Ok(v) => v,
                                         Err(_) => {
-                                            emit_error(&app_handle, &candidate.entity_id, "Invalid latitude from Nominatim");
+                                            emit_error(
+                                                &app_handle,
+                                                &candidate.entity_id,
+                                                "Invalid latitude from Nominatim",
+                                            );
                                             continue;
                                         }
                                     };
                                     let lon: f64 = match result.lon.parse() {
                                         Ok(v) => v,
                                         Err(_) => {
-                                            emit_error(&app_handle, &candidate.entity_id, "Invalid longitude from Nominatim");
+                                            emit_error(
+                                                &app_handle,
+                                                &candidate.entity_id,
+                                                "Invalid longitude from Nominatim",
+                                            );
                                             continue;
                                         }
                                     };

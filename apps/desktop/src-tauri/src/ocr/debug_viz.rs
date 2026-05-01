@@ -47,31 +47,31 @@ const CORNER_SIZE: u32 = 20;
 
 /// Distinct colors for up to 8 columns. If more columns exist, they wrap.
 const COLUMN_COLORS: &[[u8; 4]] = &[
-    [220, 30, 30, 255],     // red
-    [30, 160, 60, 255],     // green
-    [30, 80, 200, 255],     // blue
-    [200, 120, 30, 255],    // orange
-    [160, 60, 180, 255],    // purple
-    [30, 180, 180, 255],    // teal
-    [180, 100, 30, 255],    // brown
-    [240, 100, 180, 255],   // pink
+    [220, 30, 30, 255],   // red
+    [30, 160, 60, 255],   // green
+    [30, 80, 200, 255],   // blue
+    [200, 120, 30, 255],  // orange
+    [160, 60, 180, 255],  // purple
+    [30, 180, 180, 255],  // teal
+    [180, 100, 30, 255],  // brown
+    [240, 100, 180, 255], // pink
 ];
 
 /// Map a layout category to a distinctive RGBA color (fallback when columns
 /// are not available).
 fn category_color(category: &LayoutCategory) -> Rgba<u8> {
     match category {
-        LayoutCategory::Title => Rgba([220, 30, 30, 255]),        // bright red
-        LayoutCategory::PlainText => Rgba([30, 160, 60, 255]),    // green
-        LayoutCategory::Table => Rgba([30, 80, 200, 255]),        // blue
-        LayoutCategory::Figure => Rgba([200, 120, 30, 255]),      // orange
-        LayoutCategory::Caption => Rgba([160, 60, 180, 255]),     // purple
-        LayoutCategory::Footnote => Rgba([200, 200, 30, 255]),    // yellow
-        LayoutCategory::Header => Rgba([130, 130, 130, 255]),     // gray
-        LayoutCategory::Footer => Rgba([90, 90, 90, 255]),        // dark gray
-        LayoutCategory::Code => Rgba([30, 180, 180, 255]),        // teal
-        LayoutCategory::Reference => Rgba([180, 100, 30, 255]),   // brown
-        LayoutCategory::Abandoned => Rgba([240, 100, 180, 255]),  // pink
+        LayoutCategory::Title => Rgba([220, 30, 30, 255]), // bright red
+        LayoutCategory::PlainText => Rgba([30, 160, 60, 255]), // green
+        LayoutCategory::Table => Rgba([30, 80, 200, 255]), // blue
+        LayoutCategory::Figure => Rgba([200, 120, 30, 255]), // orange
+        LayoutCategory::Caption => Rgba([160, 60, 180, 255]), // purple
+        LayoutCategory::Footnote => Rgba([200, 200, 30, 255]), // yellow
+        LayoutCategory::Header => Rgba([130, 130, 130, 255]), // gray
+        LayoutCategory::Footer => Rgba([90, 90, 90, 255]), // dark gray
+        LayoutCategory::Code => Rgba([30, 180, 180, 255]), // teal
+        LayoutCategory::Reference => Rgba([180, 100, 30, 255]), // brown
+        LayoutCategory::Abandoned => Rgba([240, 100, 180, 255]), // pink
     }
 }
 
@@ -88,7 +88,11 @@ fn assign_column_indices(regions: &[LayoutRegion]) -> Vec<(usize, usize)> {
     }
 
     // Sort by order (reading order)
-    let mut indexed: Vec<(usize, usize)> = regions.iter().enumerate().map(|(i, r)| (i, r.order)).collect();
+    let mut indexed: Vec<(usize, usize)> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, r.order))
+        .collect();
     indexed.sort_by_key(|&(_, order)| order);
 
     // Detect rows: a new row starts when Y jumps significantly
@@ -262,7 +266,10 @@ pub fn save_layout_debug(
     let crops_dir = root.join("recortes").join(format!("{asset_id}_{ts}"));
 
     if let Err(e) = std::fs::create_dir_all(&layouts_dir) {
-        eprintln!("[debug_viz] Failed to create {}: {e}", layouts_dir.display());
+        eprintln!(
+            "[debug_viz] Failed to create {}: {e}",
+            layouts_dir.display()
+        );
         return Ok(());
     }
     if let Err(e) = std::fs::create_dir_all(&crops_dir) {
@@ -273,7 +280,12 @@ pub fn save_layout_debug(
     // ── Assign column indices based on reading order ─────────────────────
     let col_map = assign_column_indices(regions);
     let col_lookup: std::collections::HashMap<usize, usize> = col_map.iter().cloned().collect();
-    let num_columns = col_map.iter().map(|&(_, c)| c).max().map(|c| c + 1).unwrap_or(1);
+    let num_columns = col_map
+        .iter()
+        .map(|&(_, c)| c)
+        .max()
+        .map(|c| c + 1)
+        .unwrap_or(1);
 
     // ── Overlay image with bboxes (color-coded by column) ────────────────
     let mut overlay = decoded_image.to_rgba8();
@@ -282,10 +294,20 @@ pub fn save_layout_debug(
     let mut column_legend = String::new();
     for col_idx in 0..num_columns {
         let color = COLUMN_COLORS.get(col_idx % COLUMN_COLORS.len()).unwrap();
-        if !column_legend.is_empty() { column_legend.push_str(", "); }
-        column_legend.push_str(&format!("col{}=RGBA({},{},{},{})", col_idx, color[0], color[1], color[2], color[3]));
+        if !column_legend.is_empty() {
+            column_legend.push_str(", ");
+        }
+        column_legend.push_str(&format!(
+            "col{}=RGBA({},{},{},{})",
+            col_idx, color[0], color[1], color[2], color[3]
+        ));
     }
-    eprintln!("[debug_viz] Layout for {asset_id}: {} regions, {} columns ({})", regions.len(), num_columns, column_legend);
+    eprintln!(
+        "[debug_viz] Layout for {asset_id}: {} regions, {} columns ({})",
+        regions.len(),
+        num_columns,
+        column_legend
+    );
 
     // Sort regions by reading order for display
     let mut ordered_indices: Vec<usize> = (0..regions.len()).collect();
@@ -300,8 +322,8 @@ pub fn save_layout_debug(
             continue;
         }
 
-        let rect = Rect::at(region.bbox.x, region.bbox.y)
-            .of_size(region.bbox.width, region.bbox.height);
+        let rect =
+            Rect::at(region.bbox.x, region.bbox.y).of_size(region.bbox.width, region.bbox.height);
         draw_thick_rect(&mut overlay, rect, color, RECT_THICKNESS);
         draw_corner_marker(&mut overlay, &region.bbox, color);
     }
@@ -309,7 +331,10 @@ pub fn save_layout_debug(
     let short_id: String = asset_id.chars().take(8).collect();
     let overlay_path = layouts_dir.join(format!("{short_id}_{ts}.png"));
     if let Err(e) = overlay.save(&overlay_path) {
-        eprintln!("[debug_viz] Failed to write overlay {}: {e}", overlay_path.display());
+        eprintln!(
+            "[debug_viz] Failed to write overlay {}: {e}",
+            overlay_path.display()
+        );
     } else {
         eprintln!("[debug_viz] ✅ Overlay saved: {}", overlay_path.display());
     }
@@ -323,7 +348,10 @@ pub fn save_layout_debug(
         let col_idx = col_lookup.get(region_idx).copied().unwrap_or(0);
         let label = format!("{:?}", region.label);
         let conf_pct = (region.confidence * 100.0).round() as u32;
-        let filename = format!("col{}_order{:02}_{}_conf{:02}.png", col_idx, region.order, label, conf_pct);
+        let filename = format!(
+            "col{}_order{:02}_{}_conf{:02}.png",
+            col_idx, region.order, label, conf_pct
+        );
         let crop_path = crops_dir.join(&filename);
 
         if let Err(e) = std::fs::write(&crop_path, crop_bytes) {
@@ -400,17 +428,17 @@ pub fn save_ocr_lines_debug(
     let layouts_dir = root.join("tests_layouts");
 
     if let Err(e) = std::fs::create_dir_all(&layouts_dir) {
-        eprintln!("[debug_viz] Failed to create {}: {e}", layouts_dir.display());
+        eprintln!(
+            "[debug_viz] Failed to create {}: {e}",
+            layouts_dir.display()
+        );
         return Ok(());
     }
 
     // Draw bounding boxes on a copy of the image
     let mut overlay = img.to_rgba8();
 
-    let lines_with_bbox: Vec<_> = regions
-        .iter()
-        .filter(|r| r.bbox.is_some())
-        .collect();
+    let lines_with_bbox: Vec<_> = regions.iter().filter(|r| r.bbox.is_some()).collect();
 
     eprintln!(
         "[debug_viz] ─── OCR line detection for {asset_id}: {} lines with bboxes (method={method}) ───",
@@ -459,9 +487,15 @@ pub fn save_ocr_lines_debug(
     let short_id: String = asset_id.chars().take(8).collect();
     let overlay_path = layouts_dir.join(format!("{short_id}_{ts}.png"));
     if let Err(e) = overlay.save(&overlay_path) {
-        eprintln!("[debug_viz] Failed to write overlay {}: {e}", overlay_path.display());
+        eprintln!(
+            "[debug_viz] Failed to write overlay {}: {e}",
+            overlay_path.display()
+        );
     } else {
-        eprintln!("[debug_viz] ✅ OCR lines overlay saved: {}", overlay_path.display());
+        eprintln!(
+            "[debug_viz] ✅ OCR lines overlay saved: {}",
+            overlay_path.display()
+        );
     }
 
     let _ = original_bytes.len();

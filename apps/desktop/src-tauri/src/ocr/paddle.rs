@@ -103,15 +103,15 @@ impl PaddleOcrProvider {
         }
 
         let engine = ocr_rs::OcrEngine::new(
-            det_path.to_str().ok_or_else(|| {
-                format!("Invalid det model path: {}", det_path.display())
-            })?,
-            rec_path.to_str().ok_or_else(|| {
-                format!("Invalid rec model path: {}", rec_path.display())
-            })?,
-            dict_path.to_str().ok_or_else(|| {
-                format!("Invalid dict path: {}", dict_path.display())
-            })?,
+            det_path
+                .to_str()
+                .ok_or_else(|| format!("Invalid det model path: {}", det_path.display()))?,
+            rec_path
+                .to_str()
+                .ok_or_else(|| format!("Invalid rec model path: {}", rec_path.display()))?,
+            dict_path
+                .to_str()
+                .ok_or_else(|| format!("Invalid dict path: {}", dict_path.display()))?,
             None, // Use default OcrEngineConfig
         )
         .map_err(|e| format!("PaddleOCR engine init failed: {e}"))?;
@@ -228,7 +228,9 @@ impl PaddleOcrProvider {
                 }
             }
             Err(e) => {
-                eprintln!("[OCR] Orientation classification failed: {e} — proceeding without rotation");
+                eprintln!(
+                    "[OCR] Orientation classification failed: {e} — proceeding without rotation"
+                );
                 img
             }
         }
@@ -324,39 +326,51 @@ mod tests {
         // We need workspace root which is 3 levels up
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir
-            .parent()  // apps/desktop
+            .parent() // apps/desktop
             .and_then(|p| p.parent()) // apps
             .and_then(|p| p.parent()) // workspace root (POSITRON/EntropIA)
             .expect("no workspace root");
         let test_image_path = workspace_root.join("rust_style_binary.png");
 
         if !test_image_path.exists() {
-            eprintln!("[test] Skipping — test image not found at {:?}", test_image_path);
+            eprintln!(
+                "[test] Skipping — test image not found at {:?}",
+                test_image_path
+            );
             return;
         }
 
-        let image_bytes = std::fs::read(&test_image_path)
-            .expect("Failed to read test image");
+        let image_bytes = std::fs::read(&test_image_path).expect("Failed to read test image");
 
-        eprintln!("[test] Running PaddleOCR on {:?} ({} bytes)...", test_image_path, image_bytes.len());
+        eprintln!(
+            "[test] Running PaddleOCR on {:?} ({} bytes)...",
+            test_image_path,
+            image_bytes.len()
+        );
 
-        let output = provider.recognize(&image_bytes)
+        let output = provider
+            .recognize(&image_bytes)
             .expect("PaddleOCR recognition failed");
 
         eprintln!("[test] Method: {}", output.method);
         eprintln!("[test] Text length: {} chars", output.text.len());
         eprintln!("[test] Regions: {}", output.regions.len());
-        eprintln!("[test] First 200 chars of text:\n{}", &output.text.chars().take(200).collect::<String>());
+        eprintln!(
+            "[test] First 200 chars of text:\n{}",
+            &output.text.chars().take(200).collect::<String>()
+        );
 
         // Basic assertions — we just need SOME text back
         assert!(!output.text.is_empty(), "OCR should produce non-empty text");
-        assert!(!output.regions.is_empty(), "OCR should produce at least one region");
+        assert!(
+            !output.regions.is_empty(),
+            "OCR should produce at least one region"
+        );
         assert_eq!(output.method, "paddle", "Method should be 'paddle'");
 
         // Verify bounding boxes are present (PaddleOCR provides them)
-        let regions_with_bbox: Vec<_> = output.regions.iter()
-            .filter(|r| r.bbox.is_some())
-            .collect();
+        let regions_with_bbox: Vec<_> =
+            output.regions.iter().filter(|r| r.bbox.is_some()).collect();
         assert!(
             !regions_with_bbox.is_empty(),
             "PaddleOCR should provide bounding boxes for detected regions"
@@ -412,7 +426,13 @@ mod tests {
         let err = result.unwrap_err();
         // The error should mention "PaddleOCR model not found" (for det/rec/dict)
         // and NOT mention "Orientation" at all (the ori model is optional)
-        assert!(err.contains("PaddleOCR model not found"), "Expected model not found error, got: {err}");
-        assert!(!err.contains("Orientation"), "Orientation model failure should NOT be a fatal error, got: {err}");
+        assert!(
+            err.contains("PaddleOCR model not found"),
+            "Expected model not found error, got: {err}"
+        );
+        assert!(
+            !err.contains("Orientation"),
+            "Orientation model failure should NOT be a fatal error, got: {err}"
+        );
     }
 }

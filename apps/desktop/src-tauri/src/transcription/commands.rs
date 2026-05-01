@@ -1,5 +1,4 @@
 /// Tauri IPC commands for transcription operations.
-
 use super::{TranscriptionJob, TranscriptionQueue};
 use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;

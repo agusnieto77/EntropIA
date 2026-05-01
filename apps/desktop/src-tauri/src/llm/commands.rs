@@ -1,9 +1,9 @@
 use tauri::State;
 
-use super::LlmQueue;
+use super::openrouter::{ModelInfo, OpenRouterClient};
 use super::LlmJob;
+use super::LlmQueue;
 use super::LlmResultEntry;
-use super::openrouter::{OpenRouterClient, ModelInfo};
 use crate::db::state::AppDbState;
 
 /// Returns `true` if the LLM engine loaded successfully and is ready to accept jobs.
@@ -54,7 +54,10 @@ pub async fn llm_classify(
     categories: Vec<String>,
     llm_queue: State<'_, LlmQueue>,
 ) -> Result<String, String> {
-    llm_queue.submit(LlmJob::Classify { item_id, categories })?;
+    llm_queue.submit(LlmJob::Classify {
+        item_id,
+        categories,
+    })?;
     Ok("queued".to_string())
 }
 
@@ -64,7 +67,10 @@ pub async fn llm_ask(
     question: String,
     llm_queue: State<'_, LlmQueue>,
 ) -> Result<String, String> {
-    llm_queue.submit(LlmJob::Ask { collection_id, question })?;
+    llm_queue.submit(LlmJob::Ask {
+        collection_id,
+        question,
+    })?;
     Ok("queued".to_string())
 }
 
@@ -116,7 +122,10 @@ pub async fn llm_get_results(
     target_type: Option<String>,
     db: State<'_, AppDbState>,
 ) -> Result<Vec<LlmResultEntry>, String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     super::get_all_results_for_target(&conn, target_type.as_deref().unwrap_or("item"), &target_id)
 }
 
@@ -136,7 +145,10 @@ pub async fn llm_get_result(
     target_type: Option<String>,
     db: State<'_, AppDbState>,
 ) -> Result<Option<LlmResultEntry>, String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     super::get_latest_result(
         &conn,
         target_type.as_deref().unwrap_or("item"),

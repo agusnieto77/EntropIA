@@ -165,10 +165,7 @@ fn merge_hyphens(regions: Vec<OcrRegion>) -> Vec<OcrRegion> {
             }
 
             let next_text = regions[i + 1].text.trim_start();
-            let next_starts_lower = next_text
-                .chars()
-                .next()
-                .map_or(false, |c| c.is_lowercase());
+            let next_starts_lower = next_text.chars().next().map_or(false, |c| c.is_lowercase());
 
             if next_starts_lower {
                 // Merge: remove hyphen and join words.
@@ -184,18 +181,16 @@ fn merge_hyphens(regions: Vec<OcrRegion>) -> Vec<OcrRegion> {
                 if let (Some(ref mut bbox), Some(next_bbox)) =
                     (current.bbox.as_mut(), regions[i + 1].bbox.as_ref())
                 {
-                    let new_right = (bbox.x + bbox.width as i32)
-                        .max(next_bbox.x + next_bbox.width as i32);
-                    let new_bottom = (bbox.y + bbox.height as i32)
-                        .max(next_bbox.y + next_bbox.height as i32);
+                    let new_right =
+                        (bbox.x + bbox.width as i32).max(next_bbox.x + next_bbox.width as i32);
+                    let new_bottom =
+                        (bbox.y + bbox.height as i32).max(next_bbox.y + next_bbox.height as i32);
                     bbox.width = (new_right - bbox.x) as u32;
                     bbox.height = (new_bottom - bbox.y) as u32;
                 }
 
                 // Take the higher confidence
-                current.confidence = current
-                    .confidence
-                    .max(regions[i + 1].confidence);
+                current.confidence = current.confidence.max(regions[i + 1].confidence);
 
                 i += 1;
             } else {
@@ -535,7 +530,7 @@ mod tests {
         let regions = vec![
             make_region("Left para one. ", 50, 100, 300, 30),
             make_region("Left para two ", 50, 140, 300, 30),
-            make_region("starts here.", 50, 170, 290, 30),  // lowercase start after prev line
+            make_region("starts here.", 50, 170, 290, 30), // lowercase start after prev line
             make_region("intro-", 50, 250, 100, 30),
             make_region("duction to AI.", 50, 280, 300, 30),
             make_region("Right col first.", 450, 100, 300, 30),
@@ -549,7 +544,10 @@ mod tests {
         let right_regions: Vec<_> = result.iter().filter(|r| r.column == Some(1)).collect();
 
         assert!(!left_regions.is_empty(), "Should have left column regions");
-        assert!(!right_regions.is_empty(), "Should have right column regions");
+        assert!(
+            !right_regions.is_empty(),
+            "Should have right column regions"
+        );
 
         // Verify hyphen merge happened: "intro-" + "duction" → "introduction"
         let merged_texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();

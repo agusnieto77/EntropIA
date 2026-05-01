@@ -54,8 +54,13 @@ pub fn init_pdfium_path(app_handle: &tauri::AppHandle) {
     PDFIUM_PATH.get_or_init(|| {
         let resolved = resolve_pdfium_dll_path(app_handle);
         match &resolved {
-            Some(path) => eprintln!("[pdf] ✅ Pdfium native library resolved: {}", path.display()),
-            None => eprintln!("[pdf] ⚠️ Pdfium not found in bundled paths — will try system library"),
+            Some(path) => eprintln!(
+                "[pdf] ✅ Pdfium native library resolved: {}",
+                path.display()
+            ),
+            None => {
+                eprintln!("[pdf] ⚠️ Pdfium not found in bundled paths — will try system library")
+            }
         }
         resolved
     });
@@ -72,10 +77,16 @@ fn resolve_pdfium_dll_path(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
         let clean = strip_windows_prefix(path);
         let dll_path = clean.join(&dll_name);
         if dll_path.exists() {
-            eprintln!("[pdf] Found pdfium at resource path: {}", dll_path.display());
+            eprintln!(
+                "[pdf] Found pdfium at resource path: {}",
+                dll_path.display()
+            );
             return Some(dll_path);
         }
-        eprintln!("[pdf] Resource dir exists but no pdfium at: {}", dll_path.display());
+        eprintln!(
+            "[pdf] Resource dir exists but no pdfium at: {}",
+            dll_path.display()
+        );
     }
 
     // Tier 2: CARGO_MANIFEST_DIR dev fallback
@@ -159,13 +170,21 @@ fn get_pdfium() -> Result<Pdfium, String> {
 /// Returns the platform-specific Pdfium library filename for error messages.
 fn dll_name_display() -> &'static str {
     #[cfg(target_os = "windows")]
-    { "pdfium.dll" }
+    {
+        "pdfium.dll"
+    }
     #[cfg(target_os = "linux")]
-    { "libpdfium.so" }
+    {
+        "libpdfium.so"
+    }
     #[cfg(target_os = "macos")]
-    { "libpdfium.dylib" }
+    {
+        "libpdfium.dylib"
+    }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    { "pdfium" }
+    {
+        "pdfium"
+    }
 }
 
 /// Extract text from the native text layer of a PDF byte slice.
@@ -352,7 +371,10 @@ mod tests {
     fn render_pdf_thumbnail_invalid_bytes() {
         // Invalid PDF bytes should return an error, not panic
         let result = render_pdf_thumbnail(b"not a pdf");
-        assert!(result.is_err(), "Expected error for invalid PDF bytes in thumbnail");
+        assert!(
+            result.is_err(),
+            "Expected error for invalid PDF bytes in thumbnail"
+        );
     }
 
     #[test]
@@ -382,7 +404,10 @@ mod tests {
     fn test_dll_name_display() {
         // Just verify it returns a non-empty string
         let name = dll_name_display();
-        assert!(!name.is_empty(), "dll_name_display should return a non-empty string");
+        assert!(
+            !name.is_empty(),
+            "dll_name_display should return a non-empty string"
+        );
         assert!(
             name.contains("pdfium") || name.contains("Pdfium"),
             "dll_name_display should contain 'pdfium', got: {name}"

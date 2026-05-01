@@ -144,7 +144,10 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
         }
 
         if is_verbose_python_logging_enabled() {
-            eprintln!("[python] Discovered {} Python candidate(s)", candidates.len());
+            eprintln!(
+                "[python] Discovered {} Python candidate(s)",
+                candidates.len()
+            );
             for (i, c) in candidates.iter().enumerate() {
                 eprintln!("[python]   [{}] {}", i + 1, c.display());
             }
@@ -207,10 +210,7 @@ fn persist_python_hit(cache_key: &str, path: &Path, settings_db_path: Option<&Pa
 ///
 /// Spawns `python -c "<probe_code>"` and checks if stdout contains "ok".
 /// Used by subsystem-specific `which_python_for_module` functions.
-pub fn probe_python_module(
-    python_path: &Path,
-    probe_code: &str,
-) -> bool {
+pub fn probe_python_module(python_path: &Path, probe_code: &str) -> bool {
     let mut cmd = Command::new(python_path);
     apply_windows_no_window(&mut cmd);
     match cmd
@@ -246,16 +246,24 @@ pub fn which_python_for_module(
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {
             if let Some(path) = cached {
-                eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}", path.display());
+                eprintln!(
+                    "[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}",
+                    path.display()
+                );
                 return Some(path.clone());
             }
-            eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available");
+            eprintln!(
+                "[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available"
+            );
             return None;
         }
     }
 
     if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
-        eprintln!("[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}", path.display());
+        eprintln!(
+            "[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}",
+            path.display()
+        );
         if let Ok(mut cache) = get_probe_cache().lock() {
             cache.insert(cache_key.to_string(), Some(path.clone()));
         }
@@ -298,7 +306,10 @@ pub fn which_python_for_module(
         .collect();
 
     let candidate_count = candidates.len();
-    eprintln!("[{tag}] Probing {n} candidate(s) for {module_name}", n = candidate_count);
+    eprintln!(
+        "[{tag}] Probing {n} candidate(s) for {module_name}",
+        n = candidate_count
+    );
     let mut failed_probes = 0usize;
 
     for candidate in candidates {
@@ -408,16 +419,24 @@ pub fn which_python_for_module_scored(
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {
             if let Some(path) = cached {
-                eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}", path.display());
+                eprintln!(
+                    "[{tag}] Python resolver hit ({cache_key}, source=memory_cache): {}",
+                    path.display()
+                );
                 return Some(path.clone());
             }
-            eprintln!("[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available");
+            eprintln!(
+                "[{tag}] Python resolver hit ({cache_key}, source=memory_cache): not available"
+            );
             return None;
         }
     }
 
     if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
-        eprintln!("[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}", path.display());
+        eprintln!(
+            "[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}",
+            path.display()
+        );
         if let Ok(mut cache) = get_probe_cache().lock() {
             cache.insert(cache_key.to_string(), Some(path.clone()));
         }
@@ -466,7 +485,10 @@ pub fn which_python_for_module_scored(
     // Sort candidates by score (descending) — dedicated envs first
     candidates.sort_by_key(|c| -scorer(c));
 
-    eprintln!("[{tag}] Probing {} candidate(s) for {module_name} (scored, dedicated envs first)", candidates.len());
+    eprintln!(
+        "[{tag}] Probing {} candidate(s) for {module_name} (scored, dedicated envs first)",
+        candidates.len()
+    );
     let mut failed_probes = 0usize;
 
     for candidate in &candidates {
@@ -521,7 +543,10 @@ mod tests {
         // On CI without Python, this might return empty — that's OK for a smoke test.
         let candidates = discover_python_candidates();
         // Just verify it doesn't panic and returns a valid Vec
-        assert!(candidates.len() <= 50, "Should not have more than 50 candidates");
+        assert!(
+            candidates.len() <= 50,
+            "Should not have more than 50 candidates"
+        );
     }
 
     #[test]
@@ -529,7 +554,8 @@ mod tests {
         // Probing a nonsense module should return false without panicking
         let candidates = discover_python_candidates();
         if let Some(first) = candidates.first() {
-            let result = probe_python_module(first, "import __nonexistent_module_xyz__; print('ok')");
+            let result =
+                probe_python_module(first, "import __nonexistent_module_xyz__; print('ok')");
             assert!(!result, "Nonsense module should not be importable");
         }
         // If no candidates, the test is a no-op

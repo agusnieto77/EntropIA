@@ -19,8 +19,14 @@ pub struct SettingEntry {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn settings_get(key: String, db: State<'_, AppDbState>) -> Result<Option<String>, String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+pub async fn settings_get(
+    key: String,
+    db: State<'_, AppDbState>,
+) -> Result<Option<String>, String> {
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     let result = conn
         .query_row(
             "SELECT value FROM app_settings WHERE key = ?1",
@@ -32,8 +38,15 @@ pub async fn settings_get(key: String, db: State<'_, AppDbState>) -> Result<Opti
 }
 
 #[tauri::command]
-pub async fn settings_set(key: String, value: String, db: State<'_, AppDbState>) -> Result<(), String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+pub async fn settings_set(
+    key: String,
+    value: String,
+    db: State<'_, AppDbState>,
+) -> Result<(), String> {
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     conn.execute(
         "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
         params![key, value],
@@ -44,7 +57,10 @@ pub async fn settings_set(key: String, value: String, db: State<'_, AppDbState>)
 
 #[tauri::command]
 pub async fn settings_get_all(db: State<'_, AppDbState>) -> Result<Vec<SettingEntry>, String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     let mut stmt = conn
         .prepare("SELECT key, value FROM app_settings ORDER BY key")
         .map_err(|e| format!("Failed to prepare settings query: {e}"))?;
@@ -67,7 +83,10 @@ pub async fn settings_get_all(db: State<'_, AppDbState>) -> Result<Vec<SettingEn
 
 #[tauri::command]
 pub async fn settings_delete(key: String, db: State<'_, AppDbState>) -> Result<(), String> {
-    let conn = db.ui_conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+    let conn = db
+        .ui_conn
+        .lock()
+        .map_err(|e| format!("DB lock error: {e}"))?;
     conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
         .map_err(|e| format!("Failed to delete setting: {e}"))?;
     Ok(())

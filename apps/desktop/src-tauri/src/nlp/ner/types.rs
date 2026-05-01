@@ -33,8 +33,7 @@ pub fn sanitize_entity_value(value: &str) -> String {
             }
             matches!(
                 ch,
-                '"'
-                    | '\''
+                '"' | '\''
                     | '“'
                     | '”'
                     | '‘'
@@ -224,8 +223,14 @@ mod tests {
 
     #[test]
     fn sanitize_entity_value_trims_edge_symbols() {
-        assert_eq!(sanitize_entity_value("\"Conservas Baltar S.A.I.C.\""), "Conservas Baltar S.A.I.C");
-        assert_eq!(sanitize_entity_value("REBELION JUVENIL. —"), "REBELION JUVENIL");
+        assert_eq!(
+            sanitize_entity_value("\"Conservas Baltar S.A.I.C.\""),
+            "Conservas Baltar S.A.I.C"
+        );
+        assert_eq!(
+            sanitize_entity_value("REBELION JUVENIL. —"),
+            "REBELION JUVENIL"
+        );
         assert_eq!(sanitize_entity_value("  - M. I. A. -  "), "M. I. A");
     }
 

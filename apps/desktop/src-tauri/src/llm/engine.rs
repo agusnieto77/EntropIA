@@ -69,7 +69,10 @@ impl LlmEngine {
                 .trim_start_matches("json")
                 .trim_start_matches("JSON")
                 .trim();
-            text = without_opening.strip_suffix("```").unwrap_or(without_opening).trim();
+            text = without_opening
+                .strip_suffix("```")
+                .unwrap_or(without_opening)
+                .trim();
         }
 
         let lower = text.to_lowercase();
@@ -122,8 +125,8 @@ impl LlmEngine {
             ));
         }
 
-        let mut backend = LlamaBackend::init()
-            .map_err(|e| format!("Failed to init llama backend: {e}"))?;
+        let mut backend =
+            LlamaBackend::init().map_err(|e| format!("Failed to init llama backend: {e}"))?;
 
         // Silence verbose llama.cpp / ggml native logs (tensor loading, KV cache,
         // reserve spam, etc.). We keep our own `[llm-local] ...` diagnostics.
@@ -155,7 +158,12 @@ impl LlmEngine {
 
     /// Run raw text generation with the given prompt. Returns the generated text
     /// exactly as decoded from llama.cpp (minus surrounding trim only).
-    fn generate_raw(&self, prompt: &str, max_tokens: i32, log_prefix: &str) -> Result<String, String> {
+    fn generate_raw(
+        &self,
+        prompt: &str,
+        max_tokens: i32,
+        log_prefix: &str,
+    ) -> Result<String, String> {
         let tokens = self
             .model
             .str_to_token(prompt, AddBos::Always)
@@ -269,14 +277,24 @@ impl LlmEngine {
 
     /// Run text generation with the given prompt. Returns the sanitized generated text
     /// (excluding the prompt). `max_tokens` limits the output length.
-    pub fn generate(&self, prompt: &str, max_tokens: i32, log_prefix: &str) -> Result<String, String> {
+    pub fn generate(
+        &self,
+        prompt: &str,
+        max_tokens: i32,
+        log_prefix: &str,
+    ) -> Result<String, String> {
         let raw = self.generate_raw(prompt, max_tokens, log_prefix)?;
         Ok(Self::sanitize_text_output(&raw))
     }
 
     /// Generate OCR-corrected text and log raw vs sanitized output when the
     /// sanitization pass materially changes the model response.
-    pub fn generate_ocr_correction(&self, prompt: &str, max_tokens: i32, log_prefix: &str) -> Result<String, String> {
+    pub fn generate_ocr_correction(
+        &self,
+        prompt: &str,
+        max_tokens: i32,
+        log_prefix: &str,
+    ) -> Result<String, String> {
         let raw = self.generate_raw(prompt, max_tokens, log_prefix)?;
         let sanitized = Self::sanitize_text_output(&raw);
 
@@ -300,7 +318,12 @@ impl LlmEngine {
     /// whole process with `GGML_ASSERT(!stacks.empty()) failed` inside
     /// `llama-grammar.cpp`. We prefer unconstrained generation plus robust
     /// JSON extraction/parsing over a hard process crash.
-    pub fn generate_triples(&self, prompt: &str, max_tokens: i32, log_prefix: &str) -> Result<String, String> {
+    pub fn generate_triples(
+        &self,
+        prompt: &str,
+        max_tokens: i32,
+        log_prefix: &str,
+    ) -> Result<String, String> {
         let raw = self.generate_raw(prompt, max_tokens, log_prefix)?;
         let sanitized = Self::sanitize_json_array_output(&raw);
 
