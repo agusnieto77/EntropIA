@@ -12,6 +12,16 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 > Si querés probar la app sin compilar, andá directo a [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
 
+## Vista rápida de la app
+
+<p align="center">
+  <img src="./animation.gif" alt="Demo de EntropIA" width="960" />
+</p>
+
+<p align="center">
+  <em>Vista general de EntropIA: colecciones, corpus y exploración documental en una app desktop offline-first.</em>
+</p>
+
 Hoy el foco del proyecto está en:
 
 - **organización de corpus** en colecciones e ítems
@@ -35,11 +45,13 @@ Hoy el foco del proyecto está en:
 - [Alias en docs/database](./docs/database/SQLite.md)
 - [Guía operativa de debugging de base](./DATABASE_DEBUGGING.md)
 - [Script de auditoría SQLite](./scripts/sqlite_audit.sql)
+- [Plan de worker persistente para OCRH](./OCRH_Persistent_Worker_Plan.md)
 
 ### OCR y transcripción
 
 - **OCR Light (OCRL)**: OCR plano para imágenes y PDFs
 - **OCR High (OCRH)**: modo con **PaddleOCR-VL** para extracción más rica y sensible al layout
+- **OCRH premium**: persistencia de `blocks` + `regions`, overlay visual, filtros por tipo, navegación multipágina e inspector de bloques
 - extracción de texto nativo desde PDF cuando la calidad lo permite
 - transcripción de audio con **faster-whisper** vía subprocess de Python
 - edición manual de OCR/transcripción con re-enriquecimiento posterior
@@ -57,10 +69,45 @@ Hoy el foco del proyecto está en:
 ### Trabajo sobre documentos
 
 - visor de documento
+- overlay de layout premium sobre imágenes y PDFs procesados con OCRH
+- panel lateral de bloques OCR con selección, hover, filtros y navegación por página
+- inspector de bloque con texto completo, bbox y metadatos de matching
 - panel de entidades y triples por ítem y/o asset según el contexto activo
 - **anotaciones** sobre assets
 - **notas** asociadas al documento/asset activo
 - edición de metadata
+
+## OCRH premium: qué agrega sobre OCRL
+
+Cuando un asset se procesa con **OCRH**, EntropIA ya no guarda solo texto plano. También persiste y expone estructura documental para inspección visual y análisis posterior.
+
+### Persistencia
+
+- `extractions` guarda el texto extraído
+- `layouts` guarda:
+  - `regions`
+  - `blocks`
+  - dimensiones de referencia
+  - modelo/método
+
+### UI premium actual
+
+- toggle para mostrar/ocultar overlay
+- bounding boxes sobre imagen/PDF
+- lista de bloques con orden, label y preview
+- selección sincronizada bloque ↔ overlay
+- filtros por tipo (`títulos`, `texto`, `tablas`, `figuras`, `notas`)
+- soporte multipágina en PDFs
+- inspector de bloque con:
+  - texto completo
+  - `page`
+  - `groupId`
+  - `bbox`
+  - `overlaySource`
+
+### Limitación importante actual
+
+OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estructural ya es alta, pero la latencia puede ser considerable. El plan de optimización futuro documentado en este repo se enfoca en un **worker persistente** para PaddleOCR-VL.
 
 ## Modelos usados hoy (por proceso)
 
@@ -93,7 +140,7 @@ Hoy el foco del proyecto está en:
 | Botón visible | Dónde aparece | Archivo frontend | Función frontend | Comando Tauri | Archivo backend | Backend efectivo |
 | --- | --- | --- | --- | --- | --- | --- |
 | `OCRL` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR / Tesseract según disponibilidad) |
-| `OCRH` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR-VL por Python; con fallback local si corresponde) |
+| `OCRH` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR-VL por Python; persiste texto + layout premium cuando corresponde) |
 | `OCRC` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmCorrectOcr()` | `llm_correct_ocr` / `llm_correct_ocr_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
 | `OCRR` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()` | `llm_summarize` / `llm_summarize_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
 | `Transcribe` | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)` | `transcribe_audio` | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`) |
@@ -125,6 +172,19 @@ Hoy el foco del proyecto está en:
 | Embeddings | **fastembed** vía Python |
 | NER | ONNX local + **spaCy** opcional |
 | LLM local | **llama.cpp** + GGUF (**Gemma 4 E2B IT Q4_K_M**) |
+
+## Estado actual de la persistencia local
+
+La base SQLite local ya guarda no solo entidades de negocio (`collections`, `items`, `assets`) sino también resultados derivados importantes del pipeline:
+
+- `extractions` — OCR persistido
+- `transcriptions` — audio transcripto
+- `layouts` — estructura premium de OCRH (`blocks` + `regions`)
+- `entities` / `triples` — enriquecimiento semántico
+- `llm_results` — resultados persistidos de tareas LLM tipadas por target
+- `fts_items`, `vec_items`, `vec_assets` — búsqueda y similitud
+
+> Si necesitás inspeccionar o auditar esto en detalle, arrancá por [`SQLite.md`](./SQLite.md) y [`DATABASE_DEBUGGING.md`](./DATABASE_DEBUGGING.md).
 
 ## Instalación
 
