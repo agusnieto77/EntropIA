@@ -98,7 +98,7 @@ export class ItemRepo {
    * 3. Assets (FK → items)
    * 4. Entities (FK → items)
    * 5. Triples (FK → items)
-   * 6. Embeddings (item_id in vec_items or embeddings_fallback)
+   * 6. Asset embeddings (item_id in vec_assets)
    * 7. FTS rebuild from canonical rowid sources
    * 8. Notes (FK → items)
    * 9. Item itself
@@ -152,19 +152,7 @@ export class ItemRepo {
     }
 
     try {
-      await this.rawClient.execute(`DELETE FROM vec_items WHERE item_id = '${esc}'`)
-    } catch {
-      /* table may not exist — non-fatal */
-    }
-
-    try {
       await this.rawClient.execute(`DELETE FROM vec_assets WHERE item_id = '${esc}'`)
-    } catch {
-      /* table may not exist — non-fatal */
-    }
-
-    try {
-      await this.rawClient.execute(`DELETE FROM embeddings_fallback WHERE item_id = '${esc}'`)
     } catch {
       /* table may not exist — non-fatal */
     }
@@ -239,7 +227,9 @@ export class ItemRepo {
         return this.db
           .select()
           .from(items)
-          .where(ids.length === 1 ? eq(items.id, ids[0]!) : or(...ids.map((id) => eq(items.id, id)))!)
+          .where(
+            ids.length === 1 ? eq(items.id, ids[0]!) : or(...ids.map((id) => eq(items.id, id)))!
+          )
           .orderBy(desc(items.updatedAt))
       }
     }

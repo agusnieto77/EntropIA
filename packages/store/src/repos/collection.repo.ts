@@ -93,7 +93,7 @@ export class CollectionRepo {
    * Phase 1 (atomic): Core tables that ALWAYS exist — wrapped in BEGIN/COMMIT.
    *   If any statement fails, the whole transaction rolls back.
    * Phase 2 (best-effort): Derived/optional tables that may not exist
-   *   (`fts_items`, `vec_items`, `embeddings_fallback`). These are cleaned up
+   *   (`fts_items`, `vec_assets`). These are cleaned up
    *   after Phase 1 succeeds.
    *   Failures here are silently ignored — they're index/cache data.
    *
@@ -148,23 +148,9 @@ export class CollectionRepo {
         /* table may not exist — non-fatal */
       }
 
-      // Embedding vectors (vec0 or fallback)
-      try {
-        await this.rawClient.execute(`DELETE FROM vec_items WHERE item_id IN (${itemIdsList})`)
-      } catch {
-        /* table may not exist — non-fatal */
-      }
-
+      // Asset embedding vectors
       try {
         await this.rawClient.execute(`DELETE FROM vec_assets WHERE item_id IN (${itemIdsList})`)
-      } catch {
-        /* table may not exist — non-fatal */
-      }
-
-      try {
-        await this.rawClient.execute(
-          `DELETE FROM embeddings_fallback WHERE item_id IN (${itemIdsList})`
-        )
       } catch {
         /* table may not exist — non-fatal */
       }

@@ -3,11 +3,34 @@
 /// Each command pushes a job to the `NlpQueue` and returns immediately with
 /// `Ok("queued")`. The worker emits `nlp:progress`, `nlp:complete`, or
 /// `nlp:error` events asynchronously.
-
 use super::{NlpJob, NlpQueue};
+use serde::Serialize;
 use tauri::State;
 
-type SimilarItemRow = (String, String, String, Vec<u8>);
+type SimilarAssetRow = (String, String, String, String, String, String, Vec<u8>);
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetEmbeddingBackfillFailure {
+    pub asset_id: String,
+    pub item_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetEmbeddingBackfillReport {
+    pub force: bool,
+    pub limit: Option<usize>,
+    pub total_assets: i64,
+    pub assets_with_text: i64,
+    pub assets_with_embedding: i64,
+    pub assets_missing_embedding: i64,
+    pub requested: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub failures: Vec<AssetEmbeddingBackfillFailure>,
+}
 
 fn enqueue(nlp_queue: &NlpQueue, job: NlpJob) -> Result<String, String> {
     nlp_queue.submit(job)?;
@@ -25,23 +48,8 @@ fn triples_retired_error(target: &str) -> String {
 /// The worker will fetch the item's title + extracted text and upsert into
 /// the `fts_items` virtual table.
 #[tauri::command]
-pub async fn index_fts(
-    item_id: String,
-    nlp_queue: State<'_, NlpQueue>,
-) -> Result<String, String> {
+pub async fn index_fts(item_id: String, nlp_queue: State<'_, NlpQueue>) -> Result<String, String> {
     enqueue(&nlp_queue, NlpJob::IndexFts { item_id })
-}
-
-/// Submit an embedding computation job for `item_id`.
-///
-/// The worker will extract the item's text, compute a 384-dim vector via
-/// fastembed, and upsert into `vec_items`.
-#[tauri::command]
-pub async fn embed_item(
-    item_id: String,
-    nlp_queue: State<'_, NlpQueue>,
-) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ComputeEmbedding { item_id })
 }
 
 /// Submit a NER extraction job for `item_id`.
@@ -65,10 +73,10 @@ pub async fn extract_triples(
     Err(triples_retired_error(&format!("item '{item_id}'")))
 }
 
-/// Submit a full enrichment pipeline job (FTS + embed + NER) for `item_id`.
+/// Submit the remaining item-level enrichment pipeline job (FTS + NER) for `item_id`.
 ///
 /// Semantic triples are Gemma-only and intentionally excluded from this NLP pipeline.
-/// The worker runs all 3 sub-jobs sequentially. Errors in individual sub-jobs
+/// The worker runs both sub-jobs sequentially. Errors in individual sub-jobs
 /// are logged and emitted as `nlp:error` events but do NOT block remaining sub-jobs.
 #[tauri::command]
 pub async fn enrich_item(
@@ -86,14 +94,142 @@ pub async fn enrich_item(
 ///
 /// The worker will extract the asset's text, compute a 384-dim vector,
 /// and upsert into `vec_assets` keyed by `asset_id`.
-/// This preserves the item-level vector in `vec_items`.
 #[tauri::command]
 pub async fn embed_asset(
     item_id: String,
     asset_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ComputeAssetEmbedding { item_id, asset_id })
+    enqueue(
+        &nlp_queue,
+        NlpJob::ComputeAssetEmbedding { item_id, asset_id },
+    )
+}
+
+/// Batch backfill asset-level embeddings into `vec_assets`.
+///
+/// Walks every asset that already has OCR/transcription text and persists
+/// embeddings keyed by `asset_id`. By default it skips assets that already
+/// have a `vec_assets` row; pass `force=true` to recompute them.
+#[tauri::command]
+pub async fn backfill_asset_embeddings(
+    force: Option<bool>,
+    limit: Option<usize>,
+    app_handle: tauri::AppHandle,
+) -> Result<AssetEmbeddingBackfillReport, String> {
+    let force = force.unwrap_or(false);
+    let limit = limit.filter(|value| *value > 0);
+
+    tokio::task::spawn_blocking(move || {
+        use tauri::Manager;
+
+        let app_data_dir = app_handle.path().app_data_dir().map_err(|e| {
+            format!("Failed to resolve app data dir for asset embedding backfill: {e}")
+        })?;
+        let db_path = app_data_dir.join("entropia.sqlite");
+
+        let conn = rusqlite::Connection::open(&db_path).map_err(|e| {
+            format!("Failed to open SQLite database for asset embedding backfill: {e}")
+        })?;
+
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;\
+             CREATE TABLE IF NOT EXISTS vec_assets(\
+                 asset_id TEXT PRIMARY KEY,\
+                 item_id TEXT NOT NULL,\
+                 embedding BLOB NOT NULL\
+             );\
+             CREATE INDEX IF NOT EXISTS idx_vec_assets_item_id ON vec_assets(item_id);",
+        )
+        .map_err(|e| format!("Failed to ensure embedding tables for backfill: {e}"))?;
+
+        let coverage = super::embeddings::summarize_asset_embedding_coverage(&conn)?;
+        let candidates = super::embeddings::list_asset_embedding_candidates(&conn, force, limit)?;
+
+        if candidates.is_empty() {
+            return Ok(AssetEmbeddingBackfillReport {
+                force,
+                limit,
+                total_assets: coverage.total_assets,
+                assets_with_text: coverage.assets_with_text,
+                assets_with_embedding: coverage.assets_with_embedding,
+                assets_missing_embedding: coverage.assets_missing_embedding,
+                requested: 0,
+                succeeded: 0,
+                failed: 0,
+                failures: Vec::new(),
+            });
+        }
+
+        let python_path = super::embeddings::which_python(Some(&db_path)).ok_or_else(|| {
+            "No Python with fastembed available for asset embedding backfill".to_string()
+        })?;
+
+        let script_path = crate::path_utils::normalize_windows_path(
+            app_handle
+                .path()
+                .resolve("scripts/embed.py", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .filter(|path| path.exists())
+                .unwrap_or_else(|| {
+                    let resource_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/scripts/embed.py");
+                    if resource_path.exists() {
+                        resource_path
+                    } else {
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("scripts/embed.py")
+                    }
+                }),
+        );
+
+        let embed_cache_dir = app_data_dir.join("hf_cache");
+
+        let engine =
+            super::embeddings::EmbeddingEngine::init(super::embeddings::EmbeddingConfig {
+                python_path,
+                script_path,
+                model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                    .to_string(),
+                cache_dir: Some(embed_cache_dir),
+            })?;
+
+        let mut succeeded = 0_usize;
+        let mut failures = Vec::new();
+
+        for candidate in candidates.iter() {
+            match super::embeddings::compute_and_store_for_asset(
+                Some(&engine),
+                &conn,
+                &candidate.item_id,
+                &candidate.asset_id,
+            ) {
+                Ok(()) => succeeded += 1,
+                Err(error) => failures.push(AssetEmbeddingBackfillFailure {
+                    asset_id: candidate.asset_id.clone(),
+                    item_id: candidate.item_id.clone(),
+                    error,
+                }),
+            }
+        }
+
+        let updated_coverage = super::embeddings::summarize_asset_embedding_coverage(&conn)?;
+
+        Ok(AssetEmbeddingBackfillReport {
+            force,
+            limit,
+            total_assets: updated_coverage.total_assets,
+            assets_with_text: updated_coverage.assets_with_text,
+            assets_with_embedding: updated_coverage.assets_with_embedding,
+            assets_missing_embedding: updated_coverage.assets_missing_embedding,
+            requested: candidates.len(),
+            succeeded,
+            failed: failures.len(),
+            failures,
+        })
+    })
+    .await
+    .map_err(|e| format!("Asset embedding backfill task panicked: {e}"))?
 }
 
 /// Submit a NER extraction job for a specific asset.
@@ -106,7 +242,10 @@ pub async fn extract_entities_for_asset(
     asset_id: String,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    enqueue(&nlp_queue, NlpJob::ExtractEntitiesForAsset { item_id, asset_id })
+    enqueue(
+        &nlp_queue,
+        NlpJob::ExtractEntitiesForAsset { item_id, asset_id },
+    )
 }
 
 /// Submit a semantic triples extraction job for a specific asset.
@@ -119,7 +258,9 @@ pub async fn extract_triples_for_asset(
     asset_id: String,
     _nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    Err(triples_retired_error(&format!("asset '{asset_id}' (item '{item_id}')")))
+    Err(triples_retired_error(&format!(
+        "asset '{asset_id}' (item '{item_id}')"
+    )))
 }
 
 #[cfg(test)]
@@ -130,7 +271,7 @@ mod tests {
         values.into_iter().flat_map(|f| f.to_le_bytes()).collect()
     }
 
-    fn setup_similar_items_test_db() -> rusqlite::Connection {
+    fn setup_similar_assets_test_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db should open");
         conn.execute_batch(
             r#"
@@ -140,8 +281,17 @@ mod tests {
                 title TEXT NOT NULL
             );
 
-            CREATE TABLE vec_items (
-                item_id TEXT PRIMARY KEY,
+            CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                item_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE vec_assets (
+                asset_id TEXT PRIMARY KEY,
+                item_id TEXT NOT NULL,
                 embedding BLOB NOT NULL
             );
             "#,
@@ -193,7 +343,7 @@ mod tests {
         );
     }
 
-#[test]
+    #[test]
     fn enqueue_keeps_non_embedding_jobs_stable() {
         let (queue, _receiver) = NlpQueue::new();
 
@@ -250,7 +400,10 @@ mod tests {
         let a = vec![1.0_f32, 2.0_f32, 3.0_f32];
         let b = vec![1.0_f32, 2.0_f32, 3.0_f32];
         let dist = super::cosine_distance(&a, &b).unwrap();
-        assert!((dist - 0.0).abs() < 1e-10, "identical vectors should have distance 0");
+        assert!(
+            (dist - 0.0).abs() < 1e-10,
+            "identical vectors should have distance 0"
+        );
     }
 
     #[test]
@@ -258,7 +411,10 @@ mod tests {
         let a = vec![1.0_f32, 0.0_f32, 0.0_f32];
         let b = vec![-1.0_f32, 0.0_f32, 0.0_f32];
         let dist = super::cosine_distance(&a, &b).unwrap();
-        assert!((dist - 2.0).abs() < 1e-10, "opposite vectors should have distance 2");
+        assert!(
+            (dist - 2.0).abs() < 1e-10,
+            "opposite vectors should have distance 2"
+        );
     }
 
     #[test]
@@ -266,7 +422,10 @@ mod tests {
         let a = vec![1.0_f32, 0.0_f32, 0.0_f32];
         let b = vec![0.0_f32, 1.0_f32, 0.0_f32];
         let dist = super::cosine_distance(&a, &b).unwrap();
-        assert!((dist - 1.0).abs() < 1e-10, "orthogonal vectors should have distance 1");
+        assert!(
+            (dist - 1.0).abs() < 1e-10,
+            "orthogonal vectors should have distance 1"
+        );
     }
 
     #[test]
@@ -295,7 +454,10 @@ mod tests {
         let a = vec![1.0_f32, 2.0_f32, 3.0_f32];
         let b = vec![2.0_f32, 4.0_f32, 6.0_f32];
         let dist = super::cosine_distance(&a, &b).unwrap();
-        assert!((dist - 0.0).abs() < 1e-10, "proportional vectors should have distance 0");
+        assert!(
+            (dist - 0.0).abs() < 1e-10,
+            "proportional vectors should have distance 0"
+        );
     }
 
     #[test]
@@ -306,28 +468,37 @@ mod tests {
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect();
-        assert_eq!(recovered, original, "blob round-trip should preserve values");
+        assert_eq!(
+            recovered, original,
+            "blob round-trip should preserve values"
+        );
     }
 
     #[test]
-    fn rank_similar_item_rows_includes_other_collections() {
+    fn rank_similar_asset_rows_keeps_asset_context() {
         let target_blob = embedding_blob([1.0_f32, 0.0_f32]);
-        let same_collection_blob = embedding_blob([0.8_f32, 0.2_f32]);
+        let same_item_blob = embedding_blob([0.85_f32, 0.15_f32]);
         let other_collection_blob = embedding_blob([0.95_f32, 0.05_f32]);
 
-        let results = super::rank_similar_item_rows(
+        let results = super::rank_similar_asset_rows(
             &target_blob,
             vec![
                 (
+                    "asset-same".to_string(),
                     "item-same".to_string(),
-                    "Misma colección".to_string(),
+                    "Página hermana".to_string(),
                     "col-1".to_string(),
-                    same_collection_blob,
+                    "same.pdf".to_string(),
+                    "pdf".to_string(),
+                    same_item_blob,
                 ),
                 (
+                    "asset-other".to_string(),
                     "item-other".to_string(),
-                    "Otra colección".to_string(),
+                    "Página externa".to_string(),
                     "col-2".to_string(),
+                    "other.wav".to_string(),
+                    "audio".to_string(),
                     other_collection_blob,
                 ),
             ],
@@ -335,15 +506,16 @@ mod tests {
         )
         .expect("ranking should succeed");
 
-        assert_eq!(results.len(), 2, "should keep candidates from every collection");
-        assert_eq!(results[0]["itemId"], "item-other");
-        assert_eq!(results[0]["collectionId"], "col-2");
-        assert_eq!(results[1]["itemId"], "item-same");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["assetId"], "asset-other");
+        assert_eq!(results[0]["assetPath"], "other.wav");
+        assert_eq!(results[0]["assetType"], "audio");
+        assert_eq!(results[1]["assetId"], "asset-same");
     }
 
     #[test]
-    fn similar_items_queries_across_collections() {
-        let conn = setup_similar_items_test_db();
+    fn similar_assets_queries_across_collections_and_excludes_self() {
+        let conn = setup_similar_assets_test_db();
 
         conn.execute(
             "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
@@ -352,39 +524,67 @@ mod tests {
         .expect("target item should insert");
         conn.execute(
             "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["item-same", "col-1", "Misma colección"],
+            rusqlite::params!["item-same", "col-1", "Página hermana"],
         )
-        .expect("same collection item should insert");
+        .expect("same item should insert");
         conn.execute(
             "INSERT INTO items(id, collection_id, title) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["item-other", "col-2", "Otra colección"],
+            rusqlite::params!["item-other", "col-2", "Página externa"],
         )
-        .expect("other collection item should insert");
+        .expect("other item should insert");
 
         conn.execute(
-            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
-            rusqlite::params!["item-target", embedding_blob([1.0_f32, 0.0_f32])],
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["asset-target", "item-target", "target.pdf", "pdf", 1_i64],
+        )
+        .expect("target asset should insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["asset-same", "item-same", "same.pdf", "pdf", 2_i64],
+        )
+        .expect("same asset should insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["asset-other", "item-other", "other.wav", "audio", 3_i64],
+        )
+        .expect("other asset should insert");
+
+        conn.execute(
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "asset-target",
+                "item-target",
+                embedding_blob([1.0_f32, 0.0_f32])
+            ],
         )
         .expect("target embedding should insert");
         conn.execute(
-            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
-            rusqlite::params!["item-same", embedding_blob([0.8_f32, 0.2_f32])],
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "asset-same",
+                "item-same",
+                embedding_blob([0.8_f32, 0.2_f32])
+            ],
         )
-        .expect("same collection embedding should insert");
+        .expect("same asset embedding should insert");
         conn.execute(
-            "INSERT INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
-            rusqlite::params!["item-other", embedding_blob([0.95_f32, 0.05_f32])],
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "asset-other",
+                "item-other",
+                embedding_blob([0.95_f32, 0.05_f32])
+            ],
         )
-        .expect("other collection embedding should insert");
+        .expect("other asset embedding should insert");
 
-        let results = super::similar_items_from_conn(&conn, "item-target", 5)
-            .expect("similar items query should succeed");
+        let results = super::similar_assets_from_conn(&conn, "asset-target", 5)
+            .expect("similar assets query should succeed");
         let results = results.as_array().expect("result should be a JSON array");
 
-        assert_eq!(results.len(), 2, "should return candidates from both collections");
-        assert_eq!(results[0]["itemId"], "item-other");
+        assert_eq!(results.len(), 2, "should exclude the target asset itself");
+        assert_eq!(results[0]["assetId"], "asset-other");
         assert_eq!(results[0]["collectionId"], "col-2");
-        assert_eq!(results[1]["itemId"], "item-same");
+        assert_eq!(results[1]["assetId"], "asset-same");
         assert_eq!(results[1]["collectionId"], "col-1");
     }
 }
@@ -419,136 +619,166 @@ pub async fn fts_search(
     }))
 }
 
-/// Find items similar to `item_id` using kNN vector search.
-///
-/// Returns up to `limit` (default 5) similar items ordered by cosine distance
-/// (most similar first). Returns empty array if the item has no embedding or
-/// there are no other items with embeddings.
-///
-/// Since sqlite-vec is a no-op shim on Windows, this performs a full table
-/// scan of `vec_items` and computes cosine similarity in Rust. This is fine
-/// for MVP-scale data (<10k items).
+/// Find assets similar to `asset_id` using asset-level kNN vector search.
+/// Returns up to `limit` (default 5) similar assets ordered by cosine similarity.
 #[tauri::command]
-pub async fn similar_items(
-    item_id: String,
+pub async fn similar_assets(
+    asset_id: String,
     limit: Option<u8>,
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(5) as usize;
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
 
-    similar_items_from_conn(&conn, &item_id, limit)
+    similar_assets_from_conn(&conn, &asset_id, limit)
 }
 
-fn similar_items_from_conn(
+fn similar_assets_from_conn(
     conn: &rusqlite::Connection,
-    item_id: &str,
+    asset_id: &str,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
     const MAX_CANDIDATES: usize = 2000;
 
-    // Read the target item's embedding (stored as little-endian f32 blob)
     let target_blob: Vec<u8> = conn
         .query_row(
-            "SELECT embedding FROM vec_items WHERE item_id = ?1",
-            rusqlite::params![item_id],
+            "SELECT embedding FROM vec_assets WHERE asset_id = ?1",
+            rusqlite::params![asset_id],
             |row| row.get(0),
         )
         .map_err(|e| {
             if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
-                format!("No embedding found for item '{item_id}'")
+                format!("No embedding found for asset '{asset_id}'")
             } else {
-                format!("Failed to read embedding for '{item_id}': {e}")
+                format!("Failed to read embedding for asset '{asset_id}': {e}")
             }
         })?;
 
-    // Read candidate embeddings with their titles and collection_id via JOIN.
-    // Scan across every collection/project so Similar Items matches the global
-    // scope already used by Search by Similar Text (FTS).
     let mut stmt = conn
         .prepare(
-            "SELECT v.item_id, i.title, i.collection_id, v.embedding
-             FROM vec_items v
+            "SELECT v.asset_id, v.item_id, i.title, i.collection_id, a.path, a.type, v.embedding
+             FROM vec_assets v
+             LEFT JOIN assets a ON a.id = v.asset_id
              LEFT JOIN items i ON i.id = v.item_id
-             WHERE v.item_id != ?1
+             WHERE v.asset_id != ?1
              LIMIT ?2",
         )
-        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+        .map_err(|e| format!("Failed to prepare asset similarity query: {e}"))?;
 
     let rows = stmt
-        .query_map(
-            rusqlite::params![item_id, MAX_CANDIDATES as i64],
-            |row| {
-            let id: String = row.get(0)?;
-            let title: Option<String> = row.get(1)?;
-            let collection_id: Option<String> = row.get(2)?;
-            let blob: Vec<u8> = row.get(3)?;
-            Ok((id, title.unwrap_or_default(), collection_id.unwrap_or_default(), blob))
-        },
-        )
-        .map_err(|e| format!("Failed to execute query: {e}"))?
+        .query_map(rusqlite::params![asset_id, MAX_CANDIDATES as i64], |row| {
+            let asset_id: String = row.get(0)?;
+            let item_id: String = row.get(1)?;
+            let title: Option<String> = row.get(2)?;
+            let collection_id: Option<String> = row.get(3)?;
+            let asset_path: Option<String> = row.get(4)?;
+            let asset_type: Option<String> = row.get(5)?;
+            let blob: Vec<u8> = row.get(6)?;
+            Ok((
+                asset_id,
+                item_id,
+                title.unwrap_or_default(),
+                collection_id.unwrap_or_default(),
+                asset_path.unwrap_or_default(),
+                asset_type.unwrap_or_default(),
+                blob,
+            ))
+        })
+        .map_err(|e| format!("Failed to execute asset similarity query: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to read rows: {e}"))?;
+        .map_err(|e| format!("Failed to read asset similarity rows: {e}"))?;
 
-    Ok(serde_json::Value::Array(rank_similar_item_rows(
+    Ok(serde_json::Value::Array(rank_similar_asset_rows(
         &target_blob,
         rows,
         limit,
     )?))
 }
 
-fn rank_similar_item_rows(
+fn rank_similar_asset_rows(
     target_blob: &[u8],
-    rows: Vec<SimilarItemRow>,
+    rows: Vec<SimilarAssetRow>,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
-    if target_blob.len() % 4 != 0 {
+    rank_similarity_rows(
+        target_blob,
+        rows.into_iter()
+            .map(
+                |(asset_id, item_id, title, collection_id, asset_path, asset_type, blob)| {
+                    (
+                        (
+                            asset_id,
+                            item_id,
+                            title,
+                            collection_id,
+                            asset_path,
+                            asset_type,
+                        ),
+                        blob,
+                    )
+                },
+            )
+            .collect(),
+        limit,
+        |(asset_id, item_id, title, collection_id, asset_path, asset_type), similarity| {
+            serde_json::json!({
+                "assetId": asset_id,
+                "itemId": item_id,
+                "title": title,
+                "collectionId": collection_id,
+                "assetPath": asset_path,
+                "assetType": asset_type,
+                "similarity": similarity,
+            })
+        },
+    )
+}
+
+fn rank_similarity_rows<T, F>(
+    target_blob: &[u8],
+    rows: Vec<(T, Vec<u8>)>,
+    limit: usize,
+    to_json: F,
+) -> Result<Vec<serde_json::Value>, String>
+where
+    F: Fn(T, f64) -> serde_json::Value,
+{
+    let target = decode_embedding_blob(target_blob)?;
+
+    let mut results: Vec<(T, f64)> = rows
+        .into_iter()
+        .filter_map(|(meta, blob)| {
+            if blob.len() != target_blob.len() {
+                return None;
+            }
+
+            let other = decode_embedding_blob(&blob).ok()?;
+            let distance = cosine_distance(&target, &other)?;
+            Some((meta, 1.0 - distance))
+        })
+        .collect();
+
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(results
+        .into_iter()
+        .take(limit)
+        .map(|(meta, similarity)| to_json(meta, similarity))
+        .collect())
+}
+
+fn decode_embedding_blob(blob: &[u8]) -> Result<Vec<f32>, String> {
+    if blob.len() % 4 != 0 {
         return Err(format!(
             "Embedding blob has invalid size: {} bytes (not divisible by 4)",
-            target_blob.len()
+            blob.len()
         ));
     }
 
-    let target: Vec<f32> = target_blob
+    Ok(blob
         .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-        .collect();
-
-    // Compute cosine distance for each item
-    let mut results: Vec<(String, String, String, f64)> = rows
-        .into_iter()
-        .filter_map(|(id, title, collection_id, blob)| {
-            if blob.len() % 4 != 0 || blob.len() != target_blob.len() {
-                return None; // Skip incompatible embeddings
-            }
-            let other: Vec<f32> = blob
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-                .collect();
-
-            let distance = cosine_distance(&target, &other)?;
-            // Convert distance to similarity (1.0 = identical, 0.0 = unrelated)
-            let similarity = 1.0 - distance;
-            Some((id, title, collection_id, similarity))
-        })
-        .collect();
-
-    // Sort by similarity descending (most similar first) and take top-k
-    results.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
-    let results: Vec<_> = results
-        .into_iter()
-        .take(limit)
-        .map(|(id, title, collection_id, similarity)| {
-            serde_json::json!({
-                "itemId": id,
-                "title": title,
-                "collectionId": collection_id,
-                "similarity": similarity,
-            })
-        })
-        .collect();
-
-    Ok(results)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect())
 }
 
 /// Compute cosine distance (1 - cosine_similarity) between two f32 vectors.

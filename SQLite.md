@@ -103,7 +103,6 @@ PRAGMA table_info(annotations);
 PRAGMA table_info(app_settings);
 PRAGMA table_info(assets);
 PRAGMA table_info(collections);
-PRAGMA table_info(embeddings_fallback);
 PRAGMA table_info(entities);
 PRAGMA table_info(extractions);
 PRAGMA table_info(fts_items);
@@ -121,8 +120,9 @@ PRAGMA table_info(topics);
 PRAGMA table_info(transcriptions);
 PRAGMA table_info(triples);
 PRAGMA table_info(vec_assets);
-PRAGMA table_info(vec_items);
 ```
+
+> Si inspeccionás una base vieja y aparecen `vec_items` o `embeddings_fallback`, tomalos como leftovers legacy: la arquitectura runtime actual usa solo `vec_assets` para embeddings/similitud.
 
 ## Clasificación de tablas
 
@@ -147,9 +147,12 @@ PRAGMA table_info(vec_items);
 ### Tablas técnicas / infraestructura
 
 - `_migrations`
-- `embeddings_fallback`
-- `vec_items`
 - `vec_assets`
+
+### Legacy / archive (solo snapshots viejos)
+
+- `vec_items`
+- `embeddings_fallback`
 
 ### Tablas internas de FTS5
 
@@ -168,11 +171,13 @@ PRAGMA table_info(vec_items);
 ### `entropia.sqlite`
 
 #### `_migrations`
+
 - `id`
 - `name`
 - `applied_at`
 
 #### `annotations`
+
 - `id`
 - `asset_id`
 - `page`
@@ -186,10 +191,12 @@ PRAGMA table_info(vec_items);
 - `updated_at`
 
 #### `app_settings`
+
 - `key`
 - `value`
 
 #### `assets`
+
 - `id`
 - `item_id`
 - `path`
@@ -199,17 +206,15 @@ PRAGMA table_info(vec_items);
 - `sort_index`
 
 #### `collections`
+
 - `id`
 - `name`
 - `description`
 - `created_at`
 - `updated_at`
 
-#### `embeddings_fallback`
-- `item_id`
-- `embedding`
-
 #### `entities`
+
 - `id`
 - `item_id`
 - `entity_type`
@@ -226,6 +231,7 @@ PRAGMA table_info(vec_items);
 - `asset_id`
 
 #### `extractions`
+
 - `id`
 - `asset_id`
 - `text_content`
@@ -234,35 +240,42 @@ PRAGMA table_info(vec_items);
 - `created_at`
 
 #### `fts_items`
+
 - `item_id`
 - `title`
 - `metadata`
 - `extracted_text`
 
 #### `fts_items_config`
+
 - `k`
 - `v`
 
 #### `fts_items_data`
+
 - `id`
 - `block`
 
 #### `fts_items_docsize`
+
 - `id`
 - `sz`
 
 #### `fts_items_idx`
+
 - `segid`
 - `term`
 - `pgno`
 
 #### `item_topics`
+
 - `id`
 - `item_id`
 - `topic_id`
 - `created_at`
 
 #### `items`
+
 - `id`
 - `title`
 - `collection_id`
@@ -271,6 +284,7 @@ PRAGMA table_info(vec_items);
 - `updated_at`
 
 #### `jobs`
+
 - `id`
 - `type`
 - `status`
@@ -281,6 +295,7 @@ PRAGMA table_info(vec_items);
 - `updated_at`
 
 #### `layouts`
+
 - `id`
 - `asset_id`
 - `regions`
@@ -290,6 +305,7 @@ PRAGMA table_info(vec_items);
 - `created_at`
 
 #### `llm_results`
+
 - `id`
 - `target_id`
 - `target_type`
@@ -298,6 +314,7 @@ PRAGMA table_info(vec_items);
 - `created_at`
 
 #### `notes`
+
 - `id`
 - `item_id`
 - `content`
@@ -306,11 +323,13 @@ PRAGMA table_info(vec_items);
 - `asset_id`
 
 #### `topics`
+
 - `id`
 - `name`
 - `created_at`
 
 #### `transcriptions`
+
 - `id`
 - `asset_id`
 - `text_content`
@@ -322,6 +341,7 @@ PRAGMA table_info(vec_items);
 - `created_at`
 
 #### `triples`
+
 - `id`
 - `item_id`
 - `subject`
@@ -331,11 +351,8 @@ PRAGMA table_info(vec_items);
 - `asset_id`
 
 #### `vec_assets`
-- `asset_id`
-- `item_id`
-- `embedding`
 
-#### `vec_items`
+- `asset_id`
 - `item_id`
 - `embedding`
 
@@ -377,10 +394,6 @@ assets
   ├── 0..N -> entities
   └── 0..N -> triples
 
-items
-  ├── 1:1 -> vec_items
-  └── 0..1 -> embeddings_fallback
-
 assets
   └── 1:1 -> vec_assets
 ```
@@ -392,91 +405,104 @@ assets
 - un `asset` concentra procesamiento derivado: OCR, transcripción, layout, anotaciones y jobs
 - un `item` concentra conocimiento semántico: notas, entidades, triples y tópicos
 - la relación entre `items` y `topics` es muchos-a-muchos mediante `item_topics`
-- las tablas `vec_items`, `vec_assets` y `embeddings_fallback` soportan búsqueda/vectorización
+- `vec_assets` soporta embeddings y similitud asset-level
+- `vec_items` y `embeddings_fallback` pertenecen a notas legacy, no al runtime activo
 
 ## PK/FK por tabla
 
 ### `_migrations`
+
 - PK: `id`
 - FK: ninguna
 
 ### `annotations`
+
 - PK: `id`
 - FK:
   - `asset_id -> assets.id`
 
 ### `app_settings`
+
 - PK: `key`
 - FK: ninguna
 
 ### `assets`
+
 - PK: `id`
 - FK:
   - `item_id -> items.id`
 
 ### `collections`
+
 - PK: `id`
 - FK: ninguna
 
-### `embeddings_fallback`
-- PK: `item_id`
-- FK conceptual:
-  - `item_id -> items.id`
-
 ### `entities`
+
 - PK: `id`
 - FK conceptuales:
   - `item_id -> items.id`
   - `asset_id -> assets.id`
 
 ### `extractions`
+
 - PK: `id`
 - FK:
   - `asset_id -> assets.id`
 
 ### `fts_items`
+
 - PK: virtual FTS5, sin PK de negocio clásica
 - FK conceptual:
   - `item_id -> items.id`
 
 ### `fts_items_config`
+
 - PK: `k`
 - FK: ninguna
 
 ### `fts_items_data`
+
 - PK: `id`
 - FK: interna FTS5
 
 ### `fts_items_docsize`
+
 - PK: `id`
 - FK: interna FTS5
 
 ### `fts_items_idx`
+
 - PK compuesta: `segid`, `term`
 - FK: interna FTS5
 
 ### `item_topics`
+
 - PK: `id`
 - FK:
   - `item_id -> items.id`
   - `topic_id -> topics.id`
 
 ### `items`
+
 - PK: `id`
 - FK:
   - `collection_id -> collections.id`
 
 ### `jobs`
+
 - PK: `id`
 - FK conceptual:
   - `asset_id -> assets.id`
 
 ### `layouts`
+
 - PK: `id`
 - FK:
   - `asset_id -> assets.id`
 
 ### `llm_results`
+
 - PK: `id`
 - FK conceptual tipada:
   - `target_type='asset' -> target_id -> assets.id`
@@ -485,35 +511,35 @@ assets
   - `target_type='unknown'` reservado para filas legacy no inferibles
 
 ### `notes`
+
 - PK: `id`
 - FK conceptuales:
   - `item_id -> items.id`
   - `asset_id -> assets.id`
 
 ### `topics`
+
 - PK: `id`
 - FK: ninguna
 
 ### `transcriptions`
+
 - PK: `id`
 - FK:
   - `asset_id -> assets.id`
 
 ### `triples`
+
 - PK: `id`
 - FK conceptuales:
   - `item_id -> items.id`
   - `asset_id -> assets.id`
 
 ### `vec_assets`
+
 - PK: `asset_id`
 - FK conceptual:
   - `asset_id -> assets.id`
-  - `item_id -> items.id`
-
-### `vec_items`
-- PK: `item_id`
-- FK conceptual:
   - `item_id -> items.id`
 
 ## Mermaid ERD
@@ -537,9 +563,6 @@ erDiagram
     assets ||--o{ entities : may_reference
     assets ||--o{ triples : may_reference
     assets ||--|| vec_assets : embeds
-
-    items ||--|| vec_items : embeds
-    items ||--o| embeddings_fallback : fallback_embed
 ```
 
 ### Nota sobre FK reales vs conceptuales
@@ -553,35 +576,37 @@ erDiagram
 ### Constraints destacadas por tabla
 
 #### `_migrations`
+
 - `PRIMARY KEY AUTOINCREMENT (id)`
 - `UNIQUE (name)`
 - `NOT NULL`: `name`, `applied_at`
 
 #### `annotations`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE`
 - `CHECK kind IN ('rectangle', 'underline')`
 - `NOT NULL` en casi todas las columnas operativas
 
 #### `app_settings`
+
 - `PRIMARY KEY (key)`
 - `NOT NULL (value)`
 
 #### `assets`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (item_id) REFERENCES items(id)`
 - `NOT NULL`: `item_id`, `path`, `type`, `created_at`, `sort_index`
 - `DEFAULT sort_index = 0`
 
 #### `collections`
+
 - `PRIMARY KEY (id)`
 - `NOT NULL`: `name`, `created_at`, `updated_at`
 
-#### `embeddings_fallback`
-- `PRIMARY KEY (item_id)`
-- `NOT NULL (embedding)`
-
 #### `entities`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`
 - `CHECK entity_type IN ('person','place','date','institution','organization','misc','custom')`
@@ -592,69 +617,77 @@ erDiagram
 - `DEFAULT geo_status = 'pending'`
 
 #### `extractions`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE`
 - `UNIQUE INDEX idx_extractions_asset_id_unique ON (asset_id)`
 - `NOT NULL`: `asset_id`, `text_content`, `method`, `created_at`
 
 #### `fts_items`
+
 - tabla virtual `FTS5`
 - `tokenize='unicode61 remove_diacritics 1'`
 - `content=''` (contentless FTS)
 
 #### `item_topics`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`
 - `FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE`
 - `UNIQUE INDEX idx_item_topics_item_topic ON (item_id, topic_id)`
 
 #### `items`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (collection_id) REFERENCES collections(id)`
 - `GENERATED ALWAYS STORED`: `search_text`
 - `search_text = COALESCE(title, '') || ' ' || COALESCE(json(metadata), '')`
 
 #### `jobs`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (asset_id) REFERENCES assets(id)`
 - `DEFAULT status = 'pending'`
 
 #### `layouts`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE`
 
 #### `llm_results`
+
 - `PRIMARY KEY (id)`
 - `target_type CHECK ('asset' | 'item' | 'collection' | 'unknown')`
 - sin FK física sobre `target_id`, pero con scope explícito por `target_type`
 
 #### `notes`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (item_id) REFERENCES items(id)`
 - `asset_id` existe pero sin FK física explícita en el schema observado
 
 #### `topics`
+
 - `PRIMARY KEY (id)`
 - `UNIQUE (name)`
 
 #### `transcriptions`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE`
 - `UNIQUE INDEX idx_transcriptions_asset_id_unique ON (asset_id)`
 
 #### `triples`
+
 - `PRIMARY KEY (id)`
 - `FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`
 - `DEFAULT created_at = strftime('%s', 'now')`
 - `asset_id` existe pero sin FK física explícita en el schema observado
 
 #### `vec_assets`
+
 - `PRIMARY KEY (asset_id)`
 - `item_id NOT NULL`
-- sin FKs físicas explícitas en el schema observado
-
-#### `vec_items`
-- `PRIMARY KEY (item_id)`
 - sin FKs físicas explícitas en el schema observado
 
 ### Índices observados
@@ -691,7 +724,7 @@ erDiagram
 - `extractions` y `transcriptions` están modeladas efectivamente como **1:1 por asset** por sus índices únicos sobre `asset_id`.
 - `item_topics` evita duplicados lógicos con índice único `(item_id, topic_id)`.
 - `items.search_text` es una columna generada pensada para acelerar búsqueda/filtrado.
-- `notes.asset_id`, `triples.asset_id`, `entities.asset_id`, `vec_*` y `llm_results.target_id` no siempre tienen FK física, así que parte de la integridad depende de la app; en `llm_results` el `target_type` reduce ambigüedad y permite cleanup explícito.
+- `notes.asset_id`, `triples.asset_id`, `entities.asset_id`, `vec_assets` y `llm_results.target_id` no siempre tienen FK física, así que parte de la integridad depende de la app; en `llm_results` el `target_type` reduce ambigüedad y permite cleanup explícito.
 
 ## Query SQL de relaciones conceptuales
 
@@ -734,7 +767,6 @@ La inspección en la base activa devolvió estas tablas:
 - `app_settings`
 - `assets`
 - `collections`
-- `embeddings_fallback`
 - `entities`
 - `extractions`
 - `fts_items`
@@ -752,7 +784,6 @@ La inspección en la base activa devolvió estas tablas:
 - `transcriptions`
 - `triples`
 - `vec_assets`
-- `vec_items`
 
 ## Notas de arquitectura observadas en código
 
@@ -963,15 +994,11 @@ WHERE fts_items MATCH 'archivo OR documento'
 LIMIT 20;
 ```
 
-### `vec_items` / `vec_assets`
+### `vec_assets`
 
 Inspección rápida de embeddings persistidos:
 
 ```sql
-SELECT item_id, length(embedding) AS embedding_bytes
-FROM vec_items
-LIMIT 20;
-
 SELECT asset_id, item_id, length(embedding) AS embedding_bytes
 FROM vec_assets
 LIMIT 20;
@@ -1045,6 +1072,7 @@ WHERE i.id = 'ITEM_ID_AQUI';
 ## Dónde mirar según el problema
 
 ### “No aparece mi colección o ítem”
+
 - mirar `collections`
 - mirar `items`
 - verificar `items.collection_id`
@@ -1059,6 +1087,7 @@ ORDER BY i.created_at DESC;
 ```
 
 ### “El asset está cargado pero no se procesa”
+
 - mirar `assets`
 - mirar `jobs`
 - mirar `extractions`, `transcriptions`, `layouts`
@@ -1074,26 +1103,31 @@ ORDER BY j.updated_at DESC;
 ```
 
 ### “Falló el OCR”
+
 - mirar `extractions.method`
 - mirar `extractions.confidence`
 - mirar `layouts` si era OCR High
 - mirar `jobs.error`
 
 ### “Falló la transcripción”
+
 - mirar `transcriptions`
 - mirar `jobs` filtrando `type`
 - revisar si hay `error`
 
 ### “No veo entidades o triples”
+
 - mirar `entities`
 - mirar `triples`
 - verificar que el `item_id` o `asset_id` correcto exista antes
 
 ### “El tópico no aparece asociado”
+
 - mirar `topics`
 - mirar `item_topics`
 
 ### “La búsqueda full-text no devuelve nada”
+
 - mirar `fts_items`
 - validar que el ítem haya sido indexado
 
@@ -1106,18 +1140,19 @@ WHERE item_id = 'ITEM_ID_AQUI';
 ```
 
 ### “La similitud / embeddings no funciona”
-- mirar `vec_items`
+
 - mirar `vec_assets`
-- mirar `embeddings_fallback`
 - validar que `embedding` no esté vacío
 
 Query útil:
 
 ```sql
-SELECT item_id, length(embedding) AS bytes
-FROM vec_items
-WHERE item_id = 'ITEM_ID_AQUI';
+SELECT asset_id, item_id, length(embedding) AS bytes
+FROM vec_assets
+WHERE asset_id = 'ASSET_ID_AQUI';
 ```
+
+> Archivo legacy: si una base vieja todavía conserva `vec_items` o `embeddings_fallback`, no forman parte del contrato runtime/product actual.
 
 ## Checklist de debugging rápido
 

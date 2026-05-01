@@ -111,18 +111,18 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 
 ## Modelos usados hoy (por proceso)
 
-| Proceso | Modelo / runtime actual |
-| --- | --- |
-| LLM local (OCR correction, summaries, triples, tareas asistidas) | **`gemma-4-E2B-it-Q4_K_M.gguf`** vía `llama.cpp` (`llama-cpp-2`), `n_ctx=4096` |
-| Transcripción de audio | **`faster-whisper/base`** vía subprocess de Python (`compute_type=int8`, idioma por defecto `es`) |
-| Embeddings | **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`** vía `fastembed` en Python |
-| NER local principal | modelo **ONNX local** en `resources/models/ner/model.onnx` |
-| NER opcional / fallback enriquecido | **`es_core_news_lg`** vía spaCy en Python |
-| OCR High (OCRH) | **PaddleOCR-VL** vía `paddleocr[doc-parser]` en Python |
-| OCR nativo (cuando `paddle-ocr` está habilitado) | **`PP-OCRv5_mobile_det.mnn`** + **`latin_PP-OCRv5_mobile_rec_infer.mnn`** |
-| Corrección de orientación OCR nativo | **`PP-LCNet_x1_0_doc_ori.mnn`** |
-| Detección de layout ONNX (hoy no activa en producción) | **`PP-DocLayout-L.onnx`** |
-| Fallback OCR clásico | **Tesseract** (`spa+eng`) |
+| Proceso                                                          | Modelo / runtime actual                                                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| LLM local (OCR correction, summaries, triples, tareas asistidas) | **`gemma-4-E2B-it-Q4_K_M.gguf`** vía `llama.cpp` (`llama-cpp-2`), `n_ctx=4096`                    |
+| Transcripción de audio                                           | **`faster-whisper/base`** vía subprocess de Python (`compute_type=int8`, idioma por defecto `es`) |
+| Embeddings                                                       | **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`** vía `fastembed` en Python       |
+| NER local principal                                              | modelo **ONNX local** en `resources/models/ner/model.onnx`                                        |
+| NER opcional / fallback enriquecido                              | **`es_core_news_lg`** vía spaCy en Python                                                         |
+| OCR High (OCRH)                                                  | **PaddleOCR-VL** vía `paddleocr[doc-parser]` en Python                                            |
+| OCR nativo (cuando `paddle-ocr` está habilitado)                 | **`PP-OCRv5_mobile_det.mnn`** + **`latin_PP-OCRv5_mobile_rec_infer.mnn`**                         |
+| Corrección de orientación OCR nativo                             | **`PP-LCNet_x1_0_doc_ori.mnn`**                                                                   |
+| Detección de layout ONNX (hoy no activa en producción)           | **`PP-DocLayout-L.onnx`**                                                                         |
+| Fallback OCR clásico                                             | **Tesseract** (`spa+eng`)                                                                         |
 
 > Nota: varios pipelines tienen **degradación elegante**. Si falta un runtime, modelo o dependencia opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
 
@@ -131,47 +131,48 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 > En esta tabla, **LLMCloud** significa el proveedor remoto de inferencia LLM configurado en la app. Hoy puede ser OpenRouter, pero el provider puede cambiar.
 
 > Referencia rápida de labels actuales en UI:
+>
 > - `OCRL` = OCR Light
 > - `OCRH` = OCR High
 > - `OCRC` = OCR Correction por LLM
 > - `OCRR` = OCR/Transcription Summary por LLM
 > - `TRIPLET` = extracción de triples semánticos por LLM
 
-| Botón visible | Dónde aparece | Archivo frontend | Función frontend | Comando Tauri | Archivo backend | Backend efectivo |
-| --- | --- | --- | --- | --- | --- | --- |
-| `OCRL` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR / Tesseract según disponibilidad) |
-| `OCRH` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')` | `extract_text` | `apps/desktop/src-tauri/src/ocr/commands.rs` | **Local** (PaddleOCR-VL por Python; persiste texto + layout premium cuando corresponde) |
-| `OCRC` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmCorrectOcr()` | `llm_correct_ocr` / `llm_correct_ocr_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
-| `OCRR` | Vista de ítem, sección OCR | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()` | `llm_summarize` / `llm_summarize_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
-| `Transcribe` | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)` | `transcribe_audio` | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`) |
-| `OCRR` | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()` | `llm_summarize` / `llm_summarize_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
-| `INDEX` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleIndexFts()` | `index_fts` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (SQLite FTS) |
-| `EMBED` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleEmbedItem()` | `embed_item` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (Python + `fastembed`) |
-| `NER` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleExtractEntities()` | `extract_entities` / `extract_entities_for_asset` | `apps/desktop/src-tauri/src/nlp/commands.rs` | **Local** (ONNX + spaCy opcional) |
-| `TRIPLET` | Vista de ítem, sección NLP | `apps/desktop/src/views/ItemView.svelte` | `handleLlmExtractTriples()` | `llm_extract_triples` / `llm_extract_triples_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` |
+| Botón visible | Dónde aparece                | Archivo frontend                         | Función frontend                            | Comando Tauri                                       | Archivo backend                                        | Backend efectivo                                                                        |
+| ------------- | ---------------------------- | ---------------------------------------- | ------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `OCRL`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR / Tesseract según disponibilidad)                                  |
+| `OCRH`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')`  | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR-VL por Python; persiste texto + layout premium cuando corresponde) |
+| `OCRC`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmCorrectOcr()`                     | `llm_correct_ocr` / `llm_correct_ocr_asset`         | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
+| `OCRR`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()`                      | `llm_summarize` / `llm_summarize_asset`             | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
+| `Transcribe`  | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)`      | `transcribe_audio`                                  | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`)                                                   |
+| `OCRR`        | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()`                      | `llm_summarize` / `llm_summarize_asset`             | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
+| `INDEX`       | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleIndexFts()`                          | `index_fts`                                         | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (SQLite FTS)                                                                  |
+| `EMBED`       | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleEmbedAsset()`                        | `embed_asset`                                       | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (Python + `fastembed`, asset-level)                                           |
+| `NER`         | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractEntities()`                   | `extract_entities` / `extract_entities_for_asset`   | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (ONNX + spaCy opcional)                                                       |
+| `TRIPLET`     | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmExtractTriples()`                 | `llm_extract_triples` / `llm_extract_triples_asset` | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
 
 ### Capacidades implementadas pero no visibles todavía en la UI
 
-| Capacidad | Wrapper frontend | Archivo frontend | Comando Tauri | Archivo backend | Backend efectivo | Estado UI |
-| --- | --- | --- | --- | --- | --- | --- |
-| Q&A sobre colección | `llmAsk(collectionId, question)` | `apps/desktop/src/lib/llm.ts` | `llm_ask` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
+| Capacidad                       | Wrapper frontend                                                  | Archivo frontend              | Comando Tauri                                         | Archivo backend                              | Backend efectivo                           | Estado UI       |
+| ------------------------------- | ----------------------------------------------------------------- | ----------------------------- | ----------------------------------------------------- | -------------------------------------------- | ------------------------------------------ | --------------- |
+| Q&A sobre colección             | `llmAsk(collectionId, question)`                                  | `apps/desktop/src/lib/llm.ts` | `llm_ask`                                             | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
 | Extracción de entidades por LLM | `llmExtractEntities(itemId)` / `llmExtractEntitiesAsset(assetId)` | `apps/desktop/src/lib/llm.ts` | `llm_extract_entities` / `llm_extract_entities_asset` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
-| Clasificación por LLM | `llmClassify(itemId, categories)` | `apps/desktop/src/lib/llm.ts` | `llm_classify` | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
+| Clasificación por LLM           | `llmClassify(itemId, categories)`                                 | `apps/desktop/src/lib/llm.ts` | `llm_classify`                                        | `apps/desktop/src-tauri/src/llm/commands.rs` | **LLM local o LLMCloud**, según `llm_mode` | **No cableado** |
 
 ## Stack técnico real
 
-| Capa | Tecnología |
-| --- | --- |
-| Desktop | **Tauri 2** + Rust |
-| Frontend | **Svelte 5** + Vite |
-| DB local | **SQLite** |
-| Store/UI | workspace packages (`@entropia/store`, `@entropia/ui`) |
-| ORM cliente | **Drizzle ORM** |
-| OCR | **Tesseract**, `ocr-rs` (feature `paddle-ocr`), **PaddleOCR-VL** vía Python |
-| Transcripción | **faster-whisper** vía Python |
-| Embeddings | **fastembed** vía Python |
-| NER | ONNX local + **spaCy** opcional |
-| LLM local | **llama.cpp** + GGUF (**Gemma 4 E2B IT Q4_K_M**) |
+| Capa          | Tecnología                                                                  |
+| ------------- | --------------------------------------------------------------------------- |
+| Desktop       | **Tauri 2** + Rust                                                          |
+| Frontend      | **Svelte 5** + Vite                                                         |
+| DB local      | **SQLite**                                                                  |
+| Store/UI      | workspace packages (`@entropia/store`, `@entropia/ui`)                      |
+| ORM cliente   | **Drizzle ORM**                                                             |
+| OCR           | **Tesseract**, `ocr-rs` (feature `paddle-ocr`), **PaddleOCR-VL** vía Python |
+| Transcripción | **faster-whisper** vía Python                                               |
+| Embeddings    | **fastembed** vía Python                                                    |
+| NER           | ONNX local + **spaCy** opcional                                             |
+| LLM local     | **llama.cpp** + GGUF (**Gemma 4 E2B IT Q4_K_M**)                            |
 
 ## Estado actual de la persistencia local
 
@@ -182,7 +183,7 @@ La base SQLite local ya guarda no solo entidades de negocio (`collections`, `ite
 - `layouts` — estructura premium de OCRH (`blocks` + `regions`)
 - `entities` / `triples` — enriquecimiento semántico
 - `llm_results` — resultados persistidos de tareas LLM tipadas por target
-- `fts_items`, `vec_items`, `vec_assets` — búsqueda y similitud
+- `fts_items`, `vec_assets` — búsqueda full-text y similitud asset-level
 
 > Si necesitás inspeccionar o auditar esto en detalle, arrancá por [`SQLite.md`](./SQLite.md) y [`DATABASE_DEBUGGING.md`](./DATABASE_DEBUGGING.md).
 
@@ -192,12 +193,12 @@ La base SQLite local ya guarda no solo entidades de negocio (`collections`, `ite
 
 Podés bajar instaladores desde [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
 
-| Sistema operativo | Instalador |
-| --- | --- |
-| Windows 10/11 (x64) | `.msi` o `.exe` |
-| macOS Apple Silicon | `.dmg` |
-| macOS Intel | `.dmg` |
-| Linux | `.deb` o `.AppImage` |
+| Sistema operativo   | Instalador           |
+| ------------------- | -------------------- |
+| Windows 10/11 (x64) | `.msi` o `.exe`      |
+| macOS Apple Silicon | `.dmg`               |
+| macOS Intel         | `.dmg`               |
+| Linux               | `.deb` o `.AppImage` |
 
 > En macOS, si aparece el warning de “desarrollador no identificado”, abrí con clic derecho → **Abrir**.
 
@@ -205,12 +206,12 @@ Podés bajar instaladores desde [GitHub Releases](https://github.com/agusnieto77
 
 La app puede abrirse y usarse sin tener todo el stack local instalado, pero algunas capacidades avanzadas dependen de runtimes externos.
 
-| Capacidad | Requiere |
-| --- | --- |
-| OCR básico / fallback | Tesseract disponible |
-| OCR High (OCRH) | Python + `paddleocr[doc-parser]` |
-| Transcripción | Python + `faster-whisper` |
-| Embeddings | Python + `fastembed` |
+| Capacidad                | Requiere                             |
+| ------------------------ | ------------------------------------ |
+| OCR básico / fallback    | Tesseract disponible                 |
+| OCR High (OCRH)          | Python + `paddleocr[doc-parser]`     |
+| Transcripción            | Python + `faster-whisper`            |
+| Embeddings               | Python + `fastembed`                 |
 | NER enriquecido opcional | Python + `spacy` + `es_core_news_lg` |
 
 > En la práctica, **Windows es hoy la plataforma mejor documentada y más verificada** para levantar el stack completo de OCR/NLP local.
@@ -333,7 +334,7 @@ pnpm test
 
 - importar fuentes
 - correr OCR / transcripción
-- enriquecer con NER / triples / FTS / embeddings
+- enriquecer con NER / triples / FTS / embeddings asset-level
 - navegar documentos y resultados
 - editar texto extraído, metadata, notas y anotaciones
 

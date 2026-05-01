@@ -16,6 +16,7 @@ PNPM 9.15.4 workspaces + Turborepo. Three layers:
 - **`packages/config-ts/`** — Shared tsconfig.
 
 The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
+
 - **`db/`** — SQLite state management, Tauri IPC commands (`db_execute`, `db_select`, `db_select_rows`)
 - **`ocr/`** — OCR engine with provider chain (PaddleOCR primary → Tesseract fallback), PDF text extraction, layout-aware OCR, async job queue
 - **`nlp/`** — FTS5 indexing, embeddings (Python subprocess), hybrid NER (ONNX BERT + spaCy + rule-based), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`) with its own engine registry.
@@ -92,15 +93,18 @@ Views live in `src/views/`, layout in `src/layout/` (AppShell, TopBar).
 1. Svelte views call repos from `@entropia/store` (e.g., `item.repo.ts`)
 2. Repos use `client.ts` which wraps Tauri's `@tauri-apps/plugin-sql` for SQL operations, or calls `invoke()` for Rust commands
 3. Rust Tauri commands (`db_execute`, `db_select`) operate on shared `AppDbState` (rusqlite)
-4. AI commands (`extract_text`, `index_fts`, `embed_item`, `extract_entities`, `extract_triples`, `fts_search`, `similar_items`, `transcribe_audio`, `extract_layout`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`, `LayoutQueue`)
+4. Background AI commands (`extract_text`, `index_fts`, `embed_asset`, `extract_entities`, `extract_entities_for_asset`, `extract_triples`, `transcribe_audio`, `extract_layout`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`, `LayoutQueue`). Direct read/admin commands like `similar_assets` and `backfill_asset_embeddings` use direct DB/blocking pathways instead of the queue.
 5. LLM commands (`llm_correct_ocr`, `llm_summarize`, `llm_extract_entities`, etc.) go through `LlmQueue`. Settings commands (`settings_get`, `settings_set`) use direct DB access via `AppDbState`.
 
 ### SQLite Connections
 
 The Rust backend manages multiple SQLite connections to `entropia.sqlite`:
+
 - **UI connection** — used by Tauri IPC commands (reads/writes from frontend)
 - **OCR worker connection** — dedicated to OCR job queue
-- **NLP worker connection** — dedicated to NLP queue (embeddings stored as BLOBs in `vec_items`)
+- **NLP worker connection** — opened inside the NLP worker for queue processing (asset embeddings stored as BLOBs in `vec_assets`)
+
+Current runtime/product architecture is **asset-only** for embeddings and similarity: `embed_asset`, `backfill_asset_embeddings`, and `similar_assets` are the active APIs. Treat `vec_items`, `similar_items`, `embed_item`, and `embeddings_fallback` as legacy/archive references only.
 
 All connections use WAL mode + foreign keys enabled. Each queue worker opens its own connection independently.
 
@@ -109,6 +113,7 @@ On startup, `lib.rs` runs: (1) legacy migration from old `com.entropia.app` dire
 ### OCR Provider Chain
 
 OCR uses a fallback chain defined in `ocr/mod.rs`:
+
 - **PaddleOCR-VL** (primary) — Python subprocess (`paddle_vl.py`) using `paddleocr[doc-parser]`. Does layout detection + OCR in a single pass, returns structured blocks with labels, bounding boxes, and reading order. Method field: `"paddle_vl"`.
 - **PaddleOCR** (fallback) — `ocr-rs` crate with MNN backend, feature-gated as `paddle-ocr`. PP-OCRv5 detection + latin recognition. PP-LCNet orientation model auto-corrects 0°/90°/180°/270° rotation. `OcrEngine` is `Send + Sync`.
 - **Tesseract** (fallback) — `leptess` crate, languages `spa+eng`. `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`.
@@ -120,6 +125,7 @@ Postprocessing heuristics in `postprocess.rs` are **DISABLED** (mixed columns). 
 ### Layout Detection
 
 Two layout engines available:
+
 - **PaddleVL** (primary) — layout detection is integrated into PaddleOCR-VL's single-pass pipeline.
 - **ONNX PP-DocLayout-S** — standalone PicoDet ONNX model (`resources/models/ocr/PP-DocLayout-S.onnx`, 4.68 MB). 23 region categories. Input: 2 tensors (image [1,3,480,480] + scale_factor [1,2]).
 
@@ -153,6 +159,7 @@ Engine selection is configured via `NerConfig` with `NerEngineKind` (Onnx, Spacy
 ### LLM Architecture
 
 Dual-backend LLM system in `llm/`:
+
 - **OpenRouter** (`openrouter.rs`) — Cloud API via `reqwest`. Model and API key stored in `app_settings` table. Frontend configures via `SettingsView`.
 - **Local sidecar** (`sidecar.rs`) — llama.cpp server process managed by `SidecarManager`/`SidecarHandle`. Runs Gemma models locally.
 - **Engine** (`engine.rs`) — `LlmEngine` abstracts both backends behind `LlmConfig`. Reads settings from `app_settings` to decide which backend to use.
@@ -162,6 +169,7 @@ Dual-backend LLM system in `llm/`:
 ### Job Queue Pattern
 
 All background systems (OCR, NLP, Transcription, Layout, LLM) follow the same pattern:
+
 1. Frontend calls Tauri command → submits job to mpsc channel → returns "queued"
 2. Worker thread drains jobs serially, emits `progress/complete/error` events
 3. Frontend listens to events via reactive stores → updates UI
@@ -170,6 +178,7 @@ All background systems (OCR, NLP, Transcription, Layout, LLM) follow the same pa
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main`:
+
 - **lint-typecheck** — ESLint + svelte-check + tsc (Ubuntu, Node 20)
 - **windows-rust-feature-contract** — validates Rust builds on Windows
 - **rust-quality-report** — clippy, fmt, coverage via cargo-llvm-cov, Pester test suites (Windows, Node 22)

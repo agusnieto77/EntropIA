@@ -34,11 +34,33 @@ export interface FtsResult {
   rank: number
 }
 
-export interface SimilarItem {
+export interface SimilarAsset {
+  assetId: string
   itemId: string
   title: string
   collectionId: string
+  assetPath: string
+  assetType: string
   similarity: number
+}
+
+export interface AssetEmbeddingBackfillFailure {
+  assetId: string
+  itemId: string
+  error: string
+}
+
+export interface AssetEmbeddingBackfillReport {
+  force: boolean
+  limit?: number
+  totalAssets: number
+  assetsWithText: number
+  assetsWithEmbedding: number
+  assetsMissingEmbedding: number
+  requested: number
+  succeeded: number
+  failed: number
+  failures: AssetEmbeddingBackfillFailure[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,17 +152,12 @@ export async function indexFts(itemId: string): Promise<void> {
   await invoke('index_fts', { itemId })
 }
 
-/** Submit an embedding computation job for `itemId`. */
-export async function embedItem(itemId: string): Promise<void> {
-  await invoke('embed_item', { itemId })
-}
-
 /** Submit an NER extraction job for `itemId`. */
 export async function extractEntities(itemId: string): Promise<void> {
   await invoke('extract_entities', { itemId })
 }
 
-/** Submit a full enrichment pipeline job (FTS + embed + NER) for `itemId`. */
+/** Submit the remaining item-level enrichment job (FTS + NER) for `itemId`. */
 export async function enrichItem(itemId: string): Promise<void> {
   await invoke('enrich_item', { itemId })
 }
@@ -152,6 +169,16 @@ export async function enrichItem(itemId: string): Promise<void> {
 /** Submit an embedding computation job for a specific asset. */
 export async function embedAsset(itemId: string, assetId: string): Promise<void> {
   await invoke('embed_asset', { itemId, assetId })
+}
+
+/** Batch backfill asset-level embeddings for assets that already have text. */
+export async function backfillAssetEmbeddings(
+  options: { force?: boolean; limit?: number } = {}
+): Promise<AssetEmbeddingBackfillReport> {
+  return await invoke('backfill_asset_embeddings', {
+    force: options.force,
+    limit: options.limit,
+  })
 }
 
 /** Submit a NER extraction job for a specific asset. */
@@ -169,7 +196,7 @@ export async function ftsSearch(query: string, collectionId?: string): Promise<F
   return await invoke('fts_search', { query, collectionId })
 }
 
-/** Find items similar to `itemId` via kNN vector search. */
-export async function similarItems(itemId: string, limit: number = 5): Promise<SimilarItem[]> {
-  return await invoke('similar_items', { itemId, limit })
+/** Find assets similar to `assetId` via asset-level kNN vector search. */
+export async function similarAssets(assetId: string, limit: number = 5): Promise<SimilarAsset[]> {
+  return await invoke('similar_assets', { assetId, limit })
 }

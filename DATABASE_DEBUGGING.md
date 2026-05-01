@@ -29,7 +29,7 @@ collections -> items -> assets -> jobs / extractions / transcriptions / layouts
 collections / items / assets -> llm_results
 items -> notes / entities / triples / item_topics
 item_topics -> topics
-items/assets -> vec_items / vec_assets / embeddings_fallback
+assets -> vec_assets
 items -> fts_items
 ```
 
@@ -106,13 +106,95 @@ SELECT item_id, title
 FROM fts_items
 LIMIT 20;
 
-SELECT item_id, length(embedding) AS bytes
-FROM vec_items
-LIMIT 20;
-
 SELECT asset_id, item_id, length(embedding) AS bytes
 FROM vec_assets
 LIMIT 20;
+```
+
+### 6. Medir cobertura real de embeddings asset-level
+
+```sql
+WITH asset_embedding_audit AS (
+  SELECT
+    a.id AS asset_id,
+    a.item_id,
+    a.type,
+    EXISTS(
+      SELECT 1 FROM extractions e
+      WHERE e.asset_id = a.id
+        AND LENGTH(TRIM(COALESCE(e.text_content, ''))) > 0
+    )
+    OR EXISTS(
+      SELECT 1 FROM transcriptions t
+      WHERE t.asset_id = a.id
+        AND LENGTH(TRIM(COALESCE(t.text_content, ''))) > 0
+    ) AS has_text,
+    EXISTS(
+      SELECT 1 FROM vec_assets v
+      WHERE v.asset_id = a.id
+    ) AS has_embedding
+  FROM assets a
+)
+SELECT
+  COUNT(*) AS total_assets,
+  SUM(CASE WHEN has_text THEN 1 ELSE 0 END) AS assets_with_text,
+  SUM(CASE WHEN has_embedding THEN 1 ELSE 0 END) AS assets_with_embedding,
+  SUM(CASE WHEN has_text AND NOT has_embedding THEN 1 ELSE 0 END) AS assets_missing_embedding
+FROM asset_embedding_audit;
+
+WITH asset_embedding_audit AS (
+  SELECT
+    a.id AS asset_id,
+    a.item_id,
+    a.type,
+    EXISTS(
+      SELECT 1 FROM extractions e
+      WHERE e.asset_id = a.id
+        AND LENGTH(TRIM(COALESCE(e.text_content, ''))) > 0
+    )
+    OR EXISTS(
+      SELECT 1 FROM transcriptions t
+      WHERE t.asset_id = a.id
+        AND LENGTH(TRIM(COALESCE(t.text_content, ''))) > 0
+    ) AS has_text,
+    EXISTS(
+      SELECT 1 FROM vec_assets v
+      WHERE v.asset_id = a.id
+    ) AS has_embedding
+  FROM assets a
+)
+SELECT
+  type,
+  SUM(CASE WHEN has_text THEN 1 ELSE 0 END) AS assets_with_text,
+  SUM(CASE WHEN has_embedding THEN 1 ELSE 0 END) AS assets_with_embedding,
+  SUM(CASE WHEN has_text AND NOT has_embedding THEN 1 ELSE 0 END) AS assets_missing_embedding
+FROM asset_embedding_audit
+GROUP BY type
+ORDER BY assets_missing_embedding DESC, type ASC;
+```
+
+Si querés todo junto sin pensar, corré:
+
+```powershell
+sqlite3 "C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite" ".read scripts/sqlite_audit.sql"
+```
+
+### 7. Backfill operativo de `vec_assets`
+
+Hay un comando Tauri real para esto: `backfill_asset_embeddings`.
+
+- recorre assets con texto útil en `extractions` y/o `transcriptions`
+- por default **saltea** assets que ya tienen fila en `vec_assets`
+- con `force: true` recomputa embeddings existentes
+- `limit` sirve para corridas chicas de auditoría/debug
+
+Ejemplo desde el frontend/lib Tauri:
+
+```ts
+import { backfillAssetEmbeddings } from './apps/desktop/src/lib/nlp'
+
+const report = await backfillAssetEmbeddings({ force: false, limit: 100 })
+console.log(report)
 ```
 
 ---
@@ -122,6 +204,7 @@ LIMIT 20;
 ### A. “No aparece una colección”
 
 Mirar:
+
 - `collections`
 
 ```sql
@@ -133,6 +216,7 @@ ORDER BY created_at DESC;
 ### B. “No aparece un ítem”
 
 Mirar:
+
 - `items`
 - `collections`
 
@@ -146,6 +230,7 @@ ORDER BY i.created_at DESC;
 ### C. “El ítem existe, pero no tiene assets”
 
 Mirar:
+
 - `assets`
 
 ```sql
@@ -158,6 +243,7 @@ ORDER BY sort_index, created_at;
 ### D. “El asset está, pero OCR/transcripción no corrió”
 
 Mirar:
+
 - `jobs`
 - `extractions`
 - `transcriptions`
@@ -173,6 +259,7 @@ ORDER BY j.updated_at DESC;
 ### E. “OCR High no dejó layout”
 
 Mirar:
+
 - `layouts`
 - `extractions`
 
@@ -185,6 +272,7 @@ WHERE asset_id = 'ASSET_ID_AQUI';
 ### F. “No aparecen entidades o triples”
 
 Mirar:
+
 - `entities`
 - `triples`
 
@@ -203,6 +291,7 @@ ORDER BY created_at DESC;
 ### G. “No aparecen topics”
 
 Mirar:
+
 - `item_topics`
 - `topics`
 
@@ -216,6 +305,7 @@ WHERE it.item_id = 'ITEM_ID_AQUI';
 ### H. “La búsqueda FTS no devuelve nada”
 
 Mirar:
+
 - `fts_items`
 
 ```sql
@@ -227,23 +317,25 @@ WHERE fts_items MATCH 'termino';
 ### I. “La similitud/embeddings no funciona”
 
 Mirar:
-- `vec_items`
+
 - `vec_assets`
-- `embeddings_fallback`
+- `extractions`
+- `transcriptions`
 
 ```sql
-SELECT item_id, length(embedding) AS bytes
-FROM vec_items
-WHERE item_id = 'ITEM_ID_AQUI';
-
 SELECT asset_id, item_id, length(embedding) AS bytes
 FROM vec_assets
 WHERE asset_id = 'ASSET_ID_AQUI';
 ```
 
+APIs/runtime activos para este flujo: `embed_asset`, `backfill_asset_embeddings`, `similar_assets` y sus wrappers TS `embedAsset`, `backfillAssetEmbeddings`, `similarAssets`.
+
+Si el asset tiene texto pero no embedding, el problema YA NO es teórico: corré el backfill y después auditá de nuevo.
+
 ### J. “El resultado LLM quedó mezclado entre asset/item/collection o desapareció”
 
 Mirar:
+
 - `llm_results`
 
 ```sql
@@ -257,6 +349,20 @@ FROM llm_results
 WHERE created_at < 1000000000000
 ORDER BY created_at ASC;
 ```
+
+---
+
+## Archivo legacy previo a Batch 3
+
+La verdad runtime/producto verificada hoy es esta:
+
+- embeddings y similitud son **asset-only**
+- tabla activa: `vec_assets`
+- APIs activas: `embed_asset`, `backfill_asset_embeddings`, `similar_assets`
+
+Si ves `vec_items`, `embed_item`, `similar_items` o `embeddings_fallback` en notas viejas o snapshots de una DB local anterior, tratálos como **legacy/archive**, no como arquitectura soportada.
+
+Contexto histórico: `docs/asset-only-batch3-remnants.md`.
 
 ---
 
@@ -392,6 +498,6 @@ Cuando algo falla, no empieces por inferencias. Empezá por evidencia:
 2. `jobs`
 3. `extractions` / `transcriptions` / `layouts`
 4. `entities` / `triples` / `topics`
-5. `fts_items` / `vec_*`
+5. `fts_items` / `vec_assets`
 
 Es así de simple. Primero verificás persistencia. Después discutís lógica.

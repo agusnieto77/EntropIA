@@ -30,4 +30,4 @@ powershell -File apps/desktop/src-tauri/scripts/download-ocr-models.ps1
 
 ## Operational Notes
 
-- `sqlite-vec-windows-tradeoff.md`: rationale and rollback plan for the temporary Windows sqlite-vec shim used to unblock default-features Rust tests.
+- `sqlite-vec-windows-tradeoff.md`: archived note from the previous sqlite-vec/`vec_items` implementation; kept only for historical context.

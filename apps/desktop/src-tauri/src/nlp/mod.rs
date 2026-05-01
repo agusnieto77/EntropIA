@@ -7,19 +7,22 @@ pub mod text_provider;
 // (see llm::LlmJob::ExtractTriples / ExtractTriplesAsset). The old NLP regex+spaCy route has
 // been retired to prevent low-quality triples from overwriting LLM results in the `triples` table.
 
-use serde::Serialize;
 use rusqlite::OptionalExtension;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, path::BaseDirectory};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::llm::LlmQueue;
 use crate::path_utils::normalize_windows_path;
 use embeddings::EmbeddingEngine;
-use ner::{NerRegistry, types::{NerConfig, NerEngineKind}};
+use ner::{
+    types::{NerConfig, NerEngineKind},
+    NerRegistry,
+};
 
 // ── Event payloads ───────────────────────────────────────────────────────────
 
@@ -49,7 +52,6 @@ pub struct NlpErrorPayload {
 #[derive(Debug)]
 pub enum NlpJob {
     IndexFts { item_id: String },
-    ComputeEmbedding { item_id: String },
     ExtractEntities { item_id: String },
     EnrichItem { item_id: String },
     // Asset-level variants: process only the selected asset/page
@@ -142,16 +144,14 @@ impl NlpQueue {
             _ => None,
         };
 
-        self.sender
-            .try_send(job)
-            .map_err(|e| {
-                if let Some(item_id) = tracked_fts_item {
-                    if let Ok(mut pending) = self.fts_pending.lock() {
-                        pending.remove(&item_id);
-                    }
+        self.sender.try_send(job).map_err(|e| {
+            if let Some(item_id) = tracked_fts_item {
+                if let Ok(mut pending) = self.fts_pending.lock() {
+                    pending.remove(&item_id);
                 }
-                format!("Failed to enqueue NLP job: {e}")
-            })
+            }
+            format!("Failed to enqueue NLP job: {e}")
+        })
     }
 
     /// Get a clone of the NER dedup set handle.
@@ -180,9 +180,7 @@ impl NlpQueue {
             // Open a dedicated SQLite connection for the NLP worker.
             let conn = match rusqlite::Connection::open(&db_path) {
                 Ok(c) => {
-                    let _ = c.execute_batch(
-                        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
-                    );
+                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
                     c
                 }
                 Err(e) => {
@@ -197,17 +195,9 @@ impl NlpQueue {
                 }
             }
 
-            // Create vec_items table as a regular table (fallback when sqlite-vec
-            // extension is not available). When sqlite-vec becomes available
-            // on all platforms, this can be replaced with a vec0 virtual table.
-            // Using a regular table means kNN search requires a full scan, but
-            // for MVP-scale data (<10k items) this is perfectly fine.
+            // Create vec_assets storage for asset-level embeddings.
             if let Err(e) = conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS vec_items(
-                    item_id TEXT PRIMARY KEY,
-                    embedding BLOB NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS vec_assets(
+                "CREATE TABLE IF NOT EXISTS vec_assets(
                     asset_id TEXT PRIMARY KEY,
                     item_id TEXT NOT NULL,
                     embedding BLOB NOT NULL
@@ -219,18 +209,20 @@ impl NlpQueue {
 
             // Resolve embedding script path: try Resource directory first (production),
             // then source (dev) — mirrors transcription script resolution.
-            let embed_script_path = normalize_windows_path(app_handle
-                .path()
-                .resolve("scripts/embed.py", BaseDirectory::Resource)
-                .unwrap_or_else(|_| {
-                    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("resources/scripts/embed.py");
-                    if dev_path.exists() {
-                        dev_path
-                    } else {
-                        std::path::PathBuf::from("scripts/embed.py")
-                    }
-                }));
+            let embed_script_path = normalize_windows_path(
+                app_handle
+                    .path()
+                    .resolve("scripts/embed.py", BaseDirectory::Resource)
+                    .unwrap_or_else(|_| {
+                        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources/scripts/embed.py");
+                        if dev_path.exists() {
+                            dev_path
+                        } else {
+                            std::path::PathBuf::from("scripts/embed.py")
+                        }
+                    }),
+            );
 
             // Resolve model cache directory for HuggingFace (avoids broken symlinks on Windows)
             let embed_cache_dir = app_handle
@@ -262,55 +254,6 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "fts", &e),
                         }
                     }
-                    NlpJob::ComputeEmbedding { item_id } => {
-                        emit_progress(&app_handle, &item_id, "embed", 10);
-                        if !embed_init_attempted {
-                            embed_init_attempted = true;
-                            embed_engine = match embeddings::which_python(Some(&db_path)) {
-                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-                                    python_path,
-                                    script_path: embed_script_path.clone(),
-                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                                    cache_dir: Some(embed_cache_dir.clone()),
-                                }) {
-                                    Ok(engine) => {
-                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
-                                        Some(Arc::new(engine))
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
-                                        None
-                                    }
-                                },
-                                None => {
-                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
-                                    None
-                                }
-                            };
-                        }
-                        let engine_ref = embed_engine.as_deref();
-                        let result = tokio::task::block_in_place(|| {
-                            embeddings::compute_and_store(engine_ref, &conn, &item_id)
-                        });
-                        match result {
-                            Ok(_) => {
-                                match embedding_exists(&conn, &item_id) {
-                                    Ok(true) => {
-                                        emit_progress(&app_handle, &item_id, "embed", 100);
-                                        emit_complete(&app_handle, &item_id, "embed");
-                                    }
-                                    Ok(false) => emit_error(
-                                        &app_handle,
-                                        &item_id,
-                                        "embed",
-                                        "Embedding job completed but no vector was persisted",
-                                    ),
-                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
-                                }
-                            }
-                            Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
-                        }
-                    }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
                         if ner_registry.is_none() {
@@ -329,7 +272,9 @@ impl NlpQueue {
                             eprintln!("[nlp/ner] Registry ready (lazy init)");
                             ner_registry = Some(NerRegistry::init(ner_config));
                         }
-                        let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
+                        let registry = ner_registry
+                            .as_ref()
+                            .expect("NER registry should initialize before use");
                         let result = run_ner_for_item(&conn, &item_id, registry);
                         // Remove from dedup set so future enqueues for this item are allowed
                         if let Ok(mut pending) = ner_pending.lock() {
@@ -350,61 +295,30 @@ impl NlpQueue {
                                     &app_handle.state::<crate::geo::GeoQueue>(),
                                     &item_id,
                                 ) {
-                                    eprintln!("[geo] Failed to auto-enqueue geocoding after NER: {e}");
+                                    eprintln!(
+                                        "[geo] Failed to auto-enqueue geocoding after NER: {e}"
+                                    );
                                 }
                             }
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
                     }
                     NlpJob::EnrichItem { item_id } => {
-                        // Run FTS + embedding in parallel (independent tasks), then continue
-                        // with NER. Semantic triples are Gemma-only via the LLM pipeline.
+                        // Run FTS first, then continue with NER. Semantic triples are Gemma-only
+                        // via the LLM pipeline.
                         emit_progress(&app_handle, &item_id, "fts", 10);
-                        emit_progress(&app_handle, &item_id, "embed", 10);
-
-                        if !embed_init_attempted {
-                            embed_init_attempted = true;
-                            embed_engine = match embeddings::which_python(Some(&db_path)) {
-                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-                                    python_path,
-                                    script_path: embed_script_path.clone(),
-                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                                    cache_dir: Some(embed_cache_dir.clone()),
-                                }) {
-                                    Ok(engine) => {
-                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
-                                        Some(Arc::new(engine))
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
-                                        None
-                                    }
-                                },
-                                None => {
-                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
-                                    None
-                                }
-                            };
-                        }
 
                         let db_for_fts = db_path.clone();
                         let item_for_fts = item_id.clone();
-                        let fts_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-                            let c = rusqlite::Connection::open(&db_for_fts)
-                                .map_err(|e| format!("Failed to open FTS connection: {e}"))?;
-                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-                            fts::index_item_from_db(&c, &item_for_fts)
-                        });
-
-                        let db_for_embed = db_path.clone();
-                        let item_for_embed = item_id.clone();
-                        let embed_engine_for_task = embed_engine.clone();
-                        let embed_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-                            let c = rusqlite::Connection::open(&db_for_embed)
-                                .map_err(|e| format!("Failed to open embed connection: {e}"))?;
-                            let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-                            embeddings::compute_and_store(embed_engine_for_task.as_deref(), &c, &item_for_embed)
-                        });
+                        let fts_handle =
+                            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                                let c = rusqlite::Connection::open(&db_for_fts)
+                                    .map_err(|e| format!("Failed to open FTS connection: {e}"))?;
+                                let _ = c.execute_batch(
+                                    "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+                                );
+                                fts::index_item_from_db(&c, &item_for_fts)
+                            });
 
                         match fts_handle.await {
                             Ok(Ok(())) => {
@@ -412,30 +326,20 @@ impl NlpQueue {
                                 emit_complete(&app_handle, &item_id, "fts");
                             }
                             Ok(Err(e)) => emit_error(&app_handle, &item_id, "fts", &e),
-                            Err(e) => emit_error(&app_handle, &item_id, "fts", &format!("FTS task panicked: {e}")),
-                        }
-
-                        match embed_handle.await {
-                            Ok(Ok(())) => match embedding_exists(&conn, &item_id) {
-                                Ok(true) => {
-                                    emit_progress(&app_handle, &item_id, "embed", 100);
-                                    emit_complete(&app_handle, &item_id, "embed");
-                                }
-                                Ok(false) => emit_error(
-                                    &app_handle,
-                                    &item_id,
-                                    "embed",
-                                    "Embedding job completed but no vector was persisted",
-                                ),
-                                Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
-                            },
-                            Ok(Err(e)) => emit_error(&app_handle, &item_id, "embed", &e),
-                            Err(e) => emit_error(&app_handle, &item_id, "embed", &format!("Embed task panicked: {e}")),
+                            Err(e) => emit_error(
+                                &app_handle,
+                                &item_id,
+                                "fts",
+                                &format!("FTS task panicked: {e}"),
+                            ),
                         }
 
                         // NER sub-job: check dedup set — if ExtractEntities is already
                         // handling this item, skip NER here to avoid duplicate work.
-                        let ner_already_pending = ner_pending.lock().map(|p| p.contains(&item_id)).unwrap_or(false);
+                        let ner_already_pending = ner_pending
+                            .lock()
+                            .map(|p| p.contains(&item_id))
+                            .unwrap_or(false);
                         if ner_already_pending {
                             eprintln!("[nlp/ner] Skipping NER in EnrichItem for item_id={item_id} — already queued or in progress");
                         } else {
@@ -455,7 +359,9 @@ impl NlpQueue {
                                 eprintln!("[nlp/ner] Registry ready (lazy init)");
                                 ner_registry = Some(NerRegistry::init(ner_config));
                             }
-                            let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
+                            let registry = ner_registry
+                                .as_ref()
+                                .expect("NER registry should initialize before use");
                             // Register in dedup set before starting NER
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.insert(item_id.clone());
@@ -469,7 +375,11 @@ impl NlpQueue {
                             match r {
                                 Ok(final_entities) => {
                                     if let Err(e) = tokio::task::block_in_place(|| {
-                                        ner::persist_entities_for_item(&conn, &item_id, &final_entities)
+                                        ner::persist_entities_for_item(
+                                            &conn,
+                                            &item_id,
+                                            &final_entities,
+                                        )
                                     }) {
                                         emit_error(&app_handle, &item_id, "ner", &e);
                                         continue;
@@ -492,7 +402,6 @@ impl NlpQueue {
                     // These variants process only the selected asset/page text,
                     // not the entire item. Results are stored with both item_id
                     // (for ownership/cascade) and asset_id (for filtering).
-
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
                         if !embed_init_attempted {
@@ -521,24 +430,24 @@ impl NlpQueue {
                         }
                         let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
-                            embeddings::compute_and_store_for_asset(engine_ref, &conn, &item_id, &asset_id)
+                            embeddings::compute_and_store_for_asset(
+                                engine_ref, &conn, &item_id, &asset_id,
+                            )
                         });
                         match result {
-                            Ok(_) => {
-                                match asset_embedding_exists(&conn, &asset_id) {
-                                    Ok(true) => {
-                                        emit_progress(&app_handle, &item_id, "embed", 100);
-                                        emit_complete(&app_handle, &item_id, "embed");
-                                    }
-                                    Ok(false) => emit_error(
-                                        &app_handle,
-                                        &item_id,
-                                        "embed",
-                                        "Asset embedding job completed but no vector was persisted",
-                                    ),
-                                    Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            Ok(_) => match asset_embedding_exists(&conn, &asset_id) {
+                                Ok(true) => {
+                                    emit_progress(&app_handle, &item_id, "embed", 100);
+                                    emit_complete(&app_handle, &item_id, "embed");
                                 }
-                            }
+                                Ok(false) => emit_error(
+                                    &app_handle,
+                                    &item_id,
+                                    "embed",
+                                    "Asset embedding job completed but no vector was persisted",
+                                ),
+                                Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
+                            },
                             Err(e) => emit_error(&app_handle, &item_id, "embed", &e),
                         }
                     }
@@ -561,12 +470,18 @@ impl NlpQueue {
                             eprintln!("[nlp/ner] Registry ready (lazy init)");
                             ner_registry = Some(NerRegistry::init(ner_config));
                         }
-                        let registry = ner_registry.as_ref().expect("NER registry should initialize before use");
+                        let registry = ner_registry
+                            .as_ref()
+                            .expect("NER registry should initialize before use");
                         let result = tokio::task::block_in_place(|| {
                             catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_candidates_for_asset(&conn, &item_id, &asset_id, registry)
+                                ner::extract_candidates_for_asset(
+                                    &conn, &item_id, &asset_id, registry,
+                                )
                             }))
-                            .map_err(|panic| format_panic_payload("NER extraction for asset panicked", panic))?
+                            .map_err(|panic| {
+                                format_panic_payload("NER extraction for asset panicked", panic)
+                            })?
                         });
                         // Remove from dedup set if present
                         if let Ok(mut pending) = ner_pending.lock() {
@@ -583,7 +498,12 @@ impl NlpQueue {
                                 };
 
                                 if let Err(e) = tokio::task::block_in_place(|| {
-                                    ner::persist_entities_for_asset(&conn, &item_id, &asset_id, &final_entities)
+                                    ner::persist_entities_for_asset(
+                                        &conn,
+                                        &item_id,
+                                        &asset_id,
+                                        &final_entities,
+                                    )
                                 }) {
                                     emit_error(&app_handle, &item_id, "ner", &e);
                                     continue;
@@ -600,7 +520,6 @@ impl NlpQueue {
                             Err(e) => emit_error(&app_handle, &item_id, "ner", &e),
                         }
                     }
-
                 }
             }
         });
@@ -660,19 +579,6 @@ fn run_ner_for_item(
     Ok(batch.entities)
 }
 
-fn embedding_exists(conn: &rusqlite::Connection, item_id: &str) -> Result<bool, String> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM vec_items WHERE item_id = ?1 LIMIT 1",
-            rusqlite::params![item_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to verify persisted embedding: {e}"))?;
-
-    Ok(found.is_some())
-}
-
 fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result<bool, String> {
     let found: Option<i64> = conn
         .query_row(
@@ -728,10 +634,12 @@ fn run_coalesced_fts_reindex(
 
 fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("models/ner/{file_name}");
-    let resolved = normalize_windows_path(app_handle
-        .path()
-        .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
+    let resolved = normalize_windows_path(
+        app_handle
+            .path()
+            .resolve(&resource_rel, BaseDirectory::Resource)
+            .unwrap_or_else(|_| PathBuf::from(&resource_rel)),
+    );
 
     if resolved.exists() {
         return resolved;
@@ -759,16 +667,20 @@ fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
 
 fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
     let resource_rel = format!("scripts/{file_name}");
-    let resolved = normalize_windows_path(app_handle
-        .path()
-        .resolve(&resource_rel, BaseDirectory::Resource)
-        .unwrap_or_else(|_| PathBuf::from(&resource_rel)));
+    let resolved = normalize_windows_path(
+        app_handle
+            .path()
+            .resolve(&resource_rel, BaseDirectory::Resource)
+            .unwrap_or_else(|_| PathBuf::from(&resource_rel)),
+    );
 
     if resolved.exists() {
         return resolved;
     }
 
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts").join(file_name);
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join(file_name);
     if dev_path.exists() {
         if std::env::var("ENTROPIA_VERBOSE_STARTUP")
             .map(|v| !v.is_empty())
@@ -880,7 +792,10 @@ mod tests {
 
         let first = receiver.try_recv().expect("one FTS job should be queued");
         assert!(matches!(first, NlpJob::IndexFts { ref item_id } if item_id == "item-dup"));
-        assert!(receiver.try_recv().is_err(), "duplicate should not queue a second FTS job");
+        assert!(
+            receiver.try_recv().is_err(),
+            "duplicate should not queue a second FTS job"
+        );
         assert_eq!(
             queue
                 .fts_pending
@@ -896,11 +811,9 @@ mod tests {
     fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {
             NlpJob::IndexFts { item_id } => fts::index_item_from_db(conn, item_id),
-            NlpJob::ComputeEmbedding { item_id } => {
-                // No engine in test context → graceful degradation
-                embeddings::compute_and_store(None, conn, item_id)
+            NlpJob::ExtractEntities { item_id } => {
+                ner::extract_and_store(conn, item_id, &rule_based_registry())
             }
-            NlpJob::ExtractEntities { item_id } => ner::extract_and_store(conn, item_id, &rule_based_registry()),
             NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                 // No engine in test context → graceful degradation
                 embeddings::compute_and_store_for_asset(None, conn, item_id, asset_id)
@@ -909,9 +822,8 @@ mod tests {
                 ner::extract_and_store_for_asset(conn, item_id, asset_id, &rule_based_registry())
             }
             NlpJob::EnrichItem { item_id } => {
-                // Run all 3 NLP sub-jobs sequentially; errors don't short-circuit
+                // Run remaining item-level NLP sub-jobs sequentially.
                 let _ = fts::index_item_from_db(conn, item_id);
-                let _ = embeddings::compute_and_store(None, conn, item_id);
                 let _ = ner::extract_and_store(conn, item_id, &rule_based_registry());
                 Ok(())
             }
@@ -1029,125 +941,10 @@ mod tests {
         .expect("extraction should be inserted");
     }
 
-    #[test]
-    fn compute_embedding_job_degrades_and_non_embedding_jobs_keep_working() {
-        let conn = setup_worker_test_db();
-        seed_item(
-            &conn,
-            "item-1",
-            "asset-1",
-            "Acta Colonial",
-            "Don Manuel Belgrano creó la Bandera en la ciudad de Buenos Aires.",
-        );
-
-        let embed = run_job_without_events(
-            &conn,
-            &NlpJob::ComputeEmbedding {
-                item_id: "item-1".to_string(),
-            },
-        );
-        let fts = run_job_without_events(
-            &conn,
-            &NlpJob::IndexFts {
-                item_id: "item-1".to_string(),
-            },
-        );
-        let ner = run_job_without_events(
-            &conn,
-            &NlpJob::ExtractEntities {
-                item_id: "item-1".to_string(),
-            },
-        );
-        assert!(
-            embed.is_err(),
-            "embedding job should report degradation as an error result"
-        );
-        assert!(
-            embed
-                .as_ref()
-                .err()
-                .map(|e| e.contains("Skipping embedding for item-1"))
-                .unwrap_or(false),
-            "embedding degradation should include item context"
-        );
-        assert!(fts.is_ok(), "FTS job should still run after embedding degradation");
-        assert!(ner.is_ok(), "NER job should still run after embedding degradation");
-
-        let fts_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
-            .expect("fts row count should be queryable");
-        assert_eq!(fts_rows, 1, "FTS should index one row");
-
-        let entity_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
-                params!["item-1"],
-                |row| row.get(0),
-            )
-            .expect("entities row count should be queryable");
-        assert!(entity_rows > 0, "NER should persist at least one entity");
-
-        let triple_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
-                params!["item-1"],
-                |row| row.get(0),
-            )
-            .expect("triples row count should be queryable");
-        assert!(triple_rows > 0, "Triples should persist at least one row");
-    }
-
-    #[test]
-    fn embedding_degradation_on_missing_item_does_not_block_other_items() {
-        let conn = setup_worker_test_db();
-        seed_item(
-            &conn,
-            "item-ok",
-            "asset-ok",
-            "Cabildo Abierto",
-            "Doña Juana Azurduy fue representante de la villa de Potosí.",
-        );
-
-        let embed_missing = run_job_without_events(
-            &conn,
-            &NlpJob::ComputeEmbedding {
-                item_id: "item-missing".to_string(),
-            },
-        );
-        let fts_ok = run_job_without_events(
-            &conn,
-            &NlpJob::IndexFts {
-                item_id: "item-ok".to_string(),
-            },
-        );
-
-        assert!(
-            embed_missing.is_err(),
-            "missing-item embedding should return a controlled degradation error"
-        );
-        assert!(
-            embed_missing
-                .as_ref()
-                .err()
-                .map(|e| e.contains("No source text available for item 'item-missing'"))
-                .unwrap_or(false),
-            "missing-item degradation should explain why embedding was skipped"
-        );
-        assert!(
-            fts_ok.is_ok(),
-            "FTS for a different item should remain operational"
-        );
-
-        let fts_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
-            .expect("fts row count should be queryable");
-        assert_eq!(fts_rows, 1, "FTS indexing for unaffected item must persist");
-    }
-
     // ── EnrichItem integration tests ──────────────────────────────────────────
 
     #[test]
-    fn enrich_item_runs_all_four_sub_jobs() {
+    fn enrich_item_runs_remaining_item_level_jobs() {
         let conn = setup_worker_test_db();
         seed_item(
             &conn,
@@ -1163,10 +960,7 @@ mod tests {
                 item_id: "item-enrich".to_string(),
             },
         );
-        assert!(
-            result.is_ok(),
-            "EnrichItem should succeed (embedding degrades gracefully)"
-        );
+        assert!(result.is_ok(), "EnrichItem should succeed for remaining item-level jobs");
 
         // FTS should have indexed the item
         let fts_rows: i64 = conn
@@ -1183,25 +977,11 @@ mod tests {
             )
             .expect("entity count should be queryable");
         assert!(entity_rows > 0, "NER should persist at least one entity");
-
-        // Triples should have been extracted
-        let triple_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM triples WHERE item_id = ?1",
-                params!["item-enrich"],
-                |row| row.get(0),
-            )
-            .expect("triple count should be queryable");
-        assert!(
-            triple_rows > 0,
-            "Triples should persist at least one triple"
-        );
     }
 
     #[test]
     fn enrich_item_continues_after_sub_job_failure() {
-        // Run EnrichItem on an item — embedding degrades gracefully (no engine).
-        // All other sub-jobs should still complete successfully.
+        // Run EnrichItem on an item — remaining item-level sub-jobs should still complete.
         let conn = setup_worker_test_db();
         seed_item(
             &conn,
@@ -1211,7 +991,7 @@ mod tests {
             "Don Manuel Belgrano creó la Bandera en la ciudad de Buenos Aires.",
         );
 
-        // Run EnrichItem — embedding degrades gracefully but other sub-jobs succeed
+        // Run EnrichItem — remaining item-level sub-jobs should still succeed
         let _result = run_job_without_events(
             &conn,
             &NlpJob::EnrichItem {
@@ -1223,7 +1003,10 @@ mod tests {
         let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
             .expect("fts count should be queryable");
-        assert_eq!(fts_rows, 1, "FTS should still index the item after partial failure");
+        assert_eq!(
+            fts_rows, 1,
+            "FTS should still index the item after partial failure"
+        );
 
         // NER should still have detected entities
         let entity_rows: i64 = conn
@@ -1233,7 +1016,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("entity count should be queryable");
-        assert!(entity_rows > 0, "NER should still detect entities after partial failure");
+        assert!(
+            entity_rows > 0,
+            "NER should still detect entities after partial failure"
+        );
     }
 
     #[test]
@@ -1249,7 +1035,13 @@ mod tests {
 
         conn.execute(
             "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["asset-trans-enrich", "item-trans-enrich", "audio.mp3", "audio", 1_i64],
+            params![
+                "asset-trans-enrich",
+                "item-trans-enrich",
+                "audio.mp3",
+                "audio",
+                1_i64
+            ],
         )
         .expect("asset insert");
 
@@ -1266,16 +1058,15 @@ mod tests {
                 item_id: "item-trans-enrich".to_string(),
             },
         );
-        // Embedding may degrade, but overall pipeline should succeed or at least not panic
-        assert!(
-            result.is_ok() || result.is_err(),
-            "EnrichItem should complete without panic for transcription-only text"
-        );
+        assert!(result.is_ok(), "EnrichItem should complete for transcription-only text");
 
         // FTS should find the transcription text
         let fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM fts_items", [], |row| row.get(0))
             .expect("fts count should be queryable");
-        assert_eq!(fts_rows, 1, "FTS should index the item with transcription text");
+        assert_eq!(
+            fts_rows, 1,
+            "FTS should index the item with transcription text"
+        );
     }
 }

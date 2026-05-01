@@ -24,7 +24,6 @@ import { ExtractionRepo } from './extraction.repo'
 import { LayoutRepo } from './layout.repo'
 import { EntityRepo } from './entity.repo'
 import { FtsRepo } from './fts.repo'
-import { EmbeddingRepo } from './embedding.repo'
 import { TripleRepo } from './triple.repo'
 
 describe('initStore', () => {
@@ -54,7 +53,6 @@ describe('initStore', () => {
     expect(store.layouts).toBeInstanceOf(LayoutRepo)
     expect(store.entities).toBeInstanceOf(EntityRepo)
     expect(store.fts).toBeInstanceOf(FtsRepo)
-    expect(store.embeddings).toBeInstanceOf(EmbeddingRepo)
     expect(store.triples).toBeInstanceOf(TripleRepo)
   })
 

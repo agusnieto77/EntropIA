@@ -20,8 +20,22 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 
-use crate::python_discovery::apply_windows_no_window;
 use super::text_provider;
+use crate::python_discovery::apply_windows_no_window;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetEmbeddingCandidate {
+    pub asset_id: String,
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetEmbeddingCoverageSummary {
+    pub total_assets: i64,
+    pub assets_with_text: i64,
+    pub assets_with_embedding: i64,
+    pub assets_missing_embedding: i64,
+}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -160,54 +174,11 @@ impl EmbeddingEngine {
     }
 }
 
-/// Compute embedding for item's text (extractions + transcriptions) and store it.
-///
-/// Computes and persists embeddings for an item.
-///
-/// Returns `Err(...)` with a precise reason when embedding cannot be generated
-/// or persisted, so the UI can surface actionable errors.
-pub fn compute_and_store(
-    engine: Option<&EmbeddingEngine>,
-    conn: &Connection,
-    item_id: &str,
-) -> Result<(), String> {
-    // Fetch concatenated text from both extractions and transcriptions
-    let text = text_provider::get_item_text(conn, item_id)?;
-    if text.trim().is_empty() {
-        return Err(format!(
-            "No source text available for item '{item_id}' (run OCR/transcription first)"
-        ));
-    }
-
-    // Need an engine to compute embeddings
-    let engine = match engine {
-        Some(e) => e,
-        None => {
-            return Err(embedding_degradation_log(
-                item_id,
-                "No embedding engine configured (Python with fastembed not found)",
-            ));
-        }
-    };
-
-    // Attempt to compute embedding via Python subprocess
-    let vector = match engine.embed_text(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(embedding_degradation_log(item_id, &e));
-        }
-    };
-
-    // Attempt to upsert into vec_items (requires table to exist)
-    let blob = floats_to_blob(&vector);
-    upsert_vec_item(conn, item_id, &blob)
-}
-
 /// Compute embedding for a single asset's text and store it.
 ///
 /// Uses only the extraction/transcription text for the given `asset_id`,
 /// not the entire item. The embedding is stored under `asset_id` in
-/// `vec_assets`, preserving the item-level vector in `vec_items`.
+/// `vec_assets`.
 pub fn compute_and_store_for_asset(
     engine: Option<&EmbeddingEngine>,
     conn: &Connection,
@@ -242,6 +213,106 @@ pub fn compute_and_store_for_asset(
     upsert_vec_asset(conn, item_id, asset_id, &blob)
 }
 
+pub fn summarize_asset_embedding_coverage(
+    conn: &Connection,
+) -> Result<AssetEmbeddingCoverageSummary, String> {
+    conn.query_row(
+        r#"
+        WITH asset_text AS (
+            SELECT
+                a.id AS asset_id,
+                EXISTS(
+                    SELECT 1
+                    FROM extractions e
+                    WHERE e.asset_id = a.id
+                      AND LENGTH(TRIM(COALESCE(e.text_content, ''))) > 0
+                )
+                OR EXISTS(
+                    SELECT 1
+                    FROM transcriptions t
+                    WHERE t.asset_id = a.id
+                      AND LENGTH(TRIM(COALESCE(t.text_content, ''))) > 0
+                ) AS has_text,
+                EXISTS(
+                    SELECT 1
+                    FROM vec_assets v
+                    WHERE v.asset_id = a.id
+                ) AS has_embedding
+            FROM assets a
+        )
+        SELECT
+            COUNT(*) AS total_assets,
+            SUM(CASE WHEN has_text THEN 1 ELSE 0 END) AS assets_with_text,
+            SUM(CASE WHEN has_embedding THEN 1 ELSE 0 END) AS assets_with_embedding,
+            SUM(CASE WHEN has_text AND NOT has_embedding THEN 1 ELSE 0 END) AS assets_missing_embedding
+        FROM asset_text
+        "#,
+        [],
+        |row| {
+            Ok(AssetEmbeddingCoverageSummary {
+                total_assets: row.get(0)?,
+                assets_with_text: row.get(1)?,
+                assets_with_embedding: row.get(2)?,
+                assets_missing_embedding: row.get(3)?,
+            })
+        },
+    )
+    .map_err(|e| format!("Failed to summarize asset embedding coverage: {e}"))
+}
+
+pub fn list_asset_embedding_candidates(
+    conn: &Connection,
+    force: bool,
+    limit: Option<usize>,
+) -> Result<Vec<AssetEmbeddingCandidate>, String> {
+    let mut sql = String::from(
+        r#"
+        SELECT a.id, a.item_id
+        FROM assets a
+        WHERE (
+            EXISTS(
+                SELECT 1
+                FROM extractions e
+                WHERE e.asset_id = a.id
+                  AND LENGTH(TRIM(COALESCE(e.text_content, ''))) > 0
+            )
+            OR EXISTS(
+                SELECT 1
+                FROM transcriptions t
+                WHERE t.asset_id = a.id
+                  AND LENGTH(TRIM(COALESCE(t.text_content, ''))) > 0
+            )
+        )
+        AND (?1 = 1 OR NOT EXISTS(
+            SELECT 1
+            FROM vec_assets v
+            WHERE v.asset_id = a.id
+        ))
+        ORDER BY a.created_at ASC, a.id ASC
+        "#,
+    );
+
+    if let Some(limit) = limit {
+        sql.push_str(&format!(" LIMIT {}", limit));
+    }
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to prepare asset embedding backfill query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![if force { 1_i64 } else { 0_i64 }], |row| {
+            Ok(AssetEmbeddingCandidate {
+                asset_id: row.get(0)?,
+                item_id: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query asset embedding backfill candidates: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read asset embedding backfill candidates: {e}"))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Serialize `Vec<f32>` to little-endian bytes for sqlite-vec BLOB storage.
@@ -251,20 +322,6 @@ fn floats_to_blob(v: &[f32]) -> Vec<u8> {
 
 fn embedding_degradation_log(item_id: &str, reason: &str) -> String {
     format!("[nlp/embeddings] Skipping embedding for {item_id}: {reason}")
-}
-
-fn upsert_vec_item(conn: &Connection, item_id: &str, blob: &[u8]) -> Result<(), String> {
-    let result = conn.execute(
-        "INSERT OR REPLACE INTO vec_items(item_id, embedding) VALUES (?1, ?2)",
-        params![item_id, blob],
-    );
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!(
-            "[nlp/embeddings] Failed to persist embedding for {item_id}: {e}"
-        )),
-    }
 }
 
 fn upsert_vec_asset(
@@ -361,46 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn upsert_vec_item_degrades_gracefully_when_vec_items_table_missing() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
-        let result = upsert_vec_item(&conn, "item-1", &[1, 2, 3, 4]);
-        assert!(
-            result.is_err(),
-            "missing vec_items table should return a degradation error"
-        );
-
-        let error = result
-            .err()
-            .expect("missing vec_items table should yield error details");
-        assert!(
-            error.contains("Failed to persist embedding"),
-            "error should preserve persistence failure context"
-        );
-    }
-
-    #[test]
-    fn upsert_vec_item_writes_when_vec_items_table_exists() {
-        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
-        conn.execute(
-            "CREATE TABLE vec_items(item_id TEXT PRIMARY KEY, embedding BLOB NOT NULL)",
-            [],
-        )
-        .expect("vec_items table should be created");
-
-        let result = upsert_vec_item(&conn, "item-1", &[1, 2, 3, 4]);
-        assert!(result.is_ok(), "upsert should pass when table exists");
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vec_items WHERE item_id = 'item-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("row count query should succeed");
-        assert_eq!(count, 1);
-    }
-
-    #[test]
     fn embedding_degradation_log_includes_item_id_and_reason() {
         let message = embedding_degradation_log("item-42", "No embedding engine configured");
         assert!(
@@ -444,16 +461,31 @@ mod tests {
     }
 
     #[test]
-    fn compute_and_store_degrades_gracefully_when_no_engine() {
+    fn upsert_vec_asset_writes_when_vec_assets_table_exists() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute(
+            "CREATE TABLE vec_assets(asset_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, embedding BLOB NOT NULL)",
+            [],
+        )
+        .expect("vec_assets table should be created");
+
+        upsert_vec_asset(&conn, "item-1", "asset-1", &[9, 8, 7, 6]).expect("upsert should succeed");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vec_assets WHERE asset_id = 'asset-1' AND item_id = 'item-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count query should succeed");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn list_asset_embedding_candidates_returns_only_assets_with_text_and_missing_embeddings() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
         conn.execute_batch(
-            "
-            CREATE TABLE items (
-              id TEXT PRIMARY KEY,
-              collection_id TEXT,
-              title TEXT NOT NULL,
-              metadata TEXT
-            );
+            r#"
             CREATE TABLE assets (
               id TEXT PRIMARY KEY,
               item_id TEXT NOT NULL,
@@ -478,61 +510,202 @@ mod tests {
               confidence REAL,
               created_at INTEGER NOT NULL
             );
-            ",
+            CREATE TABLE vec_assets (
+              asset_id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              embedding BLOB NOT NULL
+            );
+            "#,
         )
         .expect("schema should be created");
 
         conn.execute(
-            "INSERT INTO items(id, collection_id, title, metadata) VALUES (?1, ?2, ?3, ?4)",
-            params!["item-1", "col-1", "Title", "{}"],
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-a", "item-1", "a.txt", "txt", 1_i64],
         )
-        .expect("item should be inserted");
-
+        .expect("asset a should insert");
         conn.execute(
             "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["asset-1", "item-1", "asset.txt", "txt", 1_i64],
+            params!["asset-b", "item-1", "b.txt", "txt", 2_i64],
         )
-        .expect("asset should be inserted");
+        .expect("asset b should insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["asset-c", "item-2", "c.txt", "txt", 3_i64],
+        )
+        .expect("asset c should insert");
+
         conn.execute(
             "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params!["ext-1", "asset-1", "texto para embedding", 2_i64],
+            params!["ext-a", "asset-a", "texto OCR", 10_i64],
         )
-        .expect("extraction should be inserted");
+        .expect("extraction should insert");
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES (?1, ?2, ?3, 'es', 1000, 'base', '[]', 0.9, ?4)",
+            params!["tr-b", "asset-b", "audio transcripto", 20_i64],
+        )
+        .expect("transcription should insert");
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["ext-c", "asset-c", "   ", 30_i64],
+        )
+        .expect("blank extraction should insert");
+        conn.execute(
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES (?1, ?2, ?3)",
+            params!["asset-b", "item-1", vec![1_u8, 2, 3, 4]],
+        )
+        .expect("existing vec asset should insert");
 
-        let result = compute_and_store(None, &conn, "item-1");
-        assert!(
-            result.is_err(),
-            "no-engine embeddings path should return degradation error"
-        );
+        let candidates = list_asset_embedding_candidates(&conn, false, None)
+            .expect("candidate query should succeed");
 
-        let error = result
-            .err()
-            .expect("no-engine path should include degradation reason");
-        assert!(
-            error.contains("Skipping embedding for item-1"),
-            "degradation error should include item id"
+        assert_eq!(
+            candidates,
+            vec![AssetEmbeddingCandidate {
+                asset_id: "asset-a".to_string(),
+                item_id: "item-1".to_string(),
+            }]
         );
     }
 
     #[test]
-    fn upsert_vec_asset_writes_when_vec_assets_table_exists() {
+    fn list_asset_embedding_candidates_force_mode_includes_existing_embeddings() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE vec_assets (
+              asset_id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              embedding BLOB NOT NULL
+            );
+            "#,
+        )
+        .expect("schema should be created");
+
         conn.execute(
-            "CREATE TABLE vec_assets(asset_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, embedding BLOB NOT NULL)",
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES ('asset-z', 'item-z', 'z.txt', 'txt', 1)",
             [],
         )
-        .expect("vec_assets table should be created");
+        .expect("asset should insert");
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES ('ext-z', 'asset-z', 'texto', 2)",
+            [],
+        )
+        .expect("extraction should insert");
+        conn.execute(
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES ('asset-z', 'item-z', ?1)",
+            params![vec![9_u8, 9, 9, 9]],
+        )
+        .expect("vec asset should insert");
 
-        upsert_vec_asset(&conn, "item-1", "asset-1", &[9, 8, 7, 6]).expect("upsert should succeed");
+        let candidates = list_asset_embedding_candidates(&conn, true, Some(10))
+            .expect("force query should succeed");
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vec_assets WHERE asset_id = 'asset-1' AND item_id = 'item-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count query should succeed");
-        assert_eq!(count, 1);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].asset_id, "asset-z");
+    }
+
+    #[test]
+    fn summarize_asset_embedding_coverage_counts_text_and_missing_rows() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE vec_assets (
+              asset_id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              embedding BLOB NOT NULL
+            );
+            "#,
+        )
+        .expect("schema should be created");
+
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES ('asset-1', 'item-1', '1.txt', 'txt', 1)",
+            [],
+        )
+        .expect("asset 1 should insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES ('asset-2', 'item-2', '2.txt', 'audio', 2)",
+            [],
+        )
+        .expect("asset 2 should insert");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES ('asset-3', 'item-3', '3.txt', 'txt', 3)",
+            [],
+        )
+        .expect("asset 3 should insert");
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES ('ext-1', 'asset-1', 'texto uno', 10)",
+            [],
+        )
+        .expect("extraction should insert");
+        conn.execute(
+            "INSERT INTO transcriptions(id, asset_id, text_content, language, duration_ms, model, segments, confidence, created_at) VALUES ('tr-2', 'asset-2', 'audio dos', 'es', 1000, 'base', '[]', 0.9, 20)",
+            [],
+        )
+        .expect("transcription should insert");
+        conn.execute(
+            "INSERT INTO vec_assets(asset_id, item_id, embedding) VALUES ('asset-1', 'item-1', ?1)",
+            params![vec![1_u8, 2, 3, 4]],
+        )
+        .expect("vec asset should insert");
+
+        let summary =
+            summarize_asset_embedding_coverage(&conn).expect("coverage summary should succeed");
+
+        assert_eq!(summary.total_assets, 3);
+        assert_eq!(summary.assets_with_text, 2);
+        assert_eq!(summary.assets_with_embedding, 1);
+        assert_eq!(summary.assets_missing_embedding, 1);
     }
 
     #[test]

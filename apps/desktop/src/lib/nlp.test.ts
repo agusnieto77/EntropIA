@@ -4,12 +4,12 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   NlpStore,
+  backfillAssetEmbeddings,
   indexFts,
-  embedItem,
   extractEntities,
   enrichItem,
   ftsSearch,
-  similarItems,
+  similarAssets,
 } from './nlp'
 
 // Mocks are set up in test-setup.ts:
@@ -71,12 +71,6 @@ describe('NlpStore', () => {
     expect(invoke).toHaveBeenCalledWith('index_fts', { itemId: 'item-1' })
   })
 
-  it('embedItem calls invoke with correct command and itemId', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce('queued')
-    await embedItem('item-2')
-    expect(invoke).toHaveBeenCalledWith('embed_item', { itemId: 'item-2' })
-  })
-
   it('extractEntities calls invoke with correct command and itemId', async () => {
     vi.mocked(invoke).mockResolvedValueOnce('queued')
     await extractEntities('item-3')
@@ -126,16 +120,25 @@ describe('NlpStore', () => {
     expect(second?.rank).toBe(-0.8)
   })
 
-  it('similarItems calls invoke with itemId and default limit', async () => {
+  it('similarAssets calls invoke with assetId and default limit', async () => {
     vi.mocked(invoke).mockResolvedValueOnce([])
-    await similarItems('item-4')
-    expect(invoke).toHaveBeenCalledWith('similar_items', { itemId: 'item-4', limit: 5 })
+    await similarAssets('asset-4')
+    expect(invoke).toHaveBeenCalledWith('similar_assets', { assetId: 'asset-4', limit: 5 })
   })
 
-  it('similarItems calls invoke with custom limit', async () => {
+  it('similarAssets calls invoke with custom limit', async () => {
     vi.mocked(invoke).mockResolvedValueOnce([])
-    await similarItems('item-5', 3)
-    expect(invoke).toHaveBeenCalledWith('similar_items', { itemId: 'item-5', limit: 3 })
+    await similarAssets('asset-5', 7)
+    expect(invoke).toHaveBeenCalledWith('similar_assets', { assetId: 'asset-5', limit: 7 })
+  })
+
+  it('backfillAssetEmbeddings calls invoke with force and limit options', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ requested: 2, succeeded: 2, failed: 0, failures: [] })
+    await backfillAssetEmbeddings({ force: true, limit: 25 })
+    expect(invoke).toHaveBeenCalledWith('backfill_asset_embeddings', {
+      force: true,
+      limit: 25,
+    })
   })
 
   // ─────────────────────────────────────────────────────────────────────────

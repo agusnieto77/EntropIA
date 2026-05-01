@@ -10,7 +10,6 @@ import { ExtractionRepo } from './extraction.repo'
 import { LayoutRepo } from './layout.repo'
 import { EntityRepo } from './entity.repo'
 import { FtsRepo } from './fts.repo'
-import { EmbeddingRepo } from './embedding.repo'
 import { TripleRepo } from './triple.repo'
 import { TranscriptionRepo } from './transcription.repo'
 import { TopicRepo } from './topic.repo'
@@ -26,7 +25,6 @@ export interface StoreApi {
   layouts: LayoutRepo
   entities: EntityRepo
   fts: FtsRepo
-  embeddings: EmbeddingRepo
   triples: TripleRepo
   transcriptions: TranscriptionRepo
   topics: TopicRepo
@@ -40,9 +38,7 @@ export async function initStore(): Promise<StoreApi> {
   console.log('[store] migrations done')
   const db = createDrizzleClient(client)
   console.log('[store] drizzle client created')
-  const embeddings = new EmbeddingRepo(client)
-  await embeddings.initialize()
-  console.log('[store] embeddings initialized, returning store')
+  console.log('[store] store initialized, returning repos')
   return {
     collections: new CollectionRepo(db, client),
     items: new ItemRepo(db, client),
@@ -54,7 +50,6 @@ export async function initStore(): Promise<StoreApi> {
     layouts: new LayoutRepo(db),
     entities: new EntityRepo(db),
     fts: new FtsRepo(client),
-    embeddings,
     triples: new TripleRepo(db),
     transcriptions: new TranscriptionRepo(db),
     topics: new TopicRepo(db),

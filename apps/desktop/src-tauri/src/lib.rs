@@ -14,8 +14,8 @@ use geo::GeoQueue;
 use llm::LlmQueue;
 use nlp::NlpQueue;
 use ocr::OcrQueue;
-use rusqlite::OptionalExtension;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -69,7 +69,9 @@ pub fn run() {
         const SEM_FAILCRITICALERRORS: u32 = 0x0001;
         const SEM_NOGPFAULTERRORBOX: u32 = 0x0002;
         const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
-        extern "system" { fn SetErrorMode(uMode: u32) -> u32; }
+        extern "system" {
+            fn SetErrorMode(uMode: u32) -> u32;
+        }
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
 
         // Suppress CRT debug assertions in debug builds.
@@ -280,15 +282,15 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             ocr::commands::is_scanned_pdf,
             ocr::commands::render_pdf_pages,
             nlp::commands::index_fts,
-            nlp::commands::embed_item,
             nlp::commands::embed_asset,
+            nlp::commands::backfill_asset_embeddings,
             nlp::commands::extract_entities,
             nlp::commands::extract_entities_for_asset,
             nlp::commands::extract_triples,
             nlp::commands::extract_triples_for_asset,
             nlp::commands::enrich_item,
             nlp::commands::fts_search,
-            nlp::commands::similar_items,
+            nlp::commands::similar_assets,
             transcription::commands::transcribe_audio,
             transcription::commands::update_transcription_text_cmd,
             llm::commands::llm_correct_ocr,
@@ -423,7 +425,10 @@ fn table_row_count(conn: &Connection, table: &str) -> Option<u64> {
 
 fn copy_sqlite_bundle(from_db: &Path, to_db: &Path) -> Result<(), String> {
     let Some(parent) = to_db.parent() else {
-        return Err(format!("Target database path has no parent: {}", to_db.display()));
+        return Err(format!(
+            "Target database path has no parent: {}",
+            to_db.display()
+        ));
     };
     fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
@@ -482,7 +487,10 @@ fn backup_path(path: &Path) -> std::path::PathBuf {
     path.with_file_name(format!("{file_name}.before-legacy-restore.bak"))
 }
 
-fn sqlite_bundle_paths(from_db: &Path, to_db: &Path) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+fn sqlite_bundle_paths(
+    from_db: &Path,
+    to_db: &Path,
+) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
     let from = sqlite_bundle_members(from_db);
     let to = sqlite_bundle_members(to_db);
     from.into_iter().zip(to).collect()
@@ -491,8 +499,20 @@ fn sqlite_bundle_paths(from_db: &Path, to_db: &Path) -> Vec<(std::path::PathBuf,
 fn sqlite_bundle_members(db_path: &Path) -> Vec<std::path::PathBuf> {
     vec![
         db_path.to_path_buf(),
-        db_path.with_file_name(format!("{}-wal", db_path.file_name().and_then(|name| name.to_str()).unwrap_or(SQLITE_BASENAME))),
-        db_path.with_file_name(format!("{}-shm", db_path.file_name().and_then(|name| name.to_str()).unwrap_or(SQLITE_BASENAME))),
+        db_path.with_file_name(format!(
+            "{}-wal",
+            db_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(SQLITE_BASENAME)
+        )),
+        db_path.with_file_name(format!(
+            "{}-shm",
+            db_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(SQLITE_BASENAME)
+        )),
     ]
 }
 
@@ -504,7 +524,10 @@ fn copy_missing_recursive(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|error| format!("Failed to read directory {}: {error}", from.display()))?
     {
         let entry = entry.map_err(|error| {
-            format!("Failed to read directory entry in {}: {error}", from.display())
+            format!(
+                "Failed to read directory entry in {}: {error}",
+                from.display()
+            )
         })?;
         let source_path = entry.path();
         let target_path = to.join(entry.file_name());
@@ -548,7 +571,11 @@ fn migrate_legacy_asset_paths(db_path: &Path, app_dir: &Path) -> Result<(), Stri
 
     conn.execute(
         "UPDATE assets SET path = REPLACE(path, ?1, ?2) WHERE path LIKE ?3",
-        rusqlite::params![legacy_prefix, current_prefix, format!("{}%", legacy_dir.to_string_lossy())],
+        rusqlite::params![
+            legacy_prefix,
+            current_prefix,
+            format!("{}%", legacy_dir.to_string_lossy())
+        ],
     )
     .map_err(|error| format!("Failed to migrate asset paths from legacy app dir: {error}"))?;
 
@@ -598,7 +625,9 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
         .unwrap_or(false);
 
     if !has_check {
-        eprintln!("[setup] extractions.method: no legacy CHECK constraint found — skipping migration");
+        eprintln!(
+            "[setup] extractions.method: no legacy CHECK constraint found — skipping migration"
+        );
         return Ok(());
     }
 
@@ -618,7 +647,7 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
          DROP TABLE extractions;
          ALTER TABLE extractions_new RENAME TO extractions;
          CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
-         COMMIT;"
+         COMMIT;",
     )
     .map_err(|e| format!("Failed to migrate extractions table: {e}"))?;
 

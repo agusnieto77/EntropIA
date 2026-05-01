@@ -257,7 +257,9 @@ describe('CollectionRepo', () => {
       // Optional tables are cleaned up with individual execute calls
       const executeCalls = rawExecuteMock.mock.calls.map((c) => c[0] as string)
       expect(
-        executeCalls.some((sql) => sql.includes("INSERT INTO fts_items(fts_items) VALUES ('delete-all')"))
+        executeCalls.some((sql) =>
+          sql.includes("INSERT INTO fts_items(fts_items) VALUES ('delete-all')")
+        )
       ).toBe(true)
       expect(
         executeCalls.some((sql) =>
@@ -267,8 +269,11 @@ describe('CollectionRepo', () => {
       expect(executeCalls.some((sql) => sql.includes('DELETE FROM fts_items WHERE item_id'))).toBe(
         false
       )
-      expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_items'))).toBe(true)
-      expect(executeCalls.some((sql) => sql.includes('DELETE FROM embeddings_fallback'))).toBe(true)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_items'))).toBe(false)
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM embeddings_fallback'))).toBe(
+        false
+      )
+      expect(executeCalls.some((sql) => sql.includes('DELETE FROM vec_assets'))).toBe(true)
     })
 
     it('escapes single quotes in collection ID to prevent SQL injection', async () => {
