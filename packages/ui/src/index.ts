@@ -49,6 +49,14 @@ export type { TopicEditorProps } from './components/TopicEditor/index'
 
 export { NoteEditor } from './components/NoteEditor/index'
 export type { NoteEditorProps } from './components/NoteEditor/index'
+export {
+  convertLegacyNoteTextToHtml,
+  isLegacyPlainTextNoteContent,
+  isNoteHtmlEffectivelyEmpty,
+  normalizeNoteContentForEditor,
+  normalizeNoteContentForRender,
+  sanitizeNoteHtml,
+} from './components/NoteEditor/index'
 
 // Components — Fase 3
 export { EntityViewer } from './components/EntityViewer/index'

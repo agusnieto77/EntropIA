@@ -10,6 +10,11 @@
     "./tokens": "./src/tokens/tokens.css"
   },
   "dependencies": {
+    "@tiptap/core": "^2.26.4",
+    "@tiptap/extension-link": "^2.26.4",
+    "@tiptap/extension-placeholder": "^2.26.4",
+    "@tiptap/extension-underline": "^2.26.4",
+    "@tiptap/starter-kit": "^2.26.4",
     "leaflet": "^1.9.4",
     "pdfjs-dist": "^4"
   },

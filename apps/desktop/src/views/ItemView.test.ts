@@ -276,17 +276,29 @@ vi.mock('@entropia/ui', async () => {
   const MockEntityViewer = (await import('./__mocks__/MockEntityViewer.svelte')).default
   const MockButton = (await import('./__mocks__/MockButton.svelte')).default
   const MockCard = (await import('./__mocks__/MockCard.svelte')).default
+  const MockNoteEditor = (await import('./__mocks__/MockNoteEditor.svelte')).default
 
   return {
     ActionIcon: MockActionIcon,
     DocumentViewer: MockDocumentViewer,
     MetadataEditor: () => null,
-    NoteEditor: () => null,
+    NoteEditor: MockNoteEditor,
     Button: MockButton,
     Card: MockCard,
     EntityViewer: MockEntityViewer,
     MapViewer: () => null,
     TopicEditor: () => null,
+    normalizeNoteContentForRender: (content: string) => {
+      if (!content) return ''
+      const stripped = content.replace(/<script[\s\S]*?<\/script>/gi, '')
+      if (/<[a-z][\s\S]*>/i.test(stripped)) return stripped
+      return stripped
+        .split(/\n{2,}/)
+        .map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br>')}</p>`)
+        .join('')
+    },
+    isNoteHtmlEffectivelyEmpty: (content: string) =>
+      !content || content.replace(/<[^>]+>/g, '').trim().length === 0,
   }
 })
 
@@ -659,7 +671,7 @@ describe('ItemView note editing', () => {
   const sampleNote = {
     id: 'note-1',
     itemId: 'item-1',
-    content: 'Original note content',
+    content: '<p>Original <strong>note</strong> content</p>',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
@@ -693,6 +705,46 @@ describe('ItemView note editing', () => {
     expect(screen.getByRole('button', { name: 'Delete note' })).toBeInTheDocument()
   })
 
+  it('renders stored rich text notes sanitized', async () => {
+    await renderItemViewWithNotes([
+      {
+        ...sampleNote,
+        content:
+          '<h2>Nota</h2><p>Texto <a href="https://entropia.dev">seguro</a></p><script>alert(1)</script>',
+      },
+    ])
+
+    expect(screen.getByRole('heading', { name: 'Nota', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'seguro' })).toHaveAttribute(
+      'href',
+      'https://entropia.dev'
+    )
+    expect(screen.queryByText('alert(1)')).not.toBeInTheDocument()
+  })
+
+  it('renders legacy plain text notes correctly', async () => {
+    await renderItemViewWithNotes([
+      {
+        ...sampleNote,
+        content: 'Linea uno\n\nLinea dos',
+      },
+    ])
+
+    expect(screen.getByText('Linea uno')).toBeInTheDocument()
+    expect(screen.getByText('Linea dos')).toBeInTheDocument()
+  })
+
+  it('uses the rich text editor for editing existing notes', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    expect(screen.getAllByTestId('note-save')).toHaveLength(1)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit note' }))
+
+    expect(screen.getAllByTestId('note-save')).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'Bold' }).length).toBeGreaterThanOrEqual(2)
+  })
+
   it('displays "No notes yet" when notes array is empty', async () => {
     storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue([])
@@ -709,19 +761,19 @@ describe('ItemView note editing', () => {
 
   it('notes store update method can be called with note id and content', async () => {
     await renderItemViewWithNotes([sampleNote])
-    await storeRef.current.notes.update('note-1', 'Updated content')
-    expect(storeRef.current.notes.update).toHaveBeenCalledWith('note-1', 'Updated content')
+    await storeRef.current.notes.update('note-1', '<p>Updated content</p>')
+    expect(storeRef.current.notes.update).toHaveBeenCalledWith('note-1', '<p>Updated content</p>')
   })
 
   it('after update, notes are reloaded from store', async () => {
-    const updatedNote = { ...sampleNote, content: 'Updated content', updatedAt: Date.now() }
+    const updatedNote = { ...sampleNote, content: '<p>Updated content</p>', updatedAt: Date.now() }
     storeRef.current.notes.findByItem.mockResolvedValueOnce([sampleNote])
     storeRef.current.notes.findByItem.mockResolvedValueOnce([updatedNote])
 
     await renderItemViewWithNotes([sampleNote])
 
     // Simulate the update that handleSaveEdit would do
-    await storeRef.current.notes.update('note-1', 'Updated content')
+    await storeRef.current.notes.update('note-1', '<p>Updated content</p>')
     // After update, notes are loaded in the current asset scope
     expect(storeRef.current.notes.findByAsset).toHaveBeenCalledWith('item-1', 'asset-1')
   })

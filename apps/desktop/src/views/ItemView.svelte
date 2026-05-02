@@ -51,6 +51,8 @@
     EntityViewer,
     MapViewer,
     TopicEditor,
+    isNoteHtmlEffectivelyEmpty,
+    normalizeNoteContentForRender,
   } from '@entropia/ui'
   import type { MapMarker } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -1496,22 +1498,19 @@
 
   // Note editing state
   let editingNoteId = $state<string | null>(null)
-  let editContent = $state('')
 
   function handleEditNote(note: Note) {
     editingNoteId = note.id
-    editContent = note.content
   }
 
-  async function handleSaveEdit(noteId: string) {
-    if (!editContent.trim()) return
+  async function handleSaveEdit(noteId: string, content: string) {
+    if (isNoteHtmlEffectivelyEmpty(content)) return
     try {
       error = null
       const store = getStore()
-      await store.notes.update(noteId, editContent)
+      await store.notes.update(noteId, content)
       notes = await loadNotesForAsset()
       editingNoteId = null
-      editContent = ''
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to update note'
     }
@@ -1519,7 +1518,10 @@
 
   function handleCancelEdit() {
     editingNoteId = null
-    editContent = ''
+  }
+
+  function getRenderedNoteContent(content: string): string {
+    return normalizeNoteContentForRender(content)
   }
 
   /** Load notes scoped to the current asset (plus item-level notes). */
@@ -1998,7 +2000,12 @@
           Add Note{#if assets.length > 1}
             · Page {selectedAssetIndex + 1}{/if}
         </h3>
-        <NoteEditor onsave={handleSaveNote} />
+        <NoteEditor
+          onsave={handleSaveNote}
+          clearOnSave={true}
+          placeholder="Write a note..."
+          saveLabel="Save note"
+        />
       </section>
 
       <section class="section">
@@ -2014,26 +2021,19 @@
               <Card>
                 {#if editingNoteId === note.id}
                   <div class="note-edit">
-                    <textarea
-                      class="note-edit__textarea"
-                      rows="3"
-                      value={editContent}
-                      oninput={(e) => (editContent = (e.target as HTMLTextAreaElement).value)}
-                    ></textarea>
-                    <div class="note-edit__actions">
-                      <Button variant="ghost" size="sm" onclick={handleCancelEdit}>Cancel</Button>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        disabled={!editContent.trim() || editContent === note.content}
-                        onclick={() => handleSaveEdit(note.id)}
-                      >
-                        Save
-                      </Button>
-                    </div>
+                    <NoteEditor
+                      content={note.content}
+                      onsave={(content) => handleSaveEdit(note.id, content)}
+                      oncancel={handleCancelEdit}
+                      clearOnSave={false}
+                      saveLabel="Save note"
+                      cancelLabel="Cancel edit"
+                    />
                   </div>
                 {:else}
-                  <p class="note-content">{note.content}</p>
+                  <div class="note-content note-content--rich">
+                    {@html getRenderedNoteContent(note.content)}
+                  </div>
                   <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
                   <div class="note-actions">
                     <Button
@@ -3412,7 +3412,52 @@
     gap: var(--space-2);
   }
   .note-content {
-    white-space: pre-wrap;
+    color: var(--color-text-primary);
+    line-height: 1.6;
+    word-break: break-word;
+  }
+  .note-content--rich :global(p:first-child),
+  .note-content--rich :global(h1:first-child),
+  .note-content--rich :global(h2:first-child),
+  .note-content--rich :global(h3:first-child),
+  .note-content--rich :global(blockquote:first-child) {
+    margin-top: 0;
+  }
+  .note-content--rich :global(p:last-child),
+  .note-content--rich :global(h1:last-child),
+  .note-content--rich :global(h2:last-child),
+  .note-content--rich :global(h3:last-child),
+  .note-content--rich :global(blockquote:last-child),
+  .note-content--rich :global(ul:last-child),
+  .note-content--rich :global(ol:last-child) {
+    margin-bottom: 0;
+  }
+  .note-content--rich :global(a) {
+    color: var(--color-accent-hover);
+    text-decoration: underline;
+  }
+  .note-content--rich :global(blockquote) {
+    margin: var(--space-3) 0;
+    padding-left: var(--space-3);
+    border-left: 3px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    color: var(--color-text-secondary);
+  }
+  .note-content--rich :global(code) {
+    background: color-mix(in srgb, var(--color-border) 65%, transparent);
+    border-radius: var(--radius-sm);
+    padding: 0.1rem 0.3rem;
+    font-size: 0.95em;
+  }
+  .note-content--rich :global(pre) {
+    background: color-mix(in srgb, var(--color-surface) 76%, black 24%);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    overflow-x: auto;
+  }
+  .note-content--rich :global(ul),
+  .note-content--rich :global(ol) {
+    padding-left: 1.25rem;
   }
   .note-date {
     font-size: var(--font-size-xs);
@@ -3427,30 +3472,6 @@
   .note-edit {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-  }
-  .note-edit__textarea {
-    width: 100%;
-    min-height: 72px;
-    padding: var(--space-2);
-    font-family: var(--font-sans);
-    font-size: var(--font-size-md);
-    color: var(--color-text-primary);
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-accent);
-    border-radius: var(--radius-md);
-    outline: none;
-    resize: vertical;
-    box-sizing: border-box;
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.2);
-  }
-  .note-edit__textarea:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 2px rgba(108, 142, 245, 0.3);
-  }
-  .note-edit__actions {
-    display: flex;
-    justify-content: flex-end;
     gap: var(--space-2);
   }
   .empty-text {
