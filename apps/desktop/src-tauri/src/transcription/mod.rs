@@ -9,6 +9,7 @@ use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::path_utils::normalize_windows_path;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
+use std::path::Path;
 use std::path::PathBuf;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
@@ -76,37 +77,6 @@ impl TranscriptionQueue {
         mut receiver: tokio::sync::mpsc::Receiver<TranscriptionJob>,
         app_handle: AppHandle,
     ) {
-        // Resolve script path: try Resource directory first (production), then source (dev)
-        let script_path = normalize_windows_path(
-            app_handle
-                .path()
-                .resolve("scripts/transcribe.py", BaseDirectory::Resource)
-                .unwrap_or_else(|_| {
-                    // Dev fallback: look relative to the src-tauri directory
-                    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("resources/scripts/transcribe.py");
-                    if dev_path.exists() {
-                        dev_path
-                    } else {
-                        // Last resort
-                        std::path::PathBuf::from("scripts/transcribe.py")
-                    }
-                }),
-        );
-
-        // Resolve model cache directory inside app data (avoids HuggingFace symlink
-        // issues on Windows — WinError 448 "untrusted mount point" on reparse points)
-        let model_cache_dir = app_handle
-            .path()
-            .app_data_dir()
-            .expect("Failed to get app data dir for model cache")
-            .join("hf_cache");
-        std::fs::create_dir_all(&model_cache_dir).unwrap_or_else(|e| {
-            eprintln!(
-                "[transcription] Warning: could not create model cache dir {}: {e}",
-                model_cache_dir.display()
-            );
-        });
         std::thread::Builder::new()
             .name("transcription-worker".to_string())
             .stack_size(8 * 1024 * 1024) // 8 MB — subprocess only, no heavy stack needed
@@ -140,38 +110,14 @@ impl TranscriptionQueue {
                     let asset_id = job.asset_id.clone();
 
                     if engine.is_none() && init_error.is_none() {
-                        let python_path = match which_python(Some(&db_path)) {
-                            Some(path) => path,
-                            None => {
-                                init_error = Some(
-                                    "No Python interpreter with faster_whisper found. Please install Python and run: pip install faster-whisper"
-                                        .to_string(),
-                                );
-                                eprintln!(
-                                    "[transcription] Worker lazy init failed: {}",
-                                    init_error.as_deref().unwrap_or("unknown error")
-                                );
-                                PathBuf::new()
+                        match create_whisper_engine(&app_handle, Some(&db_path)) {
+                            Ok(resolved_engine) => {
+                                eprintln!("[transcription] Engine ready (lazy init)");
+                                engine = Some(resolved_engine);
                             }
-                        };
-
-                        if init_error.is_none() {
-                            match WhisperEngine::init(WhisperConfig {
-                                python_path,
-                                script_path: script_path.clone(),
-                                model_size: "base".to_string(),
-                                language: "es".to_string(),
-                                compute_type: "int8".to_string(),
-                                model_dir: Some(model_cache_dir.clone()),
-                            }) {
-                                Ok(resolved_engine) => {
-                                    eprintln!("[transcription] Engine ready (lazy init)");
-                                    engine = Some(resolved_engine);
-                                }
-                                Err(error) => {
-                                    eprintln!("[transcription] Failed to initialize transcription engine: {error}");
-                                    init_error = Some(format!("Transcription engine initialization failed: {error}"));
-                                }
+                            Err(error) => {
+                                eprintln!("[transcription] Failed to initialize transcription engine: {error}");
+                                init_error = Some(format!("Transcription engine initialization failed: {error}"));
                             }
                         }
                     }
@@ -210,6 +156,76 @@ impl TranscriptionQueue {
                 }
             })
             .expect("Failed to spawn transcription worker thread");
+    }
+}
+
+fn resolve_transcription_script_path(app_handle: &AppHandle) -> PathBuf {
+    normalize_windows_path(
+        app_handle
+            .path()
+            .resolve("scripts/transcribe.py", BaseDirectory::Resource)
+            .unwrap_or_else(|_| {
+                let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources/scripts/transcribe.py");
+                if dev_path.exists() {
+                    dev_path
+                } else {
+                    std::path::PathBuf::from("scripts/transcribe.py")
+                }
+            }),
+    )
+}
+
+fn resolve_model_cache_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let model_cache_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir for model cache: {e}"))?
+        .join("hf_cache");
+
+    std::fs::create_dir_all(&model_cache_dir).map_err(|e| {
+        format!(
+            "Could not create model cache dir {}: {e}",
+            model_cache_dir.display()
+        )
+    })?;
+
+    Ok(model_cache_dir)
+}
+
+fn create_whisper_engine(
+    app_handle: &AppHandle,
+    settings_db_path: Option<&Path>,
+) -> Result<WhisperEngine, String> {
+    let python_path = which_python(settings_db_path).ok_or_else(|| {
+        "No Python interpreter with faster_whisper found. Please install Python and run: pip install faster-whisper"
+            .to_string()
+    })?;
+
+    WhisperEngine::init(WhisperConfig {
+        python_path,
+        script_path: resolve_transcription_script_path(app_handle),
+        model_size: "base".to_string(),
+        language: "es".to_string(),
+        compute_type: "int8".to_string(),
+        model_dir: Some(resolve_model_cache_dir(app_handle)?),
+    })
+}
+
+pub fn transcribe_audio_file(
+    app_handle: &AppHandle,
+    settings_db_path: Option<&Path>,
+    audio_path: &str,
+) -> Result<TranscriptionResult, String> {
+    let engine = create_whisper_engine(app_handle, settings_db_path)?;
+    engine.transcribe(audio_path, 0)
+}
+
+pub fn cleanup_temp_audio_file(audio_path: &str) -> Result<(), String> {
+    match std::fs::remove_file(audio_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to remove temporary audio file {audio_path}: {error}")),
     }
 }
 

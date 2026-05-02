@@ -21,6 +21,8 @@
     placeholder = '',
     onsave,
     oncancel,
+    ondictate,
+    dictationMaxSeconds = 300,
     clearOnSave = true,
     saveLabel = 'Save',
     cancelLabel = 'Cancel',
@@ -33,8 +35,19 @@
   let originalHtml = $state('<p></p>')
   let lastExternalHtml = $state('')
   let isFocused = $state(false)
+  let dictationState = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle')
+  let dictationSeconds = $state(0)
+  let dictationMessage = $state<string | null>(null)
+  let dictationAutoStopped = $state(false)
+  let mediaRecorder = $state<MediaRecorder | null>(null)
+  let mediaStream = $state<MediaStream | null>(null)
+  let dictationTimer = $state<ReturnType<typeof setInterval> | null>(null)
+  let dictationChunks = $state<Blob[]>([])
+  let dictationProcessing = $state<Promise<void> | null>(null)
+  let dictationSelection = $state<{ from: number; to: number } | null>(null)
 
   const showCancel = $derived(typeof oncancel === 'function')
+  const supportsDictation = $derived(typeof ondictate === 'function')
   const isEmpty = $derived(isNoteHtmlEffectivelyEmpty(currentHtml))
   const isEditing = $derived(showCancel || !clearOnSave)
   const hasChanges = $derived(
@@ -50,6 +63,14 @@
       isEditing,
     })
   )
+
+  const dictationButtonLabel = $derived.by(() => {
+    if (dictationState === 'recording') return 'Detener dictado'
+    if (dictationState === 'transcribing') return 'Procesando dictado...'
+    return 'Iniciar dictado'
+  })
+
+  const dictationTimerLabel = $derived(formatDuration(dictationSeconds))
 
   type ToolbarButton = {
     label: string
@@ -194,12 +215,22 @@
         },
       },
       onCreate: ({ editor }: { editor: Editor }) => {
+        dictationSelection = {
+          from: editor.state.selection.from,
+          to: editor.state.selection.to,
+        }
         syncEditorState(sanitizeNoteHtml(editor.getHTML()) || '<p></p>')
       },
       onUpdate: ({ editor }: { editor: Editor }) => {
         syncEditorState(sanitizeNoteHtml(editor.getHTML()) || '<p></p>')
       },
-      onSelectionUpdate: bumpEditorRevision,
+      onSelectionUpdate: ({ editor }: { editor: Editor }) => {
+        dictationSelection = {
+          from: editor.state.selection.from,
+          to: editor.state.selection.to,
+        }
+        bumpEditorRevision()
+      },
       onFocus: () => {
         isFocused = true
         bumpEditorRevision()
@@ -211,6 +242,223 @@
     })
 
     editor = instance
+  }
+
+  function formatDuration(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+
+  function resetDictationTimer() {
+    if (dictationTimer) {
+      clearInterval(dictationTimer)
+      dictationTimer = null
+    }
+    dictationSeconds = 0
+  }
+
+  function stopMediaStreamTracks() {
+    mediaStream?.getTracks().forEach((track) => track.stop())
+    mediaStream = null
+  }
+
+  function setDictationMessage(message: string | null, tone: 'idle' | 'error' = 'idle') {
+    dictationMessage = message
+    if (tone === 'error') {
+      dictationState = 'error'
+    }
+  }
+
+  function getDictationInsertionPlan(text: string) {
+    if (!editor) {
+      return { text: text.trim(), leadingSpace: false, trailingSpace: false }
+    }
+
+    const trimmed = text.trim()
+    if (!trimmed) return { text: '', leadingSpace: false, trailingSpace: false }
+
+    if (!dictationSelection) {
+      const currentText = editor.getText()
+      const prevChar = currentText.slice(-1)
+      return {
+        text: trimmed,
+        leadingSpace: Boolean(prevChar) && !/\s/.test(prevChar) && !/^[\s,.;:!?)]/.test(trimmed),
+        trailingSpace: false,
+      }
+    }
+
+    const fallbackSelection = {
+      from: editor.state.doc.content.size,
+      to: editor.state.doc.content.size,
+    }
+    const { from, to } = dictationSelection ?? fallbackSelection
+    const prevChar = editor.state.doc.textBetween(Math.max(0, from - 1), from, '', '')
+    const nextChar = editor.state.doc.textBetween(
+      to,
+      Math.min(editor.state.doc.content.size, to + 1),
+      '',
+      ''
+    )
+
+    const needsLeadingSpace =
+      from > 1 && prevChar && !/\s/.test(prevChar) && !/^[\s,.;:!?)]/.test(trimmed)
+    const needsTrailingSpace = nextChar && !/\s/.test(nextChar) && !/[\s([{]$/.test(trimmed)
+
+    return {
+      text: trimmed,
+      leadingSpace: Boolean(needsLeadingSpace),
+      trailingSpace: Boolean(needsTrailingSpace),
+    }
+  }
+
+  function insertDictationText(text: string) {
+    if (!editor) return
+
+    const insertion = getDictationInsertionPlan(text)
+    if (!insertion.text) return
+
+    const insertionText = `${insertion.leadingSpace ? ' ' : ''}${insertion.text}${insertion.trailingSpace ? ' ' : ''}`
+
+    if (dictationSelection) {
+      editor
+        .chain()
+        .focus()
+        .insertContentAt(
+          { from: dictationSelection.from, to: dictationSelection.to },
+          insertionText
+        )
+        .run()
+    } else {
+      editor.chain().focus('end').insertContent(insertionText).run()
+    }
+    syncEditorState(sanitizeNoteHtml(editor.getHTML()) || '<p></p>')
+  }
+
+  async function finalizeDictation() {
+    const recorder = mediaRecorder
+    const wasAutoStopped = dictationAutoStopped
+    const audioBlob = new Blob(dictationChunks, {
+      type: recorder?.mimeType || 'audio/webm',
+    })
+
+    dictationChunks = []
+    mediaRecorder = null
+    stopMediaStreamTracks()
+    resetDictationTimer()
+
+    if (!ondictate || audioBlob.size === 0) {
+      dictationState = 'idle'
+      if (audioBlob.size === 0) {
+        setDictationMessage('No se pudo capturar audio del micrófono.', 'error')
+      }
+      return
+    }
+
+    dictationState = 'transcribing'
+    if (wasAutoStopped) {
+      dictationMessage = `Se alcanzó el máximo de ${formatDuration(dictationMaxSeconds)}. Procesando audio...`
+    } else {
+      dictationMessage = 'Transcribiendo audio...'
+    }
+
+    try {
+      const text = (await ondictate(audioBlob)).trim()
+      if (text) {
+        insertDictationText(text)
+        dictationMessage = wasAutoStopped
+          ? `Se alcanzó el máximo de ${formatDuration(dictationMaxSeconds)}. Texto insertado.`
+          : 'Texto insertado desde el micrófono.'
+        dictationState = 'idle'
+      } else {
+        setDictationMessage('No se detectó texto en el audio.', 'error')
+      }
+    } catch (error) {
+      setDictationMessage(
+        error instanceof Error ? error.message : 'No se pudo transcribir el audio.',
+        'error'
+      )
+    } finally {
+      dictationAutoStopped = false
+      dictationProcessing = null
+    }
+  }
+
+  async function stopDictation(options?: { autoStop?: boolean }) {
+    const recorder = mediaRecorder
+    if (!recorder || recorder.state !== 'recording') return
+
+    dictationAutoStopped = options?.autoStop ?? false
+    const processing = new Promise<void>((resolve) => {
+      recorder.onstop = () => {
+        void finalizeDictation().finally(resolve)
+      }
+    })
+    dictationProcessing = processing
+    recorder.stop()
+    await processing
+  }
+
+  async function startDictation() {
+    if (!ondictate) return
+
+    if (
+      typeof window === 'undefined' ||
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      setDictationMessage('No hay micrófono disponible en este dispositivo.', 'error')
+      return
+    }
+
+    try {
+      dictationChunks = []
+      dictationMessage = null
+      dictationAutoStopped = false
+      dictationSelection = editor?.isFocused
+        ? {
+            from: editor.state.selection.from,
+            to: editor.state.selection.to,
+          }
+        : null
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStream = stream
+
+      const recorder = new MediaRecorder(stream)
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          dictationChunks = [...dictationChunks, event.data]
+        }
+      }
+      mediaRecorder = recorder
+      dictationState = 'recording'
+      dictationSeconds = 0
+      recorder.start()
+
+      dictationTimer = setInterval(() => {
+        dictationSeconds += 1
+        if (dictationSeconds >= dictationMaxSeconds) {
+          void stopDictation({ autoStop: true })
+        }
+      }, 1000)
+    } catch (error) {
+      stopMediaStreamTracks()
+      resetDictationTimer()
+      setDictationMessage(
+        error instanceof Error ? error.message : 'No se pudo acceder al micrófono.',
+        'error'
+      )
+    }
+  }
+
+  async function toggleDictation() {
+    if (dictationState === 'transcribing') return
+    if (dictationState === 'recording') {
+      await stopDictation()
+      return
+    }
+    await startDictation()
   }
 
   function updateLink() {
@@ -279,6 +527,11 @@
   })
 
   onDestroy(() => {
+    resetDictationTimer()
+    if (mediaRecorder?.state === 'recording') {
+      mediaRecorder.stop()
+    }
+    stopMediaStreamTracks()
     editor?.destroy()
     editor = null
   })
@@ -331,9 +584,45 @@
         {/each}
       </div>
     {/each}
+
+    {#if supportsDictation}
+      <div class="note-editor__tool-group" role="group" aria-label="Dictation">
+        <button
+          type="button"
+          class="note-editor__tool note-editor__tool--dictation"
+          class:note-editor__tool--active={dictationState === 'recording'}
+          aria-label={dictationButtonLabel}
+          title={dictationButtonLabel}
+          disabled={dictationState === 'transcribing'}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={toggleDictation}
+        >
+          🎙
+        </button>
+        <span class="note-editor__dictation-status" data-testid="note-editor-dictation-timer">
+          {#if dictationState === 'recording'}
+            {dictationTimerLabel} / {formatDuration(dictationMaxSeconds)}
+          {:else if dictationState === 'transcribing'}
+            Procesando...
+          {:else}
+            Dictado
+          {/if}
+        </span>
+      </div>
+    {/if}
   </div>
 
   <p class="note-editor__helper">Tip: seleccioná texto para aplicar formato o links.</p>
+
+  {#if dictationMessage}
+    <p
+      class="note-editor__dictation-message"
+      class:note-editor__dictation-message--error={dictationState === 'error'}
+      data-testid="note-editor-dictation-message"
+    >
+      {dictationMessage}
+    </p>
+  {/if}
 
   <div class="note-editor__surface" class:note-editor__surface--focused={isFocused}>
     <div bind:this={editorElement}></div>
@@ -405,6 +694,10 @@
       box-shadow 0.15s ease;
   }
 
+  .note-editor__tool--dictation {
+    min-width: 2.75rem;
+  }
+
   .note-editor__tool {
     min-width: 2.5rem;
     background: transparent;
@@ -430,6 +723,24 @@
     margin: 0;
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+  }
+
+  .note-editor__dictation-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.5rem;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .note-editor__dictation-message {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+  }
+
+  .note-editor__dictation-message--error {
+    color: #ff8f8f;
   }
 
   .note-editor__surface {

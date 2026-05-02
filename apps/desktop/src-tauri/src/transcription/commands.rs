@@ -2,7 +2,7 @@
 use super::{TranscriptionJob, TranscriptionQueue};
 use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// Submit a transcription job to the background worker queue.
 ///
@@ -69,4 +69,28 @@ pub async fn update_transcription_text_cmd(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn transcribe_dictation(audio_path: String, app_handle: AppHandle) -> Result<String, String> {
+    let audio_path_for_worker = audio_path.clone();
+    let transcription_result = tauri::async_runtime::spawn_blocking(move || {
+        super::transcribe_audio_file(&app_handle, None, &audio_path_for_worker)
+    })
+    .await
+    .map_err(|e| format!("Dictation task failed: {e}"))?;
+
+    let cleanup_result = super::cleanup_temp_audio_file(&audio_path);
+
+    match (transcription_result, cleanup_result) {
+        (Ok(result), Ok(())) => Ok(result.text.trim().to_string()),
+        (Ok(result), Err(cleanup_error)) => {
+            eprintln!("[transcription] Dictation cleanup warning: {cleanup_error}");
+            Ok(result.text.trim().to_string())
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(format!(
+            "{error}\nTemporary file cleanup failed: {cleanup_error}"
+        )),
+    }
 }

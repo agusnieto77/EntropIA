@@ -292,6 +292,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             nlp::commands::fts_search,
             nlp::commands::similar_assets,
             transcription::commands::transcribe_audio,
+            transcription::commands::transcribe_dictation,
             transcription::commands::update_transcription_text_cmd,
             llm::commands::llm_correct_ocr,
             llm::commands::llm_extract_entities,

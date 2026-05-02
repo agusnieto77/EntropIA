@@ -5,6 +5,8 @@
     content = '',
     onsave,
     oncancel,
+    ondictate,
+    dictationMaxSeconds = 300,
     clearOnSave = true,
     saveLabel = 'Save note',
     cancelLabel = 'Cancel',
@@ -19,6 +21,16 @@
   <div role="group" aria-label="Text style"></div>
   <div role="group" aria-label="Structure"></div>
   <div role="group" aria-label="Insert"></div>
+  {#if ondictate}
+    <div role="group" aria-label="Dictation">
+      <button type="button" aria-label="Iniciar dictado">🎙</button>
+      <span data-testid="note-editor-dictation-timer"
+        >0:00 / {Math.floor(dictationMaxSeconds / 60)}:{(dictationMaxSeconds % 60)
+          .toString()
+          .padStart(2, '0')}</span
+      >
+    </div>
+  {/if}
   <button type="button" aria-label="Add link">Link</button>
   <button type="button" aria-label="Remove link">Unlink</button>
   <div role="textbox">{content}</div>

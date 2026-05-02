@@ -19,7 +19,7 @@
     serializeLayoutBlock,
   } from '$lib/layout-inspector'
   import { OcrStore, extractText, type OcrMode } from '$lib/ocr'
-  import { TranscriptionStore, transcribeAudio } from '$lib/transcription'
+  import { TranscriptionStore, transcribeAudio, transcribeDictation } from '$lib/transcription'
   import {
     NlpStore,
     indexFts,
@@ -1071,6 +1071,10 @@
     }
   }
 
+  async function handleTranscribeDictation(audio: Blob): Promise<string> {
+    return transcribeDictation(audio)
+  }
+
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
@@ -2002,6 +2006,7 @@
         </h3>
         <NoteEditor
           onsave={handleSaveNote}
+          ondictate={handleTranscribeDictation}
           clearOnSave={true}
           placeholder="Write a note..."
           saveLabel="Save note"
@@ -2025,6 +2030,7 @@
                       content={note.content}
                       onsave={(content) => handleSaveEdit(note.id, content)}
                       oncancel={handleCancelEdit}
+                      ondictate={handleTranscribeDictation}
                       clearOnSave={false}
                       saveLabel="Save note"
                       cancelLabel="Cancel edit"
