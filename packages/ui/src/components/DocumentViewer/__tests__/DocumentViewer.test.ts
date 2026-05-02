@@ -8,13 +8,16 @@ class MockResizeObserver {
   static instances: MockResizeObserver[] = []
 
   callback: ResizeObserverCallback
+  observedTargets = new Set<Element>()
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback
     MockResizeObserver.instances.push(this)
   }
 
-  observe = vi.fn()
+  observe = vi.fn((target: Element) => {
+    this.observedTargets.add(target)
+  })
   disconnect = vi.fn()
 
   trigger(target: Element) {
@@ -31,6 +34,19 @@ class MockResizeObserver {
 }
 
 vi.stubGlobal('ResizeObserver', MockResizeObserver)
+
+let rafId = 0
+let rafQueue: Array<{ id: number; callback: FrameRequestCallback }> = []
+
+vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+  const id = ++rafId
+  rafQueue.push({ id, callback })
+  return id
+})
+
+vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+  rafQueue = rafQueue.filter((entry) => entry.id !== id)
+})
 
 // Mock pdfjs-dist for test environment
 vi.mock('pdfjs-dist', () => {
@@ -51,7 +67,21 @@ vi.mock('pdfjs-dist', () => {
 describe('DocumentViewer', () => {
   beforeEach(() => {
     MockResizeObserver.instances = []
+    rafId = 0
+    rafQueue = []
   })
+
+  async function flushRaf() {
+    const pending = [...rafQueue]
+    rafQueue = []
+    pending.forEach(({ callback }) => callback(performance.now()))
+    await Promise.resolve()
+  }
+
+  async function triggerResizeObservers(target: Element) {
+    MockResizeObserver.instances.forEach((obs) => obs.trigger(target))
+    await flushRaf()
+  }
 
   function setupImage(
     img: HTMLImageElement,
@@ -76,6 +106,22 @@ describe('DocumentViewer', () => {
       bottom: displayH,
       width: displayW,
       height: displayH,
+      toJSON: () => ({}),
+    }))
+  }
+
+  function setupContainer(container: HTMLElement, width: number, height: number) {
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: width })
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: height })
+    container.getBoundingClientRect = vi.fn(() => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
       toJSON: () => ({}),
     }))
   }
@@ -168,7 +214,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const stageSizer = img.parentElement?.parentElement as HTMLElement
       expect(stageSizer.style.width).toBe('200px')
@@ -182,6 +228,63 @@ describe('DocumentViewer', () => {
       expect(img.parentElement).toHaveStyle({ transform: 'scale(0.9)' })
       expect(stageSizer.style.width).toBe('180px')
       expect(stageSizer.style.height).toBe('90px')
+    })
+
+    it('ignores tiny container resize noise and keeps manual zoom composed with fit sizing', async () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      const container = img.closest('.document-viewer__image-container') as HTMLElement
+      const stageSizer = img.parentElement?.parentElement as HTMLElement
+
+      setupImage(img, 200, 100, 200, 100)
+      setupContainer(container, 300, 240)
+      await fireEvent.load(img)
+      await triggerResizeObservers(container)
+
+      expect(MockResizeObserver.instances.some((obs) => obs.observedTargets.has(img))).toBe(false)
+      expect(MockResizeObserver.instances.some((obs) => obs.observedTargets.has(container))).toBe(
+        true
+      )
+      expect(stageSizer.style.width).toBe('300px')
+      expect(stageSizer.style.height).toBe('150px')
+
+      setupContainer(container, 301, 240)
+      await triggerResizeObservers(container)
+
+      expect(stageSizer.style.width).toBe('300px')
+      expect(stageSizer.style.height).toBe('150px')
+      expect(screen.getByTestId('toolbar-zoom-info')).toHaveTextContent('100%')
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+
+      expect(screen.getByTestId('toolbar-zoom-info')).toHaveTextContent('110%')
+      expect(stageSizer.style.width).toBe('330px')
+      expect(stageSizer.style.height).toBe('165px')
+      expect(img.parentElement).toHaveStyle({ transform: 'scale(1.1)' })
+
+      setupContainer(container, 301.4, 240)
+      await triggerResizeObservers(container)
+
+      expect(stageSizer.style.width).toBe('330px')
+      expect(stageSizer.style.height).toBe('165px')
+
+      setupContainer(container, 280, 240)
+      await triggerResizeObservers(container)
+
+      expect(stageSizer.style.width).toBe('308px')
+      expect(stageSizer.style.height).toBe('154px')
+      expect(img.parentElement).toHaveStyle({ transform: 'scale(1.1)' })
     })
 
     it('renders layout regions and syncs hover/select callbacks', async () => {
@@ -219,7 +322,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const region = await screen.findByTestId('layout-overlay-layout-block-1::overlay')
       expect(region).toHaveAttribute('x', '20')
@@ -274,7 +377,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const selectedRegion = await screen.findByTestId('layout-overlay-layout-block-1::overlay')
       const hoveredRegion = await screen.findByTestId('layout-overlay-layout-block-2::overlay')
@@ -304,7 +407,7 @@ describe('DocumentViewer', () => {
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
       // Trigger resize observers (image + container)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const overlay = await screen.findByTestId('annotation-overlay')
       overlay.getBoundingClientRect = vi.fn(() => ({
@@ -365,7 +468,7 @@ describe('DocumentViewer', () => {
       // Natural 200x100, displayed at 200x100
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const shape = await screen.findByTestId('annotation-shape-ann-1')
       // ViewBox is "0 0 200 100" → normalized * natural = viewBox px
@@ -407,7 +510,7 @@ describe('DocumentViewer', () => {
       // First: natural 200x100, displayed at 200x100
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const shape = await screen.findByTestId('annotation-shape-ann-1')
       // ViewBox coordinates are always in natural-image space (200x100)
@@ -418,7 +521,7 @@ describe('DocumentViewer', () => {
 
       // Now resize: same natural image but displayed at 400x200
       setupImage(img, 200, 100, 400, 200)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       await waitFor(() => {
         // ViewBox coords don't change — they're in natural-image space (200x100)
@@ -466,7 +569,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const shape = await screen.findByTestId('annotation-shape-ann-1')
       await fireEvent.click(shape)
@@ -531,7 +634,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const overlay = await screen.findByTestId('annotation-overlay')
       overlay.getBoundingClientRect = vi.fn(() => ({
@@ -590,7 +693,7 @@ describe('DocumentViewer', () => {
       const img = screen.getByRole('img') as HTMLImageElement
       setupImage(img, 200, 100, 200, 100)
       await fireEvent.load(img)
-      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+      await triggerResizeObservers(img)
 
       const line = await screen.findByTestId('annotation-shape-ann-ul')
       // Fixed 2px stroke with non-scaling-stroke

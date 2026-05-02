@@ -75,6 +75,7 @@
   const MIN_ZOOM = 0.4
   const MAX_ZOOM = 3.0
   const ZOOM_STEP = 0.1
+  const SIZE_DEADBAND_PX = 1.5
 
   // PDF state
   let pdfPage = $state(1)
@@ -98,8 +99,9 @@
   let containerW = $state(0)
   let containerH = $state(0)
 
-  // Image zoom level (1.0 = fit-to-container)
+  // Manual zoom multiplier applied on top of auto-fit sizing.
   let imageZoom = $state(1.0)
+  let containerMeasureFrame = $state<number | null>(null)
 
   let draft = $state<{
     startX: number
@@ -171,6 +173,15 @@
 
   function clampZoom(value: number) {
     return Number(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)).toFixed(2))
+  }
+
+  function readPx(value: string) {
+    const parsed = Number.parseFloat(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  function isPracticallyEqual(next: number, prev: number, epsilon = SIZE_DEADBAND_PX) {
+    return Math.abs(next - prev) < epsilon
   }
 
   function createLocalAnnotation(
@@ -256,18 +267,47 @@
     // This preserves the previous dimensions until onload fires, avoiding a flash
     // where the overlay disappears because naturalWidth/naturalHeight are 0.
     if (!imgEl.complete || imgEl.naturalWidth === 0) return
-    naturalW = imgEl.naturalWidth
-    naturalH = imgEl.naturalHeight
-    onDimensionsChange({ width: naturalW, height: naturalH })
+    const nextNaturalW = imgEl.naturalWidth
+    const nextNaturalH = imgEl.naturalHeight
+
+    if (nextNaturalW === naturalW && nextNaturalH === naturalH) return
+
+    naturalW = nextNaturalW
+    naturalH = nextNaturalH
+    onDimensionsChange({ width: nextNaturalW, height: nextNaturalH })
   }
 
   function measureContainer() {
     if (!containerEl) return
     const style = getComputedStyle(containerEl)
-    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
-    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
-    containerW = containerEl.clientWidth - padX
-    containerH = containerEl.clientHeight - padY
+    const padX = readPx(style.paddingLeft) + readPx(style.paddingRight)
+    const padY = readPx(style.paddingTop) + readPx(style.paddingBottom)
+    const rect = containerEl.getBoundingClientRect()
+    const nextContainerW = Math.max(0, Number((rect.width - padX).toFixed(2)))
+    const nextContainerH = Math.max(0, Number((rect.height - padY).toFixed(2)))
+
+    const widthChanged = !isPracticallyEqual(nextContainerW, containerW)
+    const heightChanged = !isPracticallyEqual(nextContainerH, containerH)
+
+    if (!widthChanged && !heightChanged) return
+
+    if (widthChanged) containerW = nextContainerW
+    if (heightChanged) containerH = nextContainerH
+  }
+
+  function scheduleContainerMeasure() {
+    if (containerMeasureFrame !== null) return
+
+    containerMeasureFrame = requestAnimationFrame(() => {
+      containerMeasureFrame = null
+      measureContainer()
+    })
+  }
+
+  function cancelScheduledContainerMeasure() {
+    if (containerMeasureFrame === null) return
+    cancelAnimationFrame(containerMeasureFrame)
+    containerMeasureFrame = null
   }
 
   // ── Handlers ────────────────────────────────────────────────────────
@@ -594,17 +634,17 @@
     }
     if (!imgEl) return // Image element not mounted yet; don't zero dimensions
     measureImage()
-    const obs = new ResizeObserver(() => measureImage())
-    obs.observe(imgEl)
-    return () => obs.disconnect()
   })
 
   $effect(() => {
     if (type !== 'image' || !containerEl) return
-    measureContainer()
-    const obs = new ResizeObserver(() => measureContainer())
+    scheduleContainerMeasure()
+    const obs = new ResizeObserver(() => scheduleContainerMeasure())
     obs.observe(containerEl)
-    return () => obs.disconnect()
+    return () => {
+      obs.disconnect()
+      cancelScheduledContainerMeasure()
+    }
   })
 
   $effect(() => {
@@ -1091,6 +1131,7 @@
   .document-viewer__image-container {
     flex: 1;
     overflow: auto;
+    scrollbar-gutter: stable both-edges;
     padding: var(--space-4);
     position: relative;
   }
