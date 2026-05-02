@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CollectionView from './CollectionView.svelte'
+import { locale } from '$lib/i18n'
 
 const { storeRef, navigationRef } = vi.hoisted(() => ({
   storeRef: {
@@ -95,6 +96,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 
 describe('CollectionView consumer compatibility', () => {
   beforeEach(() => {
+    locale.set('es')
     vi.useFakeTimers()
     navigationRef.navigate.mockReset()
     storeRef.current = createStore([
@@ -162,6 +164,24 @@ describe('CollectionView consumer compatibility', () => {
         'Todavía no hay documentos en esta colección. Importá archivos para empezar a trabajar.'
       )
     ).toBeInTheDocument()
+  })
+
+  it('updates translated collection copy when locale changes', async () => {
+    render(CollectionView, { collectionId: 'col-1' })
+
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(await screen.findByRole('heading', { name: 'Colección' })).toBeInTheDocument()
+
+    locale.set('en')
+
+    await waitFor(() => {
+      expect(screen.getByText('1 visible document')).toBeInTheDocument()
+      expect(
+        screen.getByText('Import, browse, and keep this collection assets organized.')
+      ).toBeInTheDocument()
+    })
   })
 })
 

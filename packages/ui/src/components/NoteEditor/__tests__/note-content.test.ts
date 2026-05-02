@@ -4,6 +4,7 @@ import {
   convertLegacyNoteTextToHtml,
   hasNoteEditorMeaningfulChanges,
   isLegacyPlainTextNoteContent,
+  normalizeNoteLinkHref,
   normalizeNoteContentForEditor,
   normalizeNoteContentForRender,
   sanitizeNoteHtml,
@@ -28,6 +29,15 @@ describe('note-content helpers', () => {
         '<h2>Titulo</h2><p><a href="javascript:alert(1)">click</a> <strong>ok</strong></p><script>alert(1)</script>'
       )
     ).toBe('<h2>Titulo</h2><p>click <strong>ok</strong></p>')
+  })
+
+  it('normalizes safe links and preserves href metadata for rendering', () => {
+    expect(normalizeNoteLinkHref('entropia.dev')).toBe('https://entropia.dev/')
+    expect(normalizeNoteLinkHref('https://entropia.dev/docs')).toBe('https://entropia.dev/docs')
+    expect(normalizeNoteLinkHref('javascript:alert(1)')).toBeNull()
+    expect(sanitizeNoteHtml('<p><a href="entropia.dev/docs">Docs</a></p>')).toBe(
+      '<p><a href="https://entropia.dev/docs" target="_blank" rel="noopener noreferrer nofollow">Docs</a></p>'
+    )
   })
 
   it('normalizes both legacy and rich text content for rendering and editing', () => {

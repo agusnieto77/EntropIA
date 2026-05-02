@@ -60,10 +60,10 @@ describe('NoteEditor dictation', () => {
 
   it('renders the microphone button only when dictation is enabled', () => {
     const { rerender } = render(NoteEditor, { props: {} })
-    expect(screen.queryByRole('button', { name: 'Iniciar dictado' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start dictation' })).not.toBeInTheDocument()
 
     rerender({ ondictate: vi.fn() })
-    expect(screen.getByRole('button', { name: 'Iniciar dictado' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start dictation' })).toBeInTheDocument()
   })
 
   it('shows a non intrusive message when microphone APIs are unavailable', async () => {
@@ -74,10 +74,10 @@ describe('NoteEditor dictation', () => {
 
     render(NoteEditor, { props: { ondictate: vi.fn() } })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Iniciar dictado' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Start dictation' }))
 
     expect(screen.getByTestId('note-editor-dictation-message')).toHaveTextContent(
-      'No hay micrófono disponible en este dispositivo.'
+      'Microphone is not available on this device.'
     )
   })
 
@@ -85,11 +85,11 @@ describe('NoteEditor dictation', () => {
     const ondictate = vi.fn().mockResolvedValue('texto dictado')
     render(NoteEditor, { props: { ondictate, content: '<p>Hola </p>' } })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Iniciar dictado' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Start dictation' }))
 
-    expect(screen.getByRole('button', { name: 'Detener dictado' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeInTheDocument()
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Detener dictado' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Stop dictation' }))
 
     await waitFor(() => {
       expect(ondictate).toHaveBeenCalledOnce()
@@ -103,8 +103,8 @@ describe('NoteEditor dictation', () => {
     const ondictate = vi.fn().mockResolvedValue('texto dictado')
     render(NoteEditor, { props: { ondictate, content: '<p>Hola</p>' } })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Iniciar dictado' }))
-    await fireEvent.click(screen.getByRole('button', { name: 'Detener dictado' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Start dictation' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Stop dictation' }))
 
     await waitFor(() => {
       expect(screen.getByRole('textbox')).toHaveTextContent('Hola texto dictado')
@@ -116,14 +116,14 @@ describe('NoteEditor dictation', () => {
     const ondictate = vi.fn().mockResolvedValue('texto automático')
     render(NoteEditor, { props: { ondictate, dictationMaxSeconds: 2 } })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Iniciar dictado' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Start dictation' }))
 
     await vi.advanceTimersByTimeAsync(2100)
 
     await waitFor(() => {
       expect(ondictate).toHaveBeenCalledOnce()
       expect(screen.getByTestId('note-editor-dictation-message')).toHaveTextContent(
-        'Se alcanzó el máximo de 0:02. Texto insertado.'
+        'Reached the maximum of 0:02. Text inserted.'
       )
     })
   })

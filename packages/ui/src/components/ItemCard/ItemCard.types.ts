@@ -9,4 +9,5 @@ export interface ItemCardProps {
   metadataPreview?: string
   onclick?: () => void
   onDelete?: (e: MouseEvent) => void
+  deleteAriaLabel?: string
 }

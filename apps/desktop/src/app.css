@@ -1,6 +1,15 @@
 /* Import design tokens */
 @import '@entropia/ui/tokens';
 
+:root {
+  --scrollbar-size: 7px;
+  --scrollbar-radius: 999px;
+  --scrollbar-track: rgba(255, 255, 255, 0.018);
+  --scrollbar-thumb: rgba(210, 220, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(210, 220, 255, 0.2);
+  --scrollbar-thumb-active: rgba(210, 220, 255, 0.3);
+}
+
 *,
 *::before,
 *::after {
@@ -19,11 +28,55 @@ body {
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 body {
   background:
     radial-gradient(circle at top, rgba(124, 149, 255, 0.08), transparent 28%), var(--color-bg);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*:hover {
+  scrollbar-color: var(--scrollbar-thumb-hover) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: var(--scrollbar-radius);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 40px;
+  border: 2px solid transparent;
+  border-radius: var(--scrollbar-radius);
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+  transition: background-color 0.18s ease;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-active);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 #app {

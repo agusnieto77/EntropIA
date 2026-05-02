@@ -45,13 +45,12 @@
     DocumentViewer,
     MetadataEditor,
     NoteEditor,
-    Button,
     ActionIcon,
-    Card,
     EntityViewer,
     MapViewer,
     TopicEditor,
     isNoteHtmlEffectivelyEmpty,
+    normalizeNoteLinkHref,
     normalizeNoteContentForRender,
   } from '@entropia/ui'
   import type { MapMarker } from '@entropia/ui'
@@ -59,9 +58,11 @@
   import { listen, emit } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
   import { navigation } from '$lib/navigation'
+  import { locale, t, type I18nKey, type I18nParams } from '$lib/i18n'
   import type {
     Item,
     Asset,
+    Collection,
     Note,
     Annotation as StoreAnnotation,
     AnnotationKind as StoreAnnotationKind,
@@ -149,9 +150,15 @@
 
   let item = $state<Item | null>(null)
   let assets = $state<Asset[]>([])
+  let collection = $state<Collection | null>(null)
   let notes = $state<Note[]>([])
   let loading = $state(true)
   let error = $state<string | null>(null)
+  const currentLocale = locale
+  const translate = $derived.by(() => {
+    $currentLocale
+    return (key: I18nKey, params?: I18nParams) => t(key, params)
+  })
   let selectedAssetIndex = $state(0)
   let savingMetadata = $state(false)
   let annotations = $state<ViewerAnnotation[]>([])
@@ -342,6 +349,121 @@
     'notes'
   )
 
+  const metadataEditorLabels = {
+    keyPlaceholder: 'Campo',
+    valuePlaceholder: 'Valor',
+    removeFieldAria: 'Eliminar campo',
+    addField: '+ Agregar campo',
+    fieldLabel: 'Campo',
+    valueLabel: 'Valor',
+    emptyText: 'No hay metadatos cargados para este documento.',
+  }
+
+  const documentViewerLabels = $derived.by(() => {
+    $currentLocale
+    return {
+      imageAlt: translate('item.viewerImageAlt'),
+      imageOverlayAriaLabel: translate('item.viewerImageOverlay'),
+      audioSkipBack: translate('item.audioSkipBack'),
+      audioPlay: translate('item.audioPlay'),
+      audioPause: translate('item.audioPause'),
+      audioSkipForward: translate('item.audioSkipForward'),
+      audioSeek: translate('item.audioSeek'),
+      audioVolume: translate('item.audioVolume'),
+      pdfLoading: translate('item.viewerPdfLoading'),
+      pdfLoadError: translate('item.viewerPdfLoadError'),
+      pdfRenderError: translate('item.viewerPdfRenderError'),
+      pdfPreviousPage: translate('item.previousPage'),
+      pdfNextPage: translate('item.nextPage'),
+      pdfZoomOut: translate('item.toolbar.zoomOut'),
+      pdfZoomIn: translate('item.toolbar.zoomIn'),
+      layoutOverlayAriaLabel: translate('item.viewerLayoutOverlay'),
+      layoutRegionAriaLabel: (label: string) => translate('item.viewerLayoutRegion', { label }),
+      annotationAriaLabel: (id: string) => translate('item.viewerAnnotation', { id }),
+      cropRegionAriaLabel: translate('item.viewerCropRegion'),
+      eraseRegionAriaLabel: translate('item.viewerEraseRegion'),
+    }
+  })
+
+  const annotationToolbarLabels = $derived.by(() => {
+    $currentLocale
+    return {
+      expandToolbar: translate('item.toolbar.expand'),
+      expandToolbarTitle: translate('item.toolbar.expandTitle'),
+      collapseToolbar: translate('item.toolbar.collapse'),
+      collapseToolbarTitle: translate('item.toolbar.collapseTitle'),
+      toolbarAriaLabel: translate('item.toolbar.imageTools'),
+      undo: translate('item.toolbar.undo'),
+      undoTitle: translate('item.toolbar.undoTitle'),
+      rectangleTool: translate('item.toolbar.rectangle'),
+      underlineTool: translate('item.toolbar.underline'),
+      cropTool: translate('item.toolbar.crop'),
+      eraseTool: translate('item.toolbar.erase'),
+      rotateLeft: translate('item.toolbar.rotateLeft'),
+      rotateRight: translate('item.toolbar.rotateRight'),
+      zoomOut: translate('item.toolbar.zoomOut'),
+      zoomIn: translate('item.toolbar.zoomIn'),
+      deleteSelected: translate('item.toolbar.deleteAnnotation'),
+      colorAriaLabel: (label: string) => translate('item.toolbar.colorAria', { label }),
+    }
+  })
+
+  const noteEditorLabels = $derived.by(() => {
+    $currentLocale
+    return {
+      toolbarAriaLabel: translate('item.noteEditor.toolbar'),
+      textStyleGroup: translate('item.noteEditor.group.textStyle'),
+      structureGroup: translate('item.noteEditor.group.structure'),
+      insertGroup: translate('item.noteEditor.group.insert'),
+      dictationGroup: translate('item.noteEditor.group.dictation'),
+      bold: translate('item.noteEditor.bold'),
+      italic: translate('item.noteEditor.italic'),
+      underline: translate('item.noteEditor.underline'),
+      inlineCode: translate('item.noteEditor.inlineCode'),
+      heading1: translate('item.noteEditor.heading1'),
+      heading2: translate('item.noteEditor.heading2'),
+      heading3: translate('item.noteEditor.heading3'),
+      bulletList: translate('item.noteEditor.bulletList'),
+      orderedList: translate('item.noteEditor.orderedList'),
+      quote: translate('item.noteEditor.quote'),
+      addLink: translate('item.noteEditor.addLink'),
+      removeLink: translate('item.noteEditor.removeLink'),
+      dictationStart: translate('item.noteEditor.dictationStart'),
+      dictationStop: translate('item.noteEditor.dictationStop'),
+      dictationProcessing: translate('item.noteEditor.dictationProcessing'),
+      dictationIdle: translate('item.noteEditor.dictationIdle'),
+      helperText: translate('item.noteEditor.helper'),
+      dictationNoMicrophone: translate('item.noteEditor.noMicrophone'),
+      dictationNoAudio: translate('item.noteEditor.noAudio'),
+      dictationAutoStopProcessing: translate('item.noteEditor.autoStopProcessing', {
+        duration: '{duration}',
+      }),
+      dictationTranscribing: translate('item.noteEditor.transcribing'),
+      dictationAutoStopInserted: translate('item.noteEditor.autoStopInserted', {
+        duration: '{duration}',
+      }),
+      dictationInserted: translate('item.noteEditor.inserted'),
+      dictationNoText: translate('item.noteEditor.noText'),
+      dictationTranscriptionFailed: translate('item.noteEditor.transcriptionFailed'),
+      linkInvalidUrl: translate('item.noteEditor.linkInvalidUrl'),
+      linkInvalidHttp: translate('item.noteEditor.linkInvalidHttp'),
+      linkInvalidExample: translate('item.noteEditor.linkInvalidExample'),
+      linkModalTitle: translate('item.noteEditor.linkTitle'),
+      linkModalDescription: translate('item.noteEditor.linkDescription'),
+      linkUrlLabel: translate('item.noteEditor.linkUrlLabel'),
+      linkPlaceholder: translate('item.noteEditor.linkPlaceholder'),
+      linkCancel: translate('item.noteEditor.linkCancel'),
+      linkSubmit: translate('item.noteEditor.linkSubmit'),
+    }
+  })
+
+  const layoutFilterLabels = $derived.by(() => {
+    $currentLocale
+    return Object.fromEntries(
+      LAYOUT_BLOCK_FILTERS.map((filter) => [filter.id, translate(`item.layoutFilter.${filter.id}`)])
+    ) as Record<LayoutBlockFilterId, string>
+  })
+
   // LLM state (Gemma 4)
   const llmStore = new LlmStore({
     onComplete: (id, job, result) => {
@@ -484,6 +606,9 @@
   let metadataValue = $derived<Record<string, string>>(
     item?.metadata ? parseMetadataRecord(item.metadata) : {}
   )
+  let customMetadataNormalizedKeys = $derived(
+    new Set(Object.keys(metadataValue).map((key) => normalizeMetadataKey(key)))
+  )
 
   // Topic state
   let itemTopics = $state<string[]>([])
@@ -536,6 +661,14 @@
   }
 
   let selectedAsset = $derived(assets[selectedAssetIndex] ?? null)
+  let fileMetadataEntries = $derived(
+    buildTechnicalMetadata({
+      item,
+      selectedAsset,
+      collection,
+      customMetadataKeys: customMetadataNormalizedKeys,
+    })
+  )
 
   let viewerSrc = $derived(
     selectedAsset
@@ -1076,6 +1209,36 @@
     return transcribeDictation(audio)
   }
 
+  function getExtractionPrimaryActionLabel(assetType: Asset['type']) {
+    if (assetType === 'pdf') {
+      return translate('item.pdfTextAction')
+    }
+
+    return translate('item.ocrFastAction')
+  }
+
+  function getCorrectionActionLabel(assetType: Asset['type']) {
+    return assetType === 'pdf'
+      ? translate('item.pdfCorrectAction')
+      : translate('item.ocrCorrectAction')
+  }
+
+  function getSummaryActionLabel(assetType: Asset['type']) {
+    if (assetType === 'pdf') {
+      return translate('item.summaryPdfAction')
+    }
+
+    if (assetType === 'audio') {
+      return translate('item.summaryAudioAction')
+    }
+
+    return translate('item.summaryAction')
+  }
+
+  function getTranscriptionActionLabel(busy: boolean) {
+    return busy ? translate('item.transcribeBusyAction') : translate('item.transcribeShortAction')
+  }
+
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
@@ -1109,6 +1272,123 @@
 
   function getAssetTypeLabel(assetType: string) {
     return assetType ? assetType.toUpperCase() : 'ASSET'
+  }
+
+  function normalizeMetadataKey(key: string) {
+    return key
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+  }
+
+  function getFileExtension(fileName: string): string | null {
+    const index = fileName.lastIndexOf('.')
+    if (index <= 0 || index === fileName.length - 1) return null
+    return fileName.slice(index).toLowerCase()
+  }
+
+  function formatBytes(size: number | null | undefined): string | null {
+    if (size === null || size === undefined || !Number.isFinite(size) || size < 0) return null
+    if (size < 1024) return `${size} B`
+
+    const units = ['KB', 'MB', 'GB', 'TB']
+    let value = size / 1024
+    let unitIndex = 0
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024
+      unitIndex++
+    }
+
+    const digits = value >= 10 ? 0 : 1
+    return `${value.toFixed(digits)} ${units[unitIndex]}`
+  }
+
+  function pushTechnicalMetadataEntry(
+    entries: Array<{ label: string; value: string }>,
+    customMetadataKeys: Set<string>,
+    label: string,
+    value: string | null | undefined,
+    aliases: string[] = []
+  ) {
+    if (!value) return
+
+    const normalizedCandidates = [label, ...aliases].map((candidate) =>
+      normalizeMetadataKey(candidate)
+    )
+    if (normalizedCandidates.some((candidate) => customMetadataKeys.has(candidate))) {
+      return
+    }
+
+    entries.push({ label, value })
+  }
+
+  function buildTechnicalMetadata({
+    item,
+    selectedAsset,
+    collection,
+    customMetadataKeys,
+  }: {
+    item: Item | null
+    selectedAsset: Asset | null
+    collection: Collection | null
+    customMetadataKeys: Set<string>
+  }) {
+    const entries: Array<{ label: string; value: string }> = []
+    const fileName = selectedAsset ? getAssetPathLabel(selectedAsset.path) : null
+    const extension = fileName ? getFileExtension(fileName) : null
+
+    pushTechnicalMetadataEntry(entries, customMetadataKeys, 'Nombre del archivo', fileName, [
+      'archivo',
+      'nombre archivo',
+      'file name',
+    ])
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Tipo de archivo',
+      selectedAsset?.type ? getAssetTypeLabel(selectedAsset.type) : null,
+      ['tipo', 'tipo archivo', 'file type', 'mime', 'mime type']
+    )
+    pushTechnicalMetadataEntry(entries, customMetadataKeys, 'Extensión', extension, [
+      'extension',
+      'ext',
+    ])
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Tamaño',
+      formatBytes(selectedAsset?.size),
+      ['tamano', 'tamaño archivo', 'file size', 'size']
+    )
+    pushTechnicalMetadataEntry(entries, customMetadataKeys, 'Documento ID', item?.id ?? null, [
+      'documento id',
+      'document id',
+      'item id',
+      'id',
+    ])
+    pushTechnicalMetadataEntry(entries, customMetadataKeys, 'Asset ID', selectedAsset?.id ?? null, [
+      'asset id',
+      'archivo id',
+    ])
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Ruta interna',
+      selectedAsset?.path ?? null,
+      ['ruta interna', 'internal path', 'path']
+    )
+    pushTechnicalMetadataEntry(entries, customMetadataKeys, 'Colección', collection?.name ?? null, [
+      'coleccion',
+      'collection',
+      'project',
+      'proyecto',
+    ])
+
+    return entries
   }
 
   let activeAssetSummary = $derived(
@@ -1505,9 +1785,28 @@
 
   // Note editing state
   let editingNoteId = $state<string | null>(null)
+  let expandedNoteId = $state<string | null>(null)
 
   function handleEditNote(note: Note) {
     editingNoteId = note.id
+  }
+
+  function toggleNoteExpanded(noteId: string) {
+    expandedNoteId = expandedNoteId === noteId ? null : noteId
+  }
+
+  function handleNoteRowClick(noteId: string, event: MouseEvent) {
+    const target = event.target
+    if (target instanceof Element && target.closest('a, button')) {
+      return
+    }
+    toggleNoteExpanded(noteId)
+  }
+
+  function handleNoteRowKeydown(noteId: string, event: KeyboardEvent) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    toggleNoteExpanded(noteId)
   }
 
   async function handleSaveEdit(noteId: string, content: string) {
@@ -1531,6 +1830,69 @@
     return normalizeNoteContentForRender(content)
   }
 
+  async function handleExpandedNoteContentClick(event: MouseEvent) {
+    const target = event.target
+    if (!(target instanceof Element)) return
+
+    const link = target.closest('a')
+    if (!(link instanceof HTMLAnchorElement)) return
+
+    const url = normalizeNoteLinkHref(link.getAttribute('href') ?? link.href)
+    if (!url) return
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    try {
+      await invoke('open_external_url', { url })
+    } catch (error) {
+      console.error(`[ItemView] ${translate('item.noteOpenLinkError')}`, error)
+    }
+  }
+
+  function expandedNoteContentLinkHandler(node: HTMLElement) {
+    const handleClick = (event: MouseEvent) => {
+      void handleExpandedNoteContentClick(event)
+    }
+
+    node.addEventListener('click', handleClick)
+
+    return {
+      destroy() {
+        node.removeEventListener('click', handleClick)
+      },
+    }
+  }
+
+  function getPlainTextFromNote(content: string): string {
+    const rendered = getRenderedNoteContent(content)
+    if (!rendered) return ''
+
+    const withSeparators = rendered
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<li\b[^>]*>/gi, '• ')
+      .replace(/<\/(?:p|h1|h2|h3|li|blockquote|pre|ul|ol)>/gi, '\n')
+
+    if (typeof document === 'undefined') {
+      return withSeparators
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+
+    const container = document.createElement('div')
+    container.innerHTML = withSeparators
+    return (container.textContent ?? '').replace(/\s+/g, ' ').trim()
+  }
+
+  function getNotePreview(content: string): string {
+    return getPlainTextFromNote(content)
+  }
+
+  function formatNoteDate(timestamp: number): string {
+    return new Date(timestamp).toLocaleDateString()
+  }
+
   /** Load notes scoped to the current asset (plus item-level notes). */
   async function loadNotesForAsset(): Promise<Note[]> {
     if (!selectedAsset) {
@@ -1547,12 +1909,14 @@
       error = null
       selectedAssetIndex = 0 // Reset page selection on item change
       const store = getStore()
-      const [loadedItem, loadedAssets] = await Promise.all([
+      const [loadedItem, loadedAssets, loadedCollection] = await Promise.all([
         store.items.findById(itemId),
         store.assets.findByItem(itemId),
+        store.collections.findById(collectionId),
       ])
       item = loadedItem
       assets = loadedAssets
+      collection = loadedCollection
       // Asset-scoped data (notes, entities, triples, similar assets) will be loaded by the selectedAsset effect
       void loadTopics()
       void loadTopicSuggestions()
@@ -1880,7 +2244,7 @@
 </script>
 
 {#if loading}
-  <p class="status">Loading...</p>
+  <p class="status">{translate('item.loading')}</p>
 {:else if error && !item}
   <p class="error">{error}</p>
 {:else if item}
@@ -1891,7 +2255,7 @@
   >
     <div class="left-panel">
       {#if selectedAsset}
-        <div class="left-panel-tabs" role="tablist" aria-label="Panel del asset">
+        <div class="left-panel-tabs" role="tablist" aria-label={translate('item.assetPanel')}>
           <button
             id="left-panel-tab-document"
             type="button"
@@ -1904,7 +2268,7 @@
               leftPanelTab = 'document'
             }}
           >
-            Documento
+            {translate('item.documentTab')}
           </button>
           <button
             id="left-panel-tab-text"
@@ -1918,7 +2282,7 @@
               leftPanelTab = 'text'
             }}
           >
-            Texto extraído
+            {translate('item.extractedTextTab')}
           </button>
         </div>
 
@@ -1951,28 +2315,30 @@
               onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
               onAnnotationToolChange={handleAnnotationToolChange}
               onAnnotationColorChange={handleAnnotationColorChange}
-              onLayoutRegionHoverChange={(regionId) => {
+              onLayoutRegionHoverChange={(regionId: string | null) => {
                 syncLayoutHoverFromRegion(regionId)
               }}
-              onLayoutRegionSelect={(regionId) => {
+              onLayoutRegionSelect={(regionId: string) => {
                 setSelectedLayoutRegion(regionId)
               }}
               onEditSelect={handleEditSelect}
-              onEditToolChange={(tool) => {
+              onEditToolChange={(tool: EditTool) => {
                 editTool = tool
                 if (tool !== 'none') annotationTool = 'select'
               }}
               onRotateLeft={handleRotateLeft}
               onRotateRight={handleRotateRight}
               onUndo={handleUndo}
-              onPageChange={(page, totalPages) => {
+              onPageChange={(page: number, totalPages: number) => {
                 viewerPage = page
                 viewerTotalPages = totalPages
               }}
-              onDimensionsChange={(dims) => {
+              onDimensionsChange={(dims: { width: number; height: number }) => {
                 imageNaturalW = dims.width
                 imageNaturalH = dims.height
               }}
+              labels={documentViewerLabels}
+              {annotationToolbarLabels}
             />
 
             {#if annotationSaveError}
@@ -1993,20 +2359,22 @@
                 <div class="left-text-panel-card">
                   {#if (ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? '').trim()}
                     <div class="left-text-panel-meta">
-                      <span>Texto extraído</span>
+                      <span>{translate('item.extractedText')}</span>
                       <span class="ocr-meta"
-                        >via {ocr.method ?? 'unknown'} · {(
-                          ocrEditedText.get(selectedAsset.id) ??
-                          ocr.textContent ??
-                          ''
-                        ).length} chars</span
+                        >via {ocr.method ?? translate('item.ocrMethodUnknown')} · {translate(
+                          'item.characters',
+                          {
+                            count: (ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? '')
+                              .length,
+                          }
+                        )}</span
                       >
                     </div>
                     <div class="left-text-panel-body">
                       {ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''}
                     </div>
                   {:else}
-                    <p class="empty-text">Todavía no hay texto extraído para este documento.</p>
+                    <p class="empty-text">{translate('item.noExtractedText')}</p>
                   {/if}
                 </div>
               </section>
@@ -2016,18 +2384,23 @@
                 <div class="left-text-panel-card">
                   {#if (transEditedText.get(selectedAsset.id) ?? ts.text ?? '').trim()}
                     <div class="left-text-panel-meta">
-                      <span>Transcripción</span>
+                      <span>{translate('item.transcription')}</span>
                       <span class="ocr-meta">
                         {#if ts.language}{ts.language} &middot;
-                        {/if}{(transEditedText.get(selectedAsset.id) ?? ts.text ?? '').length} chars
-                        {#if ts.durationMs}&middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                        {/if}{translate('item.characters', {
+                          count: (transEditedText.get(selectedAsset.id) ?? ts.text ?? '').length,
+                        })}
+                        {#if ts.durationMs}
+                          &middot; {translate('item.audioDurationSeconds', {
+                            count: Math.round(ts.durationMs / 1000),
+                          })}{/if}
                       </span>
                     </div>
                     <div class="left-text-panel-body">
                       {transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
                     </div>
                   {:else}
-                    <p class="empty-text">Todavía no hay texto extraído para este documento.</p>
+                    <p class="empty-text">{translate('item.noExtractedText')}</p>
                   {/if}
                 </div>
               </section>
@@ -2036,7 +2409,7 @@
         </div>
       {:else}
         <div class="empty-viewer">
-          <p>No assets attached to this item.</p>
+          <p>{translate('item.noAssets')}</p>
         </div>
       {/if}
 
@@ -2046,7 +2419,7 @@
             class="pagination-btn"
             disabled={selectedAssetIndex <= 0}
             onclick={() => (selectedAssetIndex = Math.max(0, selectedAssetIndex - 1))}
-            aria-label="Previous page"
+            aria-label={translate('item.previousPage')}
           >
             ‹
           </button>
@@ -2058,7 +2431,7 @@
             disabled={selectedAssetIndex >= assets.length - 1}
             onclick={() =>
               (selectedAssetIndex = Math.min(assets.length - 1, selectedAssetIndex + 1))}
-            aria-label="Next page"
+            aria-label={translate('item.nextPage')}
           >
             ›
           </button>
@@ -2075,7 +2448,7 @@
 
     <div class="right-panel">
       <header class="item-header">
-        <span class="item-header__eyebrow">Documento activo</span>
+        <span class="item-header__eyebrow">{translate('item.activeDocument')}</span>
         <h2 class="item-title">{item.title}</h2>
         <p class="item-header__meta">{activeAssetSummary}</p>
       </header>
@@ -2084,7 +2457,7 @@
         <p class="error">{error}</p>
       {/if}
 
-      <div class="right-panel-tabs" role="tablist" aria-label="Panel derecho del documento">
+      <div class="right-panel-tabs" role="tablist" aria-label={translate('item.rightPanel')}>
         <button
           type="button"
           role="tab"
@@ -2095,7 +2468,7 @@
             rightPanelTab = 'notes'
           }}
         >
-          Notas
+          {translate('item.notesTab')}
         </button>
         <button
           type="button"
@@ -2107,7 +2480,7 @@
             rightPanelTab = 'text'
           }}
         >
-          Texto
+          {translate('item.textTab')}
         </button>
         <button
           type="button"
@@ -2122,7 +2495,7 @@
             loadGeoMarkers()
           }}
         >
-          Análisis
+          {translate('item.analysisTab')}
         </button>
         <button
           type="button"
@@ -2136,7 +2509,7 @@
             loadFtsStats()
           }}
         >
-          Búsquedas
+          {translate('item.searchTab')}
         </button>
         <button
           type="button"
@@ -2148,7 +2521,7 @@
             rightPanelTab = 'layout'
           }}
         >
-          Layout
+          {translate('item.layoutTab')}
         </button>
         <button
           type="button"
@@ -2160,14 +2533,14 @@
             rightPanelTab = 'metadata'
           }}
         >
-          Metadatos
+          {translate('item.metadataTab')}
         </button>
       </div>
 
       <div class="right-panel-content">
         <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'notes'}>
           <section class="section">
-            <h3>Tópicos</h3>
+            <h3>{translate('item.topics')}</h3>
             <TopicEditor
               topics={itemTopics}
               suggestions={topicSuggestions}
@@ -2177,68 +2550,92 @@
 
           <section class="section">
             <h3>
-              Add Note{#if assets.length > 1}
-                · Page {selectedAssetIndex + 1}{/if}
+              {translate('item.addNote')}{#if assets.length > 1}
+                {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
             </h3>
             <NoteEditor
               onsave={handleSaveNote}
               ondictate={handleTranscribeDictation}
               clearOnSave={true}
-              placeholder="Write a note..."
-              saveLabel="Save note"
+              placeholder={translate('item.writeNote')}
+              saveLabel={translate('item.saveNote')}
+              labels={noteEditorLabels}
             />
           </section>
 
           <section class="section">
             <h3>
-              Notes ({notes.length}){#if assets.length > 1}
-                · Page {selectedAssetIndex + 1}{/if}
+              {translate('item.notes')} ({notes.length}){#if assets.length > 1}
+                {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
             </h3>
             {#if notes.length === 0}
-              <p class="empty-text">No notes yet.</p>
+              <p class="empty-text">{translate('item.noNotes')}</p>
             {:else}
               <div class="notes-list">
                 {#each notes as note (note.id)}
-                  <Card>
+                  <div class="note-card">
                     {#if editingNoteId === note.id}
                       <div class="note-edit">
                         <NoteEditor
                           content={note.content}
-                          onsave={(content) => handleSaveEdit(note.id, content)}
+                          onsave={(content: string) => handleSaveEdit(note.id, content)}
                           oncancel={handleCancelEdit}
                           ondictate={handleTranscribeDictation}
                           clearOnSave={false}
-                          saveLabel="Save note"
-                          cancelLabel="Cancel edit"
+                          saveLabel={translate('item.saveNote')}
+                          cancelLabel={translate('item.cancelEdit')}
+                          labels={noteEditorLabels}
                         />
                       </div>
                     {:else}
-                      <div class="note-content note-content--rich">
-                        {@html getRenderedNoteContent(note.content)}
+                      <div
+                        class="note-row"
+                        role="button"
+                        tabindex="0"
+                        aria-label={getNotePreview(note.content)}
+                        aria-expanded={expandedNoteId === note.id}
+                        onclick={(event) => handleNoteRowClick(note.id, event)}
+                        onkeydown={(event) => handleNoteRowKeydown(note.id, event)}
+                      >
+                        <span class="note-preview" title={getNotePreview(note.content)}>
+                          {getNotePreview(note.content)}
+                        </span>
+                        <p class="note-date note-date--inline">{formatNoteDate(note.createdAt)}</p>
+                        <div class="note-actions">
+                          <button
+                            type="button"
+                            class="note-action-button note-action-button--edit"
+                            aria-label={translate('item.editNote')}
+                            onclick={(event) => {
+                              event.stopPropagation()
+                              handleEditNote(note)
+                            }}
+                          >
+                            <ActionIcon name="edit" />
+                          </button>
+                          <button
+                            type="button"
+                            class="note-action-button note-action-button--delete"
+                            aria-label={translate('item.deleteNote')}
+                            onclick={(event) => {
+                              event.stopPropagation()
+                              void handleDeleteNote(note.id)
+                            }}
+                          >
+                            <ActionIcon name="delete" />
+                          </button>
+                        </div>
                       </div>
-                      <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
-                      <div class="note-actions">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          iconOnly
-                          aria-label="Edit note"
-                          onclick={() => handleEditNote(note)}
+                      {#if expandedNoteId === note.id}
+                        <div
+                          class="note-expanded note-content note-content--rich"
+                          use:expandedNoteContentLinkHandler
                         >
-                          <ActionIcon name="edit" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          iconOnly
-                          aria-label="Delete note"
-                          onclick={() => handleDeleteNote(note.id)}
-                        >
-                          <ActionIcon name="delete" />
-                        </Button>
-                      </div>
+                          {@html getRenderedNoteContent(note.content)}
+                        </div>
+                      {/if}
                     {/if}
-                  </Card>
+                  </div>
                 {/each}
               </div>
             {/if}
@@ -2248,9 +2645,35 @@
         <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'metadata'}>
           <section class="section">
             <h3>
-              Metadata {#if savingMetadata}<span class="saving">Saving...</span>{/if}
+              {translate('item.metadata')}
+              {#if savingMetadata}<span class="saving">{translate('item.saving')}</span>{/if}
             </h3>
-            <MetadataEditor value={metadataValue} onchange={handleMetadataChange} />
+
+            <div class="metadata-sections">
+              <section class="metadata-subsection" data-testid="item-file-metadata">
+                <h4>Metadatos del archivo</h4>
+
+                {#if fileMetadataEntries.length > 0}
+                  <dl class="metadata-list">
+                    {#each fileMetadataEntries as entry (entry.label)}
+                      <div class="metadata-list__row">
+                        <dt>{entry.label}</dt>
+                        <dd>{entry.value}</dd>
+                      </div>
+                    {/each}
+                  </dl>
+                {/if}
+              </section>
+
+              <section class="metadata-subsection" data-testid="item-custom-metadata">
+                <h4>Metadatos personalizados</h4>
+                <MetadataEditor
+                  value={metadataValue}
+                  onchange={handleMetadataChange}
+                  labels={metadataEditorLabels}
+                />
+              </section>
+            </div>
           </section>
         </div>
 
@@ -2260,16 +2683,23 @@
               <div class="layout-section-header">
                 <div>
                   <h3>
-                    Layout{#if viewerType === 'pdf'}
-                      · Page {layoutActivePage}{/if}
+                    {translate('item.layoutTab')}{#if viewerType === 'pdf'}
+                      {translate('item.pageInline', { page: layoutActivePage })}{/if}
                   </h3>
                   {#if assetLayout}
                     <p class="layout-meta">
                       {assetLayout.model} · {viewerType === 'pdf'
-                        ? (layoutBlockCountsByPage[layoutActivePage] ?? 0)
-                        : layoutBlocks.length} bloques · {viewerType === 'pdf'
-                        ? layoutPageRegions.length
-                        : assetLayout.regions.length} regiones
+                        ? translate('item.layoutBlocksCount', {
+                            count: layoutBlockCountsByPage[layoutActivePage] ?? 0,
+                          })
+                        : translate('item.layoutBlocksCount', { count: layoutBlocks.length })} · {viewerType ===
+                      'pdf'
+                        ? translate('item.layoutRegionsCount', {
+                            count: layoutPageRegions.length,
+                          })
+                        : translate('item.layoutRegionsCount', {
+                            count: assetLayout.regions.length,
+                          })}
                     </p>
                   {/if}
                 </div>
@@ -2283,35 +2713,38 @@
                     showLayout = !showLayout
                   }}
                 >
-                  {showLayout ? 'Ocultar overlay' : 'Mostrar overlay'}
+                  {showLayout
+                    ? translate('item.layoutToggleHide')
+                    : translate('item.layoutToggleShow')}
                 </button>
               </div>
 
               {#if layoutLoading}
-                <p class="empty-text">Cargando layout…</p>
+                <p class="empty-text">{translate('item.layoutLoading')}</p>
               {:else if layoutError}
-                <p class="error">No se pudo cargar el layout: {layoutError}</p>
+                <p class="error">{translate('item.layoutLoadError', { error: layoutError })}</p>
               {:else if !assetLayout}
-                <p class="empty-text">Este asset todavía no tiene layout persistido.</p>
+                <p class="empty-text">{translate('item.layoutMissing')}</p>
               {:else if layoutBlocks.length === 0}
-                <p class="empty-text">Hay layout guardado, pero no trae bloques navegables.</p>
+                <p class="empty-text">{translate('item.layoutNoBlocks')}</p>
               {:else}
                 {#if showLayout}
-                  <p class="layout-help">
-                    Tocá o pasá el mouse sobre un bloque para resaltarlo en el viewer.
-                  </p>
+                  <p class="layout-help">{translate('item.layoutHelp')}</p>
                 {/if}
 
                 {#if viewerType === 'pdf' && layoutPageOptions.length > 1}
                   <div class="layout-page-toolbar">
                     <p class="layout-page-summary" data-testid="layout-page-summary">
-                      Página {layoutActivePage} de {layoutPageOptions.length}
+                      {translate('item.pageOf', {
+                        page: layoutActivePage,
+                        total: layoutPageOptions.length,
+                      })}
                     </p>
 
                     <div
                       class="layout-page-group"
                       role="group"
-                      aria-label="Seleccionar página del layout"
+                      aria-label={translate('item.layoutPageSelect')}
                     >
                       {#each layoutPageOptions as page (page)}
                         <button
@@ -2324,7 +2757,7 @@
                             viewerPage = page
                           }}
                         >
-                          <span>P{page}</span>
+                          <span>{translate('item.pageShort', { page })}</span>
                           <span class="layout-page-chip__count"
                             >{layoutBlockCountsByPage[page] ?? 0}</span
                           >
@@ -2338,7 +2771,7 @@
                   <div
                     class="layout-filter-group"
                     role="group"
-                    aria-label="Filtrar bloques por tipo"
+                    aria-label={translate('item.layoutFilterGroup')}
                   >
                     {#each LAYOUT_BLOCK_FILTERS as filter (filter.id)}
                       {@const count = layoutFilterCounts[filter.id]}
@@ -2352,7 +2785,7 @@
                           layoutTypeFilter = filter.id
                         }}
                       >
-                        <span>{filter.label}</span>
+                        <span>{layoutFilterLabels[filter.id]}</span>
                         <span
                           class="layout-filter-chip__count"
                           data-testid={`layout-filter-count-${filter.id}`}
@@ -2364,16 +2797,17 @@
                   </div>
 
                   <p class="layout-filter-summary">
-                    Mostrando {visibleLayoutBlocks.length} de {layoutPageBlocks.length} bloques.
+                    {translate('item.layoutShowing', {
+                      visible: visibleLayoutBlocks.length,
+                      total: layoutPageBlocks.length,
+                    })}
                   </p>
                 </div>
 
                 {#if layoutPageBlocks.length === 0}
-                  <p class="empty-text">No hay bloques para la página visible.</p>
+                  <p class="empty-text">{translate('item.layoutNoPageBlocks')}</p>
                 {:else if visibleLayoutBlocks.length === 0}
-                  <p class="empty-text">
-                    No hay bloques del tipo seleccionado para la página visible.
-                  </p>
+                  <p class="empty-text">{translate('item.layoutNoFilterBlocks')}</p>
                 {:else}
                   <div class="layout-block-list" bind:this={layoutBlockListEl}>
                     {#each visibleLayoutBlocks as block (block.id)}
@@ -2410,11 +2844,13 @@
                               {overlayMeta.shortLabel}
                             </span>
                             {#if viewerType === 'pdf'}
-                              <span class="layout-block-page-chip">P{block.page}</span>
+                              <span class="layout-block-page-chip"
+                                >{translate('item.pageShort', { page: block.page })}</span
+                              >
                             {/if}
                           </span>
                           <span class="layout-block-preview"
-                            >{block.preview || 'Sin preview textual'}</span
+                            >{block.preview || translate('item.layoutNoPreview')}</span
                           >
                         </span>
                       </button>
@@ -2428,8 +2864,14 @@
                       )}
                       <div class="layout-inspector__header">
                         <div>
-                          <p class="layout-inspector__eyebrow">Inspector</p>
-                          <h4>Bloque seleccionado · #{selectedLayoutBlock.order}</h4>
+                          <p class="layout-inspector__eyebrow">
+                            {translate('item.layoutInspector')}
+                          </p>
+                          <h4>
+                            {translate('item.layoutSelectedBlock', {
+                              order: selectedLayoutBlock.order,
+                            })}
+                          </h4>
                         </div>
 
                         <div class="layout-inspector__actions">
@@ -2441,10 +2883,10 @@
                             onclick={() =>
                               copyLayoutInspectorValue(
                                 selectedLayoutBlock.content,
-                                'Texto copiado.'
+                                translate('item.layoutCopiedText')
                               )}
                           >
-                            Copiar texto
+                            {translate('item.layoutCopyText')}
                           </button>
                           <button
                             type="button"
@@ -2453,10 +2895,10 @@
                             onclick={() =>
                               copyLayoutInspectorValue(
                                 formatLayoutBbox(selectedLayoutBlock.overlayBbox),
-                                'BBox copiado.'
+                                translate('item.layoutCopiedBbox')
                               )}
                           >
-                            Copiar bbox
+                            {translate('item.layoutCopyBbox')}
                           </button>
                           <button
                             type="button"
@@ -2465,45 +2907,58 @@
                             onclick={() =>
                               copyLayoutInspectorValue(
                                 serializeLayoutBlock(selectedLayoutBlock),
-                                'JSON copiado.'
+                                translate('item.layoutCopiedJson')
                               )}
                           >
-                            Copiar JSON
+                            {translate('item.layoutCopyJson')}
                           </button>
                         </div>
                       </div>
 
                       <div class="layout-inspector__grid">
                         <div>
-                          <span class="layout-inspector__label">Label</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutLabel')}</span
+                          >
                           <strong data-testid="layout-inspector-label"
                             >{selectedLayoutBlock.label}</strong
                           >
                         </div>
                         <div>
-                          <span class="layout-inspector__label">Orden</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutOrder')}</span
+                          >
                           <strong>#{selectedLayoutBlock.order}</strong>
                         </div>
                         <div>
-                          <span class="layout-inspector__label">Página</span>
+                          <span class="layout-inspector__label">{translate('item.layoutPage')}</span
+                          >
                           <strong>{selectedLayoutBlock.page}</strong>
                         </div>
                         <div>
-                          <span class="layout-inspector__label">Group</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutGroup')}</span
+                          >
                           <strong>{selectedLayoutBlock.groupId || '—'}</strong>
                         </div>
                         <div>
-                          <span class="layout-inspector__label">BBox bloque</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutBlockBbox')}</span
+                          >
                           <code>{formatLayoutBbox(selectedLayoutBlock.bbox)}</code>
                         </div>
                         <div>
-                          <span class="layout-inspector__label">BBox overlay</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutOverlayBbox')}</span
+                          >
                           <code data-testid="layout-inspector-bbox"
                             >{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code
                           >
                         </div>
                         <div class="layout-inspector__field layout-inspector__field--wide">
-                          <span class="layout-inspector__label">Overlay source</span>
+                          <span class="layout-inspector__label"
+                            >{translate('item.layoutOverlaySource')}</span
+                          >
                           <strong
                             class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource ===
                               'block'}
@@ -2517,9 +2972,11 @@
                       </div>
 
                       <div class="layout-inspector__content">
-                        <span class="layout-inspector__label">Texto / preview ampliado</span>
+                        <span class="layout-inspector__label"
+                          >{translate('item.layoutPreview')}</span
+                        >
                         <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content ||
-                            'Sin texto completo para este bloque.'}</pre>
+                            translate('item.layoutNoFullText')}</pre>
                       </div>
 
                       {#if layoutInspectorCopyMessage}
@@ -2534,8 +2991,7 @@
                       {/if}
                     {:else}
                       <div class="layout-inspector__empty" data-testid="layout-inspector-empty">
-                        Seleccioná un bloque para ver label, orden, página, bbox, source y texto
-                        completo.
+                        {translate('item.layoutEmptyInspector')}
                       </div>
                     {/if}
                   </div>
@@ -2544,7 +3000,7 @@
             </section>
           {:else}
             <section class="section">
-              <p class="empty-text">Layout no disponible para assets de audio.</p>
+              <p class="empty-text">{translate('item.layoutUnavailableForAudio')}</p>
             </section>
           {/if}
         </div>
@@ -2553,47 +3009,61 @@
           {#if selectedAsset && selectedAsset.type !== 'audio'}
             {@const ocr = getOcrState(selectedAsset.id)}
             {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
+            {@const isPdfAsset = selectedAsset.type === 'pdf'}
             <section class="section">
               <h3>
-                Text Extraction{#if assets.length > 1}
-                  · Page {selectedAssetIndex + 1}{/if}
+                {translate('item.textExtraction')}{#if assets.length > 1}
+                  {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
               </h3>
               <div class="ocr-item">
                 <div class="ocr-item-header">
                   <span class="ocr-filename">
                     {assets.length > 1 && assets.every((a) => a.type === 'image')
-                      ? `Page ${selectedAssetIndex + 1}`
-                      : (selectedAsset.path.split(/[/\\]/).pop() ?? 'Asset')}
+                      ? translate('item.assetPageLabel', { page: selectedAssetIndex + 1 })
+                      : (selectedAsset.path.split(/[/\\]/).pop() ??
+                        translate('item.assetNoSelection'))}
                   </span>
                   <div class="ocr-btn-group">
                     <button
                       class="ocr-btn ocr-btn--light"
                       disabled={busy}
                       onclick={() => handleExtractText(selectedAsset, 'light')}
-                      title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
+                      title={busy
+                        ? isPdfAsset
+                          ? translate('item.pdfTextBusyTitle')
+                          : translate('item.ocrFastBusyTitle')
+                        : isPdfAsset
+                          ? translate('item.pdfTextTitle')
+                          : translate('item.ocrFastTitle')}
                     >
-                      OCRL
+                      {getExtractionPrimaryActionLabel(selectedAsset.type)}
                     </button>
-                    <button
-                      class="ocr-btn ocr-btn--high"
-                      disabled={busy}
-                      onclick={() => handleExtractText(selectedAsset, 'high')}
-                      title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
-                    >
-                      OCRH
-                    </button>
+                    {#if !isPdfAsset}
+                      <button
+                        class="ocr-btn ocr-btn--high"
+                        disabled={busy}
+                        onclick={() => handleExtractText(selectedAsset, 'high')}
+                        title={busy
+                          ? translate('item.ocrHighBusyTitle')
+                          : translate('item.ocrHighTitle')}
+                      >
+                        {translate('item.ocrHighAction')}
+                      </button>
+                    {/if}
                     {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
                       <button
                         class="ocr-btn ocr-btn--correct"
                         disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
                         onclick={handleLlmCorrectOcr}
                         title={!llmAvailable
-                          ? 'Gemma 4 not available'
+                          ? translate('item.ocrCorrectUnavailable')
                           : ocr.status !== 'done'
-                            ? 'Extract text first'
-                            : 'LLM OCR correction (Gemma 4)'}
+                            ? translate('item.ocrCorrectNeedsText')
+                            : isPdfAsset
+                              ? translate('item.pdfCorrectTitle')
+                              : translate('item.ocrCorrectTitle')}
                       >
-                        OCRC
+                        {getCorrectionActionLabel(selectedAsset.type)}
                       </button>
                     {/if}
                     {#if llmAvailable}
@@ -2602,12 +3072,12 @@
                         disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
                         onclick={handleLlmSummarize}
                         title={!llmAvailable
-                          ? 'Gemma 4 not available'
+                          ? translate('item.summaryUnavailable')
                           : ocr.status !== 'done'
-                            ? 'Extract text first'
-                            : 'Generate summary (Gemma 4)'}
+                            ? translate('item.summaryNeedsText')
+                            : translate('item.summaryTitle')}
                       >
-                        OCRR
+                        {getSummaryActionLabel(selectedAsset.type)}
                       </button>
                     {/if}
                   </div>
@@ -2617,11 +3087,15 @@
                   <progress class="ocr-progress" value={ocr.progress} max="100">
                     {ocr.progress}%
                   </progress>
-                  <p class="ocr-status-text">Running… {ocr.progress}%</p>
+                  <p class="ocr-status-text">
+                    {translate('item.extractionRunning', { progress: ocr.progress })}
+                  </p>
                 {:else if ocr.status === 'pending'}
-                  <p class="ocr-status-text">Starting extraction…</p>
+                  <p class="ocr-status-text">{translate('item.extractionStarting')}</p>
                 {:else if ocr.status === 'error'}
-                  <p class="ocr-error">Extraction failed: {ocr.error}</p>
+                  <p class="ocr-error">
+                    {translate('item.extractionFailed', { error: ocr.error ?? '' })}
+                  </p>
                 {:else if ocr.status === 'done'}
                   {@const editedText = (() => {
                     void ocrTick
@@ -2630,9 +3104,12 @@
                   {@const displayLength = editedText.length}
                   <details class="ocr-result">
                     <summary>
-                      Extracted text
+                      {translate('item.extractedText')}
                       <span class="ocr-meta">
-                        via {ocr.method ?? 'unknown'} · {displayLength} chars
+                        via {ocr.method ?? translate('item.ocrMethodUnknown')} · {translate(
+                          'item.characters',
+                          { count: displayLength }
+                        )}
                       </span>
                     </summary>
                     <textarea
@@ -2657,22 +3134,25 @@
             {@const busy = ts.status === 'pending' || ts.status === 'running'}
             <section class="section">
               <h3>
-                Audio Transcription{#if assets.length > 1}
-                  · Page {selectedAssetIndex + 1}{/if}
+                {translate('item.audioTranscription')}{#if assets.length > 1}
+                  {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
               </h3>
               <div class="ocr-item">
                 <div class="ocr-item-header">
                   <span class="ocr-filename"
-                    >&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span
+                    >&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ??
+                      translate('item.audioLabel')}</span
                   >
                   <div class="ocr-btn-group">
                     <button
                       class="ocr-btn"
                       disabled={busy}
                       onclick={() => handleTranscribeAudio(selectedAsset)}
-                      title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+                      title={busy
+                        ? translate('item.transcribeBusyTitle')
+                        : translate('item.transcribeTitle')}
                     >
-                      {busy ? 'Transcribing…' : 'Transcribe'}
+                      {getTranscriptionActionLabel(busy)}
                     </button>
                     {#if llmAvailable}
                       <button
@@ -2680,12 +3160,12 @@
                         disabled={getLlmState().status === 'running' || ts.status !== 'done'}
                         onclick={handleLlmSummarize}
                         title={!llmAvailable
-                          ? 'Gemma 4 not available'
+                          ? translate('item.summaryUnavailable')
                           : ts.status !== 'done'
-                            ? 'Transcribe first'
-                            : 'Generate summary (Gemma 4)'}
+                            ? translate('item.summaryNeedsText')
+                            : translate('item.summaryTitle')}
                       >
-                        OCRR
+                        {getSummaryActionLabel(selectedAsset.type)}
                       </button>
                     {/if}
                   </div>
@@ -2695,22 +3175,28 @@
                   <progress class="ocr-progress" value={ts.progress} max="100">
                     {ts.progress}%
                   </progress>
-                  <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
+                  <p class="ocr-status-text">
+                    {translate('item.transcriptionRunning', { progress: ts.progress })}
+                  </p>
                 {:else if ts.status === 'pending'}
-                  <p class="ocr-status-text">Starting transcription…</p>
+                  <p class="ocr-status-text">{translate('item.transcriptionStarting')}</p>
                 {:else if ts.status === 'error'}
-                  <p class="ocr-error">Transcription failed: {ts.error}</p>
+                  <p class="ocr-error">
+                    {translate('item.transcriptionFailed', { error: ts.error ?? '' })}
+                  </p>
                 {:else if ts.status === 'done'}
                   {@const editedText = transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
                   {@const displayLength = editedText.length}
                   <details class="ocr-result">
                     <summary>
-                      Transcription
+                      {translate('item.transcription')}
                       <span class="ocr-meta">
                         {#if ts.language}{ts.language} &middot;
-                        {/if}{displayLength} chars
+                        {/if}{translate('item.characters', { count: displayLength })}
                         {#if ts.durationMs}
-                          &middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                          &middot; {translate('item.audioDurationSeconds', {
+                            count: Math.round(ts.durationMs / 1000),
+                          })}{/if}
                       </span>
                     </summary>
                     <textarea
@@ -2740,11 +3226,11 @@
             {#if currentSummary || isSummarizing}
               <section class="section">
                 <h3>
-                  Resumen{#if assets.length > 1}
-                    · Page {selectedAssetIndex + 1}{/if}
+                  {translate('item.summary')}{#if assets.length > 1}
+                    {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
                 </h3>
                 {#if isSummarizing}
-                  <p class="summary-status">Generando resumen…</p>
+                  <p class="summary-status">{translate('item.generatingSummary')}</p>
                 {:else if currentSummary}
                   <div class="summary-result">
                     <pre class="summary-text">{currentSummary}</pre>
@@ -2766,7 +3252,8 @@
                     disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
                     onclick={handleIndexFts}
                   >
-                    INDEX <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
+                    {translate('item.indexAction')}
+                    <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
                   </button>
 
                   <button
@@ -2774,7 +3261,8 @@
                     disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
                     onclick={handleEmbedAsset}
                   >
-                    EMBED <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
+                    {translate('item.embedAction')}
+                    <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
                   </button>
 
                   <button
@@ -2782,7 +3270,8 @@
                     disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
                     onclick={handleExtractEntities}
                   >
-                    NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
+                    {translate('item.nerAction')}
+                    <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
                   </button>
 
                   <button
@@ -2792,17 +3281,20 @@
                       nlp.triples === 'running'}
                     onclick={handleLlmExtractTriples}
                   >
-                    TRIPLET <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                    {translate('item.triplesAction')}
+                    <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
                   </button>
                 </div>
 
                 {#if nlp.errors?.embed}
-                  <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
+                  <p class="ocr-error">
+                    {translate('item.embeddingError', { error: nlp.errors.embed })}
+                  </p>
                 {/if}
 
                 {#if !selectedAsset}
                   <p class="empty-text">
-                    Select an asset to run asset-level embeddings and similarity.
+                    {translate('item.analysisNeedAsset')}
                   </p>
                 {/if}
 
@@ -2815,11 +3307,15 @@
                 </div>
 
                 <div class="entities-section">
-                  <h4>Entities</h4>
+                  <h4>{translate('item.entities')}</h4>
                   <EntityViewer
                     {entities}
                     {editingEntityId}
                     editingValue={editingEntityValue}
+                    labels={{
+                      editValueAria: translate('item.entityEditValueAria'),
+                      deleteAria: (value: string) => translate('item.entityDeleteAria', { value }),
+                    }}
                     onentityclick={startEditingEntity}
                     oneditvaluechange={handleEditingEntityValueChange}
                     onsaveentity={handleSaveEntity}
@@ -2828,16 +3324,15 @@
                   />
 
                   <div class="entity-editor">
-                    <h5>Manual Entities</h5>
+                    <h5>{translate('item.manualEntities')}</h5>
                     <p class="entity-editor__hint">
-                      Click an entity chip to edit inline. Blur saves only changed non-empty values;
-                      otherwise it cancels.
+                      {translate('item.entityHint')}
                     </p>
 
                     <div class="entity-editor__create">
                       <select
                         value={newEntityType}
-                        aria-label="New entity type"
+                        aria-label={translate('item.newEntityType')}
                         onchange={(event) => {
                           newEntityType = event.currentTarget.value as EditableEntityType
                         }}
@@ -2849,11 +3344,12 @@
                       <input
                         bind:value={newEntityValue}
                         type="text"
-                        placeholder="Add entity manually"
-                        aria-label="New entity value"
+                        placeholder={translate('item.newEntityValue')}
+                        aria-label={translate('item.newEntityValue')}
                         onkeydown={(event) => event.key === 'Enter' && void handleCreateEntity()}
                       />
-                      <button type="button" class="nlp-btn" onclick={handleCreateEntity}>Add</button
+                      <button type="button" class="nlp-btn" onclick={handleCreateEntity}
+                        >{translate('item.addEntity')}</button
                       >
                     </div>
 
@@ -2865,13 +3361,14 @@
 
                 <div class="triples-section">
                   <h4>
-                    Semantic Triples (S|P|O){#if assets.length > 1}
-                      · Page {selectedAssetIndex + 1}{/if}
+                    {translate('item.semanticTriples')}{#if assets.length > 1}
+                      {translate('item.pageInline', { page: selectedAssetIndex + 1 })}{/if}
                   </h4>
                   {#if triples.length === 0}
                     <p class="empty-text">
-                      No triples extracted yet{#if assets.length > 1}
-                        for this page{/if}.
+                      {translate('item.noTriples', {
+                        suffix: assets.length > 1 ? translate('item.noTriplesPageSuffix') : '',
+                      })}
                     </p>
                   {:else}
                     <ul class="triples-list">
@@ -2895,11 +3392,11 @@
             <section class="section">
               <div class="analysis-panel analysis-panel--tabbed">
                 <div class="fts-search-section">
-                  <h4>Search by Similar Text (FTS)</h4>
+                  <h4>{translate('item.searchBySimilarText')}</h4>
                   <input
                     class="fts-search-input"
                     type="search"
-                    placeholder="Escribí para buscar..."
+                    placeholder={translate('item.ftsPlaceholder')}
                     value={ftsQuery}
                     oninput={handleFtsInput}
                     onkeydown={handleFtsKeydown}
@@ -2908,11 +3405,11 @@
                   {#if ftsSearchError}
                     <p class="ocr-error">{ftsSearchError}</p>
                   {:else if ftsSearching}
-                    <p class="empty-text">Buscando textos similares...</p>
+                    <p class="empty-text">{translate('item.ftsSearching')}</p>
                   {:else if ftsQuery.trim().length === 0}
-                    <p class="empty-text">Ingresá un término para ver resultados.</p>
+                    <p class="empty-text">{translate('item.ftsPrompt')}</p>
                   {:else if ftsResults.length === 0}
-                    <p class="empty-text">No hay resultados para esa búsqueda.</p>
+                    <p class="empty-text">{translate('item.ftsNoResults')}</p>
                   {:else}
                     <ul class="similar-list">
                       {#each ftsResults as result (result.itemId)}
@@ -2930,7 +3427,9 @@
                                 {/if}
                               {/each}
                             </span>
-                            <span class="similar-score">rank {result.rank.toFixed(3)}</span>
+                            <span class="similar-score"
+                              >{translate('item.rank', { value: result.rank.toFixed(3) })}</span
+                            >
                           </button>
                         </li>
                       {/each}
@@ -2939,35 +3438,42 @@
 
                   {#if isDev}
                     <details class="fts-debug-panel">
-                      <summary>FTS Debug (dev only)</summary>
+                      <summary>{translate('item.ftsDebugTitle')}</summary>
 
                       <div class="fts-debug-grid">
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">Indexed rows</span>
+                          <span class="fts-debug-label"
+                            >{translate('item.ftsDebug.indexedRows')}</span
+                          >
                           <code>{ftsIndexedRows ?? 'unknown'}</code>
                         </div>
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">Raw query</span>
+                          <span class="fts-debug-label">{translate('item.ftsDebug.rawQuery')}</span>
                           <code>{ftsDebug?.rawQuery ?? (ftsQuery.trim() || '—')}</code>
                         </div>
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">Sanitized</span>
+                          <span class="fts-debug-label">{translate('item.ftsDebug.sanitized')}</span
+                          >
                           <code>{ftsDebug?.sanitizedQuery || '—'}</code>
                         </div>
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">Strategy</span>
+                          <span class="fts-debug-label">{translate('item.ftsDebug.strategy')}</span>
                           <code>{ftsDebug?.strategy ?? '—'}</code>
                         </div>
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">DB matches</span>
+                          <span class="fts-debug-label">{translate('item.ftsDebug.dbMatches')}</span
+                          >
                           <code>{ftsDebug?.matchCount ?? 0}</code>
                         </div>
                         <div class="fts-debug-row">
-                          <span class="fts-debug-label">Hydrated items</span>
+                          <span class="fts-debug-label"
+                            >{translate('item.ftsDebug.hydratedItems')}</span
+                          >
                           <code>{ftsDebug?.hydratedCount ?? 0}</code>
                         </div>
                         <div class="fts-debug-row fts-debug-row--stacked">
-                          <span class="fts-debug-label">Result IDs</span>
+                          <span class="fts-debug-label">{translate('item.ftsDebug.resultIds')}</span
+                          >
                           <code>{ftsDebug?.resultIds.join(', ') || '—'}</code>
                         </div>
                       </div>
@@ -2978,8 +3484,9 @@
                 {#if similarAssets.length > 0}
                   <div class="similar-section">
                     <h4>
-                      Similar Assets{#if assets.length > 1}
-                        (by page {selectedAssetIndex + 1}){/if}
+                      {assets.length > 1
+                        ? translate('item.similarAssetsPage', { page: selectedAssetIndex + 1 })
+                        : translate('item.similarAssets')}
                     </h4>
                     <ul class="similar-list">
                       {#each similarAssets.slice(0, 5) as asset (asset.assetId)}
@@ -2997,7 +3504,11 @@
                                 )}
                               </span>
                               <span class="similar-meta">
-                                asset {asset.assetId} · item {asset.itemId} · collection {asset.collectionId}
+                                {translate('item.assetMetaLine', {
+                                  assetId: asset.assetId,
+                                  itemId: asset.itemId,
+                                  collectionId: asset.collectionId,
+                                })}
                               </span>
                               {#if asset.assetPath && getAssetPathLabel(asset.assetPath) !== asset.assetPath}
                                 <span class="similar-meta similar-meta--path"
@@ -3015,15 +3526,15 @@
                 {:else}
                   <div class="similar-section">
                     <h4>
-                      Similar Assets{#if assets.length > 1}
-                        (by page {selectedAssetIndex + 1}){/if}
+                      {assets.length > 1
+                        ? translate('item.similarAssetsPage', { page: selectedAssetIndex + 1 })
+                        : translate('item.similarAssets')}
                     </h4>
                     <p class="empty-text">
                       {#if selectedAsset}
-                        No similar assets yet. Generate embeddings for this asset to compare against
-                        the rest.
+                        {translate('item.similarAssetsEmpty')}
                       {:else}
-                        Select an asset to see asset-level similarity results.
+                        {translate('item.similarAssetsNeedSelection')}
                       {/if}
                     </p>
                   </div>
@@ -3327,6 +3838,51 @@
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.03),
       0 6px 16px rgba(0, 0, 0, 0.08);
+  }
+  .metadata-sections {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+  }
+  .metadata-subsection {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .metadata-subsection h4 {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+  }
+  .metadata-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin: 0;
+  }
+  .metadata-list__row {
+    display: grid;
+    grid-template-columns: minmax(0, 0.45fr) minmax(0, 0.55fr);
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  .metadata-list__row:last-child {
+    border-bottom: none;
+  }
+  .metadata-list dt {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+  }
+  .metadata-list dd {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-primary);
+    overflow-wrap: anywhere;
   }
   .layout-section-header {
     display: flex;
@@ -3752,10 +4308,43 @@
     flex-direction: column;
     gap: var(--space-1);
   }
+  .note-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-elevated);
+  }
+  .note-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    cursor: pointer;
+  }
+  .note-row:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
+  }
+  .note-preview {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text-primary);
+    line-height: 1.35;
+  }
   .note-content {
     color: var(--color-text-primary);
     line-height: 1.6;
     word-break: break-word;
+  }
+  .note-expanded {
+    padding-top: var(--space-1);
   }
   .note-content--rich :global(p:first-child),
   .note-content--rich :global(h1:first-child),
@@ -3803,12 +4392,59 @@
   .note-date {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    margin-top: var(--space-1);
+    margin: 0;
+  }
+  .note-date--inline {
+    margin-top: 0;
+    white-space: nowrap;
   }
   .note-actions {
     display: flex;
     gap: var(--space-1);
-    margin-top: var(--space-1);
+    margin-top: 0;
+    align-items: center;
+    justify-self: end;
+  }
+  .note-action-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition:
+      color var(--transition-base),
+      opacity var(--transition-base);
+  }
+  .note-action-button:hover {
+    background: transparent;
+    box-shadow: none;
+  }
+  .note-action-button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
+  }
+  .note-action-button--edit {
+    color: color-mix(in srgb, var(--color-text-primary) 78%, white);
+  }
+  .note-action-button--edit:hover {
+    color: var(--color-text-primary);
+    opacity: 1;
+  }
+  .note-action-button--delete {
+    color: var(--color-text-muted);
+    opacity: 0.9;
+  }
+  .note-action-button--delete:hover {
+    color: var(--color-danger);
+    opacity: 1;
   }
   .note-edit {
     display: flex;

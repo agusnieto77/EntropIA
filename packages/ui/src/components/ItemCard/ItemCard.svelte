@@ -11,6 +11,7 @@
     metadataPreview,
     onclick,
     onDelete,
+    deleteAriaLabel = `Delete ${title}`,
   }: ItemCardProps = $props()
 
   const isAudio = $derived(primaryAssetType === 'audio')
@@ -91,7 +92,7 @@
       variant="ghost"
       size="sm"
       iconOnly
-      aria-label={`Delete ${title}`}
+      aria-label={deleteAriaLabel}
       onclick={(e) => {
         e.stopPropagation()
         onDelete?.(e)

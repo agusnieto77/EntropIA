@@ -6,6 +6,8 @@
     value = '',
     placeholder = '',
     debounceMs = 300,
+    ariaLabel = '',
+    clearAriaLabel = 'Clear search',
     onsearch,
     onclear,
   }: SearchBarProps = $props()
@@ -63,7 +65,7 @@
     class="search-bar__input"
     type="search"
     {placeholder}
-    aria-label={placeholder || 'Search'}
+    aria-label={ariaLabel || placeholder || 'Search'}
     value={internalValue}
     oninput={handleInput}
   />
@@ -73,7 +75,7 @@
       type="button"
       data-testid="search-clear"
       onclick={handleClear}
-      aria-label="Clear search"
+      aria-label={clearAriaLabel}
     >
       <ActionIcon name="close" size={14} />
     </button>

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShellHost from './__fixtures__/AppShellHost.svelte'
+import { locale } from '$lib/i18n'
 
 const { invokeMock, navigationStore, storeRef } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('$lib/db', () => ({
 
 describe('AppShell', () => {
   beforeEach(() => {
+    locale.set('es')
     invokeMock.mockReset().mockResolvedValue(undefined)
     storeRef.current.items.searchGlobal.mockClear()
     storeRef.current.collections.findById.mockClear()
@@ -68,5 +70,14 @@ describe('AppShell', () => {
     expect(invokeMock).toHaveBeenCalledWith('open_external_url', {
       url: 'https://hlab.com.ar/',
     })
+  })
+
+  it('reacts to locale changes in footer copy', async () => {
+    render(AppShellHost)
+
+    locale.set('en')
+
+    expect(await screen.findByText('Archive, OCR, and assisted analysis.')).toBeInTheDocument()
+    expect(screen.getByText('Developed by')).toBeInTheDocument()
   })
 })

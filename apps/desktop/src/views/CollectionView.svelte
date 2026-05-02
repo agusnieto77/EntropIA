@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
+  import { locale, t } from '$lib/i18n'
   import {
     pickFiles,
     classifyFiles,
@@ -35,14 +36,21 @@
   let dragActive = $state(false)
   let unlistenDragDrop: (() => void) | null = null
   let unlistenAssetUpdate: (() => void) | null = null
+  const currentLocale = locale
 
-  let visibleCountLabel = $derived(
-    `${items.length} ${items.length === 1 ? 'documento visible' : 'documentos visibles'}`
-  )
+  let visibleCountLabel = $derived.by(() => {
+    $currentLocale
+    return items.length === 1
+      ? t('collection.visibleCount.one', { count: items.length })
+      : t('collection.visibleCount.other', { count: items.length })
+  })
 
-  let collectionTitle = $derived(
-    navigation.current.name === 'collection' ? navigation.current.collectionName : 'Documentos'
-  )
+  let collectionTitle = $derived.by(() => {
+    $currentLocale
+    return navigation.current.name === 'collection'
+      ? navigation.current.collectionName
+      : t('collection.documentsFallback')
+  })
 
   // Cache itemId → { assetCount, thumbnailUrl, primaryAssetId, primaryAssetPath, primaryAssetType }
   let itemAssetMeta = $state<
@@ -147,7 +155,7 @@
       // Load asset metadata (count + thumbnail) for each item
       await loadItemAssets(items.map((i) => i.id))
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load items'
+      error = e instanceof Error ? e.message : t('collection.error.load')
     } finally {
       loading = false
     }
@@ -465,7 +473,7 @@
    * Extract just the filename from a full native path.
    */
   function extractFilename(nativePath: string): string {
-    return nativePath.split(/[/\\]/).pop() ?? 'unknown file'
+    return nativePath.split(/[/\\]/).pop() ?? t('collection.unknownFile')
   }
 
   /**
@@ -474,7 +482,7 @@
   function handleDeleteClick(itemId: string) {
     const meta = getItemAssetMeta(itemId)
     if (!meta.primaryAssetId || !meta.primaryAssetPath) {
-      error = 'No asset found to delete for this item.'
+      error = t('collection.error.noAssetToDelete')
       return
     }
     pendingDeleteAssetId = meta.primaryAssetId
@@ -537,7 +545,7 @@
       const message = e instanceof Error ? e.message : String(e)
       console.error('[CollectionView] DB cleanup failed (UI will still update):', message)
       // Show a subtle warning in the error field but still close the dialog
-      deleteError = `File removed. DB cleanup failed: ${message}`
+      deleteError = t('collection.error.fileRemovedDbFailed', { message })
     }
 
     // Step 2b: Clean up cached PDF thumbnail if the asset was a PDF
@@ -624,23 +632,27 @@
 <div class="collection-view page-shell" class:drag-active={dragActive}>
   <section class="page-header collection-view__header">
     <div class="page-header__content">
-      <span class="page-header__eyebrow">Colección activa</span>
+      <span class="page-header__eyebrow">{$currentLocale && t('collection.active')}</span>
       <h1>{collectionTitle}</h1>
-      <p>Importá, explorá y mantené ordenados los assets de esta colección.</p>
+      <p>{$currentLocale && t('collection.subtitle')}</p>
       <span class="page-header__meta">{visibleCountLabel}</span>
     </div>
 
     <div class="page-toolbar collection-toolbar">
       <SearchBar
-        placeholder="Buscar documentos..."
+        placeholder={$currentLocale && t('collection.searchPlaceholder')}
         onsearch={handleSearch}
         onclear={handleClearSearch}
       />
       <Button variant="primary" onclick={handleImport} disabled={importing}>
-        {importing ? 'Importando...' : '+ Importar documento'}
+        {importing
+          ? $currentLocale && t('collection.importing')
+          : $currentLocale && t('collection.import')}
       </Button>
       <Button variant="secondary" onclick={handleExportJson} disabled={exporting}>
-        {exporting ? 'Exportando...' : 'Exportar JSON'}
+        {exporting
+          ? $currentLocale && t('collection.exporting')
+          : $currentLocale && t('collection.export')}
       </Button>
     </div>
   </section>
@@ -654,17 +666,15 @@
   {/if}
 
   {#if dragActive}
-    <div class="drop-hint">Soltá archivos acá para importarlos a esta colección.</div>
+    <div class="drop-hint">{t('collection.dropHint')}</div>
   {/if}
 
   {#if loading}
-    <p class="surface-message surface-message--center">Cargando documentos...</p>
+    <p class="surface-message surface-message--center">{t('collection.loading')}</p>
   {:else if items.length === 0}
     <div class="surface-message surface-message--center empty">
       <p>
-        {searchQuery
-          ? 'No encontramos documentos para esa búsqueda. Probá ajustando el texto o limpiando el filtro.'
-          : 'Todavía no hay documentos en esta colección. Importá archivos para empezar a trabajar.'}
+        {searchQuery ? t('collection.emptySearch') : t('collection.empty')}
       </p>
     </div>
   {:else}
@@ -710,10 +720,9 @@
           if (e.key === 'Escape') handleDeleteCancel()
         }}
       >
-        <h3 id="delete-modal-title" class="modal-title">Eliminar asset</h3>
+        <h3 id="delete-modal-title" class="modal-title">{t('collection.deleteAssetTitle')}</h3>
         <p class="modal-message">
-          ¿Seguro que querés eliminar <strong>{pendingDeleteFilename}</strong>? También se borrarán
-          el texto OCR asociado y los jobs de procesamiento. Esta acción no se puede deshacer.
+          {t('collection.deleteAssetMessage', { name: pendingDeleteFilename ?? '' })}
         </p>
 
         {#if deleteError}
@@ -722,13 +731,13 @@
 
         <div class="modal-actions">
           <Button variant="secondary" onclick={handleDeleteCancel} disabled={deleting}>
-            Cancelar
+            {t('collections.cancel')}
           </Button>
           <button
             type="button"
             class="modal-delete-button"
-            aria-label="Eliminar asset"
-            title={deleting ? 'Eliminando asset' : 'Eliminar asset'}
+            aria-label={t('collection.deleteAssetAria')}
+            title={deleting ? t('collection.deletingAssetTitle') : t('collection.deleteAssetAria')}
             aria-busy={deleting}
             onclick={handleDeleteConfirm}
             disabled={deleting}

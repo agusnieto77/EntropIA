@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
-  import type { Entity, EntityType } from './EntityViewer.types'
+  import type { Entity, EntityType, EntityViewerLabels } from './EntityViewer.types'
   import { ENTITY_TYPE_LABELS, ENTITY_TYPE_TAGS } from './EntityViewer.types'
 
   interface Props {
@@ -13,6 +13,7 @@
     onsaveentity?: (entityId: string, value: string) => void | Promise<void>
     oncancelentityedit?: () => void
     ondeleteentity?: (entityId: string) => void | Promise<void>
+    labels?: Partial<EntityViewerLabels>
   }
 
   let {
@@ -25,7 +26,22 @@
     onsaveentity,
     oncancelentityedit,
     ondeleteentity,
+    labels: labelsProp = {},
   }: Props = $props()
+
+  const defaultLabels: EntityViewerLabels = {
+    emptyText: 'No entities extracted yet.',
+    editValueAria: 'Edit entity value',
+    entityAriaLabel: (value: string) => `Entity ${value}`,
+    deleteEntityAria: (value: string) => `Delete entity ${value}`,
+    confirmDeleteEntityAria: (value: string) => `Confirm delete entity ${value}`,
+    deleteEntityTitle: 'Delete entity',
+    confirmDeleteEntityTitle: 'Press again to confirm delete',
+    deletePrompt: 'Delete?',
+    typeLabels: ENTITY_TYPE_LABELS,
+  }
+
+  const labels = $derived({ ...defaultLabels, ...labelsProp })
 
   let hoveredEntityId = $state<string | null>(null)
   let focusedEntityId = $state<string | null>(null)
@@ -155,7 +171,7 @@
 {#if entities.length === 0}
   <div class="entity-viewer__empty" data-testid="entity-viewer-empty">
     <span class="entity-viewer__empty-icon" aria-hidden="true">&#128270;</span>
-    <p class="entity-viewer__empty-text">No entities extracted yet.</p>
+    <p class="entity-viewer__empty-text">{labels.emptyText}</p>
   </div>
 {:else}
   <div class="entity-viewer">
@@ -163,7 +179,7 @@
       {#if grouped.has(type)}
         <div class="entity-viewer__group" data-testid="entity-group">
           <span class="entity-viewer__group-label entity-viewer__group-label--{type}">
-            {ENTITY_TYPE_LABELS[type]}
+            {labels.typeLabels[type]}
           </span>
           <div class="entity-viewer__pills">
             {#each grouped.get(type) ?? [] as entity (entity.id)}
@@ -171,7 +187,7 @@
                 class="entity-viewer__chip entity-viewer__chip--{type}"
                 data-testid={`entity-chip-${entity.id}`}
                 role="group"
-                aria-label={`Entity ${entity.value}`}
+                aria-label={labels.entityAriaLabel(entity.value)}
                 onmouseenter={() => {
                   hoveredEntityId = entity.id
                 }}
@@ -200,7 +216,7 @@
                       bind:this={editingInput}
                       class="entity-viewer__input"
                       type="text"
-                      aria-label="Edit entity value"
+                      aria-label={labels.editValueAria}
                       value={editingValue}
                       oninput={(event) => oneditvaluechange?.(event.currentTarget.value)}
                       onkeydown={(event) => {
@@ -236,11 +252,13 @@
                     type="button"
                     class="entity-viewer__delete"
                     class:entity-viewer__delete--pending={pendingDeleteEntityId === entity.id}
-                    aria-label={`${pendingDeleteEntityId === entity.id ? 'Confirm delete' : 'Delete'} entity ${entity.value}`}
+                    aria-label={pendingDeleteEntityId === entity.id
+                      ? labels.confirmDeleteEntityAria(entity.value)
+                      : labels.deleteEntityAria(entity.value)}
                     data-testid={`entity-delete-${entity.id}`}
                     title={pendingDeleteEntityId === entity.id
-                      ? 'Press again to confirm delete'
-                      : 'Delete entity'}
+                      ? labels.confirmDeleteEntityTitle
+                      : labels.deleteEntityTitle}
                     onclick={(event) => {
                       event.stopPropagation()
                       void handleDeleteRequest(entity.id)
@@ -248,7 +266,9 @@
                     onkeydown={(event) => handleDeleteKeydown(event, entity.id)}
                   >
                     {#if pendingDeleteEntityId === entity.id}
-                      <span aria-hidden="true" class="entity-viewer__delete-label">Delete?</span>
+                      <span aria-hidden="true" class="entity-viewer__delete-label"
+                        >{labels.deletePrompt}</span
+                      >
                     {:else}
                       <span aria-hidden="true">×</span>
                     {/if}

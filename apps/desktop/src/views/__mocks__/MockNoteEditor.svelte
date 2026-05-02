@@ -6,6 +6,7 @@
     onsave,
     oncancel,
     ondictate,
+    labels,
     dictationMaxSeconds = 300,
     clearOnSave = true,
     saveLabel = 'Save note',
@@ -17,13 +18,13 @@
 </script>
 
 <div data-testid="mock-note-editor">
-  <button type="button" aria-label="Bold">Bold</button>
-  <div role="group" aria-label="Text style"></div>
-  <div role="group" aria-label="Structure"></div>
-  <div role="group" aria-label="Insert"></div>
+  <button type="button" aria-label={labels?.bold ?? 'Bold'}>{labels?.bold ?? 'Bold'}</button>
+  <div role="group" aria-label={labels?.textStyleGroup ?? 'Text style'}></div>
+  <div role="group" aria-label={labels?.structureGroup ?? 'Structure'}></div>
+  <div role="group" aria-label={labels?.insertGroup ?? 'Insert'}></div>
   {#if ondictate}
-    <div role="group" aria-label="Dictation">
-      <button type="button" aria-label="Iniciar dictado">🎙</button>
+    <div role="group" aria-label={labels?.dictationGroup ?? 'Dictation'}>
+      <button type="button" aria-label={labels?.dictationStart ?? 'Iniciar dictado'}>🎙</button>
       <span data-testid="note-editor-dictation-timer"
         >0:00 / {Math.floor(dictationMaxSeconds / 60)}:{(dictationMaxSeconds % 60)
           .toString()
@@ -31,10 +32,10 @@
       >
     </div>
   {/if}
-  <button type="button" aria-label="Add link">Link</button>
-  <button type="button" aria-label="Remove link">Unlink</button>
+  <button type="button" aria-label={labels?.addLink ?? 'Add link'}>Link</button>
+  <button type="button" aria-label={labels?.removeLink ?? 'Remove link'}>Unlink</button>
   <div role="textbox">{content}</div>
-  <p>Tip: seleccioná texto para aplicar formato o links.</p>
+  <p>{labels?.helperText ?? 'Tip: seleccioná texto para aplicar formato o links.'}</p>
   {#if oncancel}
     <button type="button" data-testid="note-cancel" onclick={() => oncancel()}>{cancelLabel}</button
     >

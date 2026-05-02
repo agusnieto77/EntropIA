@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { get } from 'svelte/store'
+  import { locale, isLocale, t, type Locale } from '$lib/i18n'
   import {
     settingsGet,
     settingsSet,
@@ -20,33 +22,44 @@
   let model = $state(DEFAULT_OPENROUTER_MODEL)
   let llmMode = $state<LlmMode>(DEFAULT_LLM_MODE)
   let localAvailable = $state(false)
+  let selectedLocale = $state<Locale>('es')
+  let languageTouched = $state(false)
 
   // Test connection state
   let testing = $state(false)
   let testResult = $state<{ success: boolean; message: string } | null>(null)
   let availableModels = $state<ModelInfo[]>([])
 
+  const LANGUAGE_KEY = 'language'
+
   // Save state
   let saving = $state(false)
   let saveFeedback = $state<{ tone: 'success' | 'error'; text: string } | null>(null)
 
   let currentModeLabel = $derived(
-    llmMode === 'local' ? 'Local' : llmMode === 'openrouter' ? 'OpenRouter' : 'Automático'
+    llmMode === 'local'
+      ? t('settings.llmMode.local.label')
+      : llmMode === 'openrouter'
+        ? t('settings.llmMode.openrouter.label')
+        : t('settings.llmMode.auto.label')
   )
 
   let currentModeDescription = $derived(
     llmMode === 'local'
-      ? 'Procesa con el modelo local disponible en este equipo.'
+      ? t('settings.llmMode.local.summary')
       : llmMode === 'openrouter'
-        ? 'Usa exclusivamente tu cuenta remota de OpenRouter.'
-        : 'Prioriza el modelo local y cae a OpenRouter cuando haga falta.'
+        ? t('settings.llmMode.openrouter.summary')
+        : t('settings.llmMode.auto.summary')
   )
 
+  const activeLocale = $derived($locale)
+
   onMount(async () => {
-    const [storedKey, storedModel, storedMode, isAvail] = await Promise.all([
+    const [storedKey, storedModel, storedMode, storedLanguage, isAvail] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
       settingsGet(SETTINGS_KEYS.LLM_MODE),
+      settingsGet(LANGUAGE_KEY),
       llmIsAvailable(),
     ])
 
@@ -56,6 +69,9 @@
     }
     if (storedModel) model = storedModel
     if (storedMode) llmMode = storedMode as LlmMode
+    if (!languageTouched) {
+      selectedLocale = isLocale(storedLanguage) ? storedLanguage : get(locale)
+    }
     localAvailable = isAvail
   })
 
@@ -66,7 +82,7 @@
 
   async function handleTestConnection() {
     if (!apiKey.trim()) {
-      testResult = { success: false, message: 'Ingresá una API key antes de probar la conexión.' }
+      testResult = { success: false, message: t('settings.enterApiKey') }
       return
     }
     testing = true
@@ -76,7 +92,7 @@
       availableModels = models
       testResult = {
         success: true,
-        message: `Conexión lista · ${models.length} modelos disponibles.`,
+        message: t('settings.connectionReady', { count: models.length }),
       }
     } catch (e) {
       testResult = {
@@ -96,11 +112,12 @@
         settingsSet(SETTINGS_KEYS.OPENROUTER_API_KEY, apiKey.trim()),
         settingsSet(SETTINGS_KEYS.OPENROUTER_MODEL, model),
         settingsSet(SETTINGS_KEYS.LLM_MODE, llmMode),
+        settingsSet(LANGUAGE_KEY, selectedLocale),
       ])
       maskedApiKey = maskKey(apiKey)
       saveFeedback = {
         tone: 'success',
-        text: 'Configuración guardada. Ya podés usar esta preferencia en toda la app.',
+        text: t('settings.saved'),
       }
       setTimeout(() => {
         saveFeedback = null
@@ -118,166 +135,209 @@
   function handleModelSelect(modelId: string) {
     model = modelId
   }
+
+  function handleLanguageChange(event: Event) {
+    const nextLocale = (event.target as HTMLSelectElement).value as Locale
+    languageTouched = true
+    selectedLocale = nextLocale
+    locale.set(nextLocale)
+  }
 </script>
 
-<div class="settings-view page-shell">
-  <section class="page-header settings-view__header">
-    <div class="page-header__content">
-      <span class="page-header__eyebrow">Preferencias</span>
-      <h1>Configuración</h1>
-      <p>Ajustá cómo EntropIA resuelve tareas locales y remotas de inteligencia artificial.</p>
-      <span class="page-header__meta">Modo actual: {currentModeLabel}</span>
-    </div>
-
-    <div class="page-toolbar settings-view__toolbar">
-      <Button variant="primary" onclick={handleSave} disabled={saving}>
-        {saving ? 'Guardando...' : 'Guardar cambios'}
-      </Button>
-    </div>
-  </section>
-
-  {#if saveFeedback}
-    <p
-      class="surface-message"
-      class:surface-message--error={saveFeedback.tone === 'error'}
-      class:surface-message--success={saveFeedback.tone === 'success'}
-    >
-      {saveFeedback.text}
-    </p>
-  {/if}
-
-  <Card>
-    <section class="settings-card-section">
-      <div class="settings-card-section__copy">
-        <h2>Modo LLM</h2>
-        <p>{currentModeDescription}</p>
+{#key activeLocale}
+  <div class="settings-view page-shell" data-locale={activeLocale}>
+    <section class="page-header settings-view__header">
+      <div class="page-header__content">
+        <span class="page-header__eyebrow">{t('settings.preferences')}</span>
+        <h1>{t('settings.title')}</h1>
+        <p>{t('settings.subtitle')}</p>
+        <span class="page-header__meta"
+          >{t('settings.currentMode', { mode: currentModeLabel })}</span
+        >
       </div>
 
-      <div class="settings__mode-options">
-        <label class="settings__radio" class:active={llmMode === 'local'}>
-          <input type="radio" name="llm_mode" value="local" bind:group={llmMode} />
-          <div class="settings__radio-content">
-            <strong>Local</strong>
-            <span class="settings__radio-desc">
-              Gemma local vía llama.cpp. Sin conexión a internet.
-              {#if localAvailable}
-                <span class="settings__badge settings__badge--ok">Disponible</span>
-              {:else}
-                <span class="settings__badge settings__badge--warn">Modelo no encontrado</span>
-              {/if}
-            </span>
-          </div>
-        </label>
-
-        <label class="settings__radio" class:active={llmMode === 'openrouter'}>
-          <input type="radio" name="llm_mode" value="openrouter" bind:group={llmMode} />
-          <div class="settings__radio-content">
-            <strong>OpenRouter</strong>
-            <span class="settings__radio-desc">
-              API remota. Requiere API key y conexión a internet.
-            </span>
-          </div>
-        </label>
-
-        <label class="settings__radio" class:active={llmMode === 'auto'}>
-          <input type="radio" name="llm_mode" value="auto" bind:group={llmMode} />
-          <div class="settings__radio-content">
-            <strong>Automático</strong>
-            <span class="settings__radio-desc">
-              Prioriza el motor local y usa OpenRouter sólo como respaldo.
-            </span>
-          </div>
-        </label>
+      <div class="page-toolbar settings-view__toolbar">
+        <Button variant="primary" onclick={handleSave} disabled={saving}>
+          {saving ? t('settings.saving') : t('settings.save')}
+        </Button>
       </div>
     </section>
-  </Card>
 
-  <Card>
-    <section class="settings-card-section">
-      <div class="settings-card-section__copy">
-        <h2>OpenRouter</h2>
-        <p>Configurá la cuenta remota, validá el acceso y elegí el modelo por defecto.</p>
-      </div>
+    {#if saveFeedback}
+      <p
+        class="surface-message"
+        class:surface-message--error={saveFeedback.tone === 'error'}
+        class:surface-message--success={saveFeedback.tone === 'success'}
+      >
+        {saveFeedback.text}
+      </p>
+    {/if}
 
-      <div class="settings__field settings__field--stacked">
-        <label class="settings__label" for="api-key">API Key</label>
-        <div class="settings__input-row">
-          {#if showApiKey}
-            <input
-              id="api-key"
-              type="text"
-              class="settings__input"
-              bind:value={apiKey}
-              placeholder="sk-or-v1-..."
-            />
-          {:else}
-            <input
-              id="api-key"
-              type="password"
-              class="settings__input"
-              bind:value={apiKey}
-              placeholder="sk-or-v1-..."
-            />
-          {/if}
-          <button
-            class="settings__icon-btn"
-            type="button"
-            onclick={() => (showApiKey = !showApiKey)}
-            title={showApiKey ? 'Ocultar API key' : 'Mostrar API key'}
-            aria-label={showApiKey ? 'Ocultar API key' : 'Mostrar API key'}
-          >
-            {showApiKey ? '🙈' : '👁'}
-          </button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onclick={handleTestConnection}
-            disabled={testing || !apiKey.trim()}
-          >
-            {testing ? 'Probando...' : 'Probar conexión'}
-          </Button>
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.languageTitle')}</h2>
+          <p>{t('settings.languageDescription')}</p>
         </div>
 
-        {#if maskedApiKey}
-          <p class="settings__hint">Clave cargada: {maskedApiKey}</p>
-        {/if}
-
-        {#if testResult}
-          <p
-            class="surface-message settings__feedback"
-            class:surface-message--success={testResult.success}
-            class:surface-message--error={!testResult.success}
+        <div class="settings__field settings__field--stacked">
+          <label class="settings__label" for="language-select">{t('settings.languageLabel')}</label>
+          <select
+            id="language-select"
+            class="settings__input"
+            bind:value={selectedLocale}
+            onchange={handleLanguageChange}
           >
-            {testResult.message}
-          </p>
-        {/if}
-      </div>
+            <option value="es">{t('settings.languageOptionEs')}</option>
+            <option value="en">{t('settings.languageOptionEn')}</option>
+          </select>
+        </div>
+      </section>
+    </Card>
 
-      <div class="settings__field settings__field--stacked">
-        <Input label="Modelo" type="text" bind:value={model} placeholder="google/gemma-3-4b-it" />
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.llmModeTitle')}</h2>
+          <p>{currentModeDescription}</p>
+        </div>
 
-        {#if availableModels.length > 0}
-          <div class="settings__model-list">
-            <p class="settings__model-list-title">Modelos sugeridos desde OpenRouter</p>
-            {#each availableModels
-              .filter((m) => m.id.includes('gemma') || m.id.includes('llama') || m.id.includes('mistral') || m.id.includes('qwen') || m.id.includes('claude') || m.id.includes('gpt'))
-              .slice(0, 15) as m (m.id)}
-              <button
-                class="settings__model-option"
-                type="button"
-                class:selected={model === m.id}
-                onclick={() => handleModelSelect(m.id)}
-              >
-                <span class="settings__model-id">{m.id}</span>
-                <span class="settings__model-ctx">{Math.round(m.context_length / 1024)}k ctx</span>
-              </button>
-            {/each}
+        <div class="settings__mode-options">
+          <label class="settings__radio" class:active={llmMode === 'local'}>
+            <input type="radio" name="llm_mode" value="local" bind:group={llmMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.llmMode.local.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.llmMode.local.description')}
+                {#if localAvailable}
+                  <span class="settings__badge settings__badge--ok"
+                    >{t('settings.badge.available')}</span
+                  >
+                {:else}
+                  <span class="settings__badge settings__badge--warn"
+                    >{t('settings.badge.notFound')}</span
+                  >
+                {/if}
+              </span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={llmMode === 'openrouter'}>
+            <input type="radio" name="llm_mode" value="openrouter" bind:group={llmMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.llmMode.openrouter.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.llmMode.openrouter.description')}
+              </span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={llmMode === 'auto'}>
+            <input type="radio" name="llm_mode" value="auto" bind:group={llmMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.llmMode.auto.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.llmMode.auto.description')}
+              </span>
+            </div>
+          </label>
+        </div>
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.openrouter.title')}</h2>
+          <p>{t('settings.openrouter.description')}</p>
+        </div>
+
+        <div class="settings__field settings__field--stacked">
+          <label class="settings__label" for="api-key">{t('settings.apiKey')}</label>
+          <div class="settings__input-row">
+            {#if showApiKey}
+              <input
+                id="api-key"
+                type="text"
+                class="settings__input"
+                bind:value={apiKey}
+                placeholder={t('settings.apiKeyPlaceholder')}
+              />
+            {:else}
+              <input
+                id="api-key"
+                type="password"
+                class="settings__input"
+                bind:value={apiKey}
+                placeholder={t('settings.apiKeyPlaceholder')}
+              />
+            {/if}
+            <button
+              class="settings__icon-btn"
+              type="button"
+              onclick={() => (showApiKey = !showApiKey)}
+              title={showApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+              aria-label={showApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+            >
+              {showApiKey ? '🙈' : '👁'}
+            </button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={handleTestConnection}
+              disabled={testing || !apiKey.trim()}
+            >
+              {testing ? t('settings.testingConnection') : t('settings.testConnection')}
+            </Button>
           </div>
-        {/if}
-      </div>
-    </section>
-  </Card>
-</div>
+
+          {#if maskedApiKey}
+            <p class="settings__hint">{t('settings.loadedKey', { key: maskedApiKey })}</p>
+          {/if}
+
+          {#if testResult}
+            <p
+              class="surface-message settings__feedback"
+              class:surface-message--success={testResult.success}
+              class:surface-message--error={!testResult.success}
+            >
+              {testResult.message}
+            </p>
+          {/if}
+        </div>
+
+        <div class="settings__field settings__field--stacked">
+          <Input
+            label={t('settings.model')}
+            type="text"
+            bind:value={model}
+            placeholder={t('settings.modelPlaceholder')}
+          />
+
+          {#if availableModels.length > 0}
+            <div class="settings__model-list">
+              <p class="settings__model-list-title">{t('settings.suggestedModels')}</p>
+              {#each availableModels
+                .filter((m) => m.id.includes('gemma') || m.id.includes('llama') || m.id.includes('mistral') || m.id.includes('qwen') || m.id.includes('claude') || m.id.includes('gpt'))
+                .slice(0, 15) as m (m.id)}
+                <button
+                  class="settings__model-option"
+                  type="button"
+                  class:selected={model === m.id}
+                  onclick={() => handleModelSelect(m.id)}
+                >
+                  <span class="settings__model-id">{m.id}</span>
+                  <span class="settings__model-ctx">{Math.round(m.context_length / 1024)}k ctx</span
+                  >
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </section>
+    </Card>
+  </div>
+{/key}
 
 <style>
   .settings-view {

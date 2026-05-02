@@ -4,6 +4,8 @@
  * so Svelte components can react to navigation changes.
  */
 
+import { locale, t } from './i18n'
+
 export type View =
   | { name: 'collections' }
   | { name: 'collection'; id: string; collectionName: string }
@@ -29,6 +31,12 @@ export class NavigationStore {
   private _history: View[] = [{ name: 'collections' }]
   private readonly _subscribers = new Set<NavigationSubscriber>()
 
+  constructor() {
+    locale.subscribe(() => {
+      this.emit()
+    })
+  }
+
   subscribe(run: NavigationSubscriber): () => void {
     this._subscribers.add(run)
     run(this.snapshot())
@@ -44,9 +52,9 @@ export class NavigationStore {
       current: history.at(-1)!,
       canGoBack: history.length > 1,
       breadcrumb: history.map((v) => {
-        if (v.name === 'collections') return 'Collections'
+        if (v.name === 'collections') return t('nav.collections')
         if (v.name === 'collection') return v.collectionName
-        if (v.name === 'settings') return 'Configuracion'
+        if (v.name === 'settings') return t('nav.settings')
         return v.itemTitle
       }),
     }

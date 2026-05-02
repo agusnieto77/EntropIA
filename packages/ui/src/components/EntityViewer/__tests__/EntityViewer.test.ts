@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi } from 'vitest'
 import EntityViewer from '../EntityViewer.svelte'
-import type { Entity } from '../EntityViewer.types'
+import type { Entity, EntityViewerProps } from '../EntityViewer.types'
 
 const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   id: 'ent-1',
@@ -171,7 +171,7 @@ describe('EntityViewer', () => {
   })
 
   it('enters inline edit mode when clicking a chip', async () => {
-    const props: Record<string, unknown> = {
+    const props: EntityViewerProps = {
       entities: [makeEntity({ id: 'entity-inline', value: 'Mar del Plata' })],
       editingEntityId: null,
       editingValue: '',
@@ -303,7 +303,7 @@ describe('EntityViewer', () => {
   it('blur saves changed non-empty values and cancels unchanged ones', async () => {
     const onsaveentity = vi.fn()
     const oncancelentityedit = vi.fn()
-    const props: Record<string, unknown> = {
+    const props: EntityViewerProps = {
       entities: [makeEntity({ id: 'entity-blur', value: 'Belgrano' })],
       editingEntityId: 'entity-blur',
       editingValue: '  Belgrano actualizado  ',

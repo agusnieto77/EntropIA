@@ -5,8 +5,13 @@ import MetadataEditor from '../MetadataEditor.svelte'
 describe('MetadataEditor', () => {
   it('renders existing key-value fields', () => {
     render(MetadataEditor, {
-      props: { value: { Author: 'John', Year: '2024' } },
+      props: {
+        value: { Author: 'John', Year: '2024' },
+        labels: { fieldLabel: 'Field', valueLabel: 'Value' },
+      },
     })
+    expect(screen.getByText('Field')).toBeInTheDocument()
+    expect(screen.getByText('Value')).toBeInTheDocument()
     const inputs = screen.getAllByRole('textbox')
     // 2 pairs = 4 inputs (key + value each)
     expect(inputs).toHaveLength(4)
@@ -56,7 +61,8 @@ describe('MetadataEditor', () => {
   })
 
   it('renders empty state with no fields', () => {
-    render(MetadataEditor, { props: {} })
+    render(MetadataEditor, { props: { labels: { emptyText: 'No metadata loaded.' } } })
+    expect(screen.getByText('No metadata loaded.')).toBeInTheDocument()
     const inputs = screen.queryAllByRole('textbox')
     expect(inputs).toHaveLength(0)
   })

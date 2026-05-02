@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopBar from './TopBar.svelte'
+import { locale } from '$lib/i18n'
 
 const { navigationStore, setNavigationState, navigateMock, backMock, storeRef } = vi.hoisted(() => {
   let current: any = {
@@ -48,6 +49,7 @@ vi.mock('$lib/db', () => ({
 
 describe('TopBar', () => {
   beforeEach(() => {
+    locale.set('es')
     vi.useFakeTimers()
     navigateMock.mockReset()
     backMock.mockReset()
@@ -74,6 +76,17 @@ describe('TopBar', () => {
     expect(screen.getByRole('button', { name: 'Abrir configuración' })).toBeInTheDocument()
     expect(screen.getByRole('searchbox', { name: 'Buscar archivos' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
+  })
+
+  it('updates translated top bar labels when locale changes', async () => {
+    render(TopBar)
+
+    locale.set('en')
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Open settings' })).toBeInTheDocument()
+      expect(screen.getByRole('searchbox', { name: 'Search files' })).toBeInTheDocument()
+    })
   })
 
   it('uses an icon-only clear button for global search', async () => {

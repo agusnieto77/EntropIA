@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { NavigationStore, type View } from './navigation'
+import { locale } from './i18n'
 
 describe('NavigationStore', () => {
   let nav: NavigationStore
 
   beforeEach(() => {
     nav = new NavigationStore()
+    locale.set('es')
   })
 
   it('starts at collections view', () => {
@@ -66,10 +68,10 @@ describe('NavigationStore', () => {
   })
 
   it('breadcrumb builds from history', () => {
-    expect(nav.breadcrumb).toEqual(['Collections'])
+    expect(nav.breadcrumb).toEqual(['Colecciones'])
 
     nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Photos' })
-    expect(nav.breadcrumb).toEqual(['Collections', 'Photos'])
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Photos'])
 
     nav.navigate({
       name: 'item',
@@ -78,7 +80,7 @@ describe('NavigationStore', () => {
       itemId: 'i1',
       itemTitle: 'Sunset.jpg',
     })
-    expect(nav.breadcrumb).toEqual(['Collections', 'Photos', 'Sunset.jpg'])
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Photos', 'Sunset.jpg'])
   })
 
   it('breadcrumb updates after back', () => {
@@ -91,7 +93,7 @@ describe('NavigationStore', () => {
       itemTitle: 'Report',
     })
     nav.back()
-    expect(nav.breadcrumb).toEqual(['Collections', 'Docs'])
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Docs'])
   })
 
   it('navigates to settings view', () => {
@@ -102,7 +104,7 @@ describe('NavigationStore', () => {
 
   it('settings breadcrumb shows Configuracion', () => {
     nav.navigate({ name: 'settings' })
-    expect(nav.breadcrumb).toEqual(['Collections', 'Configuracion'])
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
   })
 
   it('can go back from settings to collections', () => {
@@ -116,6 +118,18 @@ describe('NavigationStore', () => {
     nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Test' })
     nav.replace({ name: 'settings' })
     expect(nav.current).toEqual({ name: 'settings' })
-    expect(nav.breadcrumb).toEqual(['Collections', 'Configuracion'])
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
+  })
+
+  it('emits localized breadcrumbs again when locale changes', () => {
+    const snapshots: string[][] = []
+    const unsubscribe = nav.subscribe((snapshot) => {
+      snapshots.push(snapshot.breadcrumb)
+    })
+
+    locale.set('en')
+
+    expect(snapshots.at(-1)).toEqual(['Collections'])
+    unsubscribe()
   })
 })

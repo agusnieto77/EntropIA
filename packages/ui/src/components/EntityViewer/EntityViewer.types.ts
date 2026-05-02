@@ -28,6 +28,19 @@ export interface EntityViewerProps {
   onsaveentity?: (entityId: string, value: string) => void | Promise<void>
   oncancelentityedit?: () => void
   ondeleteentity?: (entityId: string) => void | Promise<void>
+  labels?: Partial<EntityViewerLabels>
+}
+
+export interface EntityViewerLabels {
+  emptyText: string
+  editValueAria: string
+  entityAriaLabel: (value: string) => string
+  deleteEntityAria: (value: string) => string
+  confirmDeleteEntityAria: (value: string) => string
+  deleteEntityTitle: string
+  confirmDeleteEntityTitle: string
+  deletePrompt: string
+  typeLabels: Record<EntityType, string>
 }
 
 /** Display label per entity type */

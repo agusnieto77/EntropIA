@@ -1,6 +1,7 @@
 <script lang="ts">
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
+  import { locale, t } from '$lib/i18n'
   import { ActionIcon, Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
 
@@ -15,6 +16,7 @@
   let searching = $state(false)
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let searchInputEl: HTMLInputElement | undefined = $state()
+  const currentLocale = locale
 
   async function performSearch(query: string) {
     if (!query.trim()) {
@@ -114,9 +116,11 @@
 
 <header class="topbar">
   {#if $navigation.canGoBack}
-    <Button variant="ghost" size="sm" onclick={() => navigation.back()}>← Back</Button>
+    <Button variant="ghost" size="sm" onclick={() => navigation.back()}
+      >{$currentLocale && t('topbar.back')}</Button
+    >
   {/if}
-  <nav class="breadcrumb" aria-label="Breadcrumb">
+  <nav class="breadcrumb" aria-label={$currentLocale && t('topbar.breadcrumb')}>
     {#each $navigation.breadcrumb as crumb, i}
       {#if i > 0}<span class="sep">/</span>{/if}
       <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
@@ -127,8 +131,8 @@
     class="settings-btn"
     type="button"
     onclick={() => navigation.navigate({ name: 'settings' })}
-    title="Configuracion"
-    aria-label="Abrir configuración"
+    title={$currentLocale && t('topbar.settingsTitle')}
+    aria-label={$currentLocale && t('topbar.settingsAria')}
   >
     <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
       <path
@@ -146,8 +150,8 @@
         bind:this={searchInputEl}
         class="global-search__input"
         type="search"
-        placeholder="Buscar por nombre de archivo..."
-        aria-label="Buscar archivos"
+        placeholder={$currentLocale && t('topbar.searchPlaceholder')}
+        aria-label={$currentLocale && t('topbar.searchAria')}
         value={searchQuery}
         oninput={handleInput}
         onkeydown={handleKeydown}
@@ -159,7 +163,7 @@
           class="global-search__clear"
           type="button"
           onclick={handleClear}
-          aria-label="Limpiar búsqueda"
+          aria-label={$currentLocale && t('topbar.searchClear')}
         >
           <ActionIcon name="close" size={14} />
         </button>
@@ -169,9 +173,11 @@
     {#if showResults}
       <div class="global-search__dropdown">
         {#if searching}
-          <div class="global-search__status">Buscando...</div>
+          <div class="global-search__status">{$currentLocale && t('topbar.searchSearching')}</div>
         {:else if searchResults.length === 0}
-          <div class="global-search__status">Sin resultados para "{searchQuery}"</div>
+          <div class="global-search__status">
+            {$currentLocale && t('topbar.searchNoResults', { query: searchQuery })}
+          </div>
         {:else}
           {#each searchResults as result (result.item.id)}
             <button

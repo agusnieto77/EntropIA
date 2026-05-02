@@ -133,7 +133,7 @@ describe('DocumentViewer', () => {
       expect(deleteBtn).not.toHaveTextContent('✕')
     })
 
-    it('renders image zoom controls', () => {
+    it('renders image zoom controls in the top toolbar', () => {
       render(DocumentViewer, {
         props: {
           path: '/path/to/image.jpg',
@@ -146,9 +146,42 @@ describe('DocumentViewer', () => {
         },
       })
 
-      expect(screen.getByTestId('image-controls')).toBeInTheDocument()
-      expect(screen.getByTestId('image-zoom-in')).toBeInTheDocument()
-      expect(screen.getByTestId('image-zoom-out')).toBeInTheDocument()
+      expect(screen.getByTestId('annotation-toolbar')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Zoom out' })).toBeInTheDocument()
+      expect(screen.getByTestId('toolbar-zoom-info')).toHaveTextContent('100%')
+    })
+
+    it('uses 10 percent steps and preserves uniform image dimensions when zooming out', async () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/image.jpg',
+          type: 'image',
+          assetUrl: 'asset://localhost/path/to/image.jpg',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      const img = screen.getByRole('img') as HTMLImageElement
+      setupImage(img, 200, 100, 200, 100)
+      await fireEvent.load(img)
+      MockResizeObserver.instances.forEach((obs) => obs.trigger(img))
+
+      const stageSizer = img.parentElement?.parentElement as HTMLElement
+      expect(stageSizer.style.width).toBe('200px')
+      expect(stageSizer.style.height).toBe('100px')
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }))
+
+      expect(screen.getByTestId('toolbar-zoom-info')).toHaveTextContent('90%')
+      expect(img.style.width).toBe('200px')
+      expect(img.style.height).toBe('100px')
+      expect(img.parentElement).toHaveStyle({ transform: 'scale(0.9)' })
+      expect(stageSizer.style.width).toBe('180px')
+      expect(stageSizer.style.height).toBe('90px')
     })
 
     it('renders layout regions and syncs hover/select callbacks', async () => {
@@ -649,7 +682,7 @@ describe('DocumentViewer', () => {
       expect(canvas).toBeInTheDocument()
     })
 
-    it('renders PDF navigation controls', () => {
+    it('renders PDF navigation and zoom controls in the top toolbar', () => {
       render(DocumentViewer, {
         props: {
           path: '/path/to/doc.pdf',
@@ -661,11 +694,35 @@ describe('DocumentViewer', () => {
           annotationColor: 'var(--color-accent)',
         },
       })
-      expect(screen.getByTestId('pdf-controls')).toBeInTheDocument()
+      expect(screen.getByTestId('pdf-toolbar')).toBeInTheDocument()
       expect(screen.getByTestId('pdf-prev')).toBeInTheDocument()
       expect(screen.getByTestId('pdf-next')).toBeInTheDocument()
       expect(screen.getByTestId('pdf-zoom-in')).toBeInTheDocument()
       expect(screen.getByTestId('pdf-zoom-out')).toBeInTheDocument()
+    })
+
+    it('uses 10 percent steps for pdf zoom controls', async () => {
+      render(DocumentViewer, {
+        props: {
+          path: '/path/to/doc.pdf',
+          type: 'pdf',
+          assetUrl: 'asset://localhost/path/to/doc.pdf',
+          annotations: [],
+          selectedAnnotationId: null,
+          annotationTool: 'select',
+          annotationColor: 'var(--color-accent)',
+        },
+      })
+
+      await waitFor(() => {
+        expect(screen.getByTestId('pdf-zoom-info')).toHaveTextContent('100%')
+      })
+
+      await fireEvent.click(screen.getByTestId('pdf-zoom-in'))
+      expect(screen.getByTestId('pdf-zoom-info')).toHaveTextContent('110%')
+
+      await fireEvent.click(screen.getByTestId('pdf-zoom-out'))
+      expect(screen.getByTestId('pdf-zoom-info')).toHaveTextContent('100%')
     })
 
     it('shows loading state initially', () => {
@@ -760,7 +817,7 @@ describe('DocumentViewer', () => {
         },
       })
 
-      expect(screen.getByTestId('pdf-controls')).toBeInTheDocument()
+      expect(screen.getByTestId('pdf-toolbar')).toBeInTheDocument()
 
       await view.rerender({
         path: '/path/to/image.jpg',
@@ -773,7 +830,7 @@ describe('DocumentViewer', () => {
       })
 
       expect(screen.getByRole('img')).toHaveAttribute('src', 'asset://localhost/path/to/image.jpg')
-      expect(screen.queryByTestId('pdf-controls')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('pdf-toolbar')).not.toBeInTheDocument()
       expect(screen.queryByTestId('pdf-loading')).not.toBeInTheDocument()
     })
   })

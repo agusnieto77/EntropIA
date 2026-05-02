@@ -1,8 +1,17 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import NoteEditor from '../NoteEditor.svelte'
 
 describe('NoteEditor', () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLInputElement.prototype, 'focus').mockImplementation(() => undefined)
+    vi.spyOn(HTMLInputElement.prototype, 'select').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('renders a rich text textbox with toolbar', () => {
     render(NoteEditor, { props: {} })
     expect(screen.getByRole('textbox')).toBeInTheDocument()
@@ -76,9 +85,49 @@ describe('NoteEditor', () => {
   it('shows concise helper text for note editing affordances', () => {
     render(NoteEditor, { props: {} })
 
-    expect(
-      screen.getByText('Tip: seleccioná texto para aplicar formato o links.')
-    ).toBeInTheDocument()
+    expect(screen.getByText('Tip: select text to apply formatting or links.')).toBeInTheDocument()
+  })
+
+  it('opens a custom link modal instead of using a browser prompt', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt')
+
+    render(NoteEditor, { props: {} })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add link' }))
+
+    expect(promptSpy).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Insert link' })).toBeInTheDocument()
+    expect(screen.getByTestId('note-editor-link-input')).toHaveAttribute(
+      'placeholder',
+      'https://...'
+    )
+  })
+
+  it('shows subtle validation feedback for invalid link URLs', async () => {
+    render(NoteEditor, { props: {} })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add link' }))
+    await fireEvent.input(screen.getByTestId('note-editor-link-input'), {
+      target: { value: 'not a url' },
+    })
+    await fireEvent.click(screen.getByTestId('note-editor-link-submit'))
+
+    expect(screen.getByTestId('note-editor-link-error')).toHaveTextContent(
+      'Enter a valid URL, for example https://entropia.app.'
+    )
+  })
+
+  it('closes the link modal when escape is pressed', async () => {
+    render(NoteEditor, { props: {} })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add link' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Insert link' })
+    await fireEvent.keyDown(dialog, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Insert link' })).not.toBeInTheDocument()
+    })
   })
 
   it('calls onsave with sanitized html when save is clicked', async () => {

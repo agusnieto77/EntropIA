@@ -73,9 +73,7 @@ describe('settings', () => {
 
   describe('testOpenrouterConnection', () => {
     it('calls invoke with api key', async () => {
-      const mockModels = [
-        { id: 'google/gemma-3-4b-it', name: 'Gemma 3 4B', context_length: 8192 },
-      ]
+      const mockModels = [{ id: 'google/gemma-3-4b-it', name: 'Gemma 3 4B', context_length: 8192 }]
       mockInvoke.mockResolvedValueOnce(mockModels)
       const result = await testOpenrouterConnection('sk-or-test')
       expect(mockInvoke).toHaveBeenCalledWith('test_openrouter_connection', {
@@ -90,6 +88,7 @@ describe('settings', () => {
       expect(SETTINGS_KEYS.OPENROUTER_API_KEY).toBe('openrouter_api_key')
       expect(SETTINGS_KEYS.OPENROUTER_MODEL).toBe('openrouter_model')
       expect(SETTINGS_KEYS.LLM_MODE).toBe('llm_mode')
+      expect(SETTINGS_KEYS.LANGUAGE).toBe('language')
     })
 
     it('has correct defaults', () => {

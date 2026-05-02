@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import { Editor } from '@tiptap/core'
   import StarterKit from '@tiptap/starter-kit'
   import Underline from '@tiptap/extension-underline'
   import Link from '@tiptap/extension-link'
   import Placeholder from '@tiptap/extension-placeholder'
 
-  import type { NoteEditorProps } from './NoteEditor.types'
+  import type { NoteEditorLabels, NoteEditorProps } from './NoteEditor.types'
   import {
     hasNoteEditorMeaningfulChanges,
     isNoteHtmlEffectivelyEmpty,
@@ -26,9 +26,55 @@
     clearOnSave = true,
     saveLabel = 'Save',
     cancelLabel = 'Cancel',
+    labels: labelsProp = {},
   }: NoteEditorProps = $props()
 
+  const defaultLabels: NoteEditorLabels = {
+    toolbarAriaLabel: 'Formatting toolbar',
+    textStyleGroup: 'Text style',
+    structureGroup: 'Structure',
+    insertGroup: 'Insert',
+    dictationGroup: 'Dictation',
+    bold: 'Bold',
+    italic: 'Italic',
+    underline: 'Underline',
+    inlineCode: 'Inline code',
+    heading1: 'Heading 1',
+    heading2: 'Heading 2',
+    heading3: 'Heading 3',
+    bulletList: 'Bullet list',
+    orderedList: 'Ordered list',
+    quote: 'Quote',
+    addLink: 'Add link',
+    removeLink: 'Remove link',
+    dictationStart: 'Start dictation',
+    dictationStop: 'Stop dictation',
+    dictationProcessing: 'Processing dictation...',
+    dictationIdle: 'Dictation',
+    helperText: 'Tip: select text to apply formatting or links.',
+    dictationNoMicrophone: 'Microphone is not available on this device.',
+    dictationNoAudio: 'Could not capture audio from the microphone.',
+    dictationAutoStopProcessing: 'Reached the maximum of {duration}. Processing audio...',
+    dictationTranscribing: 'Transcribing audio...',
+    dictationAutoStopInserted: 'Reached the maximum of {duration}. Text inserted.',
+    dictationInserted: 'Text inserted from the microphone.',
+    dictationNoText: 'No text was detected in the audio.',
+    dictationTranscriptionFailed: 'Could not transcribe the audio.',
+    linkInvalidUrl: 'Enter a valid URL.',
+    linkInvalidHttp: 'Use a valid http or https URL.',
+    linkInvalidExample: 'Enter a valid URL, for example https://entropia.app.',
+    linkModalTitle: 'Insert link',
+    linkModalDescription: 'Paste a valid URL for the selected text.',
+    linkUrlLabel: 'URL',
+    linkPlaceholder: 'https://...',
+    linkCancel: 'Cancel',
+    linkSubmit: 'Insert',
+  }
+
+  const labels = $derived({ ...defaultLabels, ...labelsProp })
+
   let editorElement: HTMLDivElement | undefined = $state(undefined)
+  let linkInputElement: HTMLInputElement | undefined = $state(undefined)
   let editor = $state<Editor | null>(null)
   let editorRevision = $state(0)
   let currentHtml = $state('<p></p>')
@@ -45,6 +91,10 @@
   let dictationChunks = $state<Blob[]>([])
   let dictationProcessing = $state<Promise<void> | null>(null)
   let dictationSelection = $state<{ from: number; to: number } | null>(null)
+  let isLinkModalOpen = $state(false)
+  let linkDraftHref = $state('')
+  let linkModalError = $state<string | null>(null)
+  let linkSelection = $state<{ from: number; to: number } | null>(null)
 
   const showCancel = $derived(typeof oncancel === 'function')
   const supportsDictation = $derived(typeof ondictate === 'function')
@@ -65,12 +115,16 @@
   )
 
   const dictationButtonLabel = $derived.by(() => {
-    if (dictationState === 'recording') return 'Detener dictado'
-    if (dictationState === 'transcribing') return 'Procesando dictado...'
-    return 'Iniciar dictado'
+    if (dictationState === 'recording') return labels.dictationStop
+    if (dictationState === 'transcribing') return labels.dictationProcessing
+    return labels.dictationStart
   })
 
   const dictationTimerLabel = $derived(formatDuration(dictationSeconds))
+
+  const linkModalTitleId = 'note-editor-link-modal-title'
+  const linkModalDescriptionId = 'note-editor-link-modal-description'
+  const linkModalErrorId = 'note-editor-link-modal-error'
 
   type ToolbarButton = {
     label: string
@@ -84,30 +138,30 @@
     buttons: ToolbarButton[]
   }
 
-  const toolbarGroups: ToolbarGroup[] = [
+  const toolbarGroups = $derived.by<ToolbarGroup[]>(() => [
     {
-      label: 'Text style',
+      label: labels.textStyleGroup,
       buttons: [
         {
-          label: 'Bold',
+          label: labels.bold,
           shortLabel: 'B',
           isActive: () => editor?.isActive('bold') ?? false,
           action: () => editor?.chain().focus().toggleBold().run(),
         },
         {
-          label: 'Italic',
+          label: labels.italic,
           shortLabel: 'I',
           isActive: () => editor?.isActive('italic') ?? false,
           action: () => editor?.chain().focus().toggleItalic().run(),
         },
         {
-          label: 'Underline',
+          label: labels.underline,
           shortLabel: 'U',
           isActive: () => editor?.isActive('underline') ?? false,
           action: () => editor?.chain().focus().toggleUnderline().run(),
         },
         {
-          label: 'Inline code',
+          label: labels.inlineCode,
           shortLabel: '</>',
           isActive: () => editor?.isActive('code') ?? false,
           action: () => editor?.chain().focus().toggleCode().run(),
@@ -115,40 +169,40 @@
       ],
     },
     {
-      label: 'Structure',
+      label: labels.structureGroup,
       buttons: [
         {
-          label: 'Heading 1',
+          label: labels.heading1,
           shortLabel: 'H1',
           isActive: () => editor?.isActive('heading', { level: 1 }) ?? false,
           action: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
         },
         {
-          label: 'Heading 2',
+          label: labels.heading2,
           shortLabel: 'H2',
           isActive: () => editor?.isActive('heading', { level: 2 }) ?? false,
           action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
         },
         {
-          label: 'Heading 3',
+          label: labels.heading3,
           shortLabel: 'H3',
           isActive: () => editor?.isActive('heading', { level: 3 }) ?? false,
           action: () => editor?.chain().focus().toggleHeading({ level: 3 }).run(),
         },
         {
-          label: 'Bullet list',
+          label: labels.bulletList,
           shortLabel: '• List',
           isActive: () => editor?.isActive('bulletList') ?? false,
           action: () => editor?.chain().focus().toggleBulletList().run(),
         },
         {
-          label: 'Ordered list',
+          label: labels.orderedList,
           shortLabel: '1. List',
           isActive: () => editor?.isActive('orderedList') ?? false,
           action: () => editor?.chain().focus().toggleOrderedList().run(),
         },
         {
-          label: 'Quote',
+          label: labels.quote,
           shortLabel: 'Quote',
           isActive: () => editor?.isActive('blockquote') ?? false,
           action: () => editor?.chain().focus().toggleBlockquote().run(),
@@ -156,23 +210,27 @@
       ],
     },
     {
-      label: 'Insert',
+      label: labels.insertGroup,
       buttons: [
         {
-          label: 'Add link',
+          label: labels.addLink,
           shortLabel: 'Link',
           isActive: () => editor?.isActive('link') ?? false,
           action: () => updateLink(),
         },
         {
-          label: 'Remove link',
+          label: labels.removeLink,
           shortLabel: 'Unlink',
           isActive: () => false,
           action: () => removeLink(),
         },
       ],
     },
-  ]
+  ])
+
+  function withDuration(template: string, duration: string) {
+    return template.replace('{duration}', duration)
+  }
 
   function bumpEditorRevision() {
     editorRevision += 1
@@ -350,16 +408,19 @@
     if (!ondictate || audioBlob.size === 0) {
       dictationState = 'idle'
       if (audioBlob.size === 0) {
-        setDictationMessage('No se pudo capturar audio del micrófono.', 'error')
+        setDictationMessage(labels.dictationNoAudio, 'error')
       }
       return
     }
 
     dictationState = 'transcribing'
     if (wasAutoStopped) {
-      dictationMessage = `Se alcanzó el máximo de ${formatDuration(dictationMaxSeconds)}. Procesando audio...`
+      dictationMessage = withDuration(
+        labels.dictationAutoStopProcessing,
+        formatDuration(dictationMaxSeconds)
+      )
     } else {
-      dictationMessage = 'Transcribiendo audio...'
+      dictationMessage = labels.dictationTranscribing
     }
 
     try {
@@ -367,15 +428,15 @@
       if (text) {
         insertDictationText(text)
         dictationMessage = wasAutoStopped
-          ? `Se alcanzó el máximo de ${formatDuration(dictationMaxSeconds)}. Texto insertado.`
-          : 'Texto insertado desde el micrófono.'
+          ? withDuration(labels.dictationAutoStopInserted, formatDuration(dictationMaxSeconds))
+          : labels.dictationInserted
         dictationState = 'idle'
       } else {
-        setDictationMessage('No se detectó texto en el audio.', 'error')
+        setDictationMessage(labels.dictationNoText, 'error')
       }
     } catch (error) {
       setDictationMessage(
-        error instanceof Error ? error.message : 'No se pudo transcribir el audio.',
+        error instanceof Error ? error.message : labels.dictationTranscriptionFailed,
         'error'
       )
     } finally {
@@ -408,7 +469,7 @@
       !navigator.mediaDevices?.getUserMedia ||
       typeof MediaRecorder === 'undefined'
     ) {
-      setDictationMessage('No hay micrófono disponible en este dispositivo.', 'error')
+      setDictationMessage(labels.dictationNoMicrophone, 'error')
       return
     }
 
@@ -446,7 +507,7 @@
       stopMediaStreamTracks()
       resetDictationTimer()
       setDictationMessage(
-        error instanceof Error ? error.message : 'No se pudo acceder al micrófono.',
+        error instanceof Error ? error.message : labels.dictationNoMicrophone,
         'error'
       )
     }
@@ -461,20 +522,103 @@
     await startDictation()
   }
 
-  function updateLink() {
-    if (!editor) return
+  function normalizeLinkHref(value: string) {
+    const trimmed = value.trim()
 
-    const previousHref = editor.getAttributes('link').href ?? ''
-    const nextHref = window.prompt('Ingresá la URL del link', previousHref) ?? previousHref
-    const normalizedHref = nextHref.trim()
-
-    if (!normalizedHref) {
-      editor.chain().focus().unsetLink().run()
-    } else {
-      editor.chain().focus().extendMarkRange('link').setLink({ href: normalizedHref }).run()
+    if (!trimmed) {
+      return {
+        isValid: false,
+        normalized: '',
+        error: labels.linkInvalidUrl,
+      }
     }
 
+    const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
+
+    try {
+      const url = new URL(candidate)
+
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return {
+          isValid: false,
+          normalized: '',
+          error: labels.linkInvalidHttp,
+        }
+      }
+
+      return {
+        isValid: true,
+        normalized: url.toString(),
+        error: null,
+      }
+    } catch {
+      return {
+        isValid: false,
+        normalized: '',
+        error: labels.linkInvalidExample,
+      }
+    }
+  }
+
+  async function updateLink() {
+    if (!editor) return
+
+    const { from, to } = editor.state.selection
+
+    linkSelection = { from, to }
+    linkDraftHref = editor.getAttributes('link').href ?? ''
+    linkModalError = null
+    isLinkModalOpen = true
+
+    await tick()
+
+    linkInputElement?.focus()
+    linkInputElement?.select()
+  }
+
+  function closeLinkModal() {
+    isLinkModalOpen = false
+    linkModalError = null
+    linkDraftHref = ''
+    linkSelection = null
+
+    editor?.commands.focus()
+  }
+
+  function handleLinkInput() {
+    if (linkModalError) {
+      linkModalError = null
+    }
+  }
+
+  function submitLink() {
+    if (!editor) return
+
+    const result = normalizeLinkHref(linkDraftHref)
+
+    if (!result.isValid) {
+      linkModalError = result.error
+      linkInputElement?.focus()
+      return
+    }
+
+    let chain = editor.chain().focus()
+
+    if (linkSelection) {
+      chain = chain.setTextSelection(linkSelection)
+    }
+
+    chain.extendMarkRange('link').setLink({ href: result.normalized }).run()
+
+    closeLinkModal()
     bumpEditorRevision()
+  }
+
+  function handleLinkModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeLinkModal()
+    }
   }
 
   function removeLink() {
@@ -564,7 +708,7 @@
 <div class="note-editor">
   <div
     class="note-editor__toolbar"
-    aria-label="Formatting toolbar"
+    aria-label={labels.toolbarAriaLabel}
     data-editor-revision={editorRevision}
   >
     {#each toolbarGroups as group (group.label)}
@@ -577,6 +721,7 @@
             aria-pressed={button.isActive()}
             aria-label={button.label}
             title={button.label}
+            onmousedown={(event) => event.preventDefault()}
             onclick={button.action}
           >
             {button.shortLabel}
@@ -586,7 +731,7 @@
     {/each}
 
     {#if supportsDictation}
-      <div class="note-editor__tool-group" role="group" aria-label="Dictation">
+      <div class="note-editor__tool-group" role="group" aria-label={labels.dictationGroup}>
         <button
           type="button"
           class="note-editor__tool note-editor__tool--dictation"
@@ -605,14 +750,14 @@
           {:else if dictationState === 'transcribing'}
             Procesando...
           {:else}
-            Dictado
+            {labels.dictationIdle}
           {/if}
         </span>
       </div>
     {/if}
   </div>
 
-  <p class="note-editor__helper">Tip: seleccioná texto para aplicar formato o links.</p>
+  <p class="note-editor__helper">{labels.helperText}</p>
 
   {#if dictationMessage}
     <p
@@ -651,6 +796,100 @@
       {saveLabel}
     </button>
   </div>
+
+  {#if isLinkModalOpen}
+    <div
+      class="note-editor__modal-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.currentTarget === event.target) {
+          closeLinkModal()
+        }
+      }}
+    >
+      <div
+        class="note-editor__modal"
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby={linkModalTitleId}
+        aria-describedby={linkModalError ? linkModalErrorId : linkModalDescriptionId}
+        onkeydown={handleLinkModalKeydown}
+      >
+        <div class="note-editor__modal-header">
+          <div class="note-editor__modal-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false">
+              <path
+                d="M8.75 14.75 6.5 17a3.182 3.182 0 0 1-4.5-4.5l3-3a3.182 3.182 0 0 1 4.5 0 .75.75 0 1 0 1.06-1.06 4.682 4.682 0 0 0-6.62 0l-3 3a4.682 4.682 0 0 0 6.62 6.62l2.25-2.25a.75.75 0 1 0-1.06-1.06Zm8.31-12.81a4.682 4.682 0 0 0-6.62 0L8.19 4.19a.75.75 0 1 0 1.06 1.06l2.25-2.25a3.182 3.182 0 1 1 4.5 4.5l-3 3a3.182 3.182 0 0 1-4.5 0 .75.75 0 0 0-1.06 1.06 4.682 4.682 0 0 0 6.62 0l3-3a4.682 4.682 0 0 0 0-6.62Zm-9.62 9.62a.75.75 0 0 0 1.06 0l3-3a.75.75 0 1 0-1.06-1.06l-3 3a.75.75 0 0 0 0 1.06Z"
+              />
+            </svg>
+          </div>
+          <div class="note-editor__modal-copy">
+            <h3 id={linkModalTitleId}>{labels.linkModalTitle}</h3>
+            <p id={linkModalDescriptionId}>{labels.linkModalDescription}</p>
+          </div>
+        </div>
+
+        <form
+          class="note-editor__modal-form"
+          novalidate
+          onsubmit={(event) => {
+            event.preventDefault()
+            submitLink()
+          }}
+        >
+          <label class="note-editor__modal-label" for="note-editor-link-input"
+            >{labels.linkUrlLabel}</label
+          >
+          <input
+            id="note-editor-link-input"
+            bind:this={linkInputElement}
+            class="note-editor__modal-input"
+            type="text"
+            inputmode="url"
+            autocapitalize="off"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder={labels.linkPlaceholder}
+            bind:value={linkDraftHref}
+            aria-invalid={linkModalError ? 'true' : 'false'}
+            aria-describedby={linkModalError ? linkModalErrorId : linkModalDescriptionId}
+            data-testid="note-editor-link-input"
+            oninput={handleLinkInput}
+          />
+
+          {#if linkModalError}
+            <p
+              id={linkModalErrorId}
+              class="note-editor__modal-error"
+              data-testid="note-editor-link-error"
+            >
+              {linkModalError}
+            </p>
+          {/if}
+
+          <div class="note-editor__modal-actions">
+            <button
+              type="button"
+              class="note-editor__btn note-editor__btn--ghost"
+              data-testid="note-editor-link-cancel"
+              onclick={closeLinkModal}
+            >
+              {labels.linkCancel}
+            </button>
+            <button
+              type="submit"
+              class="note-editor__btn note-editor__btn--save"
+              data-testid="note-editor-link-submit"
+            >
+              {labels.linkSubmit}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -828,6 +1067,134 @@
   }
 
   .note-editor__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .note-editor__modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: rgba(7, 10, 18, 0.76);
+    backdrop-filter: blur(10px);
+  }
+
+  .note-editor__modal {
+    width: min(100%, 28rem);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    border-radius: var(--radius-xl);
+    background:
+      radial-gradient(circle at top, rgba(255, 255, 255, 0.035), transparent 32%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 100%),
+      color-mix(in srgb, var(--color-surface) 92%, black 8%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 24px 60px rgba(0, 0, 0, 0.38);
+  }
+
+  .note-editor__modal-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .note-editor__modal-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+    color: var(--color-accent-hover);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .note-editor__modal-icon svg {
+    width: 1rem;
+    height: 1rem;
+    fill: currentColor;
+  }
+
+  .note-editor__modal-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .note-editor__modal-copy h3 {
+    margin: 0;
+    font-size: var(--font-size-md);
+    color: var(--color-text-primary);
+  }
+
+  .note-editor__modal-copy p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+  }
+
+  .note-editor__modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .note-editor__modal-label {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    letter-spacing: 0.02em;
+    color: var(--color-text-secondary);
+  }
+
+  .note-editor__modal-input {
+    width: 100%;
+    padding: 0.8rem 0.95rem;
+    border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-surface) 82%, black 18%);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .note-editor__modal-input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .note-editor__modal-input:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border));
+    box-shadow: 0 0 0 3px rgba(124, 149, 255, 0.12);
+    background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
+  }
+
+  .note-editor__modal-input[aria-invalid='true'] {
+    border-color: rgba(255, 143, 143, 0.5);
+    box-shadow: 0 0 0 3px rgba(255, 143, 143, 0.08);
+  }
+
+  .note-editor__modal-error {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: #ff9f9f;
+  }
+
+  .note-editor__modal-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);

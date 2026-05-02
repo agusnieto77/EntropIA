@@ -3,6 +3,7 @@
     entities = [],
     editingEntityId = null,
     editingValue = '',
+    labels,
     onentityclick = () => {},
     onhighlight = () => {},
     oneditvaluechange = () => {},
@@ -18,7 +19,7 @@
       <div data-testid={`mock-entity-editing-${entity.id}`}>
         <input
           type="text"
-          aria-label="Edit entity value"
+          aria-label={labels?.editValueAria ?? 'Edit entity value'}
           value={editingValue}
           oninput={(event) => oneditvaluechange(event.currentTarget.value)}
           onkeydown={(event) => {
@@ -43,7 +44,9 @@
       </button>
       <button
         type="button"
-        aria-label={`Delete entity ${entity.value}`}
+        aria-label={(labels?.deleteAria ?? ((value: string) => `Delete entity ${value}`))(
+          entity.value
+        )}
         data-testid={`mock-entity-delete-${entity.id}`}
         onclick={() => ondeleteentity(entity.id)}
       >

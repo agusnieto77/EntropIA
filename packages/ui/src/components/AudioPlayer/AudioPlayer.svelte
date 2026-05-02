@@ -1,5 +1,31 @@
 <script lang="ts">
-  let { src }: { src: string } = $props()
+  interface AudioPlayerLabels {
+    skipBack: string
+    play: string
+    pause: string
+    skipForward: string
+    seek: string
+    volume: string
+  }
+
+  let {
+    src,
+    labels: labelsProp = {},
+  }: {
+    src: string
+    labels?: Partial<AudioPlayerLabels>
+  } = $props()
+
+  const defaultLabels: AudioPlayerLabels = {
+    skipBack: 'Skip back 5 seconds',
+    play: 'Play',
+    pause: 'Pause',
+    skipForward: 'Skip forward 5 seconds',
+    seek: 'Seek',
+    volume: 'Volume',
+  }
+
+  const labels = $derived({ ...defaultLabels, ...labelsProp })
 
   let playing = $state(false)
   let currentTime = $state(0)
@@ -101,7 +127,7 @@
       type="button"
       class="audio-player__btn audio-player__btn--skip"
       data-testid="audio-skip-back"
-      aria-label="Skip back 5 seconds"
+      aria-label={labels.skipBack}
       onclick={() => skip(-5)}
     >
       &#8634; 5s
@@ -111,7 +137,7 @@
       type="button"
       class="audio-player__btn audio-player__btn--play"
       data-testid="audio-play-pause"
-      aria-label={playing ? 'Pause' : 'Play'}
+      aria-label={playing ? labels.pause : labels.play}
       onclick={togglePlay}
     >
       {playing ? '⏸' : '▶'}
@@ -121,7 +147,7 @@
       type="button"
       class="audio-player__btn audio-player__btn--skip"
       data-testid="audio-skip-forward"
-      aria-label="Skip forward 5 seconds"
+      aria-label={labels.skipForward}
       onclick={() => skip(5)}
     >
       5s &#8635;
@@ -146,7 +172,7 @@
     }}
     role="slider"
     tabindex="0"
-    aria-label="Seek"
+    aria-label={labels.seek}
     aria-valuemin={0}
     aria-valuemax={100}
     aria-valuenow={Math.round(progress * 100)}
@@ -174,7 +200,7 @@
       oninput={(e) => setVolume(parseFloat((e.target as HTMLInputElement).value))}
       class="audio-player__volume-slider"
       data-testid="audio-volume-slider"
-      aria-label="Volume"
+      aria-label={labels.volume}
     />
   </div>
 </div>

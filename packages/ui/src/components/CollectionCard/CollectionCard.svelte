@@ -11,6 +11,8 @@
     onclick,
     onedit,
     ondelete,
+    editAriaLabel = 'Edit collection',
+    deleteAriaLabel = 'Delete collection',
   }: CollectionCardProps = $props()
 
   function formatRelativeDate(timestamp: number): string {
@@ -54,7 +56,7 @@
             variant="ghost"
             size="sm"
             iconOnly
-            aria-label="Edit collection"
+            aria-label={editAriaLabel}
             data-testid="edit-button"
             onclick={(e: MouseEvent) => {
               e.stopPropagation()
@@ -70,7 +72,7 @@
             variant="ghost"
             size="sm"
             iconOnly
-            aria-label="Delete collection"
+            aria-label={deleteAriaLabel}
             data-testid="delete-button"
             onclick={(e: MouseEvent) => {
               e.stopPropagation()

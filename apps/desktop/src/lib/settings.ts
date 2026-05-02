@@ -52,6 +52,7 @@ export const SETTINGS_KEYS = {
   OPENROUTER_API_KEY: 'openrouter_api_key',
   OPENROUTER_MODEL: 'openrouter_model',
   LLM_MODE: 'llm_mode',
+  LANGUAGE: 'language',
 } as const
 
 export type LlmMode = 'local' | 'openrouter' | 'auto'

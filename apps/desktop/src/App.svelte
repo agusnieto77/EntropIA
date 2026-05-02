@@ -3,6 +3,7 @@
   import { initDb } from '$lib/db'
   import { navigation } from '$lib/navigation'
   import { setupKeyboardShortcuts } from '$lib/keyboard'
+  import { initLocale, t } from '$lib/i18n'
   import AppShell from './layout/AppShell.svelte'
   import CollectionsView from './views/CollectionsView.svelte'
   import CollectionView from './views/CollectionView.svelte'
@@ -16,14 +17,14 @@
     console.log('[App] onMount starting')
     const cleanupKeyboard = setupKeyboardShortcuts()
 
-    initDb()
+    Promise.all([initLocale(), initDb()])
       .then(() => {
         console.log('[App] initDb complete')
         ready = true
       })
       .catch((e) => {
         console.log('[App] initDb ERROR:', e)
-        error = e instanceof Error ? e.message : 'Failed to initialize database'
+        error = e instanceof Error ? e.message : t('app.initError')
       })
 
     return cleanupKeyboard
@@ -31,7 +32,7 @@
 </script>
 
 {#if !ready && !error}
-  <div class="loading"><p>Initializing...</p></div>
+  <div class="loading"><p>{t('app.initializing')}</p></div>
 {:else if error}
   <div class="error"><p>{error}</p></div>
 {:else}

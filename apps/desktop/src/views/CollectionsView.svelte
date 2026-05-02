@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
+  import { locale, t } from '$lib/i18n'
   import { CollectionCard, SearchBar, Button, Input, Card } from '@entropia/ui'
   import { onMount } from 'svelte'
   import type { Collection } from '@entropia/store'
@@ -19,6 +20,7 @@
   let deletingId = $state<string | null>(null)
   let deletingName = $state('')
   let deleting = $state(false)
+  const currentLocale = locale
 
   let filtered = $derived(
     searchQuery
@@ -26,9 +28,12 @@
       : collections
   )
 
-  let visibleCountLabel = $derived(
-    `${filtered.length} ${filtered.length === 1 ? 'colección visible' : 'colecciones visibles'}`
-  )
+  let visibleCountLabel = $derived.by(() => {
+    $currentLocale
+    return filtered.length === 1
+      ? t('collections.visibleCount.one', { count: filtered.length })
+      : t('collections.visibleCount.other', { count: filtered.length })
+  })
 
   async function loadCollections() {
     try {
@@ -45,7 +50,7 @@
       }
       itemCounts = counts
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load collections'
+      error = e instanceof Error ? e.message : t('collections.error.load')
     } finally {
       loading = false
     }
@@ -66,7 +71,7 @@
       await loadCollections()
     } catch (e) {
       console.log('[Collections] ERROR creating collection:', e)
-      error = e instanceof Error ? e.message : 'Failed to create collection'
+      error = e instanceof Error ? e.message : t('collections.error.create')
     }
   }
 
@@ -95,7 +100,7 @@
       editDescription = ''
       await loadCollections()
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Error al actualizar la colección'
+      error = e instanceof Error ? e.message : t('collections.error.update')
     }
   }
 
@@ -141,20 +146,22 @@
 <div class="collections-view page-shell">
   <section class="page-header">
     <div class="page-header__content">
-      <span class="page-header__eyebrow">Corpus</span>
-      <h1>Colecciones</h1>
-      <p>Gestioná tus espacios de trabajo y organizá el archivo por tema.</p>
+      <span class="page-header__eyebrow">{$currentLocale && t('collections.eyebrow')}</span>
+      <h1>{$currentLocale && t('collections.title')}</h1>
+      <p>{$currentLocale && t('collections.subtitle')}</p>
       <span class="page-header__meta">{visibleCountLabel}</span>
     </div>
 
     <div class="page-toolbar collections-toolbar">
       <SearchBar
-        placeholder="Buscar colecciones..."
+        placeholder={$currentLocale && t('collections.searchPlaceholder')}
         onsearch={(q) => (searchQuery = q)}
         onclear={() => (searchQuery = '')}
       />
       <Button variant="primary" onclick={() => (showCreate = !showCreate)}>
-        {showCreate ? 'Cancelar' : '+ Nueva colección'}
+        {showCreate
+          ? $currentLocale && t('collections.cancel')
+          : $currentLocale && t('collections.new')}
       </Button>
     </div>
   </section>
@@ -169,15 +176,22 @@
         }}
       >
         <div class="section-copy">
-          <h2>Nueva colección</h2>
-          <p>Creá un espacio para agrupar documentos, notas y análisis relacionados.</p>
+          <h2>{t('collections.createTitle')}</h2>
+          <p>{t('collections.createDescription')}</p>
         </div>
-        <Input type="text" placeholder="Nombre de la colección" bind:value={newName} />
-        <Input type="text" placeholder="Descripción (opcional)" bind:value={newDescription} />
+        <Input type="text" placeholder={t('collections.namePlaceholder')} bind:value={newName} />
+        <Input
+          type="text"
+          placeholder={t('collections.descriptionPlaceholder')}
+          bind:value={newDescription}
+        />
         <div class="create-form__actions">
-          <Button variant="primary" type="submit" disabled={!newName.trim()}>Crear colección</Button
+          <Button variant="primary" type="submit" disabled={!newName.trim()}
+            >{t('collections.createAction')}</Button
           >
-          <Button variant="ghost" onclick={() => (showCreate = false)}>Cancelar</Button>
+          <Button variant="ghost" onclick={() => (showCreate = false)}
+            >{t('collections.cancel')}</Button
+          >
         </div>
       </form>
     </Card>
@@ -188,13 +202,11 @@
   {/if}
 
   {#if loading}
-    <p class="surface-message surface-message--center">Cargando colecciones...</p>
+    <p class="surface-message surface-message--center">{t('collections.loading')}</p>
   {:else if filtered.length === 0}
     <div class="surface-message surface-message--center empty">
       <p>
-        {searchQuery
-          ? 'No encontramos colecciones para esa búsqueda. Probá con otro nombre o limpiá el filtro.'
-          : 'Todavía no hay colecciones. Creá una para empezar a ordenar el material.'}
+        {searchQuery ? t('collections.emptySearch') : t('collections.empty')}
       </p>
     </div>
   {:else}
@@ -209,15 +221,22 @@
                 handleSaveEdit()
               }}
             >
-              <Input type="text" placeholder="Nombre" bind:value={editName} />
               <Input
                 type="text"
-                placeholder="Descripción (opcional)"
+                placeholder={t('collections.editNamePlaceholder')}
+                bind:value={editName}
+              />
+              <Input
+                type="text"
+                placeholder={t('collections.descriptionPlaceholder')}
                 bind:value={editDescription}
               />
               <div class="edit-form__actions">
-                <Button variant="primary" type="submit" disabled={!editName.trim()}>Guardar</Button>
-                <Button variant="ghost" onclick={handleCancelEdit}>Cancelar</Button>
+                <Button variant="primary" type="submit" disabled={!editName.trim()}
+                  >{t('collections.save')}</Button
+                >
+                <Button variant="ghost" onclick={handleCancelEdit}>{t('collections.cancel')}</Button
+                >
               </div>
             </form>
           </Card>
@@ -246,17 +265,16 @@
     <div class="confirm-overlay">
       <Card>
         <div class="confirm-dialog">
-          <h3 class="confirm-dialog__title">Eliminar colección</h3>
+          <h3 class="confirm-dialog__title">{t('collections.deleteTitle')}</h3>
           <p class="confirm-dialog__message">
-            ¿Estás seguro que querés eliminar la colección <strong>'{deletingName}'</strong>? Se
-            eliminarán todos sus items y datos asociados.
+            {t('collections.deleteMessage', { name: deletingName })}
           </p>
           <div class="confirm-dialog__actions">
             <button
               type="button"
               class="confirm-dialog__delete-button"
-              aria-label="Eliminar colección"
-              title={deleting ? 'Eliminando colección' : 'Eliminar colección'}
+              aria-label={t('collections.deleteAria')}
+              title={deleting ? t('collections.deletingTitle') : t('collections.deleteAria')}
               aria-busy={deleting}
               onclick={handleConfirmDelete}
               disabled={deleting}
@@ -281,7 +299,7 @@
               </svg>
             </button>
             <Button variant="ghost" onclick={handleCancelDelete} disabled={deleting}
-              >Cancelar</Button
+              >{t('collections.cancel')}</Button
             >
           </div>
         </div>

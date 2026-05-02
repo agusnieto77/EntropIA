@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CollectionsView from './CollectionsView.svelte'
+import { locale } from '$lib/i18n'
 
 const { storeRef, navigationRef } = vi.hoisted(() => ({
   storeRef: {
@@ -49,6 +50,7 @@ vi.mock('$lib/navigation', () => ({
 
 describe('CollectionsView consumer compatibility', () => {
   beforeEach(() => {
+    locale.set('es')
     navigationRef.navigate.mockReset()
     storeRef.current = createStore(
       [
@@ -112,5 +114,18 @@ describe('CollectionsView consumer compatibility', () => {
     const confirmBtn = screen.getByRole('button', { name: 'Eliminar colección' })
     expect(confirmBtn.querySelector('svg')).toBeInTheDocument()
     expect(confirmBtn).not.toHaveTextContent('Eliminar')
+  })
+
+  it('updates critical collection copy when locale changes', async () => {
+    render(CollectionsView)
+
+    expect(await screen.findByRole('heading', { name: 'Colecciones' })).toBeInTheDocument()
+
+    locale.set('en')
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Collections' })).toBeInTheDocument()
+      expect(screen.getByText('1 visible collection')).toBeInTheDocument()
+    })
   })
 })

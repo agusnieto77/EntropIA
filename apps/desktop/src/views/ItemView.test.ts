@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ItemView from './ItemView.svelte'
 
@@ -12,6 +12,7 @@ const {
   extractTextMock,
   getLayoutByAssetMock,
   clipboardWriteTextMock,
+  invokeMock,
 } = vi.hoisted(() => ({
   nlpEventHandlers: new Map<string, (event: { payload: unknown }) => void>(),
   embedAssetMock: vi.fn<(_: string, __: string) => Promise<void>>(),
@@ -37,6 +38,13 @@ const {
   extractTextMock: vi.fn(),
   getLayoutByAssetMock: vi.fn(),
   clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
+  invokeMock: vi.fn(async (command: string) => {
+    if (command === 'llm_get_results') return []
+    if (command === 'llm_get_result') return null
+    if (command === 'llm_is_available') return true
+    if (command === 'db_select') return []
+    return null
+  }),
 }))
 
 type TripleRow = { subject: string; predicate: string; object: string }
@@ -80,6 +88,8 @@ type StoreOptions = {
       title: string
       collectionId: string
       metadata: string
+      createdAt?: number
+      updatedAt?: number
     }
   >
   ftsSearchImpl?: (
@@ -91,9 +101,20 @@ type StoreOptions = {
     id: string
     itemId: string
     path: string
-    type: 'image' | 'pdf'
+    type: 'image' | 'pdf' | 'audio'
     createdAt: number
+    size?: number | null
   }>
+  collectionsById?: Record<
+    string,
+    {
+      id: string
+      name: string
+      description?: string | null
+      createdAt?: number
+      updatedAt?: number
+    }
+  >
   annotationsByAsset?: Record<string, AnnotationRow[]>
   replaceAnnotationsImpl?: (
     assetId: string,
@@ -112,6 +133,8 @@ function createStore({
       title: 'Acta histórica',
       collectionId: 'col-1',
       metadata: '{}',
+      createdAt: 1,
+      updatedAt: 1,
     },
   },
   ftsSearchImpl = async () => [],
@@ -123,8 +146,18 @@ function createStore({
       path: 'docs/acta.pdf',
       type: 'pdf' as const,
       createdAt: Date.now(),
+      size: 2048,
     },
   ],
+  collectionsById = {
+    'col-1': {
+      id: 'col-1',
+      name: 'Colección 1',
+      description: null,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  },
   annotationsByAsset = {},
   replaceAnnotationsImpl = async () => undefined,
 }: StoreOptions = {}) {
@@ -132,6 +165,9 @@ function createStore({
     items: {
       findById: vi.fn().mockImplementation(async (id: string) => itemsById[id] ?? null),
       update: vi.fn().mockResolvedValue(undefined),
+    },
+    collections: {
+      findById: vi.fn().mockImplementation(async (id: string) => collectionsById[id] ?? null),
     },
     assets: {
       findByItem: vi.fn().mockResolvedValue(assetsRows),
@@ -261,19 +297,16 @@ vi.mock('@tauri-apps/api/event', () => ({
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(async (command: string) => {
-    if (command === 'llm_get_results') return []
-    if (command === 'llm_get_result') return null
-    if (command === 'llm_is_available') return true
-    if (command === 'db_select') return []
-    return null
-  }),
+  invoke: invokeMock,
 }))
 
 vi.mock('@entropia/ui', async () => {
   const MockActionIcon = (await import('./__mocks__/MockActionIcon.svelte')).default
   const MockDocumentViewer = (await import('./__mocks__/MockDocumentViewer.svelte')).default
   const MockEntityViewer = (await import('./__mocks__/MockEntityViewer.svelte')).default
+  const ActualMetadataEditor = (
+    await import('../../../../packages/ui/src/components/MetadataEditor/MetadataEditor.svelte')
+  ).default
   const MockButton = (await import('./__mocks__/MockButton.svelte')).default
   const MockCard = (await import('./__mocks__/MockCard.svelte')).default
   const MockNoteEditor = (await import('./__mocks__/MockNoteEditor.svelte')).default
@@ -281,13 +314,38 @@ vi.mock('@entropia/ui', async () => {
   return {
     ActionIcon: MockActionIcon,
     DocumentViewer: MockDocumentViewer,
-    MetadataEditor: () => null,
+    MetadataEditor: ActualMetadataEditor,
     NoteEditor: MockNoteEditor,
     Button: MockButton,
     Card: MockCard,
     EntityViewer: MockEntityViewer,
     MapViewer: () => null,
     TopicEditor: () => null,
+    normalizeNoteLinkHref: (href: string | null) => {
+      if (!href) return null
+      const trimmed = href.trim()
+      if (!trimmed) return null
+      if (trimmed.startsWith('#')) return trimmed
+
+      const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
+
+      try {
+        const url = new URL(candidate, 'https://entropia.local')
+        const protocol = url.protocol.toLowerCase()
+        if (
+          protocol === 'http:' ||
+          protocol === 'https:' ||
+          protocol === 'mailto:' ||
+          protocol === 'tel:'
+        ) {
+          return url.toString()
+        }
+      } catch {
+        return null
+      }
+
+      return null
+    },
     normalizeNoteContentForRender: (content: string) => {
       if (!content) return ''
       const stripped = content.replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -332,8 +390,8 @@ describe('ItemView semantic triples panel', () => {
   it('shows explicit empty state when no triples exist for the item', async () => {
     await renderItemViewWith([])
 
-    expect(await screen.findByText('Semantic Triples (S|P|O)')).toBeInTheDocument()
-    expect(await screen.findByText('No triples extracted yet.')).toBeInTheDocument()
+    expect(await screen.findByText('Tripletas semánticas (S|P|O)')).toBeInTheDocument()
+    expect(await screen.findByText('Todavía no hay tripletas extraídas.')).toBeInTheDocument()
   })
 
   it('renders triples as Subject | Predicate | Object rows when store has data', async () => {
@@ -469,6 +527,110 @@ describe('ItemView asset-level embedding and similarity', () => {
     expect(embedAssetMock).not.toHaveBeenCalled()
   })
 
+  it('shows metadata labels and existing metadata values in the metadata tab', async () => {
+    storeRef.current = createStore({
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: JSON.stringify({ autor: 'Mariano Moreno', fecha: '1810-05-25' }),
+        },
+      },
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Metadatos' }))
+
+    expect(screen.getByText('Campo')).toBeInTheDocument()
+    expect(screen.getByText('Valor')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('autor')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Mariano Moreno')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('fecha')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('1810-05-25')).toBeInTheDocument()
+    expect(screen.getByTestId('metadata-add')).toBeInTheDocument()
+  })
+
+  it('shows technical file metadata even when there are no custom metadata fields', async () => {
+    storeRef.current = createStore({
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: '{}',
+        },
+      },
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Metadatos' }))
+
+    const fileMetadataSection = screen.getByTestId('item-file-metadata')
+    const customMetadataSection = screen.getByTestId('item-custom-metadata')
+
+    expect(within(fileMetadataSection).getByText('Metadatos del archivo')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Nombre del archivo')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('acta.pdf')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Tipo de archivo')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('PDF')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Extensión')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('.pdf')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Tamaño')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('2.0 KB')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Documento ID')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('item-1')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Asset ID')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('asset-1')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Ruta interna')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('docs/acta.pdf')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Colección')).toBeInTheDocument()
+    expect(within(fileMetadataSection).getByText('Colección 1')).toBeInTheDocument()
+
+    expect(within(customMetadataSection).getByText('Metadatos personalizados')).toBeInTheDocument()
+    expect(
+      within(customMetadataSection).getByText('No hay metadatos cargados para este documento.')
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('metadata-add')).toBeInTheDocument()
+  })
+
+  it('avoids duplicating technical metadata fields already present in custom metadata', async () => {
+    storeRef.current = createStore({
+      itemsById: {
+        'item-1': {
+          id: 'item-1',
+          title: 'Acta histórica',
+          collectionId: 'col-1',
+          metadata: JSON.stringify({ 'ruta interna': 'ruta/personalizada.pdf' }),
+        },
+      },
+      assetsRows: [
+        {
+          id: 'asset-1',
+          itemId: 'item-1',
+          path: 'docs/acta.pdf',
+          type: 'pdf',
+          createdAt: Date.now(),
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Metadatos' }))
+
+    const fileMetadataSection = screen.getByTestId('item-file-metadata')
+    const customMetadataSection = screen.getByTestId('item-custom-metadata')
+
+    expect(within(fileMetadataSection).queryByText('Ruta interna')).not.toBeInTheDocument()
+    expect(within(customMetadataSection).getByDisplayValue('ruta interna')).toBeInTheDocument()
+    expect(
+      within(customMetadataSection).getByDisplayValue('ruta/personalizada.pdf')
+    ).toBeInTheDocument()
+  })
+
   it('loads and renders similar assets with asset-level context', async () => {
     similarAssetsMock.mockResolvedValue([
       {
@@ -500,12 +662,12 @@ describe('ItemView asset-level embedding and similarity', () => {
       expect(similarAssetsMock).toHaveBeenCalledWith('asset-source-1', 5)
     })
 
-    expect(await screen.findByText('Similar Assets')).toBeInTheDocument()
+    expect(await screen.findByText('Assets similares')).toBeInTheDocument()
     expect(await screen.findByTestId('similar-asset-asset-sim-2')).toBeInTheDocument()
     expect(screen.getByText('Carta manuscrita')).toBeInTheDocument()
     expect(screen.getByText('IMAGE · carta-manuscrita.jpg')).toBeInTheDocument()
     expect(
-      screen.getByText('asset asset-sim-2 · item item-2 · collection col-9')
+      screen.getByText('asset asset-sim-2 · item item-2 · colección col-9')
     ).toBeInTheDocument()
     expect(screen.getByText('archivo/carta-manuscrita.jpg')).toBeInTheDocument()
     expect(screen.getByText('91.3%')).toBeInTheDocument()
@@ -648,19 +810,19 @@ describe('ItemView full-text search in Analysis panel', () => {
     const analysisToggle = await screen.findByRole('tab', { name: /Análisis/i })
     await fireEvent.click(analysisToggle)
 
-    expect(await screen.findByText('FTS Debug (dev only)')).toBeInTheDocument()
+    expect(await screen.findByText('FTS Debug (solo dev)')).toBeInTheDocument()
 
     const input = await screen.findByPlaceholderText('Escribí para buscar...')
     await fireEvent.input(input, { target: { value: 'sindicato' } })
 
     await waitFor(() => {
-      expect(screen.getByText('Indexed rows')).toBeInTheDocument()
+      expect(screen.getByText('Filas indexadas')).toBeInTheDocument()
       expect(screen.getByText('99')).toBeInTheDocument()
-      expect(screen.getByText('Raw query')).toBeInTheDocument()
+      expect(screen.getByText('Query original')).toBeInTheDocument()
       expect(screen.getByText('sindicato')).toBeInTheDocument()
-      expect(screen.getByText('Sanitized')).toBeInTheDocument()
+      expect(screen.getByText('Sanitizada')).toBeInTheDocument()
       expect(screen.getByText('"sindicato"')).toBeInTheDocument()
-      expect(screen.getByText('DB matches')).toBeInTheDocument()
+      expect(screen.getByText('Matches DB')).toBeInTheDocument()
       expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(2)
       expect(screen.getByText('item-2')).toBeInTheDocument()
     })
@@ -682,6 +844,7 @@ describe('ItemView note editing', () => {
     extractTriplesMock.mockReset().mockResolvedValue(undefined)
     similarAssetsMock.mockReset().mockResolvedValue([])
     extractTextMock.mockReset().mockResolvedValue(undefined)
+    invokeMock.mockClear()
   })
 
   async function renderItemViewWithNotes(notes: (typeof sampleNote)[]) {
@@ -690,19 +853,19 @@ describe('ItemView note editing', () => {
     storeRef.current.notes.findByAsset.mockResolvedValue(notes)
     storeRef.current.notes.update.mockResolvedValue(undefined)
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
-    await screen.findByText(new RegExp(`Notes \\(${notes.length}\\)`))
+    await screen.findByText(new RegExp(`Notas \\(${notes.length}\\)`))
   }
 
   it('displays the correct note count', async () => {
     await renderItemViewWithNotes([sampleNote])
-    expect(screen.getByText(/Notes \(1\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Notas \(1\)/)).toBeInTheDocument()
   })
 
   it('renders icon-only note action buttons with accessible names', async () => {
     await renderItemViewWithNotes([sampleNote])
 
-    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete note' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Editar nota' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Eliminar nota' })).toBeInTheDocument()
   })
 
   it('renders stored rich text notes sanitized', async () => {
@@ -713,6 +876,11 @@ describe('ItemView note editing', () => {
           '<h2>Nota</h2><p>Texto <a href="https://entropia.dev">seguro</a></p><script>alert(1)</script>',
       },
     ])
+
+    expect(screen.queryByRole('heading', { name: 'Nota', level: 2 })).not.toBeInTheDocument()
+
+    const noteRow = screen.getByRole('button', { name: /Nota Texto seguro/i })
+    await fireEvent.click(noteRow)
 
     expect(screen.getByRole('heading', { name: 'Nota', level: 2 })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'seguro' })).toHaveAttribute(
@@ -730,8 +898,93 @@ describe('ItemView note editing', () => {
       },
     ])
 
+    expect(screen.queryByText('Linea uno')).not.toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: /Linea uno Linea dos/i }))
+
     expect(screen.getByText('Linea uno')).toBeInTheDocument()
     expect(screen.getByText('Linea dos')).toBeInTheDocument()
+  })
+
+  it('keeps notes collapsed into a single clickable row until expanded', async () => {
+    await renderItemViewWithNotes([
+      {
+        ...sampleNote,
+        content: '<p>Una nota bastante larga para verificar vista previa compacta</p>',
+      },
+    ])
+
+    const noteRow = screen.getByRole('button', {
+      name: /Una nota bastante larga para verificar vista previa compacta/i,
+    })
+
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.getByText(new Date(sampleNote.createdAt).toLocaleDateString())
+    ).toBeInTheDocument()
+
+    await fireEvent.click(noteRow)
+    expect(noteRow).toHaveAttribute('aria-expanded', 'true')
+
+    await fireEvent.click(noteRow)
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('clicking note links does not collapse the expanded row', async () => {
+    await renderItemViewWithNotes([
+      {
+        ...sampleNote,
+        content: '<p>Texto con <a href="https://entropia.dev">enlace</a></p>',
+      },
+    ])
+
+    const noteRow = screen.getByRole('button', { name: /Texto con enlace/i })
+    await fireEvent.click(noteRow)
+
+    const link = screen.getByRole('link', { name: 'enlace' })
+    await fireEvent.click(link)
+
+    expect(noteRow).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('opens expanded note links through the external url command', async () => {
+    await renderItemViewWithNotes([
+      {
+        ...sampleNote,
+        content: '<p>Texto con <a href="entropia.dev/docs">enlace</a></p>',
+      },
+    ])
+
+    await fireEvent.click(screen.getByRole('button', { name: /Texto con enlace/i }))
+    await fireEvent.click(screen.getByRole('link', { name: 'enlace' }))
+
+    expect(invokeMock).toHaveBeenCalledWith('open_external_url', {
+      url: 'https://entropia.dev/docs',
+    })
+  })
+
+  it('clicking note edit action does not toggle expansion', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    const noteRow = screen.getByRole('button', { name: /Original note content/i })
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Editar nota' }))
+
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getAllByTestId('note-save')).toHaveLength(2)
+  })
+
+  it('clicking note delete action does not toggle expansion', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    const noteRow = screen.getByRole('button', { name: /Original note content/i })
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Eliminar nota' }))
+
+    expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+    expect(storeRef.current.notes.delete).toHaveBeenCalledWith('note-1')
   })
 
   it('uses the rich text editor for editing existing notes', async () => {
@@ -739,27 +992,27 @@ describe('ItemView note editing', () => {
 
     expect(screen.getAllByTestId('note-save')).toHaveLength(1)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Edit note' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Editar nota' }))
 
     expect(screen.getAllByTestId('note-save')).toHaveLength(2)
-    expect(screen.getAllByRole('button', { name: 'Bold' }).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByRole('button', { name: 'Negrita' }).length).toBeGreaterThanOrEqual(2)
   })
 
   it('keeps the edit save action disabled until the note has content to persist', async () => {
     await renderItemViewWithNotes([{ ...sampleNote, content: '' }])
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Edit note' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Editar nota' }))
 
     const saveButtons = screen.getAllByTestId('note-save')
     expect(saveButtons.at(-1)).toBeDisabled()
   })
 
-  it('displays "No notes yet" when notes array is empty', async () => {
+  it('displays localized empty state when notes array is empty', async () => {
     storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue([])
     storeRef.current.notes.findByAsset.mockResolvedValue([])
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
-    expect(await screen.findByText('No notes yet.')).toBeInTheDocument()
+    expect(await screen.findByText('Todavía no hay notas.')).toBeInTheDocument()
   })
 
   it('notes store has update method for editing notes', async () => {
@@ -961,7 +1214,7 @@ describe('ItemView image annotations', () => {
     })
     expect(storeRef.current.annotations.findByAsset).toHaveBeenCalledWith('asset-image-1', 1)
 
-    await fireEvent.click(screen.getByRole('button', { name: /next page/i }))
+    await fireEvent.click(screen.getByRole('button', { name: /página siguiente/i }))
 
     await waitFor(() => {
       expect(screen.getByTestId('viewer-annotation-count')).toHaveTextContent('2')
@@ -1296,8 +1549,8 @@ describe('ItemView image annotations', () => {
     const expectLayoutHeading = (page: number) =>
       expect(
         screen
-          .getAllByText(new RegExp(`Page ${page}`, 'i'))
-          .some((node) => node.textContent?.includes(`Page ${page}`))
+          .getAllByText(new RegExp(`Página ${page}`, 'i'))
+          .some((node) => node.textContent?.includes(`Página ${page}`))
       ).toBe(true)
 
     expect(screen.getByText('Mostrando 1 de 1 bloques.')).toBeInTheDocument()
@@ -1493,7 +1746,7 @@ describe('ItemView entity editing UX', () => {
 
     await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
 
-    const input = await screen.findByLabelText('Edit entity value')
+    const input = await screen.findByLabelText('Editar valor de entidad')
     expect(input).toHaveValue('Mar del Plata')
 
     await fireEvent.input(input, {
@@ -1512,7 +1765,7 @@ describe('ItemView entity editing UX', () => {
   it('deletes entity from chip action', async () => {
     await renderAnalysisWithEntities()
 
-    const deleteBtn = await screen.findByRole('button', { name: 'Delete entity Mar del Plata' })
+    const deleteBtn = await screen.findByRole('button', { name: 'Eliminar entidad Mar del Plata' })
 
     await fireEvent.click(deleteBtn)
 
@@ -1524,7 +1777,7 @@ describe('ItemView entity editing UX', () => {
 
     await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
 
-    const input = await screen.findByLabelText('Edit entity value')
+    const input = await screen.findByLabelText('Editar valor de entidad')
     await fireEvent.input(input, { target: { value: '  Mar del Plata 1980  ' } })
     await fireEvent.blur(input)
 
@@ -1539,13 +1792,13 @@ describe('ItemView entity editing UX', () => {
   it('creates manual DATE entities', async () => {
     await renderAnalysisWithEntities()
 
-    await fireEvent.change(screen.getByLabelText('New entity type'), {
+    await fireEvent.change(screen.getByLabelText('Nuevo tipo de entidad'), {
       target: { value: 'date' },
     })
-    await fireEvent.input(screen.getByLabelText('New entity value'), {
+    await fireEvent.input(screen.getByLabelText('Nuevo valor de entidad'), {
       target: { value: '21 de agosto de 1970' },
     })
-    await fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Agregar' }))
 
     expect(storeRef.current.entities.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1556,5 +1809,69 @@ describe('ItemView entity editing UX', () => {
         source: 'manual',
       })
     )
+  })
+})
+
+describe('ItemView processing labels by asset type', () => {
+  beforeEach(() => {
+    nlpEventHandlers.clear()
+    embedAssetMock.mockReset().mockResolvedValue(undefined)
+    extractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesMock.mockReset().mockResolvedValue(undefined)
+    llmExtractTriplesAssetMock.mockReset().mockResolvedValue(undefined)
+    similarAssetsMock.mockReset().mockResolvedValue([])
+    extractTextMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  async function renderTextTabForAsset(assetType: 'image' | 'pdf' | 'audio') {
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: `asset-${assetType}-1`,
+          itemId: 'item-1',
+          path: `docs/sample.${assetType === 'image' ? 'jpg' : assetType === 'pdf' ? 'pdf' : 'mp3'}`,
+          type: assetType,
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Texto' }))
+  }
+
+  it('keeps OCR labels for image assets', async () => {
+    await renderTextTabForAsset('image')
+
+    expect(screen.getByRole('button', { name: 'OCRL' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OCRH' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OCRC' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OCRR' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'PTT' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'PDFC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'PDFR' })).not.toBeInTheDocument()
+  })
+
+  it('uses PDF-specific labels and hides OCR wording for pdf assets', async () => {
+    await renderTextTabForAsset('pdf')
+
+    expect(screen.getByRole('button', { name: 'PTT' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PDFC' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'PDFR' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRL' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRH' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRR' })).not.toBeInTheDocument()
+  })
+
+  it('uses transcription and summary labels for audio assets without OCR wording', async () => {
+    await renderTextTabForAsset('audio')
+
+    expect(screen.getByRole('button', { name: 'STT' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Resumen' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRL' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRH' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRC' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'OCRR' })).not.toBeInTheDocument()
   })
 })

@@ -4,6 +4,7 @@
     currentPage = 1,
     annotations = [],
     layoutRegions = [],
+    labels,
     hoveredLayoutRegionId = null,
     selectedLayoutRegionId = null,
     selectedAnnotationId = null,
@@ -58,10 +59,7 @@
   >
     Select annotation
   </button>
-  <button
-    type="button"
-    onclick={() => onLayoutRegionHoverChange(layoutRegions[0]?.id ?? null)}
-  >
+  <button type="button" onclick={() => onLayoutRegionHoverChange(layoutRegions[0]?.id ?? null)}>
     Hover first layout region
   </button>
   <button type="button" onclick={() => onLayoutRegionHoverChange(null)}>
@@ -69,11 +67,14 @@
   </button>
   <button
     type="button"
-    onclick={() => onLayoutRegionSelect(layoutRegions[1]?.id ?? layoutRegions[0]?.id ?? 'missing-layout-region')}
+    onclick={() =>
+      onLayoutRegionSelect(layoutRegions[1]?.id ?? layoutRegions[0]?.id ?? 'missing-layout-region')}
   >
     Select second layout region
   </button>
-  <button type="button" onclick={() => onPageChange(2, 2)}>Go to page 2</button>
+  <button type="button" aria-label="Go to page 2" onclick={() => onPageChange(2, 2)}>
+    Go to page 2
+  </button>
   <button type="button" onclick={() => onAnnotationToolChange('rectangle')}>Rectangle tool</button>
   <button type="button" onclick={() => onAnnotationColorChange('var(--color-warning)')}>
     Warning color

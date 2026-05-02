@@ -34,7 +34,7 @@ function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n?/g, '\n')
 }
 
-function sanitizeUrl(href: string | null): string | null {
+export function normalizeNoteLinkHref(href: string | null): string | null {
   if (!href) return null
 
   const trimmed = href.trim()
@@ -42,8 +42,10 @@ function sanitizeUrl(href: string | null): string | null {
 
   if (trimmed.startsWith('#')) return trimmed
 
+  const candidate = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`
+
   try {
-    const url = new URL(trimmed, 'https://entropia.local')
+    const url = new URL(candidate, 'https://entropia.local')
     const protocol = url.protocol.toLowerCase()
 
     if (
@@ -52,7 +54,7 @@ function sanitizeUrl(href: string | null): string | null {
       protocol === 'mailto:' ||
       protocol === 'tel:'
     ) {
-      return trimmed
+      return url.toString()
     }
   } catch {
     return null
@@ -98,7 +100,7 @@ function sanitizeNode(node: Node): Node | null {
   const clean = doc.createElement(normalizedTag)
 
   if (normalizedTag === 'a') {
-    const href = sanitizeUrl(element.getAttribute('href'))
+    const href = normalizeNoteLinkHref(element.getAttribute('href'))
     if (!href) {
       const fragment = doc.createDocumentFragment()
       appendSanitizedChildren(element, fragment)

@@ -7,4 +7,6 @@ export interface CollectionCardProps {
   onclick?: () => void
   onedit?: () => void
   ondelete?: () => void
+  editAriaLabel?: string
+  deleteAriaLabel?: string
 }

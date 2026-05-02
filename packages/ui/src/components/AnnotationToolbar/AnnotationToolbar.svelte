@@ -21,6 +21,52 @@
     onRotateLeft?: () => void
     onRotateRight?: () => void
     onUndo?: () => void
+    zoomPercent?: number | null
+    canZoomOut?: boolean
+    canZoomIn?: boolean
+    onZoomOut?: () => void
+    onZoomIn?: () => void
+    labels?: Partial<AnnotationToolbarLabels>
+  }
+
+  interface AnnotationToolbarLabels {
+    expandToolbar: string
+    expandToolbarTitle: string
+    collapseToolbar: string
+    collapseToolbarTitle: string
+    toolbarAriaLabel: string
+    undo: string
+    undoTitle: string
+    rectangleTool: string
+    underlineTool: string
+    cropTool: string
+    eraseTool: string
+    rotateLeft: string
+    rotateRight: string
+    zoomOut: string
+    zoomIn: string
+    deleteSelected: string
+    colorAriaLabel: (label: string) => string
+  }
+
+  const defaultLabels: AnnotationToolbarLabels = {
+    expandToolbar: 'Expand annotation toolbar',
+    expandToolbarTitle: 'Expand toolbar',
+    collapseToolbar: 'Collapse annotation toolbar',
+    collapseToolbarTitle: 'Collapse toolbar',
+    toolbarAriaLabel: 'Image editing tools',
+    undo: 'Undo last edit',
+    undoTitle: 'Undo',
+    rectangleTool: 'Rectangle annotation tool',
+    underlineTool: 'Underline annotation tool',
+    cropTool: 'Crop to selection',
+    eraseTool: 'Erase region (white fill)',
+    rotateLeft: 'Rotate 90° left',
+    rotateRight: 'Rotate 90° right',
+    zoomOut: 'Zoom out',
+    zoomIn: 'Zoom in',
+    deleteSelected: 'Delete selected annotation',
+    colorAriaLabel: (label: string) => `${label} annotation color`,
   }
 
   let {
@@ -37,27 +83,39 @@
     onRotateLeft = () => {},
     onRotateRight = () => {},
     onUndo = () => {},
+    zoomPercent = null,
+    canZoomOut = false,
+    canZoomIn = false,
+    onZoomOut = () => {},
+    onZoomIn = () => {},
+    labels: labelsProp = {},
   }: AnnotationToolbarProps = $props()
+
+  const labels = $derived({ ...defaultLabels, ...labelsProp })
 
   let collapsed = $state(false)
 
-  const toolOptions: Array<{
-    value: Exclude<AnnotationTool, 'select'>
-    label: string
-    short: string
-  }> = [
-    { value: 'rectangle', label: 'Rectangle annotation tool', short: '▭' },
-    { value: 'underline', label: 'Underline annotation tool', short: '▁' },
-  ]
+  const toolOptions = $derived.by(
+    (): Array<{
+      value: Exclude<AnnotationTool, 'select'>
+      label: string
+      short: string
+    }> => [
+      { value: 'rectangle', label: labels.rectangleTool, short: '▭' },
+      { value: 'underline', label: labels.underlineTool, short: '▁' },
+    ]
+  )
 
-  const editToolOptions: Array<{
-    value: Exclude<EditTool, 'none'>
-    label: string
-    short?: string
-  }> = [
-    { value: 'crop', label: 'Crop to selection', short: '✂' },
-    { value: 'erase', label: 'Erase region (white fill)' },
-  ]
+  const editToolOptions = $derived.by(
+    (): Array<{
+      value: Exclude<EditTool, 'none'>
+      label: string
+      short?: string
+    }> => [
+      { value: 'crop', label: labels.cropTool, short: '✂' },
+      { value: 'erase', label: labels.eraseTool },
+    ]
+  )
 
   function handleToolClick(option: (typeof toolOptions)[number]) {
     if (tool === option.value) {
@@ -81,8 +139,8 @@
     type="button"
     class="annotation-toolbar__fab"
     data-testid="annotation-toolbar-fab"
-    aria-label="Expand annotation toolbar"
-    title="Expand toolbar"
+    aria-label={labels.expandToolbar}
+    title={labels.expandToolbarTitle}
     onclick={() => (collapsed = false)}
   >
     ✎
@@ -92,14 +150,14 @@
     class="annotation-toolbar"
     data-testid="annotation-toolbar"
     role="toolbar"
-    aria-label="Image editing tools"
+    aria-label={labels.toolbarAriaLabel}
   >
     <div class="annotation-toolbar__group">
       <button
         type="button"
         class="annotation-toolbar__button"
-        aria-label="Undo last edit"
-        title="Undo"
+        aria-label={labels.undo}
+        title={labels.undoTitle}
         disabled={!canUndo}
         onclick={onUndo}
       >
@@ -174,8 +232,8 @@
       <button
         type="button"
         class="annotation-toolbar__button"
-        aria-label="Rotate 90° left"
-        title="Rotate 90° left"
+        aria-label={labels.rotateLeft}
+        title={labels.rotateLeft}
         onclick={onRotateLeft}
       >
         ↺
@@ -184,12 +242,89 @@
       <button
         type="button"
         class="annotation-toolbar__button"
-        aria-label="Rotate 90° right"
-        title="Rotate 90° right"
+        aria-label={labels.rotateRight}
+        title={labels.rotateRight}
         onclick={onRotateRight}
       >
         ↻
       </button>
+
+      {#if zoomPercent !== null}
+        <span class="annotation-toolbar__separator"></span>
+
+        <button
+          type="button"
+          class="annotation-toolbar__button"
+          aria-label={labels.zoomOut}
+          title={labels.zoomOut}
+          disabled={!canZoomOut}
+          onclick={onZoomOut}
+        >
+          <svg
+            class="annotation-toolbar__icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path
+              d="M16 16 21 21"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+            <path
+              d="M8.5 11h5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+
+        <span class="annotation-toolbar__zoom" data-testid="toolbar-zoom-info">{zoomPercent}%</span>
+
+        <button
+          type="button"
+          class="annotation-toolbar__button"
+          aria-label={labels.zoomIn}
+          title={labels.zoomIn}
+          disabled={!canZoomIn}
+          onclick={onZoomIn}
+        >
+          <svg
+            class="annotation-toolbar__icon"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+            <path
+              d="M16 16 21 21"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+            <path
+              d="M8.5 11h5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+            <path
+              d="M11 8.5v5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      {/if}
     </div>
 
     <div class="annotation-toolbar__group">
@@ -198,7 +333,7 @@
           type="button"
           class="annotation-toolbar__swatch"
           class:annotation-toolbar__swatch--active={color === option.value}
-          aria-label={`${option.label} annotation color`}
+          aria-label={labels.colorAriaLabel(option.label)}
           aria-pressed={color === option.value}
           title={option.label}
           onclick={() => onColorChange(option.value)}
@@ -211,8 +346,8 @@
     <button
       type="button"
       class="annotation-toolbar__button annotation-toolbar__button--danger"
-      aria-label="Delete selected annotation"
-      title="Delete selected annotation"
+      aria-label={labels.deleteSelected}
+      title={labels.deleteSelected}
       disabled={!hasSelection}
       onclick={onDeleteSelected}
     >
@@ -222,8 +357,8 @@
     <button
       type="button"
       class="annotation-toolbar__button annotation-toolbar__button--collapse"
-      aria-label="Collapse annotation toolbar"
-      title="Collapse toolbar"
+      aria-label={labels.collapseToolbar}
+      title={labels.collapseToolbarTitle}
       onclick={() => (collapsed = true)}
     >
       ›
@@ -283,6 +418,15 @@
     height: 20px;
     background-color: var(--color-border);
     margin: 0 var(--space-1);
+  }
+
+  .annotation-toolbar__zoom {
+    min-width: 52px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    font-variant-numeric: tabular-nums;
   }
 
   .annotation-toolbar__button,

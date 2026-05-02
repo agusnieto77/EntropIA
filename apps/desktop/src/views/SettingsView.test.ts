@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from './SettingsView.svelte'
+import { locale } from '$lib/i18n'
 
 const { settingsGetMock, settingsSetMock, testOpenrouterConnectionMock, llmIsAvailableMock } =
   vi.hoisted(() => ({
@@ -26,6 +27,7 @@ vi.mock('$lib/llm', () => ({
 
 describe('SettingsView', () => {
   beforeEach(() => {
+    locale.set('es')
     settingsGetMock.mockReset()
     settingsSetMock.mockReset().mockResolvedValue(undefined)
     testOpenrouterConnectionMock.mockReset()
@@ -35,6 +37,7 @@ describe('SettingsView', () => {
       if (key === 'openrouter_api_key') return 'sk-or-v1-test-key'
       if (key === 'openrouter_model') return 'anthropic/claude-3.7-sonnet'
       if (key === 'llm_mode') return 'openrouter'
+      if (key === 'language') return 'es'
       return null
     })
   })
@@ -77,5 +80,24 @@ describe('SettingsView', () => {
         'Configuración guardada. Ya podés usar esta preferencia en toda la app.'
       )
     ).toBeInTheDocument()
+  })
+
+  it('saves language preference and updates the interface reactively', async () => {
+    render(SettingsView)
+
+    const languageSelect = await screen.findByLabelText('Idioma')
+    await fireEvent.change(languageSelect, { target: { value: 'en' } })
+    expect((languageSelect as HTMLSelectElement).value).toBe('en')
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => {
+      expect(settingsSetMock).toHaveBeenNthCalledWith(4, 'language', 'en')
+      expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    })
   })
 })

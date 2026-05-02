@@ -69,4 +69,29 @@ export interface DocumentViewerProps {
   onUndo?: () => void
   onPageChange?: (page: number, totalPages: number) => void
   onDimensionsChange?: (dimensions: { width: number; height: number }) => void
+  labels?: Partial<DocumentViewerLabels>
+  annotationToolbarLabels?: Record<string, unknown>
+}
+
+export interface DocumentViewerLabels {
+  imageAlt: string
+  imageOverlayAriaLabel: string
+  audioSkipBack: string
+  audioPlay: string
+  audioPause: string
+  audioSkipForward: string
+  audioSeek: string
+  audioVolume: string
+  pdfLoading: string
+  pdfLoadError: string
+  pdfRenderError: string
+  pdfPreviousPage: string
+  pdfNextPage: string
+  pdfZoomOut: string
+  pdfZoomIn: string
+  layoutOverlayAriaLabel: string
+  layoutRegionAriaLabel: (label: string) => string
+  annotationAriaLabel: (id: string) => string
+  cropRegionAriaLabel: string
+  eraseRegionAriaLabel: string
 }

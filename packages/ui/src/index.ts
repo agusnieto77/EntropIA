@@ -54,6 +54,7 @@ export {
   hasNoteEditorMeaningfulChanges,
   isLegacyPlainTextNoteContent,
   isNoteHtmlEffectivelyEmpty,
+  normalizeNoteLinkHref,
   normalizeNoteContentForEditor,
   normalizeNoteContentForRender,
   sanitizeNoteHtml,
