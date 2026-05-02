@@ -121,6 +121,36 @@ describe('NavigationStore', () => {
     expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
   })
 
+  it('resetToPath rebuilds canonical history for cross-collection item navigation', () => {
+    nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Origen' })
+    nav.navigate({
+      name: 'item',
+      collectionId: 'c1',
+      collectionName: 'Origen',
+      itemId: 'i1',
+      itemTitle: 'Documento origen',
+    })
+
+    nav.resetToPath([
+      { name: 'collections' },
+      { name: 'collection', id: 'c2', collectionName: 'Destino' },
+      {
+        name: 'item',
+        collectionId: 'c2',
+        collectionName: 'Destino',
+        itemId: 'i2',
+        itemTitle: 'Documento destino',
+      },
+    ])
+
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Destino', 'Documento destino'])
+
+    nav.back()
+
+    expect(nav.current).toEqual({ name: 'collection', id: 'c2', collectionName: 'Destino' })
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Destino'])
+  })
+
   it('emits localized breadcrumbs again when locale changes', () => {
     const snapshots: string[][] = []
     const unsubscribe = nav.subscribe((snapshot) => {

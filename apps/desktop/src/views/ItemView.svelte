@@ -58,6 +58,11 @@
   import { listen, emit } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
   import { navigation } from '$lib/navigation'
+  import {
+    DOCUMENT_EXPLORER_ASSET_SELECTED_EVENT,
+    DOCUMENT_EXPLORER_ASSET_SELECT_REQUEST_EVENT,
+    type DocumentExplorerAssetDetail,
+  } from '$lib/document-explorer'
   import { locale, t, type I18nKey, type I18nParams } from '$lib/i18n'
   import type {
     Item,
@@ -102,6 +107,16 @@
   let isDragging = $state(false)
   let itemViewEl: HTMLElement | undefined = $state()
   let dragCleanup: (() => void) | null = null
+
+  function handleExplorerAssetSelectRequest(event: Event) {
+    const detail = (event as CustomEvent<DocumentExplorerAssetDetail>).detail
+    if (detail.itemId !== itemId || !detail.assetId) return
+
+    const nextIndex = assets.findIndex((asset) => asset.id === detail.assetId)
+    if (nextIndex >= 0) {
+      selectedAssetIndex = nextIndex
+    }
+  }
 
   function onResizeHandlePointerDown(e: PointerEvent) {
     e.preventDefault()
@@ -2016,6 +2031,17 @@
   })
 
   $effect(() => {
+    window.dispatchEvent(
+      new CustomEvent<DocumentExplorerAssetDetail>(DOCUMENT_EXPLORER_ASSET_SELECTED_EVENT, {
+        detail: {
+          itemId,
+          assetId: selectedAsset?.id ?? null,
+        },
+      })
+    )
+  })
+
+  $effect(() => {
     const asset = selectedAsset
 
     if (!asset || asset.type === 'audio') {
@@ -2169,6 +2195,11 @@
   })
 
   onMount(() => {
+    window.addEventListener(
+      DOCUMENT_EXPLORER_ASSET_SELECT_REQUEST_EVENT,
+      handleExplorerAssetSelectRequest
+    )
+
     ocrStore
       .startListening((eventName, callback) =>
         listen(eventName, callback).then((unlisten) => {
@@ -2245,6 +2276,10 @@
   })
 
   onDestroy(() => {
+    window.removeEventListener(
+      DOCUMENT_EXPLORER_ASSET_SELECT_REQUEST_EVENT,
+      handleExplorerAssetSelectRequest
+    )
     clearLayoutInspectorCopyMessage()
     ocrStore.stopListening()
     nlpStore.stopListening()

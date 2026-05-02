@@ -82,6 +82,12 @@ export class NavigationStore {
     this.emit()
   }
 
+  /** Replace the full history with a canonical path. */
+  resetToPath(path: [View, ...View[]]): void {
+    this._history = [...path]
+    this.emit()
+  }
+
   /** Replace the current view — useful for navigating between sibling items without stacking. */
   replace(view: View): void {
     if (this._history.length === 0) {

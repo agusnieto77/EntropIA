@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
   import { locale, t } from '$lib/i18n'
+  import { navigation } from '$lib/navigation'
+  import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
   import type { Snippet } from 'svelte'
 
@@ -10,6 +12,9 @@
   let { children }: { children: Snippet } = $props()
   const currentLocale = locale
   const activeLocale = $derived($currentLocale)
+  const showExplorer = $derived(
+    $navigation.current.name === 'collection' || $navigation.current.name === 'item'
+  )
 
   async function openHlabWebsite(event: MouseEvent) {
     event.preventDefault()
@@ -34,9 +39,15 @@
 
 <div class="shell">
   <TopBar />
-  <main class="content">
-    {@render children()}
-  </main>
+  <div class="workspace">
+    {#if showExplorer}
+      <DocumentExplorer />
+    {/if}
+
+    <main class="content">
+      {@render children()}
+    </main>
+  </div>
   {#key activeLocale}
     <footer class="footer" data-locale={activeLocale}>
       <div class="footer__brand">
@@ -72,8 +83,17 @@
     flex-direction: column;
     height: 100%;
   }
+
+  .workspace {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   .content {
     flex: 1;
+    min-width: 0;
     overflow-y: auto;
     padding: var(--space-4);
   }

@@ -18,8 +18,16 @@ const { invokeMock, navigationStore, storeRef } = vi.hoisted(() => ({
   },
   storeRef: {
     current: {
-      items: { searchGlobal: vi.fn().mockResolvedValue([]) },
-      collections: { findById: vi.fn().mockResolvedValue(null) },
+      collections: {
+        findAll: vi.fn().mockResolvedValue([]),
+        countItems: vi.fn().mockResolvedValue(0),
+        findById: vi.fn().mockResolvedValue(null),
+      },
+      assets: { findByItem: vi.fn().mockResolvedValue([]) },
+      items: {
+        searchGlobal: vi.fn().mockResolvedValue([]),
+        findByCollection: vi.fn().mockResolvedValue([]),
+      },
     },
   },
 }))
@@ -45,6 +53,10 @@ describe('AppShell', () => {
     locale.set('es')
     invokeMock.mockReset().mockResolvedValue(undefined)
     storeRef.current.items.searchGlobal.mockClear()
+    storeRef.current.items.findByCollection.mockClear()
+    storeRef.current.collections.findAll.mockClear()
+    storeRef.current.collections.countItems.mockClear()
+    storeRef.current.assets.findByItem.mockClear()
     storeRef.current.collections.findById.mockClear()
   })
 
