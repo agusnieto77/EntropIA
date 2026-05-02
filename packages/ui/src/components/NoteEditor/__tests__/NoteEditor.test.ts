@@ -31,6 +31,56 @@ describe('NoteEditor', () => {
     expect(saveBtn).not.toBeDisabled()
   })
 
+  it('disables save in edit mode when content was not changed', () => {
+    render(NoteEditor, {
+      props: {
+        content: '<p>Nota original</p>',
+        oncancel: vi.fn(),
+        clearOnSave: false,
+      },
+    })
+
+    expect(screen.getByTestId('note-save')).toBeDisabled()
+  })
+
+  it('enables save in edit mode after the note content changes', async () => {
+    render(NoteEditor, {
+      props: {
+        content: '<p>Nota original</p>',
+        oncancel: vi.fn(),
+        clearOnSave: false,
+      },
+    })
+
+    const textbox = screen.getByRole('textbox')
+    const saveBtn = screen.getByTestId('note-save')
+
+    textbox.innerHTML = '<p>Nota actualizada</p>'
+    await fireEvent.input(textbox)
+
+    await waitFor(() => {
+      expect(saveBtn).not.toBeDisabled()
+    })
+  })
+
+  it('renders grouped formatting actions with separate link and unlink controls', () => {
+    render(NoteEditor, { props: {} })
+
+    expect(screen.getByRole('group', { name: 'Text style' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Structure' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Insert' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add link' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove link' })).toBeInTheDocument()
+  })
+
+  it('shows concise helper text for note editing affordances', () => {
+    render(NoteEditor, { props: {} })
+
+    expect(
+      screen.getByText('Tip: seleccioná texto para aplicar formato o links.')
+    ).toBeInTheDocument()
+  })
+
   it('calls onsave with sanitized html when save is clicked', async () => {
     const onsave = vi.fn()
     render(NoteEditor, { props: { onsave, content: 'My note' } })

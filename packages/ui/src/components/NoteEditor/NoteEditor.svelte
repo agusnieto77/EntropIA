@@ -8,10 +8,12 @@
 
   import type { NoteEditorProps } from './NoteEditor.types'
   import {
+    hasNoteEditorMeaningfulChanges,
     isNoteHtmlEffectivelyEmpty,
     normalizeNoteContentForEditor,
     normalizeNoteContentForRender,
     sanitizeNoteHtml,
+    shouldDisableNoteEditorSave,
   } from './note-content'
 
   let {
@@ -30,61 +32,124 @@
   let currentHtml = $state('<p></p>')
   let originalHtml = $state('<p></p>')
   let lastExternalHtml = $state('')
+  let isFocused = $state(false)
 
-  const isEmpty = $derived(isNoteHtmlEffectivelyEmpty(currentHtml))
-  const isSaveDisabled = $derived(isEmpty)
   const showCancel = $derived(typeof oncancel === 'function')
+  const isEmpty = $derived(isNoteHtmlEffectivelyEmpty(currentHtml))
+  const isEditing = $derived(showCancel || !clearOnSave)
+  const hasChanges = $derived(
+    hasNoteEditorMeaningfulChanges({
+      originalContent: originalHtml,
+      currentContent: currentHtml,
+    })
+  )
+  const isSaveDisabled = $derived(
+    shouldDisableNoteEditorSave({
+      currentContent: currentHtml,
+      originalContent: originalHtml,
+      isEditing,
+    })
+  )
 
-  const toolbarButtons = [
+  type ToolbarButton = {
+    label: string
+    shortLabel: string
+    isActive: () => boolean
+    action: () => void
+  }
+
+  type ToolbarGroup = {
+    label: string
+    buttons: ToolbarButton[]
+  }
+
+  const toolbarGroups: ToolbarGroup[] = [
     {
-      label: 'Bold',
-      isActive: () => editor?.isActive('bold') ?? false,
-      action: () => editor?.chain().focus().toggleBold().run(),
+      label: 'Text style',
+      buttons: [
+        {
+          label: 'Bold',
+          shortLabel: 'B',
+          isActive: () => editor?.isActive('bold') ?? false,
+          action: () => editor?.chain().focus().toggleBold().run(),
+        },
+        {
+          label: 'Italic',
+          shortLabel: 'I',
+          isActive: () => editor?.isActive('italic') ?? false,
+          action: () => editor?.chain().focus().toggleItalic().run(),
+        },
+        {
+          label: 'Underline',
+          shortLabel: 'U',
+          isActive: () => editor?.isActive('underline') ?? false,
+          action: () => editor?.chain().focus().toggleUnderline().run(),
+        },
+        {
+          label: 'Inline code',
+          shortLabel: '</>',
+          isActive: () => editor?.isActive('code') ?? false,
+          action: () => editor?.chain().focus().toggleCode().run(),
+        },
+      ],
     },
     {
-      label: 'Italic',
-      isActive: () => editor?.isActive('italic') ?? false,
-      action: () => editor?.chain().focus().toggleItalic().run(),
+      label: 'Structure',
+      buttons: [
+        {
+          label: 'Heading 1',
+          shortLabel: 'H1',
+          isActive: () => editor?.isActive('heading', { level: 1 }) ?? false,
+          action: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
+        },
+        {
+          label: 'Heading 2',
+          shortLabel: 'H2',
+          isActive: () => editor?.isActive('heading', { level: 2 }) ?? false,
+          action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
+        },
+        {
+          label: 'Heading 3',
+          shortLabel: 'H3',
+          isActive: () => editor?.isActive('heading', { level: 3 }) ?? false,
+          action: () => editor?.chain().focus().toggleHeading({ level: 3 }).run(),
+        },
+        {
+          label: 'Bullet list',
+          shortLabel: '• List',
+          isActive: () => editor?.isActive('bulletList') ?? false,
+          action: () => editor?.chain().focus().toggleBulletList().run(),
+        },
+        {
+          label: 'Ordered list',
+          shortLabel: '1. List',
+          isActive: () => editor?.isActive('orderedList') ?? false,
+          action: () => editor?.chain().focus().toggleOrderedList().run(),
+        },
+        {
+          label: 'Quote',
+          shortLabel: 'Quote',
+          isActive: () => editor?.isActive('blockquote') ?? false,
+          action: () => editor?.chain().focus().toggleBlockquote().run(),
+        },
+      ],
     },
     {
-      label: 'Underline',
-      isActive: () => editor?.isActive('underline') ?? false,
-      action: () => editor?.chain().focus().toggleUnderline().run(),
-    },
-    {
-      label: 'H1',
-      isActive: () => editor?.isActive('heading', { level: 1 }) ?? false,
-      action: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
-    },
-    {
-      label: 'H2',
-      isActive: () => editor?.isActive('heading', { level: 2 }) ?? false,
-      action: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
-    },
-    {
-      label: 'H3',
-      isActive: () => editor?.isActive('heading', { level: 3 }) ?? false,
-      action: () => editor?.chain().focus().toggleHeading({ level: 3 }).run(),
-    },
-    {
-      label: 'Bullet List',
-      isActive: () => editor?.isActive('bulletList') ?? false,
-      action: () => editor?.chain().focus().toggleBulletList().run(),
-    },
-    {
-      label: 'Ordered List',
-      isActive: () => editor?.isActive('orderedList') ?? false,
-      action: () => editor?.chain().focus().toggleOrderedList().run(),
-    },
-    {
-      label: 'Blockquote',
-      isActive: () => editor?.isActive('blockquote') ?? false,
-      action: () => editor?.chain().focus().toggleBlockquote().run(),
-    },
-    {
-      label: 'Inline Code',
-      isActive: () => editor?.isActive('code') ?? false,
-      action: () => editor?.chain().focus().toggleCode().run(),
+      label: 'Insert',
+      buttons: [
+        {
+          label: 'Add link',
+          shortLabel: 'Link',
+          isActive: () => editor?.isActive('link') ?? false,
+          action: () => updateLink(),
+        },
+        {
+          label: 'Remove link',
+          shortLabel: 'Unlink',
+          isActive: () => false,
+          action: () => removeLink(),
+        },
+      ],
     },
   ]
 
@@ -135,8 +200,14 @@
         syncEditorState(sanitizeNoteHtml(editor.getHTML()) || '<p></p>')
       },
       onSelectionUpdate: bumpEditorRevision,
-      onFocus: bumpEditorRevision,
-      onBlur: bumpEditorRevision,
+      onFocus: () => {
+        isFocused = true
+        bumpEditorRevision()
+      },
+      onBlur: () => {
+        isFocused = false
+        bumpEditorRevision()
+      },
     })
 
     editor = instance
@@ -155,6 +226,13 @@
       editor.chain().focus().extendMarkRange('link').setLink({ href: normalizedHref }).run()
     }
 
+    bumpEditorRevision()
+  }
+
+  function removeLink() {
+    if (!editor) return
+
+    editor.chain().focus().extendMarkRange('link').unsetLink().run()
     bumpEditorRevision()
   }
 
@@ -236,34 +314,28 @@
     aria-label="Formatting toolbar"
     data-editor-revision={editorRevision}
   >
-    {#each toolbarButtons as button (button.label)}
-      <button
-        type="button"
-        class="note-editor__tool"
-        class:note-editor__tool--active={button.isActive()}
-        aria-pressed={button.isActive()}
-        aria-label={button.label}
-        title={button.label}
-        onclick={button.action}
-      >
-        {button.label}
-      </button>
+    {#each toolbarGroups as group (group.label)}
+      <div class="note-editor__tool-group" role="group" aria-label={group.label}>
+        {#each group.buttons as button (button.label)}
+          <button
+            type="button"
+            class="note-editor__tool"
+            class:note-editor__tool--active={button.isActive()}
+            aria-pressed={button.isActive()}
+            aria-label={button.label}
+            title={button.label}
+            onclick={button.action}
+          >
+            {button.shortLabel}
+          </button>
+        {/each}
+      </div>
     {/each}
-
-    <button
-      type="button"
-      class="note-editor__tool"
-      class:note-editor__tool--active={editor?.isActive('link') ?? false}
-      aria-pressed={editor?.isActive('link') ?? false}
-      aria-label="Link"
-      title="Link"
-      onclick={updateLink}
-    >
-      Link
-    </button>
   </div>
 
-  <div class="note-editor__surface">
+  <p class="note-editor__helper">Tip: seleccioná texto para aplicar formato o links.</p>
+
+  <div class="note-editor__surface" class:note-editor__surface--focused={isFocused}>
     <div bind:this={editorElement}></div>
   </div>
 
@@ -284,6 +356,7 @@
       type="button"
       data-testid="note-save"
       disabled={isSaveDisabled}
+      aria-disabled={isSaveDisabled}
       onclick={handleSave}
     >
       {saveLabel}
@@ -302,11 +375,23 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-1);
+    align-items: center;
+  }
+
+  .note-editor__tool-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0;
+    padding: 0.125rem;
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-surface) 90%, black 10%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
   .note-editor__tool,
   .note-editor__btn {
-    padding: var(--space-2) var(--space-3);
+    padding: 0.45rem 0.65rem;
     font-family: var(--font-sans);
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-medium);
@@ -321,20 +406,30 @@
   }
 
   .note-editor__tool {
-    background: color-mix(in srgb, var(--color-surface) 82%, black 18%);
+    min-width: 2.5rem;
+    background: transparent;
     color: var(--color-text-secondary);
+    border-color: transparent;
   }
 
   .note-editor__tool:hover,
   .note-editor__btn:hover:not(:disabled) {
     border-color: var(--color-border-strong);
     color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-surface) 72%, black 28%);
   }
 
   .note-editor__tool--active {
-    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
-    background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 22%, var(--color-surface));
     color: var(--color-text-primary);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+  }
+
+  .note-editor__helper {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
 
   .note-editor__surface {
@@ -342,6 +437,15 @@
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
     overflow: hidden;
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .note-editor__surface--focused {
+    border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border));
+    box-shadow: 0 0 0 2px rgba(124, 149, 255, 0.12);
   }
 
   .note-editor__surface :global(.ProseMirror) {
@@ -405,9 +509,11 @@
   }
 
   .note-editor__surface :global(.ProseMirror:focus) {
-    box-shadow:
-      inset 0 0 0 1px var(--color-accent),
-      0 0 0 2px rgba(124, 149, 255, 0.18);
+    box-shadow: none;
+  }
+
+  .note-editor__surface :global(.ProseMirror ::selection) {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
   }
 
   .note-editor__actions {

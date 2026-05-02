@@ -187,6 +187,40 @@ export function normalizeNoteContentForRender(content: string | null | undefined
     : sanitizeNoteHtml(content)
 }
 
+interface NoteEditorChangeOptions {
+  originalContent: string | null | undefined
+  currentContent: string | null | undefined
+}
+
+interface NoteEditorSaveStateOptions extends NoteEditorChangeOptions {
+  isEditing: boolean
+}
+
+export function hasNoteEditorMeaningfulChanges({
+  originalContent,
+  currentContent,
+}: NoteEditorChangeOptions): boolean {
+  return (
+    normalizeNoteContentForRender(originalContent) !== normalizeNoteContentForRender(currentContent)
+  )
+}
+
+export function shouldDisableNoteEditorSave({
+  currentContent,
+  originalContent,
+  isEditing,
+}: NoteEditorSaveStateOptions): boolean {
+  if (isNoteHtmlEffectivelyEmpty(currentContent)) {
+    return true
+  }
+
+  if (!isEditing) {
+    return false
+  }
+
+  return !hasNoteEditorMeaningfulChanges({ originalContent, currentContent })
+}
+
 export function isNoteHtmlEffectivelyEmpty(content: string | null | undefined): boolean {
   const normalized = normalizeNoteContentForRender(content)
   if (!normalized) return true

@@ -51,11 +51,13 @@ export { NoteEditor } from './components/NoteEditor/index'
 export type { NoteEditorProps } from './components/NoteEditor/index'
 export {
   convertLegacyNoteTextToHtml,
+  hasNoteEditorMeaningfulChanges,
   isLegacyPlainTextNoteContent,
   isNoteHtmlEffectivelyEmpty,
   normalizeNoteContentForEditor,
   normalizeNoteContentForRender,
   sanitizeNoteHtml,
+  shouldDisableNoteEditorSave,
 } from './components/NoteEditor/index'
 
 // Components — Fase 3

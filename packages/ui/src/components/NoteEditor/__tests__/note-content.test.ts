@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   convertLegacyNoteTextToHtml,
+  hasNoteEditorMeaningfulChanges,
   isLegacyPlainTextNoteContent,
   normalizeNoteContentForEditor,
   normalizeNoteContentForRender,
   sanitizeNoteHtml,
+  shouldDisableNoteEditorSave,
 } from '../note-content'
 
 describe('note-content helpers', () => {
@@ -33,5 +35,55 @@ describe('note-content helpers', () => {
     expect(normalizeNoteContentForEditor('<p>Hola <em>mundo</em></p><iframe></iframe>')).toBe(
       '<p>Hola <em>mundo</em></p>'
     )
+  })
+
+  it('detects meaningful note changes after html normalization', () => {
+    expect(
+      hasNoteEditorMeaningfulChanges({
+        originalContent: 'Linea uno\n\nLinea dos',
+        currentContent: '<p>Linea uno</p><p>Linea dos</p>',
+      })
+    ).toBe(false)
+
+    expect(
+      hasNoteEditorMeaningfulChanges({
+        originalContent: '<p>Texto original</p>',
+        currentContent: '<p>Texto actualizado</p>',
+      })
+    ).toBe(true)
+  })
+
+  it('disables save only when empty or unchanged during edit mode', () => {
+    expect(
+      shouldDisableNoteEditorSave({
+        currentContent: '<p></p>',
+        originalContent: '<p></p>',
+        isEditing: false,
+      })
+    ).toBe(true)
+
+    expect(
+      shouldDisableNoteEditorSave({
+        currentContent: '<p>Nota existente</p>',
+        originalContent: '<p>Nota existente</p>',
+        isEditing: true,
+      })
+    ).toBe(true)
+
+    expect(
+      shouldDisableNoteEditorSave({
+        currentContent: '<p>Nota existente</p>',
+        originalContent: '<p>Nota original</p>',
+        isEditing: true,
+      })
+    ).toBe(false)
+
+    expect(
+      shouldDisableNoteEditorSave({
+        currentContent: '<p>Nota lista para guardar</p>',
+        originalContent: '<p>Nota lista para guardar</p>',
+        isEditing: false,
+      })
+    ).toBe(false)
   })
 })

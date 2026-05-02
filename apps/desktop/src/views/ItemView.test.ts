@@ -745,6 +745,15 @@ describe('ItemView note editing', () => {
     expect(screen.getAllByRole('button', { name: 'Bold' }).length).toBeGreaterThanOrEqual(2)
   })
 
+  it('keeps the edit save action disabled until the note has content to persist', async () => {
+    await renderItemViewWithNotes([{ ...sampleNote, content: '' }])
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit note' }))
+
+    const saveButtons = screen.getAllByTestId('note-save')
+    expect(saveButtons.at(-1)).toBeDisabled()
+  })
+
   it('displays "No notes yet" when notes array is empty', async () => {
     storeRef.current = createStore()
     storeRef.current.notes.findByItem.mockResolvedValue([])
