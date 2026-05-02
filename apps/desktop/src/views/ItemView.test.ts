@@ -975,7 +975,7 @@ describe('ItemView note editing', () => {
     expect(screen.getAllByTestId('note-save')).toHaveLength(2)
   })
 
-  it('clicking note delete action does not toggle expansion', async () => {
+  it('clicking note delete action opens confirmation without toggling expansion', async () => {
     await renderItemViewWithNotes([sampleNote])
 
     const noteRow = screen.getByRole('button', { name: /Original note content/i })
@@ -984,7 +984,30 @@ describe('ItemView note editing', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Eliminar nota' }))
 
     expect(noteRow).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(
+      screen.getByText('¿Seguro que querés eliminar esta nota? Esta acción no se puede deshacer.')
+    ).toBeInTheDocument()
+    expect(storeRef.current.notes.delete).not.toHaveBeenCalled()
+  })
+
+  it('deletes the note only after confirming', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Eliminar nota' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirmar eliminación de nota' }))
+
     expect(storeRef.current.notes.delete).toHaveBeenCalledWith('note-1')
+  })
+
+  it('cancelling note deletion keeps the note untouched', async () => {
+    await renderItemViewWithNotes([sampleNote])
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Eliminar nota' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(storeRef.current.notes.delete).not.toHaveBeenCalled()
   })
 
   it('uses the rich text editor for editing existing notes', async () => {
