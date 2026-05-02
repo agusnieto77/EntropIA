@@ -325,7 +325,7 @@ describe('ItemView semantic triples panel', () => {
     storeRef.current = createStore({ triplesRows })
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
 
-    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    const analysisToggle = await screen.findByRole('tab', { name: /Análisis/i })
     await fireEvent.click(analysisToggle)
   }
 
@@ -438,7 +438,7 @@ describe('ItemView asset-level embedding and similarity', () => {
   async function openAnalysis(store = createStore()) {
     storeRef.current = store
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
-    await fireEvent.click(await screen.findByRole('button', { name: /Analysis/i }))
+    await fireEvent.click(await screen.findByRole('tab', { name: /Análisis/i }))
   }
 
   it('calls embedAsset for the selected asset when clicking EMBED', async () => {
@@ -554,7 +554,7 @@ describe('ItemView full-text search in Analysis panel', () => {
 
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
 
-    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    const analysisToggle = await screen.findByRole('tab', { name: /Análisis/i })
     await fireEvent.click(analysisToggle)
 
     expect(await screen.findByText('Ingresá un término para ver resultados.')).toBeInTheDocument()
@@ -600,7 +600,7 @@ describe('ItemView full-text search in Analysis panel', () => {
 
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
 
-    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    const analysisToggle = await screen.findByRole('tab', { name: /Análisis/i })
     await fireEvent.click(analysisToggle)
 
     const input = (await screen.findByPlaceholderText('Escribí para buscar...')) as HTMLInputElement
@@ -645,7 +645,7 @@ describe('ItemView full-text search in Analysis panel', () => {
 
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
 
-    const analysisToggle = await screen.findByRole('button', { name: /Analysis/i })
+    const analysisToggle = await screen.findByRole('tab', { name: /Análisis/i })
     await fireEvent.click(analysisToggle)
 
     expect(await screen.findByText('FTS Debug (dev only)')).toBeInTheDocument()
@@ -1485,44 +1485,55 @@ describe('ItemView entity editing UX', () => {
     })
 
     render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
-    await fireEvent.click(await screen.findByRole('button', { name: /Analysis/i }))
+    await fireEvent.click(await screen.findByRole('tab', { name: /Análisis/i }))
   }
 
-  it('opens entity modal from entity tag click and saves edits', async () => {
+  it('opens inline entity editing from chip click and saves edits on Enter', async () => {
     await renderAnalysisWithEntities()
 
     await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
 
-    expect(await screen.findByRole('dialog', { name: /Edit entity/i })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Close entity editor' })).toHaveLength(2)
+    const input = await screen.findByLabelText('Edit entity value')
+    expect(input).toHaveValue('Mar del Plata')
 
-    await fireEvent.input(screen.getByLabelText('Edit entity value'), {
+    await fireEvent.input(input, {
       target: { value: 'Mar del Plata 1970' },
     })
-    await fireEvent.change(screen.getByLabelText('Edit entity type'), {
-      target: { value: 'date' },
-    })
-    await fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(storeRef.current.entities.update).toHaveBeenCalledWith('entity-1', {
-      entityType: 'date',
+      entityType: 'organization',
       value: 'Mar del Plata 1970',
       confidence: 1,
       source: 'manual',
     })
   })
 
-  it('deletes entity from modal', async () => {
+  it('deletes entity from chip action', async () => {
     await renderAnalysisWithEntities()
 
-    await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
-    const deleteBtn = screen.getByRole('button', { name: 'Delete entity' })
-    expect(deleteBtn.querySelector('svg')).toBeInTheDocument()
-    expect(deleteBtn).not.toHaveTextContent('Delete')
+    const deleteBtn = await screen.findByRole('button', { name: 'Delete entity Mar del Plata' })
 
     await fireEvent.click(deleteBtn)
 
     expect(storeRef.current.entities.delete).toHaveBeenCalledWith('entity-1')
+  })
+
+  it('blur saves trimmed changed values inline', async () => {
+    await renderAnalysisWithEntities()
+
+    await fireEvent.click(await screen.findByTestId('mock-entity-entity-1'))
+
+    const input = await screen.findByLabelText('Edit entity value')
+    await fireEvent.input(input, { target: { value: '  Mar del Plata 1980  ' } })
+    await fireEvent.blur(input)
+
+    expect(storeRef.current.entities.update).toHaveBeenCalledWith('entity-1', {
+      entityType: 'organization',
+      value: 'Mar del Plata 1980',
+      confidence: 1,
+      source: 'manual',
+    })
   })
 
   it('creates manual DATE entities', async () => {

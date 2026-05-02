@@ -20,6 +20,14 @@ export interface Entity {
 
 export interface EntityViewerProps {
   entities: Entity[]
+  editingEntityId?: string | null
+  editingValue?: string
+  onhighlight?: (detail: { startOffset: number; endOffset: number }) => void
+  onentityclick?: (entity: Entity) => void
+  oneditvaluechange?: (value: string) => void
+  onsaveentity?: (entityId: string, value: string) => void | Promise<void>
+  oncancelentityedit?: () => void
+  ondeleteentity?: (entityId: string) => void | Promise<void>
 }
 
 /** Display label per entity type */

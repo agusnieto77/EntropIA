@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/svelte'
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte'
 import { describe, it, expect, vi } from 'vitest'
 import EntityViewer from '../EntityViewer.svelte'
 import type { Entity } from '../EntityViewer.types'
@@ -168,5 +168,165 @@ describe('EntityViewer', () => {
 
     expect(onentityclick).toHaveBeenCalledOnce()
     expect(onentityclick).toHaveBeenCalledWith(expect.objectContaining({ id: 'e-click' }))
+  })
+
+  it('enters inline edit mode when clicking a chip', async () => {
+    const props: Record<string, unknown> = {
+      entities: [makeEntity({ id: 'entity-inline', value: 'Mar del Plata' })],
+      editingEntityId: null,
+      editingValue: '',
+    }
+
+    const view = render(EntityViewer, { props })
+
+    props.onentityclick = async (entity: Entity) => {
+      props.editingEntityId = entity.id
+      props.editingValue = entity.value
+      await view.rerender(props)
+    }
+
+    await view.rerender(props)
+    await fireEvent.click(screen.getByRole('button', { name: /Mar del Plata/i }))
+
+    expect(await screen.findByDisplayValue('Mar del Plata')).toBeInTheDocument()
+  })
+
+  it('shows the current entity value inside the inline input', () => {
+    render(EntityViewer, {
+      props: {
+        entities: [makeEntity({ id: 'entity-current', value: 'Belgrano' })],
+        editingEntityId: 'entity-current',
+        editingValue: 'Belgrano',
+      },
+    })
+
+    expect(screen.getByRole('textbox', { name: 'Edit entity value' })).toHaveValue('Belgrano')
+  })
+
+  it('pressing Enter triggers save callback with trimmed value', async () => {
+    const onsaveentity = vi.fn()
+    const oneditvaluechange = vi.fn()
+
+    render(EntityViewer, {
+      props: {
+        entities: [makeEntity({ id: 'entity-save', value: 'Belgrano' })],
+        editingEntityId: 'entity-save',
+        editingValue: '  Belgrano renovado  ',
+        onsaveentity,
+        oneditvaluechange,
+      },
+    })
+
+    const input = screen.getByRole('textbox', { name: 'Edit entity value' })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onsaveentity).toHaveBeenCalledWith('entity-save', 'Belgrano renovado')
+    expect(oneditvaluechange).not.toHaveBeenCalled()
+  })
+
+  it('pressing Escape cancels inline editing', async () => {
+    const oncancelentityedit = vi.fn()
+
+    render(EntityViewer, {
+      props: {
+        entities: [makeEntity({ id: 'entity-cancel', value: 'Belgrano' })],
+        editingEntityId: 'entity-cancel',
+        editingValue: 'Belgrano editado',
+        oncancelentityedit,
+      },
+    })
+
+    await fireEvent.keyDown(screen.getByRole('textbox', { name: 'Edit entity value' }), {
+      key: 'Escape',
+    })
+
+    expect(oncancelentityedit).toHaveBeenCalledOnce()
+  })
+
+  it('requires inline delete confirmation before triggering delete callback', async () => {
+    const ondeleteentity = vi.fn()
+
+    render(EntityViewer, {
+      props: {
+        entities: [makeEntity({ id: 'entity-delete', value: 'Belgrano' })],
+        ondeleteentity,
+      },
+    })
+
+    expect(screen.queryByRole('button', { name: 'Delete entity Belgrano' })).not.toBeInTheDocument()
+
+    await fireEvent.mouseEnter(screen.getByTestId('entity-chip-entity-delete'))
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete entity Belgrano' })
+    await fireEvent.click(deleteButton)
+
+    expect(ondeleteentity).not.toHaveBeenCalled()
+
+    const confirmButton = await screen.findByRole('button', {
+      name: 'Confirm delete entity Belgrano',
+    })
+    expect(confirmButton).toHaveTextContent('Delete?')
+    expect(confirmButton).toHaveAttribute('title', 'Press again to confirm delete')
+    await fireEvent.click(confirmButton)
+
+    expect(ondeleteentity).toHaveBeenCalledWith('entity-delete')
+  })
+
+  it('supports keyboard-first delete confirmation without breaking inline edit affordances', async () => {
+    const ondeleteentity = vi.fn()
+
+    render(EntityViewer, {
+      props: {
+        entities: [makeEntity({ id: 'entity-delete-keyboard', value: 'Belgrano' })],
+        ondeleteentity,
+      },
+    })
+
+    const pill = screen.getByRole('button', { name: /Belgrano/i })
+
+    await fireEvent.focusIn(pill)
+
+    const deleteButton = await screen.findByRole('button', { name: 'Delete entity Belgrano' })
+    await fireEvent.keyDown(deleteButton, { key: 'Enter' })
+
+    expect(ondeleteentity).not.toHaveBeenCalled()
+    const confirmButton = await screen.findByRole('button', {
+      name: 'Confirm delete entity Belgrano',
+    })
+    expect(confirmButton).toHaveTextContent('Delete?')
+
+    await fireEvent.keyDown(confirmButton, { key: 'Enter' })
+
+    expect(ondeleteentity).toHaveBeenCalledWith('entity-delete-keyboard')
+  })
+
+  it('blur saves changed non-empty values and cancels unchanged ones', async () => {
+    const onsaveentity = vi.fn()
+    const oncancelentityedit = vi.fn()
+    const props: Record<string, unknown> = {
+      entities: [makeEntity({ id: 'entity-blur', value: 'Belgrano' })],
+      editingEntityId: 'entity-blur',
+      editingValue: '  Belgrano actualizado  ',
+      onsaveentity,
+      oncancelentityedit,
+    }
+
+    const view = render(EntityViewer, { props })
+    const input = screen.getByRole('textbox', { name: 'Edit entity value' })
+
+    await fireEvent.blur(input)
+
+    expect(onsaveentity).toHaveBeenCalledWith('entity-blur', 'Belgrano actualizado')
+    expect(oncancelentityedit).not.toHaveBeenCalled()
+
+    props.editingValue = '   '
+    onsaveentity.mockClear()
+    await view.rerender(props)
+    await fireEvent.blur(screen.getByRole('textbox', { name: 'Edit entity value' }))
+
+    await waitFor(() => {
+      expect(oncancelentityedit).toHaveBeenCalledOnce()
+    })
+    expect(onsaveentity).not.toHaveBeenCalled()
   })
 })

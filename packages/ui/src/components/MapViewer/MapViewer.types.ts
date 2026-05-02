@@ -10,5 +10,6 @@ export interface MapMarker {
 export interface MapViewerProps {
   markers: MapMarker[]
   height?: string
+  visible?: boolean
   onmarkerclick?: (marker: MapMarker) => void
 }

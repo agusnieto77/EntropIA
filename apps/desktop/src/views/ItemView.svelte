@@ -180,6 +180,7 @@
   let layoutInspectorCopyTimer = $state<ReturnType<typeof setTimeout> | null>(null)
   let viewerPage = $state(1)
   let viewerTotalPages = $state(1)
+  let leftPanelTab = $state<'document' | 'text'>('document')
 
   // Image edit state
   let editTool = $state<EditTool>('none')
@@ -318,8 +319,6 @@
   let newEntityType = $state<EditableEntityType>('organization')
   let editingEntityId = $state<string | null>(null)
   let editingEntityValue = $state('')
-  let editingEntityType = $state<EditableEntityType>('organization')
-  let entityEditorOpen = $state(false)
   let entityActionError = $state<string | null>(null)
   let similarAssets = $state<SimilarAsset[]>([])
   let ftsQuery = $state('')
@@ -339,7 +338,9 @@
     resultIds: string[]
   } | null>(null)
   let triples = $state<Array<{ subject: string; predicate: string; object: string }>>([])
-  let analysisOpen = $state(false)
+  let rightPanelTab = $state<'notes' | 'text' | 'analysis' | 'search' | 'layout' | 'metadata'>(
+    'notes'
+  )
 
   // LLM state (Gemma 4)
   const llmStore = new LlmStore({
@@ -1218,24 +1219,26 @@
   function startEditingEntity(entity: Entity) {
     editingEntityId = entity.id
     editingEntityValue = entity.value
-    editingEntityType = toEditableEntityType(entity.entityType)
-    entityEditorOpen = true
     entityActionError = null
   }
 
   function cancelEditingEntity() {
     editingEntityId = null
     editingEntityValue = ''
-    editingEntityType = 'organization'
-    entityEditorOpen = false
   }
 
-  async function handleSaveEntity(entityId: string) {
-    const value = normalizeManualEntityValue(editingEntityValue)
+  function handleEditingEntityValueChange(value: string) {
+    editingEntityValue = value
+  }
+
+  async function handleSaveEntity(entityId: string, nextValue = editingEntityValue) {
+    const value = normalizeManualEntityValue(nextValue)
     if (!value) return
+    const entity = entities.find((candidate) => candidate.id === entityId)
+    if (!entity) return
     try {
       await getStore().entities.update(entityId, {
-        entityType: editingEntityType,
+        entityType: toEditableEntityType(entity.entityType),
         value,
         confidence: 1.0,
         source: 'manual',
@@ -1702,6 +1705,9 @@
     const asset = selectedAsset
     if (!asset) return
 
+    leftPanelTab = 'document'
+    rightPanelTab = 'notes'
+
     // Reload notes for this asset (plus item-level notes)
     void loadNotesForAsset().then((loadedNotes) => {
       notes = loadedNotes
@@ -1885,54 +1891,149 @@
   >
     <div class="left-panel">
       {#if selectedAsset}
-        <DocumentViewer
-          path={selectedAsset.path}
-          assetUrl={viewerSrc}
-          type={viewerType}
-          {annotations}
-          {layoutRegions}
-          showLayoutOverlay={showLayout && layoutRegions.length > 0}
-          hoveredLayoutRegionId={layoutHoveredRegionId}
-          selectedLayoutRegionId={layoutSelectedRegionId}
-          {layoutReferenceWidth}
-          {layoutReferenceHeight}
-          {selectedAnnotationId}
-          {annotationTool}
-          {annotationColor}
-          {editTool}
-          {canUndo}
-          currentPage={viewerPage}
-          onAnnotationsChange={handleAnnotationsChange}
-          onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
-          onAnnotationToolChange={handleAnnotationToolChange}
-          onAnnotationColorChange={handleAnnotationColorChange}
-          onLayoutRegionHoverChange={(regionId) => {
-            syncLayoutHoverFromRegion(regionId)
-          }}
-          onLayoutRegionSelect={(regionId) => {
-            setSelectedLayoutRegion(regionId)
-          }}
-          onEditSelect={handleEditSelect}
-          onEditToolChange={(tool) => {
-            editTool = tool
-            if (tool !== 'none') annotationTool = 'select'
-          }}
-          onRotateLeft={handleRotateLeft}
-          onRotateRight={handleRotateRight}
-          onUndo={handleUndo}
-          onPageChange={(page, totalPages) => {
-            viewerPage = page
-            viewerTotalPages = totalPages
-          }}
-          onDimensionsChange={(dims) => {
-            imageNaturalW = dims.width
-            imageNaturalH = dims.height
-          }}
-        />
+        <div class="left-panel-tabs" role="tablist" aria-label="Panel del asset">
+          <button
+            id="left-panel-tab-document"
+            type="button"
+            role="tab"
+            class:active={leftPanelTab === 'document'}
+            class="left-panel-tab"
+            aria-selected={leftPanelTab === 'document'}
+            aria-controls="left-panel-document"
+            onclick={() => {
+              leftPanelTab = 'document'
+            }}
+          >
+            Documento
+          </button>
+          <button
+            id="left-panel-tab-text"
+            type="button"
+            role="tab"
+            class:active={leftPanelTab === 'text'}
+            class="left-panel-tab"
+            aria-selected={leftPanelTab === 'text'}
+            aria-controls="left-panel-text"
+            onclick={() => {
+              leftPanelTab = 'text'
+            }}
+          >
+            Texto extraído
+          </button>
+        </div>
 
-        {#if annotationSaveError}
-          <p class="error">{annotationSaveError}</p>
-        {/if}
+        <div class="left-panel-content">
+          <div
+            id="left-panel-document"
+            role="tabpanel"
+            aria-labelledby="left-panel-tab-document"
+            class="left-panel-pane left-panel-pane--document"
+            class:is-hidden={leftPanelTab !== 'document'}
+          >
+            <DocumentViewer
+              path={selectedAsset.path}
+              assetUrl={viewerSrc}
+              type={viewerType}
+              {annotations}
+              {layoutRegions}
+              showLayoutOverlay={showLayout && layoutRegions.length > 0}
+              hoveredLayoutRegionId={layoutHoveredRegionId}
+              selectedLayoutRegionId={layoutSelectedRegionId}
+              {layoutReferenceWidth}
+              {layoutReferenceHeight}
+              {selectedAnnotationId}
+              {annotationTool}
+              {annotationColor}
+              {editTool}
+              {canUndo}
+              currentPage={viewerPage}
+              onAnnotationsChange={handleAnnotationsChange}
+              onSelectedAnnotationIdChange={handleSelectedAnnotationIdChange}
+              onAnnotationToolChange={handleAnnotationToolChange}
+              onAnnotationColorChange={handleAnnotationColorChange}
+              onLayoutRegionHoverChange={(regionId) => {
+                syncLayoutHoverFromRegion(regionId)
+              }}
+              onLayoutRegionSelect={(regionId) => {
+                setSelectedLayoutRegion(regionId)
+              }}
+              onEditSelect={handleEditSelect}
+              onEditToolChange={(tool) => {
+                editTool = tool
+                if (tool !== 'none') annotationTool = 'select'
+              }}
+              onRotateLeft={handleRotateLeft}
+              onRotateRight={handleRotateRight}
+              onUndo={handleUndo}
+              onPageChange={(page, totalPages) => {
+                viewerPage = page
+                viewerTotalPages = totalPages
+              }}
+              onDimensionsChange={(dims) => {
+                imageNaturalW = dims.width
+                imageNaturalH = dims.height
+              }}
+            />
+
+            {#if annotationSaveError}
+              <p class="error">{annotationSaveError}</p>
+            {/if}
+          </div>
+
+          <div
+            id="left-panel-text"
+            role="tabpanel"
+            aria-labelledby="left-panel-tab-text"
+            class="left-panel-pane left-panel-pane--text"
+            class:is-hidden={leftPanelTab !== 'text'}
+          >
+            {#if selectedAsset.type !== 'audio'}
+              {@const ocr = getOcrState(selectedAsset.id)}
+              <section class="left-text-panel-section">
+                <div class="left-text-panel-card">
+                  {#if (ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? '').trim()}
+                    <div class="left-text-panel-meta">
+                      <span>Texto extraído</span>
+                      <span class="ocr-meta"
+                        >via {ocr.method ?? 'unknown'} · {(
+                          ocrEditedText.get(selectedAsset.id) ??
+                          ocr.textContent ??
+                          ''
+                        ).length} chars</span
+                      >
+                    </div>
+                    <div class="left-text-panel-body">
+                      {ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''}
+                    </div>
+                  {:else}
+                    <p class="empty-text">Todavía no hay texto extraído para este documento.</p>
+                  {/if}
+                </div>
+              </section>
+            {:else}
+              {@const ts = getTranscriptionState(selectedAsset.id)}
+              <section class="left-text-panel-section">
+                <div class="left-text-panel-card">
+                  {#if (transEditedText.get(selectedAsset.id) ?? ts.text ?? '').trim()}
+                    <div class="left-text-panel-meta">
+                      <span>Transcripción</span>
+                      <span class="ocr-meta">
+                        {#if ts.language}{ts.language} &middot;
+                        {/if}{(transEditedText.get(selectedAsset.id) ?? ts.text ?? '').length} chars
+                        {#if ts.durationMs}&middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                      </span>
+                    </div>
+                    <div class="left-text-panel-body">
+                      {transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
+                    </div>
+                  {:else}
+                    <p class="empty-text">Todavía no hay texto extraído para este documento.</p>
+                  {/if}
+                </div>
+              </section>
+            {/if}
+          </div>
+        </div>
       {:else}
         <div class="empty-viewer">
           <p>No assets attached to this item.</p>
@@ -1983,926 +2084,955 @@
         <p class="error">{error}</p>
       {/if}
 
-      <section class="section">
-        <h3>
-          Metadata {#if savingMetadata}<span class="saving">Saving...</span>{/if}
-        </h3>
-        <MetadataEditor value={metadataValue} onchange={handleMetadataChange} />
-      </section>
+      <div class="right-panel-tabs" role="tablist" aria-label="Panel derecho del documento">
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'notes'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'notes'}
+          onclick={() => {
+            rightPanelTab = 'notes'
+          }}
+        >
+          Notas
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'text'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'text'}
+          onclick={() => {
+            rightPanelTab = 'text'
+          }}
+        >
+          Texto
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'analysis'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'analysis'}
+          onclick={() => {
+            rightPanelTab = 'analysis'
+            loadEntities()
+            loadTriples()
+            loadGeoMarkers()
+          }}
+        >
+          Análisis
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'search'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'search'}
+          onclick={() => {
+            rightPanelTab = 'search'
+            loadSimilarAssets()
+            loadFtsStats()
+          }}
+        >
+          Búsquedas
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'layout'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'layout'}
+          onclick={() => {
+            rightPanelTab = 'layout'
+          }}
+        >
+          Layout
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class:active={rightPanelTab === 'metadata'}
+          class="right-panel-tab"
+          aria-selected={rightPanelTab === 'metadata'}
+          onclick={() => {
+            rightPanelTab = 'metadata'
+          }}
+        >
+          Metadatos
+        </button>
+      </div>
 
-      <section class="section">
-        <h3>Tópicos</h3>
-        <TopicEditor
-          topics={itemTopics}
-          suggestions={topicSuggestions}
-          onchange={handleTopicsChange}
-        />
-      </section>
+      <div class="right-panel-content">
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'notes'}>
+          <section class="section">
+            <h3>Tópicos</h3>
+            <TopicEditor
+              topics={itemTopics}
+              suggestions={topicSuggestions}
+              onchange={handleTopicsChange}
+            />
+          </section>
 
-      <section class="section">
-        <h3>
-          Add Note{#if assets.length > 1}
-            · Page {selectedAssetIndex + 1}{/if}
-        </h3>
-        <NoteEditor
-          onsave={handleSaveNote}
-          ondictate={handleTranscribeDictation}
-          clearOnSave={true}
-          placeholder="Write a note..."
-          saveLabel="Save note"
-        />
-      </section>
-
-      <section class="section">
-        <h3>
-          Notes ({notes.length}){#if assets.length > 1}
-            · Page {selectedAssetIndex + 1}{/if}
-        </h3>
-        {#if notes.length === 0}
-          <p class="empty-text">No notes yet.</p>
-        {:else}
-          <div class="notes-list">
-            {#each notes as note (note.id)}
-              <Card>
-                {#if editingNoteId === note.id}
-                  <div class="note-edit">
-                    <NoteEditor
-                      content={note.content}
-                      onsave={(content) => handleSaveEdit(note.id, content)}
-                      oncancel={handleCancelEdit}
-                      ondictate={handleTranscribeDictation}
-                      clearOnSave={false}
-                      saveLabel="Save note"
-                      cancelLabel="Cancel edit"
-                    />
-                  </div>
-                {:else}
-                  <div class="note-content note-content--rich">
-                    {@html getRenderedNoteContent(note.content)}
-                  </div>
-                  <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
-                  <div class="note-actions">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      iconOnly
-                      aria-label="Edit note"
-                      onclick={() => handleEditNote(note)}
-                    >
-                      <ActionIcon name="edit" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      iconOnly
-                      aria-label="Delete note"
-                      onclick={() => handleDeleteNote(note.id)}
-                    >
-                      <ActionIcon name="delete" />
-                    </Button>
-                  </div>
-                {/if}
-              </Card>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      {#if selectedAsset && selectedAsset.type !== 'audio'}
-        <section class="section">
-          <div class="layout-section-header">
-            <div>
-              <h3>
-                Layout{#if viewerType === 'pdf'}
-                  · Page {layoutActivePage}{/if}
-              </h3>
-              {#if assetLayout}
-                <p class="layout-meta">
-                  {assetLayout.model} · {viewerType === 'pdf'
-                    ? (layoutBlockCountsByPage[layoutActivePage] ?? 0)
-                    : layoutBlocks.length} bloques · {viewerType === 'pdf'
-                    ? layoutPageRegions.length
-                    : assetLayout.regions.length} regiones
-                </p>
-              {/if}
-            </div>
-
-            <button
-              type="button"
-              class="layout-toggle"
-              disabled={!hasLayoutData}
-              aria-pressed={showLayout}
-              onclick={() => {
-                showLayout = !showLayout
-              }}
-            >
-              {showLayout ? 'Ocultar overlay' : 'Mostrar overlay'}
-            </button>
-          </div>
-
-          {#if layoutLoading}
-            <p class="empty-text">Cargando layout…</p>
-          {:else if layoutError}
-            <p class="error">No se pudo cargar el layout: {layoutError}</p>
-          {:else if !assetLayout}
-            <p class="empty-text">Este asset todavía no tiene layout persistido.</p>
-          {:else if layoutBlocks.length === 0}
-            <p class="empty-text">Hay layout guardado, pero no trae bloques navegables.</p>
-          {:else}
-            {#if showLayout}
-              <p class="layout-help">
-                Tocá o pasá el mouse sobre un bloque para resaltarlo en el viewer.
-              </p>
-            {/if}
-
-            {#if viewerType === 'pdf' && layoutPageOptions.length > 1}
-              <div class="layout-page-toolbar">
-                <p class="layout-page-summary" data-testid="layout-page-summary">
-                  Página {layoutActivePage} de {layoutPageOptions.length}
-                </p>
-
-                <div
-                  class="layout-page-group"
-                  role="group"
-                  aria-label="Seleccionar página del layout"
-                >
-                  {#each layoutPageOptions as page (page)}
-                    <button
-                      type="button"
-                      class:active={layoutActivePage === page}
-                      class="layout-page-chip"
-                      data-testid={`layout-page-chip-${page}`}
-                      aria-pressed={layoutActivePage === page}
-                      onclick={() => {
-                        viewerPage = page
-                      }}
-                    >
-                      <span>P{page}</span>
-                      <span class="layout-page-chip__count"
-                        >{layoutBlockCountsByPage[page] ?? 0}</span
-                      >
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-
-            <div class="layout-filter-toolbar">
-              <div class="layout-filter-group" role="group" aria-label="Filtrar bloques por tipo">
-                {#each LAYOUT_BLOCK_FILTERS as filter (filter.id)}
-                  {@const count = layoutFilterCounts[filter.id]}
-                  <button
-                    type="button"
-                    class:active={layoutTypeFilter === filter.id}
-                    class="layout-filter-chip"
-                    data-testid={`layout-filter-${filter.id}`}
-                    aria-pressed={layoutTypeFilter === filter.id}
-                    onclick={() => {
-                      layoutTypeFilter = filter.id
-                    }}
-                  >
-                    <span>{filter.label}</span>
-                    <span
-                      class="layout-filter-chip__count"
-                      data-testid={`layout-filter-count-${filter.id}`}
-                    >
-                      {count}
-                    </span>
-                  </button>
-                {/each}
-              </div>
-
-              <p class="layout-filter-summary">
-                Mostrando {visibleLayoutBlocks.length} de {layoutPageBlocks.length} bloques.
-              </p>
-            </div>
-
-            {#if layoutPageBlocks.length === 0}
-              <p class="empty-text">No hay bloques para la página visible.</p>
-            {:else if visibleLayoutBlocks.length === 0}
-              <p class="empty-text">No hay bloques del tipo seleccionado para la página visible.</p>
-            {:else}
-              <div class="layout-block-list" bind:this={layoutBlockListEl}>
-                {#each visibleLayoutBlocks as block (block.id)}
-                  {@const isHovered = layoutHoveredBlockId === block.id}
-                  {@const isSelected = layoutSelectedBlockId === block.id}
-                  {@const overlayMeta = getLayoutOverlaySourceMeta(block.overlaySource)}
-                  <button
-                    type="button"
-                    data-testid={`layout-block-item-${block.id}`}
-                    data-layout-block-id={block.id}
-                    class:hovered={isHovered}
-                    class:selected={isSelected}
-                    class:fallback={block.overlaySource === 'block'}
-                    class="layout-block-item"
-                    onmouseenter={() => {
-                      syncLayoutHoverFromBlock(block.id)
-                    }}
-                    onmouseleave={() => {
-                      syncLayoutHoverFromBlock(null)
-                    }}
-                    onclick={() => {
-                      setSelectedLayoutBlock(block.id)
-                    }}
-                  >
-                    <span class="layout-block-order">#{block.order}</span>
-                    <span class="layout-block-content">
-                      <span class="layout-block-heading">
-                        <span class="layout-block-label">{block.label}</span>
-                        <span
-                          class:layout-block-source-badge--fallback={block.overlaySource ===
-                            'block'}
-                          class="layout-block-source-badge"
-                        >
-                          {overlayMeta.shortLabel}
-                        </span>
-                        {#if viewerType === 'pdf'}
-                          <span class="layout-block-page-chip">P{block.page}</span>
-                        {/if}
-                      </span>
-                      <span class="layout-block-preview"
-                        >{block.preview || 'Sin preview textual'}</span
-                      >
-                    </span>
-                  </button>
-                {/each}
-              </div>
-
-              <div class="layout-inspector" data-testid="layout-block-inspector">
-                {#if selectedLayoutBlock}
-                  {@const overlayMeta = getLayoutOverlaySourceMeta(
-                    selectedLayoutBlock.overlaySource
-                  )}
-                  <div class="layout-inspector__header">
-                    <div>
-                      <p class="layout-inspector__eyebrow">Inspector</p>
-                      <h4>Bloque seleccionado · #{selectedLayoutBlock.order}</h4>
-                    </div>
-
-                    <div class="layout-inspector__actions">
-                      <button
-                        type="button"
-                        class="layout-inspector__action"
-                        data-testid="layout-inspector-copy-text"
-                        disabled={!selectedLayoutBlock.content.trim()}
-                        onclick={() =>
-                          copyLayoutInspectorValue(selectedLayoutBlock.content, 'Texto copiado.')}
-                      >
-                        Copiar texto
-                      </button>
-                      <button
-                        type="button"
-                        class="layout-inspector__action"
-                        data-testid="layout-inspector-copy-bbox"
-                        onclick={() =>
-                          copyLayoutInspectorValue(
-                            formatLayoutBbox(selectedLayoutBlock.overlayBbox),
-                            'BBox copiado.'
-                          )}
-                      >
-                        Copiar bbox
-                      </button>
-                      <button
-                        type="button"
-                        class="layout-inspector__action"
-                        data-testid="layout-inspector-copy-json"
-                        onclick={() =>
-                          copyLayoutInspectorValue(
-                            serializeLayoutBlock(selectedLayoutBlock),
-                            'JSON copiado.'
-                          )}
-                      >
-                        Copiar JSON
-                      </button>
-                    </div>
-                  </div>
-
-                  <div class="layout-inspector__grid">
-                    <div>
-                      <span class="layout-inspector__label">Label</span>
-                      <strong data-testid="layout-inspector-label"
-                        >{selectedLayoutBlock.label}</strong
-                      >
-                    </div>
-                    <div>
-                      <span class="layout-inspector__label">Orden</span>
-                      <strong>#{selectedLayoutBlock.order}</strong>
-                    </div>
-                    <div>
-                      <span class="layout-inspector__label">Página</span>
-                      <strong>{selectedLayoutBlock.page}</strong>
-                    </div>
-                    <div>
-                      <span class="layout-inspector__label">Group</span>
-                      <strong>{selectedLayoutBlock.groupId || '—'}</strong>
-                    </div>
-                    <div>
-                      <span class="layout-inspector__label">BBox bloque</span>
-                      <code>{formatLayoutBbox(selectedLayoutBlock.bbox)}</code>
-                    </div>
-                    <div>
-                      <span class="layout-inspector__label">BBox overlay</span>
-                      <code data-testid="layout-inspector-bbox"
-                        >{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code
-                      >
-                    </div>
-                    <div class="layout-inspector__field layout-inspector__field--wide">
-                      <span class="layout-inspector__label">Overlay source</span>
-                      <strong
-                        class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource ===
-                          'block'}
-                        class="layout-inspector__source"
-                        data-testid="layout-inspector-overlay-source"
-                      >
-                        {overlayMeta.label}
-                      </strong>
-                      <p>{overlayMeta.description}</p>
-                    </div>
-                  </div>
-
-                  <div class="layout-inspector__content">
-                    <span class="layout-inspector__label">Texto / preview ampliado</span>
-                    <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content ||
-                        'Sin texto completo para este bloque.'}</pre>
-                  </div>
-
-                  {#if layoutInspectorCopyMessage}
-                    <p
-                      class:layout-inspector__message--error={layoutInspectorCopyMessage.tone ===
-                        'error'}
-                      class="layout-inspector__message"
-                      data-testid="layout-inspector-copy-message"
-                    >
-                      {layoutInspectorCopyMessage.text}
-                    </p>
-                  {/if}
-                {:else}
-                  <div class="layout-inspector__empty" data-testid="layout-inspector-empty">
-                    Seleccioná un bloque para ver label, orden, página, bbox, source y texto
-                    completo.
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          {/if}
-        </section>
-      {/if}
-
-      {#if selectedAsset && selectedAsset.type !== 'audio'}
-        {@const ocr = getOcrState(selectedAsset.id)}
-        {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
-        <section class="section">
-          <h3>
-            Text Extraction{#if assets.length > 1}
-              · Page {selectedAssetIndex + 1}{/if}
-          </h3>
-          <div class="ocr-item">
-            <div class="ocr-item-header">
-              <span class="ocr-filename">
-                {assets.length > 1 && assets.every((a) => a.type === 'image')
-                  ? `Page ${selectedAssetIndex + 1}`
-                  : (selectedAsset.path.split(/[/\\]/).pop() ?? 'Asset')}
-              </span>
-              <div class="ocr-btn-group">
-                <button
-                  class="ocr-btn ocr-btn--light"
-                  disabled={busy}
-                  onclick={() => handleExtractText(selectedAsset, 'light')}
-                  title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
-                >
-                  OCRL
-                </button>
-                <button
-                  class="ocr-btn ocr-btn--high"
-                  disabled={busy}
-                  onclick={() => handleExtractText(selectedAsset, 'high')}
-                  title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
-                >
-                  OCRH
-                </button>
-                {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
-                  <button
-                    class="ocr-btn ocr-btn--correct"
-                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
-                    onclick={handleLlmCorrectOcr}
-                    title={!llmAvailable
-                      ? 'Gemma 4 not available'
-                      : ocr.status !== 'done'
-                        ? 'Extract text first'
-                        : 'LLM OCR correction (Gemma 4)'}
-                  >
-                    OCRC
-                  </button>
-                {/if}
-                {#if llmAvailable}
-                  <button
-                    class="ocr-btn ocr-btn--summarize"
-                    disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
-                    onclick={handleLlmSummarize}
-                    title={!llmAvailable
-                      ? 'Gemma 4 not available'
-                      : ocr.status !== 'done'
-                        ? 'Extract text first'
-                        : 'Generate summary (Gemma 4)'}
-                  >
-                    OCRR
-                  </button>
-                {/if}
-              </div>
-            </div>
-
-            {#if ocr.status === 'running'}
-              <progress class="ocr-progress" value={ocr.progress} max="100">
-                {ocr.progress}%
-              </progress>
-              <p class="ocr-status-text">Running… {ocr.progress}%</p>
-            {:else if ocr.status === 'pending'}
-              <p class="ocr-status-text">Starting extraction…</p>
-            {:else if ocr.status === 'error'}
-              <p class="ocr-error">Extraction failed: {ocr.error}</p>
-            {:else if ocr.status === 'done'}
-              {@const editedText = (() => {
-                void ocrTick
-                return ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''
-              })()}
-              {@const displayLength = editedText.length}
-              <details class="ocr-result">
-                <summary>
-                  Extracted text
-                  <span class="ocr-meta">
-                    via {ocr.method ?? 'unknown'} · {displayLength} chars
-                  </span>
-                </summary>
-                <textarea
-                  class="ocr-result-body ocr-textarea"
-                  rows="8"
-                  oninput={(e) => {
-                    const val = e.currentTarget.value
-                    ocrEditedText.set(selectedAsset.id, val)
-                    ocrStore.setTextContent(selectedAsset.id, val)
-                    schedulePersist(selectedAsset.id, val)
-                    ocrTick++
-                  }}>{editedText}</textarea
-                >
-              </details>
-            {/if}
-          </div>
-        </section>
-      {/if}
-
-      {#if selectedAsset && selectedAsset.type === 'audio'}
-        {@const ts = getTranscriptionState(selectedAsset.id)}
-        {@const busy = ts.status === 'pending' || ts.status === 'running'}
-        <section class="section">
-          <h3>
-            Audio Transcription{#if assets.length > 1}
-              · Page {selectedAssetIndex + 1}{/if}
-          </h3>
-          <div class="ocr-item">
-            <div class="ocr-item-header">
-              <span class="ocr-filename"
-                >&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span
-              >
-              <div class="ocr-btn-group">
-                <button
-                  class="ocr-btn"
-                  disabled={busy}
-                  onclick={() => handleTranscribeAudio(selectedAsset)}
-                  title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
-                >
-                  {busy ? 'Transcribing…' : 'Transcribe'}
-                </button>
-                {#if llmAvailable}
-                  <button
-                    class="ocr-btn ocr-btn--summarize"
-                    disabled={getLlmState().status === 'running' || ts.status !== 'done'}
-                    onclick={handleLlmSummarize}
-                    title={!llmAvailable
-                      ? 'Gemma 4 not available'
-                      : ts.status !== 'done'
-                        ? 'Transcribe first'
-                        : 'Generate summary (Gemma 4)'}
-                  >
-                    OCRR
-                  </button>
-                {/if}
-              </div>
-            </div>
-
-            {#if ts.status === 'running'}
-              <progress class="ocr-progress" value={ts.progress} max="100">
-                {ts.progress}%
-              </progress>
-              <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
-            {:else if ts.status === 'pending'}
-              <p class="ocr-status-text">Starting transcription…</p>
-            {:else if ts.status === 'error'}
-              <p class="ocr-error">Transcription failed: {ts.error}</p>
-            {:else if ts.status === 'done'}
-              {@const editedText = transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
-              {@const displayLength = editedText.length}
-              <details class="ocr-result">
-                <summary>
-                  Transcription
-                  <span class="ocr-meta">
-                    {#if ts.language}{ts.language} &middot;
-                    {/if}{displayLength} chars
-                    {#if ts.durationMs}
-                      &middot; {Math.round(ts.durationMs / 1000)}s{/if}
-                  </span>
-                </summary>
-                <textarea
-                  class="ocr-result-body ocr-textarea"
-                  rows="8"
-                  oninput={(e) => {
-                    const val = e.currentTarget.value
-                    transEditedText.set(selectedAsset.id, val)
-                    transcriptionStore.setTextContent(selectedAsset.id, val)
-                    scheduleTranscriptionPersist(selectedAsset.id, val)
-                    transcriptionTick++
-                  }}>{editedText}</textarea
-                >
-              </details>
-            {/if}
-          </div>
-        </section>
-      {/if}
-
-      {#if selectedAsset}
-        {@const currentSummary = (() => {
-          void summaryTick
-          return summaryTexts.get(selectedAsset.id) ?? null
-        })()}
-        {@const isSummarizing =
-          getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
-        {#if currentSummary || isSummarizing}
           <section class="section">
             <h3>
-              Resumen{#if assets.length > 1}
+              Add Note{#if assets.length > 1}
                 · Page {selectedAssetIndex + 1}{/if}
             </h3>
-            {#if isSummarizing}
-              <p class="summary-status">Generando resumen…</p>
-            {:else if currentSummary}
-              <div class="summary-result">
-                <pre class="summary-text">{currentSummary}</pre>
-              </div>
-            {/if}
+            <NoteEditor
+              onsave={handleSaveNote}
+              ondictate={handleTranscribeDictation}
+              clearOnSave={true}
+              placeholder="Write a note..."
+              saveLabel="Save note"
+            />
           </section>
-        {/if}
-      {/if}
 
-      {#if assets.length > 0}
-        <section class="section">
-          <button
-            class="analysis-toggle"
-            onclick={() => {
-              analysisOpen = !analysisOpen
-              if (analysisOpen) {
-                loadEntities()
-                loadSimilarAssets()
-                loadTriples()
-                loadFtsStats()
-                loadGeoMarkers()
-              }
-            }}
-          >
-            Analysis {analysisOpen ? '▲' : '▼'}
-          </button>
-
-          {#if analysisOpen}
-            {@const nlp = getNlpState()}
-            <div class="analysis-panel">
-              <div class="fts-search-section">
-                <h4>Search by Similar Text (FTS)</h4>
-                <input
-                  class="fts-search-input"
-                  type="search"
-                  placeholder="Escribí para buscar..."
-                  value={ftsQuery}
-                  oninput={handleFtsInput}
-                  onkeydown={handleFtsKeydown}
-                />
-
-                {#if ftsSearchError}
-                  <p class="ocr-error">{ftsSearchError}</p>
-                {:else if ftsSearching}
-                  <p class="empty-text">Buscando textos similares...</p>
-                {:else if ftsQuery.trim().length === 0}
-                  <p class="empty-text">Ingresá un término para ver resultados.</p>
-                {:else if ftsResults.length === 0}
-                  <p class="empty-text">No hay resultados para esa búsqueda.</p>
-                {:else}
-                  <ul class="similar-list">
-                    {#each ftsResults as result (result.itemId)}
-                      <li class="similar-item">
-                        <button
-                          class="similar-item-btn"
-                          onclick={() => navigateToSimilarItem(result)}
-                        >
-                          <span class="similar-title">
-                            {#each splitHighlightedSegments(result.title || result.itemId, ftsQuery) as segment, i (`${result.itemId}-seg-${i}-${segment.text}`)}
-                              {#if segment.isMatch}
-                                <mark class="fts-match">{segment.text}</mark>
-                              {:else}
-                                {segment.text}
-                              {/if}
-                            {/each}
-                          </span>
-                          <span class="similar-score">rank {result.rank.toFixed(3)}</span>
-                        </button>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-
-                {#if isDev}
-                  <details class="fts-debug-panel">
-                    <summary>FTS Debug (dev only)</summary>
-
-                    <div class="fts-debug-grid">
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">Indexed rows</span>
-                        <code>{ftsIndexedRows ?? 'unknown'}</code>
+          <section class="section">
+            <h3>
+              Notes ({notes.length}){#if assets.length > 1}
+                · Page {selectedAssetIndex + 1}{/if}
+            </h3>
+            {#if notes.length === 0}
+              <p class="empty-text">No notes yet.</p>
+            {:else}
+              <div class="notes-list">
+                {#each notes as note (note.id)}
+                  <Card>
+                    {#if editingNoteId === note.id}
+                      <div class="note-edit">
+                        <NoteEditor
+                          content={note.content}
+                          onsave={(content) => handleSaveEdit(note.id, content)}
+                          oncancel={handleCancelEdit}
+                          ondictate={handleTranscribeDictation}
+                          clearOnSave={false}
+                          saveLabel="Save note"
+                          cancelLabel="Cancel edit"
+                        />
                       </div>
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">Raw query</span>
-                        <code>{ftsDebug?.rawQuery ?? (ftsQuery.trim() || '—')}</code>
+                    {:else}
+                      <div class="note-content note-content--rich">
+                        {@html getRenderedNoteContent(note.content)}
                       </div>
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">Sanitized</span>
-                        <code>{ftsDebug?.sanitizedQuery || '—'}</code>
-                      </div>
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">Strategy</span>
-                        <code>{ftsDebug?.strategy ?? '—'}</code>
-                      </div>
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">DB matches</span>
-                        <code>{ftsDebug?.matchCount ?? 0}</code>
-                      </div>
-                      <div class="fts-debug-row">
-                        <span class="fts-debug-label">Hydrated items</span>
-                        <code>{ftsDebug?.hydratedCount ?? 0}</code>
-                      </div>
-                      <div class="fts-debug-row fts-debug-row--stacked">
-                        <span class="fts-debug-label">Result IDs</span>
-                        <code>{ftsDebug?.resultIds.join(', ') || '—'}</code>
-                      </div>
-                    </div>
-                  </details>
-                {/if}
-              </div>
-
-              <div class="nlp-actions">
-                <button
-                  class="nlp-btn"
-                  disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
-                  onclick={handleIndexFts}
-                >
-                  INDEX <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
-                </button>
-
-                <button
-                  class="nlp-btn"
-                  disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
-                  onclick={handleEmbedAsset}
-                >
-                  EMBED <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
-                </button>
-
-                <button
-                  class="nlp-btn"
-                  disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
-                  onclick={handleExtractEntities}
-                >
-                  NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
-                </button>
-
-                <button
-                  class="nlp-btn"
-                  disabled={!llmAvailable || nlp.triples === 'pending' || nlp.triples === 'running'}
-                  onclick={handleLlmExtractTriples}
-                >
-                  TRIPLET <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
-                </button>
-              </div>
-
-              {#if nlp.errors?.embed}
-                <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
-              {/if}
-
-              {#if !selectedAsset}
-                <p class="empty-text">
-                  Select an asset to run asset-level embeddings and similarity.
-                </p>
-              {/if}
-
-              <!-- Map section (OpenStreetMap) -->
-              <div class="geo-section">
-                <MapViewer markers={geoMarkers} height="280px" />
-              </div>
-
-              <div class="entities-section">
-                <h4>Entities</h4>
-                <EntityViewer {entities} onentityclick={startEditingEntity} />
-
-                <div class="entity-editor">
-                  <h5>Manual Entities</h5>
-                  <p class="entity-editor__hint">Click an entity tag above to edit or delete it.</p>
-
-                  <div class="entity-editor__create">
-                    <select
-                      value={newEntityType}
-                      aria-label="New entity type"
-                      onchange={(event) => {
-                        newEntityType = event.currentTarget.value as EditableEntityType
-                      }}
-                    >
-                      {#each EDITABLE_ENTITY_TYPES as type}
-                        <option value={type}>{type.toUpperCase()}</option>
-                      {/each}
-                    </select>
-                    <input
-                      bind:value={newEntityValue}
-                      type="text"
-                      placeholder="Add entity manually"
-                      aria-label="New entity value"
-                      onkeydown={(event) => event.key === 'Enter' && void handleCreateEntity()}
-                    />
-                    <button type="button" class="nlp-btn" onclick={handleCreateEntity}>Add</button>
-                  </div>
-
-                  {#if entityActionError}
-                    <p class="error">{entityActionError}</p>
-                  {/if}
-                </div>
-
-                {#if entityEditorOpen && editingEntityId}
-                  <div
-                    class="entity-modal"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Edit entity"
-                  >
-                    <button
-                      type="button"
-                      class="entity-modal__backdrop"
-                      aria-label="Close entity editor"
-                      onclick={cancelEditingEntity}
-                    ></button>
-
-                    <div class="entity-modal__panel">
-                      <div class="entity-modal__header">
-                        <h5>Edit entity</h5>
-                        <button
-                          class="entity-modal__close"
-                          type="button"
-                          aria-label="Close entity editor"
-                          onclick={cancelEditingEntity}
-                        >
-                          <ActionIcon name="close" />
-                        </button>
-                      </div>
-
-                      <div class="entity-modal__body">
-                        <label class="entity-modal__field">
-                          <span>Type</span>
-                          <select
-                            value={editingEntityType}
-                            aria-label="Edit entity type"
-                            onchange={(event) => {
-                              editingEntityType = event.currentTarget.value as EditableEntityType
-                            }}
-                          >
-                            {#each EDITABLE_ENTITY_TYPES as type}
-                              <option value={type}>{type.toUpperCase()}</option>
-                            {/each}
-                          </select>
-                        </label>
-
-                        <label class="entity-modal__field">
-                          <span>Value</span>
-                          <input
-                            bind:value={editingEntityValue}
-                            type="text"
-                            aria-label="Edit entity value"
-                            onkeydown={(event) =>
-                              event.key === 'Enter' &&
-                              editingEntityId &&
-                              void handleSaveEntity(editingEntityId)}
-                          />
-                        </label>
-                      </div>
-
-                      <div class="entity-modal__actions">
+                      <p class="note-date">{new Date(note.createdAt).toLocaleString()}</p>
+                      <div class="note-actions">
                         <Button
-                          type="button"
-                          variant="danger"
+                          variant="ghost"
                           size="sm"
                           iconOnly
-                          aria-label="Delete entity"
-                          title="Delete entity"
-                          class="entity-modal__danger"
-                          onclick={() => editingEntityId && handleDeleteEntity(editingEntityId)}
+                          aria-label="Edit note"
+                          onclick={() => handleEditNote(note)}
+                        >
+                          <ActionIcon name="edit" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          iconOnly
+                          aria-label="Delete note"
+                          onclick={() => handleDeleteNote(note.id)}
                         >
                           <ActionIcon name="delete" />
                         </Button>
-                        <div class="entity-modal__actions-right">
-                          <button type="button" class="nlp-btn" onclick={cancelEditingEntity}
-                            >Cancel</button
-                          >
-                          <button
-                            type="button"
-                            class="nlp-btn"
-                            onclick={() => editingEntityId && handleSaveEntity(editingEntityId)}
-                          >
-                            Save
-                          </button>
-                        </div>
                       </div>
+                    {/if}
+                  </Card>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        </div>
+
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'metadata'}>
+          <section class="section">
+            <h3>
+              Metadata {#if savingMetadata}<span class="saving">Saving...</span>{/if}
+            </h3>
+            <MetadataEditor value={metadataValue} onchange={handleMetadataChange} />
+          </section>
+        </div>
+
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'layout'}>
+          {#if selectedAsset && selectedAsset.type !== 'audio'}
+            <section class="section">
+              <div class="layout-section-header">
+                <div>
+                  <h3>
+                    Layout{#if viewerType === 'pdf'}
+                      · Page {layoutActivePage}{/if}
+                  </h3>
+                  {#if assetLayout}
+                    <p class="layout-meta">
+                      {assetLayout.model} · {viewerType === 'pdf'
+                        ? (layoutBlockCountsByPage[layoutActivePage] ?? 0)
+                        : layoutBlocks.length} bloques · {viewerType === 'pdf'
+                        ? layoutPageRegions.length
+                        : assetLayout.regions.length} regiones
+                    </p>
+                  {/if}
+                </div>
+
+                <button
+                  type="button"
+                  class="layout-toggle"
+                  disabled={!hasLayoutData}
+                  aria-pressed={showLayout}
+                  onclick={() => {
+                    showLayout = !showLayout
+                  }}
+                >
+                  {showLayout ? 'Ocultar overlay' : 'Mostrar overlay'}
+                </button>
+              </div>
+
+              {#if layoutLoading}
+                <p class="empty-text">Cargando layout…</p>
+              {:else if layoutError}
+                <p class="error">No se pudo cargar el layout: {layoutError}</p>
+              {:else if !assetLayout}
+                <p class="empty-text">Este asset todavía no tiene layout persistido.</p>
+              {:else if layoutBlocks.length === 0}
+                <p class="empty-text">Hay layout guardado, pero no trae bloques navegables.</p>
+              {:else}
+                {#if showLayout}
+                  <p class="layout-help">
+                    Tocá o pasá el mouse sobre un bloque para resaltarlo en el viewer.
+                  </p>
+                {/if}
+
+                {#if viewerType === 'pdf' && layoutPageOptions.length > 1}
+                  <div class="layout-page-toolbar">
+                    <p class="layout-page-summary" data-testid="layout-page-summary">
+                      Página {layoutActivePage} de {layoutPageOptions.length}
+                    </p>
+
+                    <div
+                      class="layout-page-group"
+                      role="group"
+                      aria-label="Seleccionar página del layout"
+                    >
+                      {#each layoutPageOptions as page (page)}
+                        <button
+                          type="button"
+                          class:active={layoutActivePage === page}
+                          class="layout-page-chip"
+                          data-testid={`layout-page-chip-${page}`}
+                          aria-pressed={layoutActivePage === page}
+                          onclick={() => {
+                            viewerPage = page
+                          }}
+                        >
+                          <span>P{page}</span>
+                          <span class="layout-page-chip__count"
+                            >{layoutBlockCountsByPage[page] ?? 0}</span
+                          >
+                        </button>
+                      {/each}
                     </div>
                   </div>
                 {/if}
-              </div>
 
-              <div class="triples-section">
-                <h4>
-                  Semantic Triples (S|P|O){#if assets.length > 1}
-                    · Page {selectedAssetIndex + 1}{/if}
-                </h4>
-                {#if triples.length === 0}
+                <div class="layout-filter-toolbar">
+                  <div
+                    class="layout-filter-group"
+                    role="group"
+                    aria-label="Filtrar bloques por tipo"
+                  >
+                    {#each LAYOUT_BLOCK_FILTERS as filter (filter.id)}
+                      {@const count = layoutFilterCounts[filter.id]}
+                      <button
+                        type="button"
+                        class:active={layoutTypeFilter === filter.id}
+                        class="layout-filter-chip"
+                        data-testid={`layout-filter-${filter.id}`}
+                        aria-pressed={layoutTypeFilter === filter.id}
+                        onclick={() => {
+                          layoutTypeFilter = filter.id
+                        }}
+                      >
+                        <span>{filter.label}</span>
+                        <span
+                          class="layout-filter-chip__count"
+                          data-testid={`layout-filter-count-${filter.id}`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    {/each}
+                  </div>
+
+                  <p class="layout-filter-summary">
+                    Mostrando {visibleLayoutBlocks.length} de {layoutPageBlocks.length} bloques.
+                  </p>
+                </div>
+
+                {#if layoutPageBlocks.length === 0}
+                  <p class="empty-text">No hay bloques para la página visible.</p>
+                {:else if visibleLayoutBlocks.length === 0}
                   <p class="empty-text">
-                    No triples extracted yet{#if assets.length > 1}
-                      for this page{/if}.
+                    No hay bloques del tipo seleccionado para la página visible.
                   </p>
                 {:else}
-                  <ul class="triples-list">
-                    {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
-                      <li class="triple-item">
-                        <span class="triple-cell">{triple.subject}</span>
-                        <span class="triple-cell">{triple.predicate}</span>
-                        <span class="triple-cell">{triple.object}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-
-              {#if similarAssets.length > 0}
-                <div class="similar-section">
-                  <h4>
-                    Similar Assets{#if assets.length > 1}
-                      (by page {selectedAssetIndex + 1}){/if}
-                  </h4>
-                  <ul class="similar-list">
-                    {#each similarAssets.slice(0, 5) as asset (asset.assetId)}
-                      <li class="similar-item">
-                        <button
-                          class="similar-item-btn"
-                          onclick={() => navigateToSimilarItem(asset)}
-                          data-testid={`similar-asset-${asset.assetId}`}
-                        >
-                          <span class="similar-item-main">
-                            <span class="similar-title">{asset.title || asset.itemId}</span>
-                            <span class="similar-meta">
-                              {getAssetTypeLabel(asset.assetType)} · {getAssetPathLabel(
-                                asset.assetPath
-                              )}
+                  <div class="layout-block-list" bind:this={layoutBlockListEl}>
+                    {#each visibleLayoutBlocks as block (block.id)}
+                      {@const isHovered = layoutHoveredBlockId === block.id}
+                      {@const isSelected = layoutSelectedBlockId === block.id}
+                      {@const overlayMeta = getLayoutOverlaySourceMeta(block.overlaySource)}
+                      <button
+                        type="button"
+                        data-testid={`layout-block-item-${block.id}`}
+                        data-layout-block-id={block.id}
+                        class:hovered={isHovered}
+                        class:selected={isSelected}
+                        class:fallback={block.overlaySource === 'block'}
+                        class="layout-block-item"
+                        onmouseenter={() => {
+                          syncLayoutHoverFromBlock(block.id)
+                        }}
+                        onmouseleave={() => {
+                          syncLayoutHoverFromBlock(null)
+                        }}
+                        onclick={() => {
+                          setSelectedLayoutBlock(block.id)
+                        }}
+                      >
+                        <span class="layout-block-order">#{block.order}</span>
+                        <span class="layout-block-content">
+                          <span class="layout-block-heading">
+                            <span class="layout-block-label">{block.label}</span>
+                            <span
+                              class:layout-block-source-badge--fallback={block.overlaySource ===
+                                'block'}
+                              class="layout-block-source-badge"
+                            >
+                              {overlayMeta.shortLabel}
                             </span>
-                            <span class="similar-meta">
-                              asset {asset.assetId} · item {asset.itemId} · collection {asset.collectionId}
-                            </span>
-                            {#if asset.assetPath && getAssetPathLabel(asset.assetPath) !== asset.assetPath}
-                              <span class="similar-meta similar-meta--path">{asset.assetPath}</span>
+                            {#if viewerType === 'pdf'}
+                              <span class="layout-block-page-chip">P{block.page}</span>
                             {/if}
                           </span>
-                          <span class="similar-score">{(asset.similarity * 100).toFixed(1)}%</span>
-                        </button>
-                      </li>
+                          <span class="layout-block-preview"
+                            >{block.preview || 'Sin preview textual'}</span
+                          >
+                        </span>
+                      </button>
                     {/each}
-                  </ul>
-                </div>
-              {:else}
-                <div class="similar-section">
-                  <h4>
-                    Similar Assets{#if assets.length > 1}
-                      (by page {selectedAssetIndex + 1}){/if}
-                  </h4>
-                  <p class="empty-text">
-                    {#if selectedAsset}
-                      No similar assets yet. Generate embeddings for this asset to compare against
-                      the rest.
+                  </div>
+
+                  <div class="layout-inspector" data-testid="layout-block-inspector">
+                    {#if selectedLayoutBlock}
+                      {@const overlayMeta = getLayoutOverlaySourceMeta(
+                        selectedLayoutBlock.overlaySource
+                      )}
+                      <div class="layout-inspector__header">
+                        <div>
+                          <p class="layout-inspector__eyebrow">Inspector</p>
+                          <h4>Bloque seleccionado · #{selectedLayoutBlock.order}</h4>
+                        </div>
+
+                        <div class="layout-inspector__actions">
+                          <button
+                            type="button"
+                            class="layout-inspector__action"
+                            data-testid="layout-inspector-copy-text"
+                            disabled={!selectedLayoutBlock.content.trim()}
+                            onclick={() =>
+                              copyLayoutInspectorValue(
+                                selectedLayoutBlock.content,
+                                'Texto copiado.'
+                              )}
+                          >
+                            Copiar texto
+                          </button>
+                          <button
+                            type="button"
+                            class="layout-inspector__action"
+                            data-testid="layout-inspector-copy-bbox"
+                            onclick={() =>
+                              copyLayoutInspectorValue(
+                                formatLayoutBbox(selectedLayoutBlock.overlayBbox),
+                                'BBox copiado.'
+                              )}
+                          >
+                            Copiar bbox
+                          </button>
+                          <button
+                            type="button"
+                            class="layout-inspector__action"
+                            data-testid="layout-inspector-copy-json"
+                            onclick={() =>
+                              copyLayoutInspectorValue(
+                                serializeLayoutBlock(selectedLayoutBlock),
+                                'JSON copiado.'
+                              )}
+                          >
+                            Copiar JSON
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="layout-inspector__grid">
+                        <div>
+                          <span class="layout-inspector__label">Label</span>
+                          <strong data-testid="layout-inspector-label"
+                            >{selectedLayoutBlock.label}</strong
+                          >
+                        </div>
+                        <div>
+                          <span class="layout-inspector__label">Orden</span>
+                          <strong>#{selectedLayoutBlock.order}</strong>
+                        </div>
+                        <div>
+                          <span class="layout-inspector__label">Página</span>
+                          <strong>{selectedLayoutBlock.page}</strong>
+                        </div>
+                        <div>
+                          <span class="layout-inspector__label">Group</span>
+                          <strong>{selectedLayoutBlock.groupId || '—'}</strong>
+                        </div>
+                        <div>
+                          <span class="layout-inspector__label">BBox bloque</span>
+                          <code>{formatLayoutBbox(selectedLayoutBlock.bbox)}</code>
+                        </div>
+                        <div>
+                          <span class="layout-inspector__label">BBox overlay</span>
+                          <code data-testid="layout-inspector-bbox"
+                            >{formatLayoutBbox(selectedLayoutBlock.overlayBbox)}</code
+                          >
+                        </div>
+                        <div class="layout-inspector__field layout-inspector__field--wide">
+                          <span class="layout-inspector__label">Overlay source</span>
+                          <strong
+                            class:layout-inspector__source--fallback={selectedLayoutBlock.overlaySource ===
+                              'block'}
+                            class="layout-inspector__source"
+                            data-testid="layout-inspector-overlay-source"
+                          >
+                            {overlayMeta.label}
+                          </strong>
+                          <p>{overlayMeta.description}</p>
+                        </div>
+                      </div>
+
+                      <div class="layout-inspector__content">
+                        <span class="layout-inspector__label">Texto / preview ampliado</span>
+                        <pre data-testid="layout-inspector-content">{selectedLayoutBlock.content ||
+                            'Sin texto completo para este bloque.'}</pre>
+                      </div>
+
+                      {#if layoutInspectorCopyMessage}
+                        <p
+                          class:layout-inspector__message--error={layoutInspectorCopyMessage.tone ===
+                            'error'}
+                          class="layout-inspector__message"
+                          data-testid="layout-inspector-copy-message"
+                        >
+                          {layoutInspectorCopyMessage.text}
+                        </p>
+                      {/if}
                     {:else}
-                      Select an asset to see asset-level similarity results.
+                      <div class="layout-inspector__empty" data-testid="layout-inspector-empty">
+                        Seleccioná un bloque para ver label, orden, página, bbox, source y texto
+                        completo.
+                      </div>
                     {/if}
-                  </p>
-                </div>
+                  </div>
+                {/if}
               {/if}
-            </div>
+            </section>
+          {:else}
+            <section class="section">
+              <p class="empty-text">Layout no disponible para assets de audio.</p>
+            </section>
           {/if}
-        </section>
-      {/if}
+        </div>
+
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'text'}>
+          {#if selectedAsset && selectedAsset.type !== 'audio'}
+            {@const ocr = getOcrState(selectedAsset.id)}
+            {@const busy = ocr.status === 'pending' || ocr.status === 'running'}
+            <section class="section">
+              <h3>
+                Text Extraction{#if assets.length > 1}
+                  · Page {selectedAssetIndex + 1}{/if}
+              </h3>
+              <div class="ocr-item">
+                <div class="ocr-item-header">
+                  <span class="ocr-filename">
+                    {assets.length > 1 && assets.every((a) => a.type === 'image')
+                      ? `Page ${selectedAssetIndex + 1}`
+                      : (selectedAsset.path.split(/[/\\]/).pop() ?? 'Asset')}
+                  </span>
+                  <div class="ocr-btn-group">
+                    <button
+                      class="ocr-btn ocr-btn--light"
+                      disabled={busy}
+                      onclick={() => handleExtractText(selectedAsset, 'light')}
+                      title={busy ? 'Extraction in progress…' : 'Fast OCR (PaddleOCR/Tesseract)'}
+                    >
+                      OCRL
+                    </button>
+                    <button
+                      class="ocr-btn ocr-btn--high"
+                      disabled={busy}
+                      onclick={() => handleExtractText(selectedAsset, 'high')}
+                      title={busy ? 'Extraction in progress…' : 'High-accuracy OCR (PaddleVL)'}
+                    >
+                      OCRH
+                    </button>
+                    {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
+                      <button
+                        class="ocr-btn ocr-btn--correct"
+                        disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                        onclick={handleLlmCorrectOcr}
+                        title={!llmAvailable
+                          ? 'Gemma 4 not available'
+                          : ocr.status !== 'done'
+                            ? 'Extract text first'
+                            : 'LLM OCR correction (Gemma 4)'}
+                      >
+                        OCRC
+                      </button>
+                    {/if}
+                    {#if llmAvailable}
+                      <button
+                        class="ocr-btn ocr-btn--summarize"
+                        disabled={getLlmState().status === 'running' || ocr.status !== 'done'}
+                        onclick={handleLlmSummarize}
+                        title={!llmAvailable
+                          ? 'Gemma 4 not available'
+                          : ocr.status !== 'done'
+                            ? 'Extract text first'
+                            : 'Generate summary (Gemma 4)'}
+                      >
+                        OCRR
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if ocr.status === 'running'}
+                  <progress class="ocr-progress" value={ocr.progress} max="100">
+                    {ocr.progress}%
+                  </progress>
+                  <p class="ocr-status-text">Running… {ocr.progress}%</p>
+                {:else if ocr.status === 'pending'}
+                  <p class="ocr-status-text">Starting extraction…</p>
+                {:else if ocr.status === 'error'}
+                  <p class="ocr-error">Extraction failed: {ocr.error}</p>
+                {:else if ocr.status === 'done'}
+                  {@const editedText = (() => {
+                    void ocrTick
+                    return ocrEditedText.get(selectedAsset.id) ?? ocr.textContent ?? ''
+                  })()}
+                  {@const displayLength = editedText.length}
+                  <details class="ocr-result">
+                    <summary>
+                      Extracted text
+                      <span class="ocr-meta">
+                        via {ocr.method ?? 'unknown'} · {displayLength} chars
+                      </span>
+                    </summary>
+                    <textarea
+                      class="ocr-result-body ocr-textarea"
+                      rows="8"
+                      oninput={(e) => {
+                        const val = e.currentTarget.value
+                        ocrEditedText.set(selectedAsset.id, val)
+                        ocrStore.setTextContent(selectedAsset.id, val)
+                        schedulePersist(selectedAsset.id, val)
+                        ocrTick++
+                      }}>{editedText}</textarea
+                    >
+                  </details>
+                {/if}
+              </div>
+            </section>
+          {/if}
+
+          {#if selectedAsset && selectedAsset.type === 'audio'}
+            {@const ts = getTranscriptionState(selectedAsset.id)}
+            {@const busy = ts.status === 'pending' || ts.status === 'running'}
+            <section class="section">
+              <h3>
+                Audio Transcription{#if assets.length > 1}
+                  · Page {selectedAssetIndex + 1}{/if}
+              </h3>
+              <div class="ocr-item">
+                <div class="ocr-item-header">
+                  <span class="ocr-filename"
+                    >&#x1f50a; {selectedAsset.path.split(/[/\\]/).pop() ?? 'Audio'}</span
+                  >
+                  <div class="ocr-btn-group">
+                    <button
+                      class="ocr-btn"
+                      disabled={busy}
+                      onclick={() => handleTranscribeAudio(selectedAsset)}
+                      title={busy ? 'Transcription in progress…' : 'Transcribe this audio file'}
+                    >
+                      {busy ? 'Transcribing…' : 'Transcribe'}
+                    </button>
+                    {#if llmAvailable}
+                      <button
+                        class="ocr-btn ocr-btn--summarize"
+                        disabled={getLlmState().status === 'running' || ts.status !== 'done'}
+                        onclick={handleLlmSummarize}
+                        title={!llmAvailable
+                          ? 'Gemma 4 not available'
+                          : ts.status !== 'done'
+                            ? 'Transcribe first'
+                            : 'Generate summary (Gemma 4)'}
+                      >
+                        OCRR
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if ts.status === 'running'}
+                  <progress class="ocr-progress" value={ts.progress} max="100">
+                    {ts.progress}%
+                  </progress>
+                  <p class="ocr-status-text">Transcribing… {ts.progress}%</p>
+                {:else if ts.status === 'pending'}
+                  <p class="ocr-status-text">Starting transcription…</p>
+                {:else if ts.status === 'error'}
+                  <p class="ocr-error">Transcription failed: {ts.error}</p>
+                {:else if ts.status === 'done'}
+                  {@const editedText = transEditedText.get(selectedAsset.id) ?? ts.text ?? ''}
+                  {@const displayLength = editedText.length}
+                  <details class="ocr-result">
+                    <summary>
+                      Transcription
+                      <span class="ocr-meta">
+                        {#if ts.language}{ts.language} &middot;
+                        {/if}{displayLength} chars
+                        {#if ts.durationMs}
+                          &middot; {Math.round(ts.durationMs / 1000)}s{/if}
+                      </span>
+                    </summary>
+                    <textarea
+                      class="ocr-result-body ocr-textarea"
+                      rows="8"
+                      oninput={(e) => {
+                        const val = e.currentTarget.value
+                        transEditedText.set(selectedAsset.id, val)
+                        transcriptionStore.setTextContent(selectedAsset.id, val)
+                        scheduleTranscriptionPersist(selectedAsset.id, val)
+                        transcriptionTick++
+                      }}>{editedText}</textarea
+                    >
+                  </details>
+                {/if}
+              </div>
+            </section>
+          {/if}
+
+          {#if selectedAsset}
+            {@const currentSummary = (() => {
+              void summaryTick
+              return summaryTexts.get(selectedAsset.id) ?? null
+            })()}
+            {@const isSummarizing =
+              getLlmState().status === 'running' && getLlmState().activeJob === 'summarize'}
+            {#if currentSummary || isSummarizing}
+              <section class="section">
+                <h3>
+                  Resumen{#if assets.length > 1}
+                    · Page {selectedAssetIndex + 1}{/if}
+                </h3>
+                {#if isSummarizing}
+                  <p class="summary-status">Generando resumen…</p>
+                {:else if currentSummary}
+                  <div class="summary-result">
+                    <pre class="summary-text">{currentSummary}</pre>
+                  </div>
+                {/if}
+              </section>
+            {/if}
+          {/if}
+        </div>
+
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'analysis'}>
+          {#if assets.length > 0}
+            {@const nlp = getNlpState()}
+            <section class="section">
+              <div class="analysis-panel analysis-panel--tabbed">
+                <div class="nlp-actions">
+                  <button
+                    class="nlp-btn"
+                    disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
+                    onclick={handleIndexFts}
+                  >
+                    INDEX <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
+                  </button>
+
+                  <button
+                    class="nlp-btn"
+                    disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
+                    onclick={handleEmbedAsset}
+                  >
+                    EMBED <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
+                  </button>
+
+                  <button
+                    class="nlp-btn"
+                    disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
+                    onclick={handleExtractEntities}
+                  >
+                    NER <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
+                  </button>
+
+                  <button
+                    class="nlp-btn"
+                    disabled={!llmAvailable ||
+                      nlp.triples === 'pending' ||
+                      nlp.triples === 'running'}
+                    onclick={handleLlmExtractTriples}
+                  >
+                    TRIPLET <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                  </button>
+                </div>
+
+                {#if nlp.errors?.embed}
+                  <p class="ocr-error">Embedding error: {nlp.errors.embed}</p>
+                {/if}
+
+                {#if !selectedAsset}
+                  <p class="empty-text">
+                    Select an asset to run asset-level embeddings and similarity.
+                  </p>
+                {/if}
+
+                <div class="geo-section">
+                  <MapViewer
+                    markers={geoMarkers}
+                    height="280px"
+                    visible={rightPanelTab === 'analysis'}
+                  />
+                </div>
+
+                <div class="entities-section">
+                  <h4>Entities</h4>
+                  <EntityViewer
+                    {entities}
+                    {editingEntityId}
+                    editingValue={editingEntityValue}
+                    onentityclick={startEditingEntity}
+                    oneditvaluechange={handleEditingEntityValueChange}
+                    onsaveentity={handleSaveEntity}
+                    oncancelentityedit={cancelEditingEntity}
+                    ondeleteentity={handleDeleteEntity}
+                  />
+
+                  <div class="entity-editor">
+                    <h5>Manual Entities</h5>
+                    <p class="entity-editor__hint">
+                      Click an entity chip to edit inline. Blur saves only changed non-empty values;
+                      otherwise it cancels.
+                    </p>
+
+                    <div class="entity-editor__create">
+                      <select
+                        value={newEntityType}
+                        aria-label="New entity type"
+                        onchange={(event) => {
+                          newEntityType = event.currentTarget.value as EditableEntityType
+                        }}
+                      >
+                        {#each EDITABLE_ENTITY_TYPES as type}
+                          <option value={type}>{type.toUpperCase()}</option>
+                        {/each}
+                      </select>
+                      <input
+                        bind:value={newEntityValue}
+                        type="text"
+                        placeholder="Add entity manually"
+                        aria-label="New entity value"
+                        onkeydown={(event) => event.key === 'Enter' && void handleCreateEntity()}
+                      />
+                      <button type="button" class="nlp-btn" onclick={handleCreateEntity}>Add</button
+                      >
+                    </div>
+
+                    {#if entityActionError}
+                      <p class="error">{entityActionError}</p>
+                    {/if}
+                  </div>
+                </div>
+
+                <div class="triples-section">
+                  <h4>
+                    Semantic Triples (S|P|O){#if assets.length > 1}
+                      · Page {selectedAssetIndex + 1}{/if}
+                  </h4>
+                  {#if triples.length === 0}
+                    <p class="empty-text">
+                      No triples extracted yet{#if assets.length > 1}
+                        for this page{/if}.
+                    </p>
+                  {:else}
+                    <ul class="triples-list">
+                      {#each triples as triple, i (`${triple.subject}-${triple.predicate}-${triple.object}-${i}`)}
+                        <li class="triple-item">
+                          <span class="triple-cell">{triple.subject}</span>
+                          <span class="triple-cell">{triple.predicate}</span>
+                          <span class="triple-cell">{triple.object}</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              </div>
+            </section>
+          {/if}
+        </div>
+
+        <div class="right-panel-pane" class:is-hidden={rightPanelTab !== 'search'}>
+          {#if assets.length > 0}
+            <section class="section">
+              <div class="analysis-panel analysis-panel--tabbed">
+                <div class="fts-search-section">
+                  <h4>Search by Similar Text (FTS)</h4>
+                  <input
+                    class="fts-search-input"
+                    type="search"
+                    placeholder="Escribí para buscar..."
+                    value={ftsQuery}
+                    oninput={handleFtsInput}
+                    onkeydown={handleFtsKeydown}
+                  />
+
+                  {#if ftsSearchError}
+                    <p class="ocr-error">{ftsSearchError}</p>
+                  {:else if ftsSearching}
+                    <p class="empty-text">Buscando textos similares...</p>
+                  {:else if ftsQuery.trim().length === 0}
+                    <p class="empty-text">Ingresá un término para ver resultados.</p>
+                  {:else if ftsResults.length === 0}
+                    <p class="empty-text">No hay resultados para esa búsqueda.</p>
+                  {:else}
+                    <ul class="similar-list">
+                      {#each ftsResults as result (result.itemId)}
+                        <li class="similar-item">
+                          <button
+                            class="similar-item-btn"
+                            onclick={() => navigateToSimilarItem(result)}
+                          >
+                            <span class="similar-title">
+                              {#each splitHighlightedSegments(result.title || result.itemId, ftsQuery) as segment, i (`${result.itemId}-seg-${i}-${segment.text}`)}
+                                {#if segment.isMatch}
+                                  <mark class="fts-match">{segment.text}</mark>
+                                {:else}
+                                  {segment.text}
+                                {/if}
+                              {/each}
+                            </span>
+                            <span class="similar-score">rank {result.rank.toFixed(3)}</span>
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+
+                  {#if isDev}
+                    <details class="fts-debug-panel">
+                      <summary>FTS Debug (dev only)</summary>
+
+                      <div class="fts-debug-grid">
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">Indexed rows</span>
+                          <code>{ftsIndexedRows ?? 'unknown'}</code>
+                        </div>
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">Raw query</span>
+                          <code>{ftsDebug?.rawQuery ?? (ftsQuery.trim() || '—')}</code>
+                        </div>
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">Sanitized</span>
+                          <code>{ftsDebug?.sanitizedQuery || '—'}</code>
+                        </div>
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">Strategy</span>
+                          <code>{ftsDebug?.strategy ?? '—'}</code>
+                        </div>
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">DB matches</span>
+                          <code>{ftsDebug?.matchCount ?? 0}</code>
+                        </div>
+                        <div class="fts-debug-row">
+                          <span class="fts-debug-label">Hydrated items</span>
+                          <code>{ftsDebug?.hydratedCount ?? 0}</code>
+                        </div>
+                        <div class="fts-debug-row fts-debug-row--stacked">
+                          <span class="fts-debug-label">Result IDs</span>
+                          <code>{ftsDebug?.resultIds.join(', ') || '—'}</code>
+                        </div>
+                      </div>
+                    </details>
+                  {/if}
+                </div>
+
+                {#if similarAssets.length > 0}
+                  <div class="similar-section">
+                    <h4>
+                      Similar Assets{#if assets.length > 1}
+                        (by page {selectedAssetIndex + 1}){/if}
+                    </h4>
+                    <ul class="similar-list">
+                      {#each similarAssets.slice(0, 5) as asset (asset.assetId)}
+                        <li class="similar-item">
+                          <button
+                            class="similar-item-btn"
+                            onclick={() => navigateToSimilarItem(asset)}
+                            data-testid={`similar-asset-${asset.assetId}`}
+                          >
+                            <span class="similar-item-main">
+                              <span class="similar-title">{asset.title || asset.itemId}</span>
+                              <span class="similar-meta">
+                                {getAssetTypeLabel(asset.assetType)} · {getAssetPathLabel(
+                                  asset.assetPath
+                                )}
+                              </span>
+                              <span class="similar-meta">
+                                asset {asset.assetId} · item {asset.itemId} · collection {asset.collectionId}
+                              </span>
+                              {#if asset.assetPath && getAssetPathLabel(asset.assetPath) !== asset.assetPath}
+                                <span class="similar-meta similar-meta--path"
+                                  >{asset.assetPath}</span
+                                >
+                              {/if}
+                            </span>
+                            <span class="similar-score">{(asset.similarity * 100).toFixed(1)}%</span
+                            >
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  </div>
+                {:else}
+                  <div class="similar-section">
+                    <h4>
+                      Similar Assets{#if assets.length > 1}
+                        (by page {selectedAssetIndex + 1}){/if}
+                    </h4>
+                    <p class="empty-text">
+                      {#if selectedAsset}
+                        No similar assets yet. Generate embeddings for this asset to compare against
+                        the rest.
+                      {:else}
+                        Select an asset to see asset-level similarity results.
+                      {/if}
+                    </p>
+                  </div>
+                {/if}
+              </div>
+            </section>
+          {/if}
+        </div>
+      </div>
     </div>
   </div>
 {/if}
@@ -2920,12 +3050,203 @@
     gap: var(--space-3);
     overflow-y: auto;
   }
+  .left-panel-tabs {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) 0;
+  }
+  .left-panel-tab {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease;
+  }
+  .left-panel-tab:hover {
+    color: var(--color-text-primary);
+    border-color: var(--color-border-hover, var(--color-border));
+  }
+  .left-panel-tab.active {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+  .left-panel-content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+  }
+  .left-panel-pane {
+    min-height: 0;
+  }
+  .left-panel-pane.is-hidden {
+    display: none;
+  }
+  .left-panel-pane--text {
+    flex: 1;
+    padding: 0 var(--space-2);
+    min-height: 0;
+  }
+  .left-text-panel-section {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .left-text-panel-card {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+  .left-text-panel-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+  }
+  .left-text-panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .right-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-3);
+    overflow: hidden;
+    padding: var(--space-2);
+    min-height: 0;
+  }
+  .right-panel-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background:
+      linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.028),
+        rgba(255, 255, 255, 0.008) 28%,
+        transparent 100%
+      ),
+      color-mix(in srgb, var(--color-surface) 93%, black 7%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.035),
+      0 6px 16px rgba(0, 0, 0, 0.1);
+  }
+  .right-panel-tab {
+    position: relative;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.035),
+        rgba(255, 255, 255, 0.01) 40%,
+        transparent 100%
+      ),
+      color-mix(in srgb, var(--color-surface) 88%, black 12%);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease,
+      transform 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .right-panel-tab:hover {
+    color: var(--color-text-primary);
+    border-color: var(--color-border-hover, var(--color-border));
+    transform: translateY(-1px);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.1);
+  }
+  .right-panel-tab.active {
+    color: var(--color-text-primary);
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--color-accent) 10%, rgba(255, 255, 255, 0.05)) 0%,
+        transparent 100%
+      ),
+      color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--color-accent) 24%, transparent),
+      0 8px 18px color-mix(in srgb, var(--color-accent) 7%, transparent);
+  }
+  .right-panel-tab.active::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 4px;
+    height: 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-accent) 80%, white 20%);
+    opacity: 0.75;
+  }
+  .right-panel-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    background:
+      radial-gradient(circle at top, rgba(255, 255, 255, 0.028), transparent 24%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 80%), var(--color-surface);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.03),
+      0 12px 28px rgba(0, 0, 0, 0.12);
+  }
+  .right-panel-pane {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    height: 100%;
+    min-height: 0;
     overflow-y: auto;
-    padding: var(--space-3);
+    padding: var(--space-2);
+  }
+  .right-panel-pane.is-hidden {
+    display: none;
+  }
+  .analysis-panel--tabbed {
+    border-top: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
   }
   .item-header {
     display: flex;
@@ -2935,8 +3256,11 @@
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-lg);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 55%), var(--color-surface);
-    box-shadow: var(--shadow-sm);
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.032), transparent 30%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.024), transparent 55%), var(--color-surface);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.035),
+      0 10px 22px rgba(0, 0, 0, 0.1);
   }
   .item-header__eyebrow {
     font-size: var(--font-size-xs);
@@ -2987,11 +3311,22 @@
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
     color: var(--color-text-secondary);
-    margin-bottom: var(--space-2);
+    margin-bottom: var(--space-1);
   }
   .section {
     display: flex;
     flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-lg);
+    background:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.028), transparent 26%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 75%),
+      color-mix(in srgb, var(--color-surface) 95%, black 5%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.03),
+      0 6px 16px rgba(0, 0, 0, 0.08);
   }
   .layout-section-header {
     display: flex;
@@ -3415,7 +3750,7 @@
   .notes-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-1);
   }
   .note-content {
     color: var(--color-text-primary);
@@ -3473,7 +3808,7 @@
   .note-actions {
     display: flex;
     gap: var(--space-1);
-    margin-top: var(--space-2);
+    margin-top: var(--space-1);
   }
   .note-edit {
     display: flex;
@@ -3531,15 +3866,19 @@
   .ocr-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
   .ocr-item {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-2);
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-1);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 70%),
+      color-mix(in srgb, var(--color-surface) 94%, black 6%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
   }
   .ocr-item-header {
     display: flex;
@@ -3632,6 +3971,10 @@
     font-size: var(--font-size-xs);
     color: var(--color-danger);
   }
+  .ocr-meta {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
   .ocr-result {
     font-size: var(--font-size-sm);
   }
@@ -3642,12 +3985,8 @@
     justify-content: space-between;
     align-items: center;
   }
-  .ocr-meta {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
   .ocr-result-body {
-    margin-top: var(--space-2);
+    margin-top: var(--space-1);
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     white-space: pre-wrap;
@@ -3655,8 +3994,8 @@
   }
   .ocr-textarea {
     width: 100%;
-    min-height: 8rem;
-    padding: var(--space-2);
+    min-height: 7rem;
+    padding: var(--space-1) var(--space-2);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
     font-size: var(--font-size-sm);
     line-height: 1.5;
@@ -3699,18 +4038,22 @@
   .analysis-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-3);
+    gap: var(--space-3);
+    padding: var(--space-2);
     border: 1px solid var(--color-border);
     border-top: none;
     border-radius: 0 0 var(--radius-md) var(--radius-md);
     overflow: hidden;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 75%),
+      color-mix(in srgb, var(--color-surface) 95%, black 5%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
   }
 
   .nlp-actions {
     display: flex;
     flex-direction: row;
-    gap: var(--space-2);
+    gap: var(--space-1);
   }
 
   .nlp-btn {
@@ -3721,7 +4064,7 @@
     gap: var(--space-1);
     flex: 1 1 25%;
     min-width: 0;
-    padding: var(--space-2) var(--space-1);
+    padding: 6px var(--space-1);
     font-size: var(--font-size-xs);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
@@ -3852,101 +4195,6 @@
     justify-content: center;
     font-size: var(--font-size-sm);
     padding: var(--space-2) var(--space-3);
-  }
-
-  .entity-modal {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .entity-modal__backdrop {
-    position: absolute;
-    inset: 0;
-    border: none;
-    background: rgb(0 0 0 / 0.45);
-  }
-
-  .entity-modal__panel {
-    position: relative;
-    width: min(520px, calc(100vw - 2rem));
-    background: var(--color-surface-raised, var(--color-surface));
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-4);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    box-shadow: 0 20px 40px rgb(0 0 0 / 0.18);
-  }
-
-  .entity-modal__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-  }
-
-  .entity-modal__header h5 {
-    margin: 0;
-    font-size: var(--font-size-sm);
-  }
-
-  .entity-modal__close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-height-sm);
-    height: var(--control-height-sm);
-    padding: 0;
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-  }
-
-  .entity-modal__close:hover {
-    background: var(--color-surface);
-    color: var(--color-text-primary);
-  }
-
-  .entity-modal__close:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
-  }
-
-  .entity-modal__body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .entity-modal__field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-  }
-
-  .entity-modal__actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-  }
-
-  .entity-modal__actions-right {
-    display: flex;
-    gap: var(--space-2);
-  }
-
-  .entity-modal__danger {
-    color: var(--color-danger, #dc2626);
   }
 
   .fts-search-input {
