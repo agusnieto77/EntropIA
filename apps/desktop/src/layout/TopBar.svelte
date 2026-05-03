@@ -2,7 +2,7 @@
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
-  import { ActionIcon, Button } from '@entropia/ui'
+  import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
 
   interface SearchResult {
@@ -17,6 +17,8 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let searchInputEl: HTMLInputElement | undefined = $state()
   const currentLocale = locale
+  const translate = (key: string, params?: Record<string, string | number>) =>
+    t(key as never, params)
 
   async function performSearch(query: string) {
     if (!query.trim()) {
@@ -54,11 +56,13 @@
     }
   }
 
-  function handleInput(e: Event) {
-    const target = e.target as HTMLInputElement
-    searchQuery = target.value
-
+  function handleInput() {
     if (debounceTimer) clearTimeout(debounceTimer)
+  }
+
+  function handleSearchValueChange(query: string, e: Event) {
+    searchQuery = query
+    handleInput()
 
     if (!searchQuery.trim()) {
       searchResults = []
@@ -115,57 +119,47 @@
 </script>
 
 <header class="topbar">
-  {#if $navigation.canGoBack}
-    <Button variant="ghost" size="sm" onclick={() => navigation.back()}
-      >{$currentLocale && t('topbar.back')}</Button
-    >
-  {/if}
-  <nav class="breadcrumb" aria-label={$currentLocale && t('topbar.breadcrumb')}>
-    {#each $navigation.breadcrumb as crumb, i}
-      {#if i > 0}<span class="sep">/</span>{/if}
-      <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
-    {/each}
-  </nav>
-
-  <button
-    class="settings-btn"
-    type="button"
-    onclick={() => navigation.navigate({ name: 'settings' })}
-    title={$currentLocale && t('topbar.settingsTitle')}
-    aria-label={$currentLocale && t('topbar.settingsAria')}
-  >
-    <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
-      <path
-        fill-rule="evenodd"
-        d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
-        clip-rule="evenodd"
-      />
-    </svg>
-  </button>
+  <div class="topbar__leading">
+    {#if $navigation.canGoBack}
+      <Button variant="ghost" size="sm" onclick={() => navigation.back()}
+        >{$currentLocale && t('topbar.back')}</Button
+      >
+    {/if}
+    <nav class="breadcrumb" aria-label={$currentLocale && t('topbar.breadcrumb')}>
+      {#each $navigation.breadcrumb as crumb, i}
+        {#if i > 0}<span class="sep">/</span>{/if}
+        <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
+      {/each}
+    </nav>
+  </div>
 
   <div class="global-search">
-    <div class="global-search__input-wrapper">
-      <span class="global-search__icon" aria-hidden="true">&#128269;</span>
+    <div class="global-search__input-wrap">
       <input
-        bind:this={searchInputEl}
         class="global-search__input"
         type="search"
-        placeholder={$currentLocale && t('topbar.searchPlaceholder')}
-        aria-label={$currentLocale && t('topbar.searchAria')}
-        value={searchQuery}
-        oninput={handleInput}
+        bind:value={searchQuery}
+        bind:this={searchInputEl}
+        placeholder={$currentLocale && translate('topbar.searchPlaceholder')}
+        aria-label={$currentLocale && translate('topbar.searchAria')}
+        oninput={(event: Event) =>
+          handleSearchValueChange((event.currentTarget as HTMLInputElement).value, event)}
         onkeydown={handleKeydown}
         onblur={handleBlur}
         onfocus={handleFocus}
       />
+
       {#if searchQuery}
         <button
           class="global-search__clear"
           type="button"
+          aria-label={$currentLocale && translate('topbar.searchClear')}
+          title={$currentLocale && translate('topbar.searchClear')}
           onclick={handleClear}
-          aria-label={$currentLocale && t('topbar.searchClear')}
         >
-          <ActionIcon name="close" size={14} />
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor">
+            <path d="M5 5l10 10M15 5L5 15" stroke-width="1.8" stroke-linecap="round" />
+          </svg>
         </button>
       {/if}
     </div>
@@ -173,10 +167,12 @@
     {#if showResults}
       <div class="global-search__dropdown">
         {#if searching}
-          <div class="global-search__status">{$currentLocale && t('topbar.searchSearching')}</div>
+          <div class="global-search__status">
+            {$currentLocale && translate('topbar.searchSearching')}
+          </div>
         {:else if searchResults.length === 0}
           <div class="global-search__status">
-            {$currentLocale && t('topbar.searchNoResults', { query: searchQuery })}
+            {$currentLocale && translate('topbar.searchNoResults', { query: searchQuery })}
           </div>
         {:else}
           {#each searchResults as result (result.item.id)}
@@ -193,12 +189,43 @@
       </div>
     {/if}
   </div>
+
+  <div class="topbar__actions">
+    <button
+      class="topbar__icon-btn"
+      type="button"
+      onclick={() => navigation.openRootSection({ name: 'db-browser' })}
+      title={$currentLocale && translate('topbar.dbBrowserTitle')}
+      aria-label={$currentLocale && translate('topbar.dbBrowserAria')}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <ellipse cx="12" cy="5" rx="7" ry="3" stroke-width="1.8" />
+        <path d="M5 5v6c0 1.66 3.13 3 7 3s7-1.34 7-3V5" stroke-width="1.8" />
+        <path d="M5 11v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" stroke-width="1.8" />
+      </svg>
+    </button>
+
+    <button
+      class="topbar__icon-btn"
+      type="button"
+      onclick={() => navigation.openRootSection({ name: 'settings' })}
+      title={$currentLocale && t('topbar.settingsTitle')}
+      aria-label={$currentLocale && t('topbar.settingsAria')}
+    >
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+        <path
+          fill-rule="evenodd"
+          d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+          clip-rule="evenodd"
+        />
+      </svg>
+    </button>
+  </div>
 </header>
 
 <style>
   .topbar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto minmax(260px, 360px);
+    display: flex;
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
@@ -206,11 +233,22 @@
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--color-surface);
     box-shadow: var(--shadow-sm);
+    min-width: 0;
   }
+
+  .topbar__leading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .breadcrumb {
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
@@ -229,7 +267,15 @@
     color: var(--color-text-muted);
   }
 
-  .settings-btn {
+  .topbar__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .topbar__icon-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -247,12 +293,12 @@
       border-color var(--transition-base),
       box-shadow var(--transition-base);
   }
-  .settings-btn:hover {
+  .topbar__icon-btn:hover {
     color: var(--color-text-primary);
     background: var(--color-surface-elevated);
     border-color: var(--color-border-strong);
   }
-  .settings-btn:focus-visible {
+  .topbar__icon-btn:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
   }
@@ -260,86 +306,61 @@
   .global-search {
     position: relative;
     width: 100%;
+    max-width: 320px;
+    flex: 1 1 260px;
     min-width: 0;
   }
 
-  .global-search__input-wrapper {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: var(--control-height-md);
-    padding: 0 var(--space-3);
-    background-color: var(--color-surface-sunken);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    transition:
-      border-color var(--transition-base),
-      box-shadow var(--transition-base),
-      background-color var(--transition-base);
-  }
-
-  .global-search__input-wrapper:focus-within {
-    border-color: var(--color-accent);
-    box-shadow: var(--focus-ring);
-    background-color: var(--color-surface);
-  }
-
-  .global-search__icon {
-    flex-shrink: 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-secondary);
-    opacity: 0.9;
+  .global-search__input-wrap {
+    position: relative;
   }
 
   .global-search__input {
-    flex: 1;
-    border: none;
-    outline: none;
-    background: transparent;
-    font-family: var(--font-sans);
-    font-size: var(--font-size-sm);
+    width: 100%;
+    min-height: var(--control-height-md);
+    padding: 0 calc(var(--space-4) + 18px) 0 var(--space-3);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-sunken);
     color: var(--color-text-primary);
-    min-width: 0;
-    line-height: var(--line-height-base);
+    font-size: var(--font-size-sm);
   }
 
-  .global-search__input::placeholder {
-    color: var(--color-text-muted);
-  }
-
-  .global-search__input::-webkit-search-cancel-button {
-    display: none;
+  .global-search__input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: var(--focus-ring);
+    background: var(--color-surface);
   }
 
   .global-search__clear {
-    flex-shrink: 0;
-    display: flex;
+    position: absolute;
+    top: 50%;
+    right: var(--space-2);
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 24px;
     height: 24px;
     padding: 0;
     border: none;
-    border-radius: var(--radius-full);
-    background-color: var(--color-surface-raised);
+    border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--color-text-secondary);
     cursor: pointer;
-    transition:
-      background-color var(--transition-base),
-      color var(--transition-base),
-      box-shadow var(--transition-base);
-  }
-
-  .global-search__clear :global(svg) {
-    pointer-events: none;
+    transform: translateY(-50%);
   }
 
   .global-search__clear:hover {
-    background-color: var(--color-border-subtle);
     color: var(--color-text-primary);
+    background: var(--color-surface-raised);
   }
 
-  .global-search__clear:focus-visible,
+  .global-search__clear:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
   .global-search__result:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
@@ -404,15 +425,17 @@
 
   @media (max-width: 900px) {
     .topbar {
-      grid-template-columns: auto minmax(0, 1fr);
+      flex-wrap: wrap;
     }
 
-    .settings-btn {
-      justify-self: end;
+    .topbar__leading {
+      flex: 1 1 0;
     }
 
     .global-search {
-      grid-column: 1 / -1;
+      order: 3;
+      max-width: none;
+      flex-basis: 100%;
     }
   }
 </style>

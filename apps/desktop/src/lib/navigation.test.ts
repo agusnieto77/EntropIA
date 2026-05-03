@@ -102,6 +102,17 @@ describe('NavigationStore', () => {
     expect(nav.canGoBack).toBe(true)
   })
 
+  it('navigates to db browser view', () => {
+    nav.navigate({ name: 'db-browser' })
+    expect(nav.current).toEqual({ name: 'db-browser' })
+    expect(nav.canGoBack).toBe(true)
+  })
+
+  it('db browser breadcrumb shows Base de datos', () => {
+    nav.navigate({ name: 'db-browser' })
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Base de datos'])
+  })
+
   it('settings breadcrumb shows Configuracion', () => {
     nav.navigate({ name: 'settings' })
     expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
@@ -117,6 +128,26 @@ describe('NavigationStore', () => {
   it('replace works with settings view', () => {
     nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Test' })
     nav.replace({ name: 'settings' })
+    expect(nav.current).toEqual({ name: 'settings' })
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
+  })
+
+  it('openRootSection rebuilds canonical breadcrumb for settings', () => {
+    nav.navigate({ name: 'collection', id: 'c1', collectionName: 'Archivo' })
+    nav.navigate({ name: 'item', collectionId: 'c1', collectionName: 'Archivo', itemId: 'i1', itemTitle: 'Acta' })
+
+    nav.openRootSection({ name: 'settings' })
+
+    expect(nav.current).toEqual({ name: 'settings' })
+    expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
+    expect(nav.canGoBack).toBe(true)
+  })
+
+  it('openRootSection replaces previous root sections instead of accumulating history', () => {
+    nav.openRootSection({ name: 'settings' })
+    nav.openRootSection({ name: 'db-browser' })
+    nav.openRootSection({ name: 'settings' })
+
     expect(nav.current).toEqual({ name: 'settings' })
     expect(nav.breadcrumb).toEqual(['Colecciones', 'Configuración'])
   })

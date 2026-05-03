@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopBar from './TopBar.svelte'
 import { locale } from '$lib/i18n'
 
-const { navigationStore, setNavigationState, navigateMock, backMock, storeRef } = vi.hoisted(() => {
+const { navigationStore, setNavigationState, navigateMock, openRootSectionMock, backMock, storeRef } = vi.hoisted(() => {
   let current: any = {
     history: [{ name: 'collections' as const }],
     current: { name: 'collections' as const },
@@ -25,6 +25,7 @@ const { navigationStore, setNavigationState, navigateMock, backMock, storeRef } 
       subscribers.forEach((run) => run(current))
     },
     navigateMock: vi.fn(),
+    openRootSectionMock: vi.fn(),
     backMock: vi.fn(),
     storeRef: {
       current: {
@@ -39,6 +40,7 @@ vi.mock('$lib/navigation', () => ({
   navigation: {
     subscribe: navigationStore.subscribe,
     navigate: navigateMock,
+    openRootSection: openRootSectionMock,
     back: backMock,
   },
 }))
@@ -52,6 +54,7 @@ describe('TopBar', () => {
     locale.set('es')
     vi.useFakeTimers()
     navigateMock.mockReset()
+    openRootSectionMock.mockReset()
     backMock.mockReset()
     storeRef.current.items.searchGlobal.mockReset()
     storeRef.current.collections.findById.mockReset()
@@ -73,9 +76,28 @@ describe('TopBar', () => {
   it('renders accessible controls for navigation and global search', () => {
     render(TopBar)
 
+    expect(
+      screen.getByRole('button', { name: 'Abrir navegador de base de datos' })
+    ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Abrir configuración' })).toBeInTheDocument()
     expect(screen.getByRole('searchbox', { name: 'Buscar archivos' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
+  })
+
+  it('navigates to db browser from the database icon button', async () => {
+    render(TopBar)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Abrir navegador de base de datos' }))
+
+    expect(openRootSectionMock).toHaveBeenCalledWith({ name: 'db-browser' })
+  })
+
+  it('opens settings as a canonical root section', async () => {
+    render(TopBar)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Abrir configuración' }))
+
+    expect(openRootSectionMock).toHaveBeenCalledWith({ name: 'settings' })
   })
 
   it('updates translated top bar labels when locale changes', async () => {

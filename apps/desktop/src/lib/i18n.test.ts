@@ -53,4 +53,16 @@ describe('i18n', () => {
     expect(settingsSetMock).toHaveBeenCalledWith('language', 'en')
     expect(get(locale)).toBe('en')
   })
+
+  it('exposes db browser action copy in both locales', async () => {
+    const { locale, t } = await import('./i18n')
+
+    expect(t('dbBrowser.copyCell')).toBe('Copiar')
+    expect(t('dbBrowser.pageSizeLabel')).toBe('Filas por página')
+
+    locale.set('en')
+
+    expect(t('dbBrowser.copyCell')).toBe('Copy')
+    expect(t('dbBrowser.pageSizeLabel')).toBe('Rows per page')
+  })
 })

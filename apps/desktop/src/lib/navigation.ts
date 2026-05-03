@@ -16,7 +16,10 @@ export type View =
       itemId: string
       itemTitle: string
     }
+  | { name: 'db-browser' }
   | { name: 'settings' }
+
+type RootSectionView = Extract<View, { name: 'settings' | 'db-browser' }>
 
 type NavigationSnapshot = {
   history: View[]
@@ -54,6 +57,7 @@ export class NavigationStore {
       breadcrumb: history.map((v) => {
         if (v.name === 'collections') return t('nav.collections')
         if (v.name === 'collection') return v.collectionName
+        if (v.name === 'db-browser') return t('nav.dbBrowser')
         if (v.name === 'settings') return t('nav.settings')
         return v.itemTitle
       }),
@@ -80,6 +84,11 @@ export class NavigationStore {
   navigate(view: View): void {
     this._history = [...this._history, view]
     this.emit()
+  }
+
+  /** Navigate to a root-level section using a canonical breadcrumb path. */
+  openRootSection(view: RootSectionView): void {
+    this.resetToPath([{ name: 'collections' }, view])
   }
 
   /** Replace the full history with a canonical path. */

@@ -8,13 +8,21 @@
     debounceMs = 300,
     ariaLabel = '',
     clearAriaLabel = 'Clear search',
+    emitSearch = true,
+    onvaluechange,
     onsearch,
     onclear,
+    oninput,
+    onfocus,
+    onblur,
+    onkeydown,
+    inputRef,
   }: SearchBarProps = $props()
 
   let internalValue = $state('')
   let lastExternalValue = $state<string | undefined>(undefined)
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  let inputEl = $state<HTMLInputElement | undefined>(undefined)
 
   function clearDebounceTimer() {
     if (!debounceTimer) {
@@ -27,8 +35,14 @@
   function handleInput(e: Event) {
     const target = e.target as HTMLInputElement
     internalValue = target.value
+    onvaluechange?.(internalValue, e)
+    oninput?.(e)
 
     clearDebounceTimer()
+
+    if (!emitSearch) {
+      return
+    }
 
     debounceTimer = setTimeout(() => {
       onsearch?.(internalValue)
@@ -56,18 +70,26 @@
     clearDebounceTimer()
   })
 
+  $effect(() => {
+    inputRef?.(inputEl)
+  })
+
   let showClear = $derived(internalValue.length > 0)
 </script>
 
 <div class="search-bar">
   <span class="search-bar__icon" data-testid="search-icon" aria-hidden="true">&#128269;</span>
   <input
+    bind:this={inputEl}
     class="search-bar__input"
     type="search"
     {placeholder}
     aria-label={ariaLabel || placeholder || 'Search'}
     value={internalValue}
     oninput={handleInput}
+    {onfocus}
+    {onblur}
+    {onkeydown}
   />
   {#if showClear}
     <button

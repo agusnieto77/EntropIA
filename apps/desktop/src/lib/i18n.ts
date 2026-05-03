@@ -7,11 +7,14 @@ export const DEFAULT_LOCALE: Locale = 'es'
 
 const es = {
   'nav.collections': 'Colecciones',
+  'nav.dbBrowser': 'Base de datos',
   'nav.settings': 'Configuración',
   'app.initializing': 'Inicializando...',
   'app.initError': 'No se pudo inicializar la base de datos',
   'topbar.back': '← Volver',
   'topbar.breadcrumb': 'Breadcrumb',
+  'topbar.dbBrowserTitle': 'Base de datos',
+  'topbar.dbBrowserAria': 'Abrir navegador de base de datos',
   'topbar.settingsTitle': 'Configuración',
   'topbar.settingsAria': 'Abrir configuración',
   'topbar.searchPlaceholder': 'Buscar por nombre de archivo...',
@@ -66,6 +69,40 @@ const es = {
   'settings.openrouter.title': 'OpenRouter',
   'settings.openrouter.description':
     'Configurá la cuenta remota, validá el acceso y elegí el modelo por defecto.',
+  'dbBrowser.eyebrow': 'Base de datos',
+  'dbBrowser.title': 'Consulta DB',
+  'dbBrowser.subtitle':
+    'Explorá tablas del SQLite de EntropIA en modo solo lectura, con búsqueda, orden y paginación.',
+  'dbBrowser.tableLabel': 'Tabla',
+  'dbBrowser.searchLabel': 'Filtro simple',
+  'dbBrowser.searchPlaceholder': 'Filtrar por texto...',
+  'dbBrowser.searchSubmit': 'Buscar',
+  'dbBrowser.searchClear': 'Limpiar',
+  'dbBrowser.loadingTables': 'Cargando tablas disponibles...',
+  'dbBrowser.loadingRows': 'Consultando filas...',
+  'dbBrowser.emptyTables': 'No hay tablas navegables disponibles.',
+  'dbBrowser.emptyRows': 'Esta tabla no tiene filas para mostrar.',
+  'dbBrowser.emptyFiltered': 'No hay resultados para ese filtro.',
+  'dbBrowser.columnsCount': '{count} columnas',
+  'dbBrowser.totalRows': '{count} filas',
+  'dbBrowser.pageSummary': 'Mostrando {from}-{to} de {total}',
+  'dbBrowser.pageStatus': 'Página {page} de {totalPages}',
+  'dbBrowser.previousPage': 'Anterior',
+  'dbBrowser.nextPage': 'Siguiente',
+  'dbBrowser.refresh': 'Recargar',
+  'dbBrowser.pageSizeLabel': 'Filas por página',
+  'dbBrowser.copyCell': 'Copiar',
+  'dbBrowser.copyCellAria': 'Copiar valor de {column}',
+  'dbBrowser.copyExpandedAria': 'Copiar valor completo de {column}',
+  'dbBrowser.copySuccess': 'Valor copiado.',
+  'dbBrowser.copyError': 'No se pudo copiar el valor.',
+  'dbBrowser.expandCell': 'Expandir',
+  'dbBrowser.expandCellAria': 'Expandir valor de {column}',
+  'dbBrowser.expandDialogTitle': 'Valor completo de {column}',
+  'dbBrowser.expandDialogJson': 'Vista completa formateada como JSON legible.',
+  'dbBrowser.expandDialogText': 'Vista completa del contenido textual.',
+  'dbBrowser.expandDialogClose': 'Cerrar',
+  'dbBrowser.noValue': '—',
   'settings.apiKey': 'API Key',
   'settings.apiKeyPlaceholder': 'sk-or-v1-...',
   'settings.hideApiKey': 'Ocultar API key',
@@ -425,6 +462,42 @@ const es = {
 } as const
 
 type ExtraI18nKey =
+  | 'nav.dbBrowser'
+  | 'topbar.dbBrowserTitle'
+  | 'topbar.dbBrowserAria'
+  | 'dbBrowser.eyebrow'
+  | 'dbBrowser.title'
+  | 'dbBrowser.subtitle'
+  | 'dbBrowser.tableLabel'
+  | 'dbBrowser.searchLabel'
+  | 'dbBrowser.searchPlaceholder'
+  | 'dbBrowser.searchSubmit'
+  | 'dbBrowser.searchClear'
+  | 'dbBrowser.loadingTables'
+  | 'dbBrowser.loadingRows'
+  | 'dbBrowser.emptyTables'
+  | 'dbBrowser.emptyRows'
+  | 'dbBrowser.emptyFiltered'
+  | 'dbBrowser.columnsCount'
+  | 'dbBrowser.totalRows'
+  | 'dbBrowser.pageSummary'
+  | 'dbBrowser.pageStatus'
+  | 'dbBrowser.previousPage'
+  | 'dbBrowser.nextPage'
+  | 'dbBrowser.refresh'
+  | 'dbBrowser.pageSizeLabel'
+  | 'dbBrowser.copyCell'
+  | 'dbBrowser.copyCellAria'
+  | 'dbBrowser.copyExpandedAria'
+  | 'dbBrowser.copySuccess'
+  | 'dbBrowser.copyError'
+  | 'dbBrowser.expandCell'
+  | 'dbBrowser.expandCellAria'
+  | 'dbBrowser.expandDialogTitle'
+  | 'dbBrowser.expandDialogJson'
+  | 'dbBrowser.expandDialogText'
+  | 'dbBrowser.expandDialogClose'
+  | 'dbBrowser.noValue'
   | 'item.fileMetadata'
   | 'item.customMetadata'
   | 'item.audioSkipBack'
@@ -447,11 +520,14 @@ type ExtraI18nKey =
 
 const en: Record<keyof typeof es | ExtraI18nKey, string> = {
   'nav.collections': 'Collections',
+  'nav.dbBrowser': 'Database',
   'nav.settings': 'Settings',
   'app.initializing': 'Initializing...',
   'app.initError': 'Failed to initialize database',
   'topbar.back': '← Back',
   'topbar.breadcrumb': 'Breadcrumb',
+  'topbar.dbBrowserTitle': 'Database',
+  'topbar.dbBrowserAria': 'Open database browser',
   'topbar.settingsTitle': 'Settings',
   'topbar.settingsAria': 'Open settings',
   'topbar.searchPlaceholder': 'Search by file name...',
@@ -507,6 +583,40 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
   'settings.openrouter.title': 'OpenRouter',
   'settings.openrouter.description':
     'Configure the remote account, validate access, and choose the default model.',
+  'dbBrowser.eyebrow': 'Database',
+  'dbBrowser.title': 'DB Browser',
+  'dbBrowser.subtitle':
+    'Browse EntropIA SQLite tables in read-only mode with search, sorting, and pagination.',
+  'dbBrowser.tableLabel': 'Table',
+  'dbBrowser.searchLabel': 'Simple filter',
+  'dbBrowser.searchPlaceholder': 'Filter by text...',
+  'dbBrowser.searchSubmit': 'Search',
+  'dbBrowser.searchClear': 'Clear',
+  'dbBrowser.loadingTables': 'Loading available tables...',
+  'dbBrowser.loadingRows': 'Querying rows...',
+  'dbBrowser.emptyTables': 'There are no browsable tables available.',
+  'dbBrowser.emptyRows': 'This table has no rows to display.',
+  'dbBrowser.emptyFiltered': 'There are no results for that filter.',
+  'dbBrowser.columnsCount': '{count} columns',
+  'dbBrowser.totalRows': '{count} rows',
+  'dbBrowser.pageSummary': 'Showing {from}-{to} of {total}',
+  'dbBrowser.pageStatus': 'Page {page} of {totalPages}',
+  'dbBrowser.previousPage': 'Previous',
+  'dbBrowser.nextPage': 'Next',
+  'dbBrowser.refresh': 'Refresh',
+  'dbBrowser.pageSizeLabel': 'Rows per page',
+  'dbBrowser.copyCell': 'Copy',
+  'dbBrowser.copyCellAria': 'Copy value from {column}',
+  'dbBrowser.copyExpandedAria': 'Copy full value from {column}',
+  'dbBrowser.copySuccess': 'Value copied.',
+  'dbBrowser.copyError': 'Could not copy the value.',
+  'dbBrowser.expandCell': 'Expand',
+  'dbBrowser.expandCellAria': 'Expand value from {column}',
+  'dbBrowser.expandDialogTitle': 'Full value for {column}',
+  'dbBrowser.expandDialogJson': 'Full view formatted as readable JSON.',
+  'dbBrowser.expandDialogText': 'Full textual content view.',
+  'dbBrowser.expandDialogClose': 'Close',
+  'dbBrowser.noValue': '—',
   'settings.apiKey': 'API Key',
   'settings.apiKeyPlaceholder': 'sk-or-v1-...',
   'settings.hideApiKey': 'Hide API key',
@@ -890,8 +1000,9 @@ locale.subscribe((value) => {
   syncDocumentLanguage(value)
 })
 
-export function t(key: I18nKey, params?: I18nParams): string {
-  return interpolate(messages[get(locale)][key], params)
+export function t(key: I18nKey | (string & {}), params?: I18nParams): string {
+  const dictionary = messages[get(locale)] as Record<string, string>
+  return interpolate(dictionary[key] ?? String(key), params)
 }
 
 export const translator = derived(
