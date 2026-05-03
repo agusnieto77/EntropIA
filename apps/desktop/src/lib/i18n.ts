@@ -17,6 +17,8 @@ const es = {
   'topbar.dbBrowserAria': 'Abrir navegador de base de datos',
   'topbar.settingsTitle': 'Configuración',
   'topbar.settingsAria': 'Abrir configuración',
+  'topbar.previousDocument': 'Documento anterior',
+  'topbar.nextDocument': 'Documento siguiente',
   'topbar.searchPlaceholder': 'Buscar por nombre de archivo...',
   'topbar.searchAria': 'Buscar archivos',
   'topbar.searchClear': 'Limpiar búsqueda',
@@ -465,6 +467,8 @@ type ExtraI18nKey =
   | 'nav.dbBrowser'
   | 'topbar.dbBrowserTitle'
   | 'topbar.dbBrowserAria'
+  | 'topbar.previousDocument'
+  | 'topbar.nextDocument'
   | 'dbBrowser.eyebrow'
   | 'dbBrowser.title'
   | 'dbBrowser.subtitle'
@@ -530,6 +534,8 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
   'topbar.dbBrowserAria': 'Open database browser',
   'topbar.settingsTitle': 'Settings',
   'topbar.settingsAria': 'Open settings',
+  'topbar.previousDocument': 'Previous document',
+  'topbar.nextDocument': 'Next document',
   'topbar.searchPlaceholder': 'Search by file name...',
   'topbar.searchAria': 'Search files',
   'topbar.searchClear': 'Clear search',

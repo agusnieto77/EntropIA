@@ -3,7 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopBar from './TopBar.svelte'
 import { locale } from '$lib/i18n'
 
-const { navigationStore, setNavigationState, navigateMock, openRootSectionMock, backMock, storeRef } = vi.hoisted(() => {
+const {
+  navigationStore,
+  setNavigationState,
+  navigateMock,
+  replaceMock,
+  openRootSectionMock,
+  backMock,
+  storeRef,
+} = vi.hoisted(() => {
   let current: any = {
     history: [{ name: 'collections' as const }],
     current: { name: 'collections' as const },
@@ -25,11 +33,12 @@ const { navigationStore, setNavigationState, navigateMock, openRootSectionMock, 
       subscribers.forEach((run) => run(current))
     },
     navigateMock: vi.fn(),
+    replaceMock: vi.fn(),
     openRootSectionMock: vi.fn(),
     backMock: vi.fn(),
     storeRef: {
       current: {
-        items: { searchGlobal: vi.fn() },
+        items: { searchGlobal: vi.fn(), findByCollection: vi.fn() },
         collections: { findById: vi.fn() },
       },
     },
@@ -40,6 +49,7 @@ vi.mock('$lib/navigation', () => ({
   navigation: {
     subscribe: navigationStore.subscribe,
     navigate: navigateMock,
+    replace: replaceMock,
     openRootSection: openRootSectionMock,
     back: backMock,
   },
@@ -54,10 +64,17 @@ describe('TopBar', () => {
     locale.set('es')
     vi.useFakeTimers()
     navigateMock.mockReset()
+    replaceMock.mockReset()
     openRootSectionMock.mockReset()
     backMock.mockReset()
     storeRef.current.items.searchGlobal.mockReset()
+    storeRef.current.items.findByCollection.mockReset()
     storeRef.current.collections.findById.mockReset()
+    storeRef.current.items.findByCollection.mockResolvedValue([
+      { id: 'item-0', title: 'Acta 0', collectionId: 'col-1' },
+      { id: 'item-1', title: 'Acta 1', collectionId: 'col-1' },
+      { id: 'item-2', title: 'Acta 2', collectionId: 'col-1' },
+    ])
     setNavigationState({
       history: [
         { name: 'collections' },
@@ -82,6 +99,8 @@ describe('TopBar', () => {
     expect(screen.getByRole('button', { name: 'Abrir configuración' })).toBeInTheDocument()
     expect(screen.getByRole('searchbox', { name: 'Buscar archivos' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Documento anterior' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Documento siguiente' })).not.toBeInTheDocument()
   })
 
   it('navigates to db browser from the database icon button', async () => {
@@ -153,5 +172,82 @@ describe('TopBar', () => {
       itemId: 'item-1',
       itemTitle: 'Acta fundacional',
     })
+  })
+
+  it('renders sibling document controls and replaces navigation within the same collection', async () => {
+    setNavigationState({
+      history: [
+        { name: 'collections' },
+        { name: 'collection', id: 'col-1', collectionName: 'Archivo' },
+        {
+          name: 'item',
+          collectionId: 'col-1',
+          collectionName: 'Archivo',
+          itemId: 'item-1',
+          itemTitle: 'Acta 1',
+        },
+      ],
+      current: {
+        name: 'item',
+        collectionId: 'col-1',
+        collectionName: 'Archivo',
+        itemId: 'item-1',
+        itemTitle: 'Acta 1',
+      },
+      canGoBack: true,
+      breadcrumb: ['Collections', 'Archivo', 'Acta 1'],
+    })
+
+    render(TopBar)
+
+    const previousButton = await screen.findByRole('button', { name: 'Documento anterior' })
+    const nextButton = await screen.findByRole('button', { name: 'Documento siguiente' })
+
+    expect(previousButton).toBeEnabled()
+    expect(nextButton).toBeEnabled()
+
+    await fireEvent.click(nextButton)
+
+    expect(replaceMock).toHaveBeenCalledWith({
+      name: 'item',
+      collectionId: 'col-1',
+      collectionName: 'Archivo',
+      itemId: 'item-2',
+      itemTitle: 'Acta 2',
+    })
+  })
+
+  it('disables sibling controls at collection boundaries', async () => {
+    storeRef.current.items.findByCollection.mockResolvedValueOnce([
+      { id: 'item-1', title: 'Acta 1', collectionId: 'col-1' },
+      { id: 'item-2', title: 'Acta 2', collectionId: 'col-1' },
+    ])
+    setNavigationState({
+      history: [
+        { name: 'collections' },
+        { name: 'collection', id: 'col-1', collectionName: 'Archivo' },
+        {
+          name: 'item',
+          collectionId: 'col-1',
+          collectionName: 'Archivo',
+          itemId: 'item-1',
+          itemTitle: 'Acta 1',
+        },
+      ],
+      current: {
+        name: 'item',
+        collectionId: 'col-1',
+        collectionName: 'Archivo',
+        itemId: 'item-1',
+        itemTitle: 'Acta 1',
+      },
+      canGoBack: true,
+      breadcrumb: ['Collections', 'Archivo', 'Acta 1'],
+    })
+
+    render(TopBar)
+
+    expect(await screen.findByRole('button', { name: 'Documento anterior' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Documento siguiente' })).toBeEnabled()
   })
 })

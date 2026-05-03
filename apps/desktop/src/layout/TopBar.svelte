@@ -14,11 +14,62 @@
   let searchResults = $state<SearchResult[]>([])
   let showResults = $state(false)
   let searching = $state(false)
+  let previousItem = $state<Item | null>(null)
+  let nextItem = $state<Item | null>(null)
+  let siblingRequestId = 0
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let searchInputEl: HTMLInputElement | undefined = $state()
   const currentLocale = locale
   const translate = (key: string, params?: Record<string, string | number>) =>
     t(key as never, params)
+
+  function buildItemView(item: Item) {
+    const currentView = $navigation.current
+    if (currentView.name !== 'item') return null
+
+    return {
+      name: 'item' as const,
+      collectionId: currentView.collectionId,
+      collectionName: currentView.collectionName,
+      itemId: item.id,
+      itemTitle: item.title,
+    }
+  }
+
+  async function loadSiblingItems() {
+    const currentView = $navigation.current
+    const requestId = ++siblingRequestId
+
+    previousItem = null
+    nextItem = null
+
+    if (currentView.name !== 'item') return
+
+    try {
+      const items = await getStore().items.findByCollection(currentView.collectionId)
+      if (requestId !== siblingRequestId) return
+
+      const currentIndex = items.findIndex((item) => item.id === currentView.itemId)
+      if (currentIndex === -1) return
+
+      previousItem = items[currentIndex - 1] ?? null
+      nextItem = items[currentIndex + 1] ?? null
+    } catch (error) {
+      if (requestId !== siblingRequestId) return
+      console.error('[TopBar] Failed to load sibling documents', error)
+    }
+  }
+
+  function navigateToSibling(item: Item | null) {
+    const nextView = item ? buildItemView(item) : null
+    if (!nextView) return
+    navigation.replace(nextView)
+  }
+
+  $effect(() => {
+    $navigation.current
+    void loadSiblingItems()
+  })
 
   async function performSearch(query: string) {
     if (!query.trim()) {
@@ -120,17 +171,53 @@
 
 <header class="topbar">
   <div class="topbar__leading">
-    {#if $navigation.canGoBack}
-      <Button variant="ghost" size="sm" onclick={() => navigation.back()}
-        >{$currentLocale && t('topbar.back')}</Button
-      >
-    {/if}
+    <div class="topbar__back-slot">
+      {#if $navigation.canGoBack}
+        <Button variant="ghost" size="sm" onclick={() => navigation.back()}
+          >{$currentLocale && t('topbar.back')}</Button
+        >
+      {/if}
+    </div>
     <nav class="breadcrumb" aria-label={$currentLocale && t('topbar.breadcrumb')}>
       {#each $navigation.breadcrumb as crumb, i}
         {#if i > 0}<span class="sep">/</span>{/if}
-        <span class="crumb" class:last={i === $navigation.breadcrumb.length - 1}>{crumb}</span>
+        {#if i === $navigation.breadcrumb.length - 1}
+          <span class="crumb crumb--current" class:last={i === $navigation.breadcrumb.length - 1}>
+            <span class="crumb__label">{crumb}</span>
+          </span>
+        {:else}
+          <span class="crumb">{crumb}</span>
+        {/if}
       {/each}
     </nav>
+  </div>
+
+  <div class="topbar__center" class:topbar__center--inactive={$navigation.current.name !== 'item'}>
+    {#if $navigation.current.name === 'item'}
+      <span class="crumb-nav" aria-label={$currentLocale && t('topbar.breadcrumb')}>
+        <button
+          class="crumb-nav__button"
+          type="button"
+          aria-label={$currentLocale && t('topbar.previousDocument')}
+          title={$currentLocale && t('topbar.previousDocument')}
+          disabled={!previousItem}
+          onclick={() => navigateToSibling(previousItem)}
+        >
+          &lt;
+        </button>
+        <span class="crumb-nav__separator" aria-hidden="true">|</span>
+        <button
+          class="crumb-nav__button"
+          type="button"
+          aria-label={$currentLocale && t('topbar.nextDocument')}
+          title={$currentLocale && t('topbar.nextDocument')}
+          disabled={!nextItem}
+          onclick={() => navigateToSibling(nextItem)}
+        >
+          &gt;
+        </button>
+      </span>
+    {/if}
   </div>
 
   <div class="global-search">
@@ -225,7 +312,9 @@
 
 <style>
   .topbar {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(220px, 320px) auto;
+    grid-template-areas: 'leading center search actions';
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
@@ -237,18 +326,37 @@
   }
 
   .topbar__leading {
-    display: flex;
+    grid-area: leading;
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
     align-items: center;
     gap: var(--space-3);
-    flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .topbar__back-slot {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .topbar__center {
+    grid-area: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 56px;
+  }
+
+  .topbar__center--inactive {
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .breadcrumb {
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
@@ -256,6 +364,17 @@
   .crumb {
     color: var(--color-text-secondary);
     font-size: var(--font-size-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .crumb--current {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .crumb__label {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -267,11 +386,57 @@
     color: var(--color-text-muted);
   }
 
+  .crumb-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--color-text-muted);
+  }
+
+  .crumb-nav__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: inherit;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      color var(--transition-base),
+      background-color var(--transition-base);
+  }
+
+  .crumb-nav__button:hover:not(:disabled) {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  }
+
+  .crumb-nav__button:disabled {
+    opacity: 0.38;
+    cursor: default;
+  }
+
+  .crumb-nav__button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .crumb-nav__separator {
+    font-size: 10px;
+    opacity: 0.55;
+  }
+
   .topbar__actions {
+    grid-area: actions;
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    margin-left: auto;
     flex-shrink: 0;
   }
 
@@ -304,10 +469,10 @@
   }
 
   .global-search {
+    grid-area: search;
+    justify-self: end;
     position: relative;
-    width: 100%;
-    max-width: 320px;
-    flex: 1 1 260px;
+    width: min(100%, 320px);
     min-width: 0;
   }
 
@@ -425,17 +590,27 @@
 
   @media (max-width: 900px) {
     .topbar {
-      flex-wrap: wrap;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-areas:
+        'leading center actions'
+        'search search search';
     }
 
     .topbar__leading {
-      flex: 1 1 0;
+      grid-area: leading;
+    }
+
+    .topbar__center {
+      grid-area: center;
+    }
+
+    .topbar__actions {
+      grid-area: actions;
     }
 
     .global-search {
-      order: 3;
-      max-width: none;
-      flex-basis: 100%;
+      grid-area: search;
+      width: 100%;
     }
   }
 </style>
