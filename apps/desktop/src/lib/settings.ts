@@ -53,6 +53,7 @@ export const SETTINGS_KEYS = {
   OPENROUTER_MODEL: 'openrouter_model',
   LLM_MODE: 'llm_mode',
   LANGUAGE: 'language',
+  DEPS_VENV_PYTHON_PATH: 'deps_venv_python_path',
 } as const
 
 export type LlmMode = 'local' | 'openrouter' | 'auto'

@@ -352,6 +352,17 @@ pub fn which_python_for_module(
     None
 }
 
+/// Clear the module probe cache so the next `which_python_for_module` call re-probes.
+///
+/// Called by `deps_reset` after the managed venv is deleted, so subsystems
+/// (OCR, embeddings, transcription, NER) don't keep using a now-gone interpreter.
+pub fn invalidate_probe_cache() {
+    if let Ok(mut cache) = get_probe_cache().lock() {
+        cache.clear();
+        eprintln!("[python_discovery] Probe cache invalidated");
+    }
+}
+
 /// Collect Python interpreters that were previously validated for ANY module.
 ///
 /// Returns deduplicated paths from the probe cache, ordered by the normal

@@ -14,6 +14,10 @@
   } from '$lib/settings'
   import { llmIsAvailable } from '$lib/llm'
   import { Button, Card, Input } from '@entropia/ui'
+  import DependenciasTab from './DependenciasTab.svelte'
+
+  // Tab state
+  let activeTab = $state<'openrouter' | 'dependencias'>('openrouter')
 
   // State
   let apiKey = $state('')
@@ -163,6 +167,27 @@
       </div>
     </section>
 
+    <!-- Tab navigation -->
+    <nav class="settings-tabs" aria-label="Secciones de configuración">
+      <button
+        class="settings-tab"
+        class:settings-tab--active={activeTab === 'openrouter'}
+        type="button"
+        onclick={() => (activeTab = 'openrouter')}
+      >
+        LLM y OpenRouter
+      </button>
+      <button
+        class="settings-tab"
+        class:settings-tab--active={activeTab === 'dependencias'}
+        type="button"
+        onclick={() => (activeTab = 'dependencias')}
+      >
+        Dependencias de IA
+      </button>
+    </nav>
+
+    {#if activeTab === 'openrouter'}
     {#if saveFeedback}
       <p
         class="surface-message"
@@ -336,12 +361,48 @@
         </div>
       </section>
     </Card>
+
+    {:else if activeTab === 'dependencias'}
+    <DependenciasTab />
+    {/if}
   </div>
 {/key}
 
 <style>
   .settings-view {
     min-height: 100%;
+  }
+
+  /* Tab navigation */
+  .settings-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+    margin-bottom: var(--space-1);
+  }
+
+  .settings-tab {
+    padding: var(--space-2) var(--space-5);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-secondary);
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease;
+    margin-bottom: -1px;
+  }
+
+  .settings-tab:hover {
+    color: var(--color-text-primary);
+  }
+
+  .settings-tab--active {
+    color: var(--color-accent);
+    border-bottom-color: var(--color-accent);
   }
 
   .settings-view__toolbar {

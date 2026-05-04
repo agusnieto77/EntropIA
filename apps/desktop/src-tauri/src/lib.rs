@@ -1,4 +1,5 @@
 mod db;
+pub mod deps;
 mod geo;
 mod image_edit;
 mod llm;
@@ -209,7 +210,32 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
                 .expect("Failed to configure SQLite pragmas (worker)");
 
-            app.manage(AppDbState::new(ui_conn, worker_conn));
+            app.manage(AppDbState::new(ui_conn, worker_conn, db_path.clone()));
+
+            // Dependency manager: tracks Python-package availability (OCR, embeddings, etc.)
+            app.manage(deps::DepsState::new());
+
+            // Background dependency check — runs 2 s after startup so the window is visible first.
+            let app_handle_deps = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let db_state = app_handle_deps.state::<AppDbState>();
+                let deps_state = app_handle_deps.state::<deps::DepsState>();
+                let python_path = {
+                    let conn = db_state.ui_conn.lock();
+                    conn.ok().and_then(|c| deps::checks::resolve_probe_python(&c))
+                };
+                if let Some(python) = python_path {
+                    let results = deps::checks::probe_all(&python).await;
+                    let mut map = deps_state.0.lock().await;
+                    for (id, status) in &results {
+                        map.insert(id.clone(), status.clone());
+                    }
+                    eprintln!("[deps] Startup check: {} deps checked", results.len());
+                } else {
+                    eprintln!("[deps] Startup check: no venv Python found — skipping probe");
+                }
+            });
 
             // OCR queue: create channel, manage the sender half, spawn worker with receiver
             let (ocr_queue, ocr_receiver) = OcrQueue::new();
@@ -320,6 +346,11 @@ llm::commands::llm_get_results,
             settings::settings_get_all,
             settings::settings_delete,
             llm::commands::test_openrouter_connection,
+            deps::deps_check_all,
+            deps::deps_install_all,
+            deps::deps_install_one,
+            deps::deps_get_uv_status,
+            deps::deps_reset,
             open_external_url,
         ])
         .run(tauri::generate_context!())
