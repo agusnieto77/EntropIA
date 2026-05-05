@@ -1,10 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShellHost from './__fixtures__/AppShellHost.svelte'
 import { locale } from '$lib/i18n'
 
-const { invokeMock, navigationStore, storeRef } = vi.hoisted(() => ({
+type EventListenerCallback = (event: { payload: unknown }) => void
+
+const { invokeMock, listenMock, navigationStore, storeRef } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
+  listenMock: vi.fn<(eventName: string, callback: EventListenerCallback) => Promise<() => void>>(
+    () => Promise.resolve(vi.fn()),
+  ),
   navigationStore: {
     subscribe(run: (value: unknown) => void) {
       run({
@@ -36,6 +41,10 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: invokeMock,
 }))
 
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: listenMock,
+}))
+
 vi.mock('$lib/navigation', () => ({
   navigation: {
     subscribe: navigationStore.subscribe,
@@ -51,7 +60,14 @@ vi.mock('$lib/db', () => ({
 describe('AppShell', () => {
   beforeEach(() => {
     locale.set('es')
-    invokeMock.mockReset().mockResolvedValue(undefined)
+    invokeMock.mockReset().mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([])
+      }
+
+      return Promise.resolve(undefined)
+    })
+    listenMock.mockClear().mockImplementation(() => Promise.resolve(vi.fn()))
     storeRef.current.items.searchGlobal.mockClear()
     storeRef.current.items.findByCollection.mockClear()
     storeRef.current.collections.findAll.mockClear()
@@ -91,5 +107,39 @@ describe('AppShell', () => {
 
     expect(await screen.findByText('Archive, OCR, and assisted analysis.')).toBeInTheDocument()
     expect(screen.getByText('Developed by')).toBeInTheDocument()
+  })
+
+  it('boots without awaiting a fresh dependency probe and updates from completion events', async () => {
+    let depsCompleteHandler: ((event: { payload: { results: Array<{ id: string; status: { type: string } }> } }) => void) | undefined
+
+    listenMock.mockImplementation((eventName: string, callback: EventListenerCallback) => {
+      if (eventName === 'deps://complete') {
+        depsCompleteHandler = callback as typeof depsCompleteHandler
+      }
+
+      return Promise.resolve(vi.fn())
+    })
+
+    render(AppShellHost)
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('deps_get_cached_statuses')
+    })
+    expect(invokeMock).not.toHaveBeenCalledWith('deps_check_all')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    depsCompleteHandler?.({
+      payload: {
+        results: [
+          { id: 'Python', status: { type: 'missing' } },
+          { id: 'Fastembed', status: { type: 'installed' } },
+          { id: 'PaddleOcr', status: { type: 'installed' } },
+        ],
+      },
+    })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '⚠ Algunas funciones de IA no están disponibles.',
+    )
   })
 })

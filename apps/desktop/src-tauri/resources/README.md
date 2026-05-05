@@ -7,6 +7,13 @@ This directory is reserved for bundled Tauri resources.
   The DLL is resolved at runtime with a 3-tier search (bundled → dev → system library).
   See `resources/lib/.gitkeep` for details.
 
+## Bundled Tools
+
+- `tools/uv/windows-x86_64/uv.exe` — bundled `uv` 0.6.14 for Windows x64.
+- `tools/uv/windows-aarch64/uv.exe` — bundled `uv` 0.6.14 for Windows ARM64.
+  Runtime resolution prefers bundled Tauri resources, then dev resources, then
+  the legacy app-data managed copy, then system `PATH`.
+
 ## OCR Models
 
 Runtime assets for the `ocrs` engine are downloaded automatically before each build:

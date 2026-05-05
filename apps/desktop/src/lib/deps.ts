@@ -57,12 +57,20 @@ export interface DepsErrorEvent {
   recoverable: boolean
 }
 
+function normalizeDepResults(results: DepCheckResult[] | null | undefined): DepCheckResult[] {
+  return Array.isArray(results) ? results : []
+}
+
 // ---------------------------------------------------------------------------
 // Invoke wrappers
 // ---------------------------------------------------------------------------
 
 export function checkAllDeps(): Promise<DepCheckResult[]> {
-  return invoke<DepCheckResult[]>('deps_check_all')
+  return invoke<DepCheckResult[]>('deps_check_all').then(normalizeDepResults)
+}
+
+export function getCachedDepsStatuses(): Promise<DepCheckResult[]> {
+  return invoke<DepCheckResult[]>('deps_get_cached_statuses').then(normalizeDepResults)
 }
 
 export function installAllDeps(): Promise<void> {

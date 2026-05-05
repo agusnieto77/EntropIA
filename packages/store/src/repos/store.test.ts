@@ -19,7 +19,6 @@ import { ItemRepo } from './item.repo'
 import { AssetRepo } from './asset.repo'
 import { NoteRepo } from './note.repo'
 import { AnnotationRepo } from './annotation.repo'
-import { JobRepo } from './job.repo'
 import { ExtractionRepo } from './extraction.repo'
 import { LayoutRepo } from './layout.repo'
 import { EntityRepo } from './entity.repo'
@@ -48,7 +47,6 @@ describe('initStore', () => {
     expect(store.assets).toBeInstanceOf(AssetRepo)
     expect(store.notes).toBeInstanceOf(NoteRepo)
     expect(store.annotations).toBeInstanceOf(AnnotationRepo)
-    expect(store.jobs).toBeInstanceOf(JobRepo)
     expect(store.extractions).toBeInstanceOf(ExtractionRepo)
     expect(store.layouts).toBeInstanceOf(LayoutRepo)
     expect(store.entities).toBeInstanceOf(EntityRepo)

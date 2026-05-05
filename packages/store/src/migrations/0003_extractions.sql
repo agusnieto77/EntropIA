@@ -7,6 +7,3 @@ CREATE TABLE IF NOT EXISTS extractions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_asset_id ON jobs(asset_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

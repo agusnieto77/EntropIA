@@ -4,6 +4,18 @@ use tauri::State;
 
 use crate::db::state::AppDbState;
 
+async fn invalidate_dependency_probe_cache_if_needed(
+    key: &str,
+    deps: Option<&State<'_, crate::deps::DepsState>>,
+) {
+    if crate::deps::should_invalidate_cache_for_setting(key) {
+        if let Some(deps_state) = deps {
+            crate::deps::invalidate_probe_cache(deps_state.inner()).await;
+        }
+        crate::python_discovery::invalidate_probe_cache();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -42,16 +54,23 @@ pub async fn settings_set(
     key: String,
     value: String,
     db: State<'_, AppDbState>,
+    deps: State<'_, crate::deps::DepsState>,
 ) -> Result<(), String> {
-    let conn = db
-        .ui_conn
-        .lock()
-        .map_err(|e| format!("DB lock error: {e}"))?;
-    conn.execute(
-        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
-        params![key, value],
-    )
-    .map_err(|e| format!("Failed to save setting: {e}"))?;
+    let should_invalidate = crate::deps::should_invalidate_cache_for_setting(&key);
+    {
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|e| format!("DB lock error: {e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![key.as_str(), value.as_str()],
+        )
+        .map_err(|e| format!("Failed to save setting: {e}"))?;
+    }
+    if should_invalidate {
+        invalidate_dependency_probe_cache_if_needed(&key, Some(&deps)).await;
+    }
     Ok(())
 }
 
@@ -82,13 +101,23 @@ pub async fn settings_get_all(db: State<'_, AppDbState>) -> Result<Vec<SettingEn
 }
 
 #[tauri::command]
-pub async fn settings_delete(key: String, db: State<'_, AppDbState>) -> Result<(), String> {
-    let conn = db
-        .ui_conn
-        .lock()
-        .map_err(|e| format!("DB lock error: {e}"))?;
-    conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
-        .map_err(|e| format!("Failed to delete setting: {e}"))?;
+pub async fn settings_delete(
+    key: String,
+    db: State<'_, AppDbState>,
+    deps: State<'_, crate::deps::DepsState>,
+) -> Result<(), String> {
+    let should_invalidate = crate::deps::should_invalidate_cache_for_setting(&key);
+    {
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|e| format!("DB lock error: {e}"))?;
+        conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key.as_str()])
+            .map_err(|e| format!("Failed to delete setting: {e}"))?;
+    }
+    if should_invalidate {
+        invalidate_dependency_probe_cache_if_needed(&key, Some(&deps)).await;
+    }
     Ok(())
 }
 

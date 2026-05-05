@@ -3,7 +3,12 @@
   import { invoke } from '@tauri-apps/api/core'
   import { locale, t } from '$lib/i18n'
   import { navigation } from '$lib/navigation'
-  import { checkAllDeps, onDepsComplete, CRITICAL_DEPS, type DepCheckResult } from '$lib/deps'
+  import {
+    getCachedDepsStatuses,
+    onDepsComplete,
+    CRITICAL_DEPS,
+    type DepCheckResult,
+  } from '$lib/deps'
   import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
   import type { Snippet } from 'svelte'
@@ -30,14 +35,17 @@
   let unlistenDepsComplete: (() => void) | undefined
 
   onMount(async () => {
-    try {
-      depsResults = await checkAllDeps()
-    } catch (e) {
-      console.error('[AppShell] deps check failed', e)
-    }
     unlistenDepsComplete = await onDepsComplete((event) => {
-      depsResults = event.results
+      depsResults = event.results ?? []
     })
+
+    void getCachedDepsStatuses()
+      .then((results) => {
+        depsResults = results
+      })
+      .catch((e) => {
+        console.error('[AppShell] cached deps fetch failed', e)
+      })
   })
 
   onDestroy(() => {

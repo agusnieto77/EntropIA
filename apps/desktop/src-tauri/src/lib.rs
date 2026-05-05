@@ -221,21 +221,16 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let db_state = app_handle_deps.state::<AppDbState>();
                 let deps_state = app_handle_deps.state::<deps::DepsState>();
-                let python_path = {
-                    let conn = db_state.ui_conn.lock();
-                    conn.ok().and_then(|c| deps::checks::resolve_probe_python(&c))
-                };
-                if let Some(python) = python_path {
-                    let results = deps::checks::probe_all(&python).await;
-                    let mut map = deps_state.0.lock().await;
-                    for (id, status) in &results {
-                        map.insert(id.clone(), status.clone());
+                match deps::probe_all_once(deps_state.inner(), db_state.inner()).await {
+                    Ok(results) => {
+                        if let Err(err) = deps::emit_probe_complete(&app_handle_deps, &results) {
+                            eprintln!("[deps] Startup event emit failed: {err}");
+                        }
+                        eprintln!("[deps] Startup check: {} deps checked", results.len());
                     }
-                    eprintln!("[deps] Startup check: {} deps checked", results.len());
-                } else {
-                    eprintln!(
-                        "[deps] Startup check: no managed/runtime Python with critical deps found — skipping probe"
-                    );
+                    Err(err) => {
+                        eprintln!("[deps] Startup check failed: {err}");
+                    }
                 }
             });
 
@@ -349,6 +344,7 @@ llm::commands::llm_get_results,
             settings::settings_delete,
             llm::commands::test_openrouter_connection,
             deps::deps_check_all,
+            deps::deps_get_cached_statuses,
             deps::deps_install_all,
             deps::deps_install_one,
             deps::deps_get_uv_status,

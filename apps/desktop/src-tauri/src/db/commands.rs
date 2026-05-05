@@ -12,7 +12,6 @@ const DB_BROWSER_CANDIDATE_TABLES: &[&str] = &[
     "items",
     "assets",
     "notes",
-    "jobs",
     "extractions",
     "transcriptions",
     "entities",

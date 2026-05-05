@@ -4,11 +4,13 @@
 //! `"ok"` when the dependency is importable. This module runs those probes
 //! asynchronously and maps the results to `DependencyStatus` values.
 
+use std::sync::{Mutex, OnceLock};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::task;
 use tokio::time::timeout;
 
 #[cfg(windows)]
@@ -16,6 +18,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 use super::{DependencyId, DependencyStatus};
 use crate::deps::registry::all_deps;
+
+const PROBE_TIMEOUT_SECS: u64 = 45;
+const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
 
 const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
 const PROBE_PADDLE_VL: &str = "from paddleocr import PaddleOCRVL; print('ok')";
@@ -27,6 +32,30 @@ const RUNTIME_PYTHON_KEYS: &[&str] = &[
     "python.faster_whisper.path",
     "python.spacy.path",
 ];
+
+static LOGGED_RUNTIME_FALLBACK: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn runtime_fallback_log_cache() -> &'static Mutex<Option<PathBuf>> {
+    LOGGED_RUNTIME_FALLBACK.get_or_init(|| Mutex::new(None))
+}
+
+pub fn invalidate_resolved_probe_python_log() {
+    if let Ok(mut cache) = runtime_fallback_log_cache().lock() {
+        *cache = None;
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProbePythonSettings {
+    managed_path: Option<PathBuf>,
+    runtime_candidates: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbePythonMode {
+    DependencyManager,
+    RuntimeFallback,
+}
 
 // ---------------------------------------------------------------------------
 // Per-dependency probe
@@ -47,7 +76,7 @@ pub async fn probe_one(dep: &crate::deps::registry::DependencySpec, python_path:
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let probe_result = timeout(Duration::from_secs(10), cmd.output()).await;
+    let probe_result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
 
     match probe_result {
         Ok(Ok(output)) if output.status.success() => {
@@ -107,7 +136,7 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
 
-            let result = timeout(Duration::from_secs(10), cmd.output()).await;
+            let result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
             let status = match result {
                 Ok(Ok(output)) if output.status.success() => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -143,10 +172,13 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
         }
     };
 
-    match timeout(Duration::from_secs(15), collect_all).await {
+    match timeout(Duration::from_secs(GLOBAL_PROBE_TIMEOUT_SECS), collect_all).await {
         Ok(()) => {}
         Err(_) => {
-            eprintln!("[deps/checks] global probe timeout (15 s) — marking remaining deps Unknown");
+            eprintln!(
+                "[deps/checks] global probe timeout ({} s) — marking remaining deps Unknown",
+                GLOBAL_PROBE_TIMEOUT_SECS
+            );
             // Abort any tasks still running.
             join_set.abort_all();
             // Any dep not yet inserted stays Unknown (default for missing keys).
@@ -171,25 +203,49 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
 /// Resolve the Python interpreter path to use for probing.
 ///
 /// Reads `deps_venv_python_path` from `app_settings` via an open rusqlite
-/// connection. If that managed venv path is missing, it falls back to
-/// discovering a runtime Python that satisfies the same critical capabilities
-/// used by the app at runtime (`fastembed` + `PaddleOCRVL`). Optional
-/// capabilities (`faster_whisper`, `spaCy + es_core_news_sm`) are used only to
-/// prefer a richer runtime when multiple candidates satisfy the critical set.
-pub fn resolve_probe_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
-    if let Some(raw) = crate::settings::get_setting(conn, "deps_venv_python_path") {
-        let path = PathBuf::from(&raw);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
+/// connection. Runtime fallback resolution is handled separately so dependency
+/// manager probes can require the managed venv while runtime features still
+/// retain their system/runtime fallback behavior.
+pub fn load_probe_python_settings(conn: &rusqlite::Connection) -> ProbePythonSettings {
+    let managed_path = crate::settings::get_setting(conn, "deps_venv_python_path")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
 
-    resolve_runtime_python(conn)
+    ProbePythonSettings {
+        managed_path,
+        runtime_candidates: persisted_runtime_candidates(conn),
+    }
 }
 
-fn resolve_runtime_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
-    let mut candidates = persisted_runtime_candidates(conn);
+pub fn resolve_probe_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
+    resolve_probe_python_from_settings(load_probe_python_settings(conn), ProbePythonMode::RuntimeFallback)
+}
 
+pub async fn resolve_probe_python_async(
+    settings: ProbePythonSettings,
+    mode: ProbePythonMode,
+) -> Result<Option<PathBuf>, String> {
+    task::spawn_blocking(move || resolve_probe_python_from_settings(settings, mode))
+        .await
+        .map_err(|error| format!("Dependency Python resolution task failed: {error}"))
+}
+
+pub fn resolve_probe_python_from_settings(
+    settings: ProbePythonSettings,
+    mode: ProbePythonMode,
+) -> Option<PathBuf> {
+    if let Some(path) = settings.managed_path {
+        return Some(path);
+    }
+
+    match mode {
+        ProbePythonMode::DependencyManager => None,
+        ProbePythonMode::RuntimeFallback => resolve_runtime_python_candidates(settings.runtime_candidates),
+    }
+}
+
+fn resolve_runtime_python_candidates(mut candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    
     for candidate in crate::python_discovery::discover_python_candidates() {
         if candidate.is_file() && !candidates.contains(candidate) {
             candidates.push(candidate.clone());
@@ -216,11 +272,24 @@ fn resolve_runtime_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
     }
 
     if let Some((path, optional_score)) = best_match {
-        eprintln!(
-            "[deps/checks] Using runtime Python fallback (critical deps OK, optional score={}): {}",
-            optional_score,
-            path.display()
-        );
+        let should_log = runtime_fallback_log_cache()
+            .lock()
+            .map(|mut cache| {
+                let already_logged = cache.as_ref() == Some(&path);
+                if !already_logged {
+                    *cache = Some(path.clone());
+                }
+                !already_logged
+            })
+            .unwrap_or(true);
+
+        if should_log {
+            eprintln!(
+                "[deps/checks] Using runtime Python fallback (critical deps OK, optional score={}): {}",
+                optional_score,
+                path.display()
+            );
+        }
         return Some(path);
     }
 
@@ -338,5 +407,56 @@ mod tests {
 
         let candidates = persisted_runtime_candidates(&conn);
         assert_eq!(candidates, vec![current_exe]);
+    }
+
+    #[test]
+    fn test_load_probe_python_settings_prefers_existing_managed_path_without_runtime_candidates() {
+        let conn = in_memory_conn();
+        let current_exe = std::env::current_exe().expect("current exe path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["deps_venv_python_path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert managed python path");
+
+        let settings = load_probe_python_settings(&conn);
+        let result = resolve_probe_python_from_settings(settings, ProbePythonMode::RuntimeFallback);
+
+        assert_eq!(result, Some(current_exe));
+    }
+
+    #[test]
+    fn test_dependency_manager_mode_requires_managed_venv() {
+        let conn = in_memory_conn();
+        let current_exe = std::env::current_exe().expect("current exe path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["python.spacy.path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert runtime python path");
+
+        let settings = load_probe_python_settings(&conn);
+        let result = resolve_probe_python_from_settings(settings, ProbePythonMode::DependencyManager);
+
+        assert_eq!(result, None, "dependency checks must not fall back to runtime python when managed venv is missing");
+    }
+
+    #[test]
+    fn test_runtime_fallback_mode_can_use_runtime_candidates_without_managed_venv() {
+        let conn = in_memory_conn();
+        let current_exe = std::env::current_exe().expect("current exe path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["python.fastembed.path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert runtime python path");
+
+        let settings = load_probe_python_settings(&conn);
+        let result = resolve_probe_python_from_settings(settings, ProbePythonMode::RuntimeFallback);
+
+        assert!(
+            result.as_ref().map(|path| path.is_file()).unwrap_or(true),
+            "runtime fallback mode may use runtime candidates when no managed venv exists"
+        );
     }
 }

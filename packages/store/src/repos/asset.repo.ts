@@ -79,7 +79,7 @@ export class AssetRepo {
   }
 
   /**
-   * Delete an asset and all its dependent records (jobs, extractions)
+   * Delete an asset and all its dependent records
    * in a single atomic transaction. Returns the deleted asset record
    * so the caller can remove the associated file from the filesystem.
    *
@@ -101,7 +101,6 @@ export class AssetRepo {
     // Using a single SQL batch ensures atomicity (all or nothing)
     try {
       await this.rawClient.executeBatch(`
-        DELETE FROM jobs WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM extractions WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM layouts WHERE asset_id = '${id.replace(/'/g, "''")}';
         DELETE FROM transcriptions WHERE asset_id = '${id.replace(/'/g, "''")}';

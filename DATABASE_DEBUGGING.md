@@ -25,7 +25,7 @@ collection -> item -> asset -> procesamiento -> enriquecimiento -> búsqueda
 Traducido a tablas:
 
 ```text
-collections -> items -> assets -> jobs / extractions / transcriptions / layouts
+collections -> items -> assets -> extractions / transcriptions / layouts
 collections / items / assets -> llm_results
 items -> notes / entities / triples / item_topics
 item_topics -> topics
@@ -52,15 +52,23 @@ FROM assets
 ORDER BY created_at DESC;
 ```
 
-### 2. Verificar jobs
+### 2. Verificar persistencia de resultados
 
 ```sql
-SELECT id, type, status, asset_id, error, created_at, updated_at
-FROM jobs
-ORDER BY updated_at DESC;
+SELECT asset_id, method, confidence, created_at
+FROM extractions
+ORDER BY created_at DESC;
+
+SELECT asset_id, language, duration_ms, model, confidence, created_at
+FROM transcriptions
+ORDER BY created_at DESC;
+
+SELECT asset_id, model, created_at
+FROM layouts
+ORDER BY created_at DESC;
 ```
 
-### 3. Verificar persistencia de resultados
+### 3. Verificar otros resultados persistidos
 
 ```sql
 SELECT asset_id, method, confidence, created_at
@@ -244,16 +252,23 @@ ORDER BY sort_index, created_at;
 
 Mirar:
 
-- `jobs`
 - `extractions`
 - `transcriptions`
+- `layouts`
 
 ```sql
-SELECT a.id, a.path, j.type, j.status, j.error
+SELECT
+  a.id,
+  a.path,
+  CASE WHEN e.asset_id IS NOT NULL THEN 'yes' ELSE 'no' END AS extraction,
+  CASE WHEN t.asset_id IS NOT NULL THEN 'yes' ELSE 'no' END AS transcription,
+  CASE WHEN l.asset_id IS NOT NULL THEN 'yes' ELSE 'no' END AS layout
 FROM assets a
-LEFT JOIN jobs j ON j.asset_id = a.id
+LEFT JOIN extractions e ON e.asset_id = a.id
+LEFT JOIN transcriptions t ON t.asset_id = a.id
+LEFT JOIN layouts l ON l.asset_id = a.id
 WHERE a.id = 'ASSET_ID_AQUI'
-ORDER BY j.updated_at DESC;
+LIMIT 1;
 ```
 
 ### E. “OCR High no dejó layout”
@@ -495,9 +510,10 @@ PRAGMA quick_check;
 Cuando algo falla, no empieces por inferencias. Empezá por evidencia:
 
 1. `assets`
-2. `jobs`
-3. `extractions` / `transcriptions` / `layouts`
-4. `entities` / `triples` / `topics`
-5. `fts_items` / `vec_assets`
+2. `extractions` / `transcriptions` / `layouts`
+3. `entities` / `triples` / `topics`
+4. `fts_items` / `vec_assets`
 
 Es así de simple. Primero verificás persistencia. Después discutís lógica.
+
+> Compatibilidad: si abrís una base vieja y todavía aparece `jobs`, tratala como una tabla legacy. El runtime actual no la usa y la cleanup vigente la elimina con la migración `0021_drop_unused_processing_table`.

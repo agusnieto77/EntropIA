@@ -45,15 +45,3 @@ CREATE TABLE IF NOT EXISTS notes (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-
--- Jobs — async processing tasks (OCR, NER, embeddings, triples)
-CREATE TABLE IF NOT EXISTS jobs (
-  id         TEXT    PRIMARY KEY,
-  type       TEXT    NOT NULL,
-  status     TEXT    NOT NULL DEFAULT 'pending',
-  asset_id   TEXT    NOT NULL REFERENCES assets(id),
-  result     TEXT,
-  error      TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);

@@ -275,7 +275,6 @@ describe('ItemRepo', () => {
       const batchSql = rawExecuteBatchMock.mock.calls[0]?.[0] as string
       // Core tables (always exist) — in atomic transaction
       expect(batchSql).toContain('BEGIN')
-      expect(batchSql).toContain('DELETE FROM jobs')
       expect(batchSql).toContain('DELETE FROM extractions')
       expect(batchSql).toContain('DELETE FROM layouts')
       expect(batchSql).toContain('DELETE FROM llm_results')

@@ -46,17 +46,6 @@ CREATE TABLE IF NOT EXISTS notes (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS jobs (
-  id         TEXT    PRIMARY KEY,
-  type       TEXT    NOT NULL,
-  status     TEXT    NOT NULL DEFAULT 'pending',
-  asset_id   TEXT    NOT NULL REFERENCES assets(id),
-  result     TEXT,
-  error      TEXT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
   `.trim(),
 
   '0002_metadata_search': `
@@ -82,9 +71,6 @@ CREATE TABLE IF NOT EXISTS extractions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_asset_id ON jobs(asset_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   `.trim(),
 
   '0004_fts5': `
@@ -367,6 +353,10 @@ ON llm_results(target_type, target_id, job_type)
 -- may already contain a legacy layouts table without the blocks column.
 CREATE TEMP TABLE IF NOT EXISTS __entropia_migration_0020_noop (id INTEGER);
 DROP TABLE IF EXISTS __entropia_migration_0020_noop
+  `.trim(),
+
+  '0021_drop_unused_processing_table': `
+DROP TABLE IF EXISTS jobs
   `.trim(),
 }
 

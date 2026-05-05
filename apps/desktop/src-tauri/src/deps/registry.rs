@@ -23,9 +23,14 @@ pub struct DependencySpec {
     pub probe_code: &'static str,
     /// Whether the main AI pipeline cannot function without this dependency.
     pub critical: bool,
+    /// Managed-environment prerequisites that must exist before this dep can install.
+    pub managed_prerequisites: &'static [DependencyId],
     /// Relative install order — lower numbers are installed first.
     pub install_order: u8,
 }
+
+const NO_PREREQUISITES: &[DependencyId] = &[];
+const SPACY_MODEL_PREREQUISITES: &[DependencyId] = &[DependencyId::Spacy];
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -38,6 +43,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         pip_spec: None,
         probe_code: "import sys; print('ok')",
         critical: true,
+        managed_prerequisites: NO_PREREQUISITES,
         install_order: 0,
     },
     DependencySpec {
@@ -46,6 +52,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         pip_spec: Some("fastembed>=0.4.0"),
         probe_code: "import fastembed; print('ok')",
         critical: true,
+        managed_prerequisites: NO_PREREQUISITES,
         install_order: 1,
     },
     DependencySpec {
@@ -54,6 +61,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         pip_spec: Some("paddleocr[doc-parser]>=2.9.0"),
         probe_code: "import paddleocr; print('ok')",
         critical: true,
+        managed_prerequisites: NO_PREREQUISITES,
         install_order: 2,
     },
     DependencySpec {
@@ -62,6 +70,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         pip_spec: Some("faster-whisper>=1.0.0"),
         probe_code: "import faster_whisper; print('ok')",
         critical: false,
+        managed_prerequisites: NO_PREREQUISITES,
         install_order: 3,
     },
     DependencySpec {
@@ -70,14 +79,16 @@ static ALL_DEPS: &[DependencySpec] = &[
         pip_spec: Some("spacy>=3.7.0,<4.0.0"),
         probe_code: "import spacy; print('ok')",
         critical: false,
+        managed_prerequisites: NO_PREREQUISITES,
         install_order: 4,
     },
     DependencySpec {
         id: DependencyId::SpacyModelEs,
         display_name: "spaCy model (es_core_news_sm)",
-        pip_spec: None, // installed via `python -m spacy download es_core_news_sm`
+        pip_spec: None, // installed from a pinned wheel URL via the managed uv venv flow
         probe_code: "import spacy; spacy.load('es_core_news_sm'); print('ok')",
         critical: false,
+        managed_prerequisites: SPACY_MODEL_PREREQUISITES,
         install_order: 5,
     },
 ];
@@ -90,6 +101,13 @@ pub fn all_deps() -> &'static [DependencySpec] {
 /// Look up a single dependency by id.
 pub fn find_dep(id: &DependencyId) -> Option<&'static DependencySpec> {
     ALL_DEPS.iter().find(|spec| &spec.id == id)
+}
+
+/// Return all dependencies in deterministic install order.
+pub fn all_deps_in_install_order() -> Vec<&'static DependencySpec> {
+    let mut deps = ALL_DEPS.iter().collect::<Vec<_>>();
+    deps.sort_by_key(|spec| spec.install_order);
+    deps
 }
 
 // ---------------------------------------------------------------------------
@@ -134,5 +152,22 @@ mod tests {
             find_dep(&DependencyId::Fastembed).is_some(),
             "Fastembed must be in registry"
         );
+    }
+
+    #[test]
+    fn test_spacy_model_declares_spacy_prerequisite() {
+        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
+        assert_eq!(spacy_model.managed_prerequisites, SPACY_MODEL_PREREQUISITES);
+    }
+
+    #[test]
+    fn test_all_deps_in_install_order_is_sorted() {
+        let deps = all_deps_in_install_order();
+        for window in deps.windows(2) {
+            assert!(
+                window[0].install_order <= window[1].install_order,
+                "install order helper must stay sorted"
+            );
+        }
     }
 }

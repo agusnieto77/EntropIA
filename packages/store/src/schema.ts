@@ -55,22 +55,6 @@ export const notes = sqliteTable('notes', {
 })
 
 // ---------------------------------------------------------------------------
-// Jobs — async processing tasks (OCR, NER, embeddings, triples)
-// ---------------------------------------------------------------------------
-export const jobs = sqliteTable('jobs', {
-  id: text('id').primaryKey(),
-  type: text('type').notNull(), // 'ocr' | 'embeddings' | 'ner'
-  status: text('status').notNull().default('pending'), // 'pending' | 'running' | 'done' | 'error'
-  assetId: text('asset_id')
-    .notNull()
-    .references(() => assets.id),
-  result: text('result'), // JSON blob
-  error: text('error'),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull(),
-})
-
-// ---------------------------------------------------------------------------
 // Extractions — OCR / native text extraction results for an asset
 // ---------------------------------------------------------------------------
 export const extractions = sqliteTable('extractions', {

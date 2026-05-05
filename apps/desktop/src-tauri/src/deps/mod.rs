@@ -5,10 +5,11 @@
 //! install, and uv-binary management sub-modules.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 pub mod checks;
@@ -60,18 +61,68 @@ pub enum DependencyStatus {
 ///
 /// Wrapped in `Arc<Mutex<…>>` so it can be cloned cheaply and shared between
 /// the Tauri command layer and background workers.
+#[derive(Debug, Default)]
+pub struct DepsStateData {
+    pub statuses: HashMap<DependencyId, DependencyStatus>,
+    pub cached_probe_python: Option<PathBuf>,
+    pub cached_probe_results: Option<HashMap<DependencyId, DependencyStatus>>,
+    pub probe_in_flight: bool,
+    pub probe_generation: u64,
+}
+
 #[derive(Clone, Debug)]
-pub struct DepsState(pub Arc<Mutex<HashMap<DependencyId, DependencyStatus>>>);
+pub struct DepsState(pub Arc<Mutex<DepsStateData>>);
+
+fn default_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
+    use DependencyId::*;
+
+    let mut map = HashMap::new();
+    for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
+        map.insert(id, DependencyStatus::Unknown);
+    }
+    map
+}
+
+fn missing_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
+    registry::all_deps()
+        .into_iter()
+        .map(|dep| (dep.id.clone(), DependencyStatus::Missing))
+        .collect()
+}
+
+fn dep_results_from_map(
+    results_map: HashMap<DependencyId, DependencyStatus>,
+) -> Vec<DepCheckResult> {
+    registry::all_deps()
+        .iter()
+        .filter_map(|dep| {
+            results_map.get(&dep.id).cloned().map(|status| {
+                let version = match &status {
+                    DependencyStatus::Installed { version } => version.clone(),
+                    _ => None,
+                };
+                DepCheckResult {
+                    id: dep.id.clone(),
+                    status,
+                    version,
+                }
+            })
+        })
+        .collect()
+}
 
 impl DepsState {
     /// Create a new state map with all dependencies initialised to `Unknown`.
     pub fn new() -> Self {
-        use DependencyId::*;
-        let mut map = HashMap::new();
-        for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
-            map.insert(id, DependencyStatus::Unknown);
-        }
-        Self(Arc::new(Mutex::new(map)))
+        Self(
+            Arc::new(Mutex::new(DepsStateData {
+                statuses: default_dependency_statuses(),
+                cached_probe_python: None,
+                cached_probe_results: None,
+                probe_in_flight: false,
+                probe_generation: 0,
+            })),
+        )
     }
 }
 
@@ -99,9 +150,148 @@ pub struct UvStatusResult {
     pub venv_path: Option<String>,
 }
 
+pub fn should_invalidate_cache_for_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "deps_venv_python_path"
+            | "python.fastembed.path"
+            | "python.paddle_vl.path"
+            | "python.faster_whisper.path"
+            | "python.spacy.path"
+    )
+}
+
+pub async fn invalidate_probe_cache(state: &DepsState) {
+    let mut data = state.0.lock().await;
+    data.cached_probe_python = None;
+    data.cached_probe_results = None;
+    data.probe_in_flight = false;
+    data.probe_generation = data.probe_generation.saturating_add(1);
+    drop(data);
+    checks::invalidate_resolved_probe_python_log();
+}
+
+pub async fn cache_current_statuses(state: &DepsState, probe_python: Option<PathBuf>) {
+    let mut data = state.0.lock().await;
+    data.cached_probe_python = probe_python;
+    data.cached_probe_results = Some(data.statuses.clone());
+    data.probe_in_flight = false;
+}
+
+async fn finish_probe_attempt(
+    state: &DepsState,
+    probe_generation: u64,
+    probe_python: Option<PathBuf>,
+    results: Option<HashMap<DependencyId, DependencyStatus>>,
+) {
+    let mut data = state.0.lock().await;
+    if data.probe_generation != probe_generation {
+        return;
+    }
+    data.cached_probe_python = probe_python;
+    data.cached_probe_results = results.clone();
+    data.probe_in_flight = false;
+    if let Some(results_map) = results {
+        for (id, status) in results_map {
+            data.statuses.insert(id, status);
+        }
+    }
+}
+
+pub async fn probe_all_once(
+    state: &DepsState,
+    db: &crate::db::state::AppDbState,
+) -> Result<HashMap<DependencyId, DependencyStatus>, String> {
+    loop {
+        let probe_generation = {
+            let mut data = state.0.lock().await;
+
+            if let Some(results) = &data.cached_probe_results {
+                return Ok(results.clone());
+            }
+
+            if data.probe_in_flight {
+                None
+            } else {
+                data.probe_in_flight = true;
+                for dep in registry::all_deps() {
+                    data.statuses
+                        .insert(dep.id.clone(), DependencyStatus::Checking);
+                }
+                Some(data.probe_generation)
+            }
+        };
+
+        if let Some(probe_generation) = probe_generation {
+            let probe_settings = {
+                let conn = db
+                    .ui_conn
+                    .lock()
+                    .map_err(|err| format!("DB lock error: {err}"));
+
+                conn.map(|guard| checks::load_probe_python_settings(&guard))
+            };
+
+            let probe_settings = if let Ok(settings) = probe_settings {
+                settings
+            } else {
+                finish_probe_attempt(state, probe_generation, None, None).await;
+                return Err(
+                    probe_settings
+                        .err()
+                        .unwrap_or_else(|| "DB lock error".to_string()),
+                );
+            };
+
+            let python_path = checks::resolve_probe_python_async(
+                probe_settings,
+                checks::ProbePythonMode::DependencyManager,
+            )
+            .await?;
+
+            let results_map = match python_path.clone() {
+                Some(python) => checks::probe_all(&python).await,
+                None => missing_dependency_statuses(),
+            };
+
+            finish_probe_attempt(state, probe_generation, python_path, Some(results_map.clone()))
+                .await;
+
+            return Ok(results_map);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
+
+fn all_critical_installed(results: &HashMap<DependencyId, DependencyStatus>) -> bool {
+    registry::all_deps()
+        .iter()
+        .filter(|dep| dep.critical)
+        .all(|dep| {
+            matches!(
+                results.get(&dep.id),
+                Some(DependencyStatus::Installed { .. })
+            )
+        })
+}
+
+pub fn emit_probe_complete(
+    app: &tauri::AppHandle,
+    results: &HashMap<DependencyId, DependencyStatus>,
+) -> Result<(), String> {
+    let payload = install::DepsCompletePayload {
+        results: dep_results_from_map(results.clone()),
+        all_critical_installed: all_critical_installed(results),
+    };
+
+    app.emit("deps://complete", payload)
+        .map_err(|error| format!("Failed to emit dependency completion event: {error}"))
+}
 
 /// Probe all registered dependencies and update the shared DepsState.
 ///
@@ -110,54 +300,26 @@ pub struct UvStatusResult {
 /// - Otherwise runs all probes concurrently and updates `DepsState`.
 #[tauri::command]
 pub async fn deps_check_all(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DepsState>,
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<Vec<DepCheckResult>, String> {
-    let python_path = {
-        let conn = db
-            .ui_conn
-            .lock()
-            .map_err(|e| format!("DB lock error: {e}"))?;
-        checks::resolve_probe_python(&conn)
-    };
+    let results_map = probe_all_once(state.inner(), db.inner()).await?;
+    emit_probe_complete(&app, &results_map)?;
+    Ok(dep_results_from_map(results_map))
+}
 
-    let results_map = match python_path {
-        Some(python) => checks::probe_all(&python).await,
-        None => {
-            // No venv Python — mark every dep as Missing.
-            let mut map = HashMap::new();
-            for dep in registry::all_deps() {
-                map.insert(dep.id.clone(), DependencyStatus::Missing);
-            }
-            map
-        }
-    };
-
-    // Persist results into shared state.
-    {
-        let mut map = state.0.lock().await;
-        for (id, status) in &results_map {
-            map.insert(id.clone(), status.clone());
-        }
-    }
-
-    let results = results_map
-        .into_iter()
-        .map(|(id, status)| {
-            let version = match &status {
-                DependencyStatus::Installed { version } => version.clone(),
-                _ => None,
-            };
-            DepCheckResult { id, status, version }
-        })
-        .collect();
-
-    Ok(results)
+#[tauri::command]
+pub async fn deps_get_cached_statuses(
+    state: tauri::State<'_, DepsState>,
+) -> Result<Vec<DepCheckResult>, String> {
+    let data = state.0.lock().await;
+    Ok(dep_results_from_map(data.statuses.clone()))
 }
 
 /// Install all registered dependencies into the managed venv.
 ///
-/// - Ensures the uv binary (downloads if needed).
+/// - Ensures the uv binary (bundled/dev/system fallback, downloads only if needed).
 /// - Creates the venv (idempotent).
 /// - Persists venv Python paths in app_settings.
 /// - Emits `deps://progress` events per dep, `deps://complete` when done.
@@ -207,7 +369,7 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
 
-    let uv_binary = uv::UvBinary::detect(&app_data_dir);
+    let uv_binary = uv::UvBinary::detect(Some(&app), &app_data_dir);
     let uv_ready = uv_binary.is_some();
     let uv_path = uv_binary.as_ref().map(|b| b.path.to_string_lossy().into_owned());
     let uv_version = uv_binary.map(|b| b.version);
@@ -273,15 +435,17 @@ pub async fn deps_reset(
 
     // ── 3. Invalidate the Python discovery probe cache ────────────────────────
     crate::python_discovery::invalidate_probe_cache();
+    invalidate_probe_cache(state.inner()).await;
 
-    // ── 4. Reset DepsState to all Missing ────────────────────────────────────
+    // ── 4. Reset DepsState to all Missing and refresh cache ──────────────────
     {
         use DependencyId::*;
         let mut map = state.0.lock().await;
         for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
-            map.insert(id, DependencyStatus::Missing);
+            map.statuses.insert(id, DependencyStatus::Missing);
         }
     }
+    cache_current_statuses(state.inner(), None).await;
 
     eprintln!("[deps] Reset complete — all deps marked Missing");
     Ok(())
