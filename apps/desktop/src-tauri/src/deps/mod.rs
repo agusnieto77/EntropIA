@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 pub mod checks;
