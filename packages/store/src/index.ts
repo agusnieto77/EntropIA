@@ -9,7 +9,6 @@ export {
   items,
   assets,
   notes,
-  jobs,
   extractions,
   layouts,
   entities,
@@ -29,7 +28,6 @@ export { ItemRepo } from './repos/item.repo'
 export { AssetRepo } from './repos/asset.repo'
 export { NoteRepo } from './repos/note.repo'
 export { AnnotationRepo } from './repos/annotation.repo'
-export { JobRepo } from './repos/job.repo'
 export { ExtractionRepo } from './repos/extraction.repo'
 export { LayoutRepo } from './repos/layout.repo'
 export { EntityRepo } from './repos/entity.repo'
@@ -57,7 +55,6 @@ export type {
   AnnotationInput,
   NewAnnotation,
 } from './repos/annotation.repo'
-export type { Job, NewJob } from './repos/job.repo'
 export type { Extraction, NewExtraction } from './repos/extraction.repo'
 export type { Entity, NewEntity, EntityType } from './repos/entity.repo'
 export type { Triple, NewTriple } from './repos/triple.repo'

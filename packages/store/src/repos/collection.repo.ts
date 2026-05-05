@@ -119,7 +119,6 @@ export class CollectionRepo {
     try {
       await this.rawClient.executeBatch(`
         BEGIN;
-        DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
         DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
         DELETE FROM layouts WHERE asset_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));
         DELETE FROM llm_results WHERE (target_type = 'asset' OR target_type = 'unknown') AND target_id IN (SELECT id FROM assets WHERE item_id IN (SELECT id FROM items WHERE collection_id = '${esc}'));

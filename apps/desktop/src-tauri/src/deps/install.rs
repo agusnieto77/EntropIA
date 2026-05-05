@@ -10,13 +10,15 @@ use tauri::Emitter;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::process::Command;
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 use super::{DepCheckResult, DependencyId, DependencyStatus, DepsState};
-use crate::deps::checks::probe_one;
-use crate::deps::registry::{all_deps, find_dep, DependencySpec};
+use crate::deps::checks::{probe_one, ProbePythonMode};
+use crate::deps::registry::{all_deps_in_install_order, find_dep, DependencySpec};
 use crate::deps::uv::{self, UvBinary};
+
+#[cfg(test)]
+const SPACY_MODEL_ES_VERSION: &str = "3.8.0";
+const SPACY_MODEL_ES_WHEEL_URL: &str =
+    "https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl";
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -57,7 +59,7 @@ pub async fn create_venv(uv: &UvBinary, app_data_dir: &Path) -> Result<PathBuf, 
 
     let output = uv
         .command()
-        .args(["venv", &venv_str, "--python", "3.11"])
+        .args(["venv", &venv_str, "--python", "3.11", "--seed"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -114,7 +116,7 @@ pub fn persist_venv_paths(
 /// Install one dependency into the managed venv.
 ///
 /// - Deps with `pip_spec`: `uv pip install <spec> --python <venv_python>`
-/// - `SpacyModelEs` (no pip_spec): `python -m spacy download es_core_news_sm`
+/// - `SpacyModelEs`: `uv pip install <exact-wheel-url> --python <venv_python>`
 /// - `Python` (no pip_spec, managed by uv): immediate `Ok(())`
 ///
 /// Streams stderr line-by-line, calling `on_output(line)` for each line.
@@ -125,34 +127,106 @@ pub async fn install_package(
     venv_python: &Path,
     on_output: impl Fn(&str) + Send + 'static,
 ) -> Result<(), String> {
-    match dep.id {
-        DependencyId::Python => {
-            // Python itself is managed by `uv venv` — nothing to install.
-            return Ok(());
-        }
-        DependencyId::SpacyModelEs => {
-            // spaCy model is downloaded via `python -m spacy download`.
-            let mut cmd = Command::new(venv_python);
-            #[cfg(windows)]
-            cmd.creation_flags(CREATE_NO_WINDOW);
-            cmd.args(["-m", "spacy", "download", "es_core_news_sm"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            return run_and_stream(&mut cmd, dep.display_name, on_output).await;
-        }
-        _ => {
-            let spec = dep
-                .pip_spec
-                .ok_or_else(|| format!("Sin pip_spec para {}", dep.display_name))?;
+    if dep.id == DependencyId::Python {
+        // Python itself is managed by `uv venv` — nothing to install.
+        return Ok(());
+    }
 
-            let python_str = venv_python.to_string_lossy().into_owned();
-            let mut cmd = uv.command();
-            cmd.args(["pip", "install", spec, "--python", &python_str])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            return run_and_stream(&mut cmd, dep.display_name, on_output).await;
+    let spec = managed_install_spec(dep)
+        .ok_or_else(|| format!("Sin spec de instalación para {}", dep.display_name))?;
+
+    let python_str = venv_python.to_string_lossy().into_owned();
+    let mut cmd = uv.command();
+    cmd.args(["pip", "install", spec, "--python", &python_str])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    run_and_stream(&mut cmd, dep.display_name, on_output).await
+}
+
+fn managed_install_spec(dep: &DependencySpec) -> Option<&'static str> {
+    match dep.id {
+        DependencyId::Python => None,
+        // Install the exact wheel version compatible with our managed spaCy 3.8 flow.
+        DependencyId::SpacyModelEs => Some(SPACY_MODEL_ES_WHEEL_URL),
+        _ => dep.pip_spec,
+    }
+}
+
+async fn ensure_managed_prerequisites_installed(
+    uv: &UvBinary,
+    dep: &DependencySpec,
+    venv_python: &Path,
+) -> Result<(), String> {
+    for prerequisite_id in dep.managed_prerequisites {
+        let prerequisite = find_dep(prerequisite_id)
+            .ok_or_else(|| format!("Prerequisito desconocido para {}: {prerequisite_id:?}", dep.display_name))?;
+
+        let prerequisite_status = probe_one(prerequisite, venv_python).await;
+        if matches!(prerequisite_status, DependencyStatus::Installed { .. }) {
+            continue;
+        }
+
+        let display_name = prerequisite.display_name;
+        install_package(uv, prerequisite, venv_python, move |line| {
+            eprintln!("[deps/install] [{display_name}] {line}");
+        })
+        .await?;
+
+        let post_install_status = probe_one(prerequisite, venv_python).await;
+        if !matches!(post_install_status, DependencyStatus::Installed { .. }) {
+            return Err(format!(
+                "No se pudo confirmar el prerequisito {} dentro del venv administrado",
+                prerequisite.display_name
+            ));
         }
     }
+
+    Ok(())
+}
+
+async fn update_dependency_status(
+    app: &tauri::AppHandle,
+    state: &DepsState,
+    id: &DependencyId,
+    status: DependencyStatus,
+) {
+    {
+        let mut map = state.0.lock().await;
+        map.statuses.insert(id.clone(), status.clone());
+    }
+
+    let _ = app.emit(
+        "deps://progress",
+        DepsProgressPayload {
+            id: id.clone(),
+            status,
+        },
+    );
+}
+
+fn managed_install_plan(dep: &'static DependencySpec) -> Vec<&'static DependencySpec> {
+    let mut plan = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_managed_install_plan(dep, &mut seen, &mut plan);
+    plan
+}
+
+fn collect_managed_install_plan(
+    dep: &'static DependencySpec,
+    seen: &mut std::collections::HashSet<DependencyId>,
+    plan: &mut Vec<&'static DependencySpec>,
+) {
+    if !seen.insert(dep.id.clone()) {
+        return;
+    }
+
+    for prerequisite_id in dep.managed_prerequisites {
+        if let Some(prerequisite) = find_dep(prerequisite_id) {
+            collect_managed_install_plan(prerequisite, seen, plan);
+        }
+    }
+
+    plan.push(dep);
 }
 
 /// Helper: spawn `cmd`, stream stderr lines via `on_output`, return `Err` on
@@ -244,13 +318,15 @@ pub async fn install_all(
     db_path: &Path,
     app_data_dir: &Path,
 ) -> Result<(), String> {
+    super::invalidate_probe_cache(state).await;
+
     // ── 1. Ensure uv ────────────────────────────────────────────────────────
     let uv = ensure_uv(app, app_data_dir).await?;
 
     // ── 2. Create venv & update Python status ───────────────────────────────
     {
         let mut map = state.0.lock().await;
-        map.insert(
+        map.statuses.insert(
             DependencyId::Python,
             DependencyStatus::Installing { percent: 0 },
         );
@@ -268,7 +344,7 @@ pub async fn install_all(
             let status = DependencyStatus::Installed { version: Some("3.11".to_string()) };
             {
                 let mut map = state.0.lock().await;
-                map.insert(DependencyId::Python, status.clone());
+                map.statuses.insert(DependencyId::Python, status.clone());
             }
             let _ = app.emit(
                 "deps://progress",
@@ -283,7 +359,7 @@ pub async fn install_all(
             let status = DependencyStatus::Failed(e.clone());
             {
                 let mut map = state.0.lock().await;
-                map.insert(DependencyId::Python, status.clone());
+                map.statuses.insert(DependencyId::Python, status.clone());
             }
             let _ = app.emit(
                 "deps://progress",
@@ -314,7 +390,7 @@ pub async fn install_all(
         version: Some("3.11".to_string()),
     });
 
-    for dep in all_deps() {
+    for dep in all_deps_in_install_order() {
         if dep.id == DependencyId::Python {
             continue; // Already handled above.
         }
@@ -323,7 +399,7 @@ pub async fn install_all(
         let installing = DependencyStatus::Installing { percent: 0 };
         {
             let mut map = state.0.lock().await;
-            map.insert(dep.id.clone(), installing.clone());
+            map.statuses.insert(dep.id.clone(), installing.clone());
         }
         let _ = app.emit(
             "deps://progress",
@@ -355,7 +431,7 @@ pub async fn install_all(
 
         {
             let mut map = state.0.lock().await;
-            map.insert(dep.id.clone(), final_status.clone());
+            map.statuses.insert(dep.id.clone(), final_status.clone());
         }
         let _ = app.emit(
             "deps://progress",
@@ -391,6 +467,9 @@ pub async fn install_all(
         },
     );
 
+    crate::python_discovery::invalidate_probe_cache();
+    super::cache_current_statuses(state, Some(venv_python)).await;
+
     Ok(())
 }
 
@@ -411,6 +490,8 @@ pub async fn install_one(
     db_path: &Path,
     app_data_dir: &Path,
 ) -> Result<DepCheckResult, String> {
+    super::invalidate_probe_cache(state).await;
+
     if *id == DependencyId::Python {
         return Err(
             "Python es gestionado por uv, no se puede instalar individualmente".to_string(),
@@ -418,88 +499,146 @@ pub async fn install_one(
     }
 
     // Pre-flight: uv must already be present.
-    let uv = uv::UvBinary::detect(app_data_dir)
-        .ok_or_else(|| "uv no está disponible. Ejecutá la instalación completa primero.".to_string())?;
+    let uv = uv::UvBinary::detect(Some(app), app_data_dir).ok_or_else(|| {
+        "uv no está disponible. Verificá los recursos bundled o ejecutá la instalación completa primero."
+            .to_string()
+    })?;
 
-    // Pre-flight: venv python must exist.
-    let venv_python = venv_python_path(app_data_dir);
-    if !venv_python.is_file() {
-        return Err(
-            "El entorno virtual no existe. Ejecutá la instalación completa primero.".to_string(),
-        );
-    }
-
-    let dep = find_dep(id)
-        .ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
-
-    // Emit Installing.
-    let installing = DependencyStatus::Installing { percent: 0 };
-    {
-        let mut map = state.0.lock().await;
-        map.insert(id.clone(), installing.clone());
-    }
-    let _ = app.emit(
-        "deps://progress",
-        DepsProgressPayload {
-            id: id.clone(),
-            status: installing,
-        },
-    );
-
-    let display_name = dep.display_name;
-    let install_result = install_package(
-        &uv,
-        dep,
-        &venv_python,
-        move |line| {
-            eprintln!("[deps/install] [{display_name}] {line}");
-        },
-    )
-    .await;
-
-    if let Err(ref msg) = install_result {
-        let status = DependencyStatus::Failed(msg.clone());
+    // Ensure the managed venv exists before installing a single dependency.
+    let existing_venv_python = venv_python_path(app_data_dir);
+    let venv_python = if existing_venv_python.is_file() {
+        existing_venv_python
+    } else {
+        let status = DependencyStatus::Installing { percent: 0 };
         {
             let mut map = state.0.lock().await;
-            map.insert(id.clone(), status.clone());
+            map.statuses.insert(DependencyId::Python, status.clone());
         }
         let _ = app.emit(
             "deps://progress",
             DepsProgressPayload {
-                id: id.clone(),
+                id: DependencyId::Python,
                 status,
             },
         );
+
+        let created = create_venv(&uv, app_data_dir).await?;
+
+        {
+            let conn = rusqlite::Connection::open(db_path)
+                .map_err(|e| format!("Error abriendo base de datos para settings: {e}"))?;
+            persist_venv_paths(&conn, &created)
+                .map_err(|e| format!("Error guardando rutas de venv: {e}"))?;
+        }
+
+        let status = DependencyStatus::Installed {
+            version: Some("3.11".to_string()),
+        };
+        {
+            let mut map = state.0.lock().await;
+            map.statuses.insert(DependencyId::Python, status.clone());
+        }
+        let _ = app.emit(
+            "deps://progress",
+            DepsProgressPayload {
+                id: DependencyId::Python,
+                status,
+            },
+        );
+
+        created
+    };
+
+    let dep = find_dep(id)
+        .ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
+
+    let install_plan = managed_install_plan(dep);
+
+    // Emit Installing.
+    let installing = DependencyStatus::Installing { percent: 0 };
+    update_dependency_status(app, state, id, installing).await;
+
+    for planned_dep in &install_plan[..install_plan.len().saturating_sub(1)] {
+        ensure_managed_prerequisites_installed(&uv, planned_dep, &venv_python).await?;
+
+        let prerequisite_status = probe_one(planned_dep, &venv_python).await;
+        if matches!(prerequisite_status, DependencyStatus::Installed { .. }) {
+            update_dependency_status(app, state, &planned_dep.id, prerequisite_status).await;
+            continue;
+        }
+
+        update_dependency_status(
+            app,
+            state,
+            &planned_dep.id,
+            DependencyStatus::Installing { percent: 0 },
+        )
+        .await;
+
+        let display_name = planned_dep.display_name;
+        install_package(&uv, planned_dep, &venv_python, move |line| {
+            eprintln!("[deps/install] [{display_name}] {line}");
+        })
+        .await?;
+
+        let verified = probe_one(planned_dep, &venv_python).await;
+        if !matches!(verified, DependencyStatus::Installed { .. }) {
+            update_dependency_status(
+                app,
+                state,
+                &planned_dep.id,
+                DependencyStatus::Failed(format!(
+                    "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
+                    planned_dep.display_name
+                )),
+            )
+            .await;
+            return Err(format!(
+                "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
+                planned_dep.display_name
+            ));
+        }
+
+        update_dependency_status(app, state, &planned_dep.id, verified).await;
+    }
+
+    let display_name = dep.display_name;
+    let install_result = install_package(&uv, dep, &venv_python, move |line| {
+        eprintln!("[deps/install] [{display_name}] {line}");
+    })
+    .await;
+
+    if let Err(ref msg) = install_result {
+        let status = DependencyStatus::Failed(msg.clone());
+        update_dependency_status(app, state, id, status).await;
         return Err(msg.clone());
     }
 
     // Re-probe to get accurate installed status.
     // Read python path from settings if venv path has been persisted; fall
     // back to the path we already know.
-    let probe_python = {
-        let conn = rusqlite::Connection::open(db_path).ok();
-        conn.and_then(|c| crate::deps::checks::resolve_probe_python(&c))
-            .unwrap_or(venv_python)
-    };
+    let probe_settings = rusqlite::Connection::open(db_path)
+        .ok()
+        .map(|conn| crate::deps::checks::load_probe_python_settings(&conn))
+        .unwrap_or_default();
+    let probe_python = crate::deps::checks::resolve_probe_python_async(
+        probe_settings,
+        ProbePythonMode::DependencyManager,
+    )
+        .await?
+        .unwrap_or(venv_python);
 
     let probed_status = probe_one(dep, &probe_python).await;
 
-    {
-        let mut map = state.0.lock().await;
-        map.insert(id.clone(), probed_status.clone());
-    }
-    let _ = app.emit(
-        "deps://progress",
-        DepsProgressPayload {
-            id: id.clone(),
-            status: probed_status.clone(),
-        },
-    );
+    update_dependency_status(app, state, id, probed_status.clone()).await;
 
     let version = match &probed_status {
         DependencyStatus::Installed { version } => version.clone(),
         _ => None,
     };
+
+    crate::python_discovery::invalidate_probe_cache();
+    super::cache_current_statuses(state, Some(probe_python.clone())).await;
 
     Ok(DepCheckResult {
         id: id.clone(),
@@ -515,7 +654,7 @@ pub async fn install_one(
 /// Ensure a valid uv binary is available: detect it, or download it.
 /// Emits `deps://uv_progress` events during download.
 async fn ensure_uv(app: &tauri::AppHandle, app_data_dir: &Path) -> Result<UvBinary, String> {
-    if let Some(uv) = uv::UvBinary::detect(app_data_dir) {
+    if let Some(uv) = uv::UvBinary::detect(Some(app), app_data_dir) {
         return Ok(uv);
     }
 
@@ -539,6 +678,7 @@ async fn ensure_uv(app: &tauri::AppHandle, app_data_dir: &Path) -> Result<UvBina
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deps::registry::find_dep;
 
     #[test]
     fn test_venv_path_structure() {
@@ -596,5 +736,37 @@ mod tests {
                 "key '{key}' should store the python path"
             );
         }
+    }
+
+    #[test]
+    fn test_managed_install_plan_keeps_spacy_before_model() {
+        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
+        let plan = managed_install_plan(spacy_model)
+            .into_iter()
+            .map(|dep| dep.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(plan, vec![DependencyId::Spacy, DependencyId::SpacyModelEs]);
+    }
+
+    #[test]
+    fn test_managed_install_spec_uses_exact_spacy_model_wheel() {
+        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
+
+        assert_eq!(managed_install_spec(spacy_model), Some(SPACY_MODEL_ES_WHEEL_URL));
+        assert!(SPACY_MODEL_ES_WHEEL_URL.contains("es_core_news_sm-3.8.0"));
+        assert!(SPACY_MODEL_ES_WHEEL_URL.ends_with("-py3-none-any.whl"));
+    }
+
+    #[test]
+    fn test_managed_install_spec_preserves_regular_pip_specs() {
+        let spacy = find_dep(&DependencyId::Spacy).expect("spacy dep present");
+
+        assert_eq!(managed_install_spec(spacy), spacy.pip_spec);
+    }
+
+    #[test]
+    fn test_spacy_model_version_constant_matches_wheel_url() {
+        assert!(SPACY_MODEL_ES_WHEEL_URL.contains(SPACY_MODEL_ES_VERSION));
     }
 }

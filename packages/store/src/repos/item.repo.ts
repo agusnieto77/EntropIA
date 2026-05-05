@@ -93,15 +93,14 @@ export class ItemRepo {
    * an orphan and should be fully cleaned up.
    *
    * Cleanup order (dependencies first):
-   * 1. Jobs (FK → assets)
-   * 2. Extractions (FK → assets)
-   * 3. Assets (FK → items)
-   * 4. Entities (FK → items)
-   * 5. Triples (FK → items)
-   * 6. Asset embeddings (item_id in vec_assets)
-   * 7. FTS rebuild from canonical rowid sources
-   * 8. Notes (FK → items)
-   * 9. Item itself
+   * 1. Extractions (FK → assets)
+   * 2. Assets (FK → items)
+   * 3. Entities (FK → items)
+   * 4. Triples (FK → items)
+   * 5. Asset embeddings (item_id in vec_assets)
+   * 6. FTS rebuild from canonical rowid sources
+   * 7. Notes (FK → items)
+   * 8. Item itself
    *
    * @throws Error if rawClient is not available
    * @throws Error if the transaction fails
@@ -125,7 +124,6 @@ export class ItemRepo {
     try {
       await this.rawClient.executeBatch(`
         BEGIN;
-        DELETE FROM jobs WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
         DELETE FROM extractions WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
         DELETE FROM layouts WHERE asset_id IN (SELECT id FROM assets WHERE item_id = '${esc}');
         DELETE FROM llm_results WHERE (target_type = 'asset' OR target_type = 'unknown') AND target_id IN (SELECT id FROM assets WHERE item_id = '${esc}');

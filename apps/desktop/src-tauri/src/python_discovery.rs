@@ -172,6 +172,19 @@ fn python_setting_key(cache_key: &str) -> String {
     format!("python.{cache_key}.path")
 }
 
+fn load_managed_venv_python(probe_code: &str, settings_db_path: Option<&Path>) -> Option<PathBuf> {
+    let db_path = settings_db_path?;
+    let conn = Connection::open(db_path).ok()?;
+    let managed = crate::settings::get_setting(&conn, "deps_venv_python_path")?;
+    let path = PathBuf::from(&managed);
+
+    if path.is_file() && probe_python_module(&path, probe_code) {
+        return Some(path);
+    }
+
+    None
+}
+
 fn load_persisted_python(
     cache_key: &str,
     probe_code: &str,
@@ -242,6 +255,18 @@ pub fn which_python_for_module(
     probe_code: &str,
     settings_db_path: Option<&Path>,
 ) -> Option<PathBuf> {
+    if let Some(path) = load_managed_venv_python(probe_code, settings_db_path) {
+        eprintln!(
+            "[{tag}] Python resolver hit ({cache_key}, source=managed_venv): {}",
+            path.display()
+        );
+        if let Ok(mut cache) = get_probe_cache().lock() {
+            cache.insert(cache_key.to_string(), Some(path.clone()));
+        }
+        persist_python_hit(cache_key, &path, settings_db_path);
+        return Some(path);
+    }
+
     // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {
@@ -426,6 +451,18 @@ pub fn which_python_for_module_scored(
     settings_db_path: Option<&Path>,
     scorer: &dyn Fn(&std::path::Path) -> i32,
 ) -> Option<PathBuf> {
+    if let Some(path) = load_managed_venv_python(probe_code, settings_db_path) {
+        eprintln!(
+            "[{tag}] Python resolver hit ({cache_key}, source=managed_venv): {}",
+            path.display()
+        );
+        if let Ok(mut cache) = get_probe_cache().lock() {
+            cache.insert(cache_key.to_string(), Some(path.clone()));
+        }
+        persist_python_hit(cache_key, &path, settings_db_path);
+        return Some(path);
+    }
+
     // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {

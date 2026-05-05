@@ -112,7 +112,6 @@ PRAGMA table_info(fts_items_docsize);
 PRAGMA table_info(fts_items_idx);
 PRAGMA table_info(item_topics);
 PRAGMA table_info(items);
-PRAGMA table_info(jobs);
 PRAGMA table_info(layouts);
 PRAGMA table_info(llm_results);
 PRAGMA table_info(notes);
@@ -137,7 +136,6 @@ PRAGMA table_info(vec_assets);
 - `annotations`
 - `entities`
 - `triples`
-- `jobs`
 - `extractions`
 - `transcriptions`
 - `layouts`
@@ -283,17 +281,6 @@ PRAGMA table_info(vec_assets);
 - `created_at`
 - `updated_at`
 
-#### `jobs`
-
-- `id`
-- `type`
-- `status`
-- `asset_id`
-- `result`
-- `error`
-- `created_at`
-- `updated_at`
-
 #### `layouts`
 
 - `id`
@@ -389,7 +376,6 @@ items
             via item_topics
 
 assets
-  ├── 1:N -> jobs
   ├── 0..1 -> notes
   ├── 0..N -> entities
   └── 0..N -> triples
@@ -402,7 +388,7 @@ assets
 
 - una `collection` agrupa muchos `items`
 - un `item` puede tener muchos `assets`
-- un `asset` concentra procesamiento derivado: OCR, transcripción, layout, anotaciones y jobs
+- un `asset` concentra procesamiento derivado persistido: OCR, transcripción, layout y anotaciones
 - un `item` concentra conocimiento semántico: notas, entidades, triples y tópicos
 - la relación entre `items` y `topics` es muchos-a-muchos mediante `item_topics`
 - `vec_assets` soporta embeddings y similitud asset-level
@@ -489,12 +475,6 @@ assets
 - FK:
   - `collection_id -> collections.id`
 
-### `jobs`
-
-- PK: `id`
-- FK conceptual:
-  - `asset_id -> assets.id`
-
 ### `layouts`
 
 - PK: `id`
@@ -558,7 +538,6 @@ erDiagram
     assets ||--|| transcriptions : produces
     assets ||--o{ annotations : has
     assets ||--o{ layouts : has
-    assets ||--o{ jobs : queues
     assets ||--o{ notes : may_reference
     assets ||--o{ entities : may_reference
     assets ||--o{ triples : may_reference
@@ -643,12 +622,6 @@ erDiagram
 - `GENERATED ALWAYS STORED`: `search_text`
 - `search_text = COALESCE(title, '') || ' ' || COALESCE(json(metadata), '')`
 
-#### `jobs`
-
-- `PRIMARY KEY (id)`
-- `FOREIGN KEY (asset_id) REFERENCES assets(id)`
-- `DEFAULT status = 'pending'`
-
 #### `layouts`
 
 - `PRIMARY KEY (id)`
@@ -706,8 +679,6 @@ erDiagram
 - `idx_item_topics_topic_id` → `item_topics(topic_id)`
 - `idx_items_collection` → `items(collection_id)`
 - `idx_items_search` → `items(search_text)`
-- `idx_jobs_asset_id` → `jobs(asset_id)`
-- `idx_jobs_status` → `jobs(status)`
 - `idx_layouts_asset_id` → `layouts(asset_id)`
 - `idx_llm_results_target` → `llm_results(target_id)`
 - `idx_llm_results_target_typed` → `llm_results(target_type, target_id, job_type)`
@@ -776,7 +747,6 @@ La inspección en la base activa devolvió estas tablas:
 - `fts_items_idx`
 - `item_topics`
 - `items`
-- `jobs`
 - `layouts`
 - `llm_results`
 - `notes`
@@ -954,16 +924,6 @@ WHERE it.item_id = 'ITEM_ID_AQUI'
 ORDER BY t.name;
 ```
 
-### `jobs`
-
-Ver jobs recientes y errores:
-
-```sql
-SELECT id, type, status, asset_id, error, created_at, updated_at
-FROM jobs
-ORDER BY updated_at DESC;
-```
-
 ### `llm_results`
 
 Ver resultados LLM persistidos:
@@ -1089,17 +1049,24 @@ ORDER BY i.created_at DESC;
 ### “El asset está cargado pero no se procesa”
 
 - mirar `assets`
-- mirar `jobs`
 - mirar `extractions`, `transcriptions`, `layouts`
 
 Query útil:
 
 ```sql
-SELECT a.id, a.path, a.type, j.type AS job_type, j.status, j.error
+SELECT
+  a.id,
+  a.path,
+  a.type,
+  CASE WHEN e.asset_id IS NOT NULL THEN 1 ELSE 0 END AS has_extraction,
+  CASE WHEN t.asset_id IS NOT NULL THEN 1 ELSE 0 END AS has_transcription,
+  CASE WHEN l.asset_id IS NOT NULL THEN 1 ELSE 0 END AS has_layout
 FROM assets a
-LEFT JOIN jobs j ON j.asset_id = a.id
+LEFT JOIN extractions e ON e.asset_id = a.id
+LEFT JOIN transcriptions t ON t.asset_id = a.id
+LEFT JOIN layouts l ON l.asset_id = a.id
 WHERE a.id = 'ASSET_ID_AQUI'
-ORDER BY j.updated_at DESC;
+LIMIT 1;
 ```
 
 ### “Falló el OCR”
@@ -1107,13 +1074,11 @@ ORDER BY j.updated_at DESC;
 - mirar `extractions.method`
 - mirar `extractions.confidence`
 - mirar `layouts` si era OCR High
-- mirar `jobs.error`
 
 ### “Falló la transcripción”
 
 - mirar `transcriptions`
-- mirar `jobs` filtrando `type`
-- revisar si hay `error`
+- revisar si existe fila persistida y con qué metadata/modelo
 
 ### “No veo entidades o triples”
 
@@ -1160,9 +1125,10 @@ WHERE asset_id = 'ASSET_ID_AQUI';
 1. ¿Existe la collection?
 2. ¿Existe el item y apunta a la collection correcta?
 3. ¿Existen assets para ese item?
-4. ¿Se creó job de procesamiento?
-5. ¿Se persistió extraction o transcription?
-6. ¿Se generó layout/anotación si correspondía?
-7. ¿Se generaron entities/triples/topics?
-8. ¿Se indexó en FTS o embeddings si el flujo lo requería?
+4. ¿Se persistió extraction o transcription?
+5. ¿Se generó layout/anotación si correspondía?
+6. ¿Se generaron entities/triples/topics?
+7. ¿Se indexó en FTS o embeddings si el flujo lo requería?
 ```
+
+> Compatibilidad: bases existentes pueden traer una tabla legacy `jobs` creada por migraciones viejas. La cleanup actual la elimina con `0021_drop_unused_processing_table`; no forma parte del esquema runtime soportado.
