@@ -108,7 +108,7 @@ FROM items i`
 
     const rowid = rows[0]?.rowid
     if (rowid === undefined || rowid === null) {
-      throw new Error(`Cannot index FTS item: item \"${itemId}\" does not exist`)
+      throw new Error(`Cannot index FTS item: item "${itemId}" does not exist`)
     }
 
     return rowid

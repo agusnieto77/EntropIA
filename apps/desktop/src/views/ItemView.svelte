@@ -3420,7 +3420,8 @@
                     editingValue={editingEntityValue}
                     labels={{
                       editValueAria: translate('item.entityEditValueAria'),
-                      deleteAria: (value: string) => translate('item.entityDeleteAria', { value }),
+                      deleteEntityAria: (value: string) =>
+                        translate('item.entityDeleteAria', { value }),
                     }}
                     onentityclick={startEditingEntity}
                     oneditvaluechange={handleEditingEntityValueChange}

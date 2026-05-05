@@ -130,7 +130,7 @@ impl SpacyNerEngine {
         if report.model_name.is_none() {
             report
                 .warnings
-                .push("No spaCy model configured — using es_core_news_lg by default".to_string());
+                .push("No spaCy model configured — using es_core_news_sm by default".to_string());
         }
 
         report
@@ -148,7 +148,7 @@ impl SpacyNerEngine {
         let model_name = config
             .model_name
             .clone()
-            .unwrap_or_else(|| "es_core_news_lg".to_string());
+            .unwrap_or_else(|| "es_core_news_sm".to_string());
 
         if !python_path.exists() {
             return Err(format!(
@@ -280,8 +280,8 @@ pub fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<PathBu
     python_discovery::which_python_for_module(
         "nlp/ner/spacy",
         "spacy",
-        "spacy+es_core_news_lg",
-        "import spacy, es_core_news_lg; print('ok')",
+        "spacy+es_core_news_sm",
+        "import spacy, es_core_news_sm; print('ok')",
         settings_db_path,
     )
 }

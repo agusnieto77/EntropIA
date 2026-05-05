@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte'
   import { invoke } from '@tauri-apps/api/core'
   import { locale, t } from '$lib/i18n'
   import { navigation } from '$lib/navigation'
+  import { checkAllDeps, onDepsComplete, CRITICAL_DEPS, type DepCheckResult } from '$lib/deps'
   import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
   import type { Snippet } from 'svelte'
@@ -15,6 +17,36 @@
   const showExplorer = $derived(
     $navigation.current.name === 'collection' || $navigation.current.name === 'item'
   )
+
+  let depsResults = $state<DepCheckResult[]>([])
+  const hasCriticalMissing = $derived(
+    depsResults.some(
+      (d) =>
+        CRITICAL_DEPS.includes(d.id) &&
+        (d.status.type === 'missing' || d.status.type === 'failed'),
+    ),
+  )
+
+  let unlistenDepsComplete: (() => void) | undefined
+
+  onMount(async () => {
+    try {
+      depsResults = await checkAllDeps()
+    } catch (e) {
+      console.error('[AppShell] deps check failed', e)
+    }
+    unlistenDepsComplete = await onDepsComplete((event) => {
+      depsResults = event.results
+    })
+  })
+
+  onDestroy(() => {
+    unlistenDepsComplete?.()
+  })
+
+  function goToDepSettings() {
+    navigation.openRootSection({ name: 'settings' })
+  }
 
   async function openHlabWebsite(event: MouseEvent) {
     event.preventDefault()
@@ -45,6 +77,14 @@
     {/if}
 
     <main class="content">
+      {#if hasCriticalMissing}
+        <div class="deps-banner" role="alert">
+          <span>⚠ Algunas funciones de IA no están disponibles.</span>
+          <button class="deps-banner__btn" onclick={goToDepSettings}
+            >Configurar dependencias →</button
+          >
+        </div>
+      {/if}
       {@render children()}
     </main>
   </div>
@@ -96,6 +136,36 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-4);
+  }
+
+  .deps-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    color: #92400e;
+  }
+
+  .deps-banner__btn {
+    flex-shrink: 0;
+    padding: 2px var(--space-3);
+    border: 1px solid #f59e0b;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: #92400e;
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: background-color var(--transition-base);
+  }
+
+  .deps-banner__btn:hover {
+    background: #fde68a;
   }
 
   .footer {
