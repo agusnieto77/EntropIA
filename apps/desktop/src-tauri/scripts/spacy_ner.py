@@ -35,7 +35,7 @@ def map_label(label: str) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--text", required=True)
-    parser.add_argument("--model", default="es_core_news_lg")
+    parser.add_argument("--model", default="es_core_news_sm")
     args = parser.parse_args()
 
     # Sanitize lone surrogates before tokenizing — see sanitize_surrogates()

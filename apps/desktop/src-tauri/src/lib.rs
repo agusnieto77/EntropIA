@@ -233,7 +233,9 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                     }
                     eprintln!("[deps] Startup check: {} deps checked", results.len());
                 } else {
-                    eprintln!("[deps] Startup check: no venv Python found — skipping probe");
+                    eprintln!(
+                        "[deps] Startup check: no managed/runtime Python with critical deps found — skipping probe"
+                    );
                 }
             });
 

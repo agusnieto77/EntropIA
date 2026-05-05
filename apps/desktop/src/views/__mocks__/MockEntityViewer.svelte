@@ -44,7 +44,7 @@
       </button>
       <button
         type="button"
-        aria-label={(labels?.deleteAria ?? ((value: string) => `Delete entity ${value}`))(
+        aria-label={(labels?.deleteEntityAria ?? ((value: string) => `Delete entity ${value}`))(
           entity.value
         )}
         data-testid={`mock-entity-delete-${entity.id}`}

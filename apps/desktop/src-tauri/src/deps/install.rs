@@ -96,10 +96,10 @@ pub fn persist_venv_paths(
 
     let keys = [
         "deps_venv_python_path",
-        "python.embed.path",
+        "python.fastembed.path",
         "python.paddle_vl.path",
-        "python.transcription.path",
-        "python.spacy_ner.path",
+        "python.faster_whisper.path",
+        "python.spacy.path",
     ];
 
     for key in keys {
@@ -580,10 +580,10 @@ mod tests {
 
         let keys = [
             "deps_venv_python_path",
-            "python.embed.path",
+            "python.fastembed.path",
             "python.paddle_vl.path",
-            "python.transcription.path",
-            "python.spacy_ner.path",
+            "python.faster_whisper.path",
+            "python.spacy.path",
         ];
         for key in keys {
             let value: String = conn

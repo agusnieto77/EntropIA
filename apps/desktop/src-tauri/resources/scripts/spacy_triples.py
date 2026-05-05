@@ -56,7 +56,7 @@ def main():
 
     import spacy
 
-    nlp = spacy.load("es_core_news_lg")
+    nlp = spacy.load("es_core_news_sm")
     doc = nlp(text)
     triples = extraer_svo_espanol(doc)
     print("===TRIPLES_JSON_BEGIN===")

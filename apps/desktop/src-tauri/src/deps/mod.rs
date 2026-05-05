@@ -259,10 +259,10 @@ pub async fn deps_reset(
             .map_err(|e| format!("DB lock error: {e}"))?;
         let keys = [
             "deps_venv_python_path",
-            "python.embed.path",
+            "python.fastembed.path",
             "python.paddle_vl.path",
-            "python.transcription.path",
-            "python.spacy_ner.path",
+            "python.faster_whisper.path",
+            "python.spacy.path",
         ];
         for key in keys {
             crate::settings::delete_setting(&conn, key)

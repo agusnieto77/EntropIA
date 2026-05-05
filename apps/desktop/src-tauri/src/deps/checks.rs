@@ -20,6 +20,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use super::{DependencyId, DependencyStatus};
 use crate::deps::registry::all_deps;
 
+const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
+const PROBE_PADDLE_VL: &str = "from paddleocr import PaddleOCRVL; print('ok')";
+const PROBE_FASTER_WHISPER: &str = "import faster_whisper; print('ok')";
+const PROBE_SPACY_ES: &str = "import spacy, es_core_news_sm; print('ok')";
+const RUNTIME_PYTHON_KEYS: &[&str] = &[
+    "python.fastembed.path",
+    "python.paddle_vl.path",
+    "python.faster_whisper.path",
+    "python.spacy.path",
+];
+
 // ---------------------------------------------------------------------------
 // Per-dependency probe
 // ---------------------------------------------------------------------------
@@ -163,16 +174,96 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
 /// Resolve the Python interpreter path to use for probing.
 ///
 /// Reads `deps_venv_python_path` from `app_settings` via an open rusqlite
-/// connection. Returns `Some(path)` only when the key is present AND the
-/// file actually exists on disk. Returns `None` otherwise (stale path or
-/// key absent).
+/// connection. If that managed venv path is missing, it falls back to
+/// discovering a runtime Python that satisfies the same critical capabilities
+/// used by the app at runtime (`fastembed` + `PaddleOCRVL`). Optional
+/// capabilities (`faster_whisper`, `spaCy + es_core_news_sm`) are used only to
+/// prefer a richer runtime when multiple candidates satisfy the critical set.
 pub fn resolve_probe_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
-    let raw = crate::settings::get_setting(conn, "deps_venv_python_path")?;
-    let path = PathBuf::from(&raw);
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
+    if let Some(raw) = crate::settings::get_setting(conn, "deps_venv_python_path") {
+        let path = PathBuf::from(&raw);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    resolve_runtime_python(conn)
+}
+
+fn resolve_runtime_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
+    let mut candidates = persisted_runtime_candidates(conn);
+
+    for candidate in crate::python_discovery::discover_python_candidates() {
+        if candidate.is_file() && !candidates.contains(candidate) {
+            candidates.push(candidate.clone());
+        }
+    }
+
+    let mut best_match: Option<(PathBuf, usize)> = None;
+
+    for candidate in candidates {
+        let capabilities = probe_runtime_capabilities(&candidate);
+        if !(capabilities.has_fastembed && capabilities.has_paddle_vl) {
+            continue;
+        }
+
+        let optional_score = usize::from(capabilities.has_faster_whisper)
+            + usize::from(capabilities.has_spacy);
+
+        match &best_match {
+            Some((_, best_score)) if *best_score >= optional_score => {}
+            _ => {
+                best_match = Some((candidate, optional_score));
+            }
+        }
+    }
+
+    if let Some((path, optional_score)) = best_match {
+        eprintln!(
+            "[deps/checks] Using runtime Python fallback (critical deps OK, optional score={}): {}",
+            optional_score,
+            path.display()
+        );
+        return Some(path);
+    }
+
+    None
+}
+
+fn persisted_runtime_candidates(conn: &rusqlite::Connection) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    for key in RUNTIME_PYTHON_KEYS {
+        let Some(raw) = crate::settings::get_setting(conn, key) else {
+            continue;
+        };
+
+        let path = PathBuf::from(raw);
+        if path.is_file() && !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    }
+
+    candidates
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RuntimeCapabilities {
+    has_fastembed: bool,
+    has_paddle_vl: bool,
+    has_faster_whisper: bool,
+    has_spacy: bool,
+}
+
+fn probe_runtime_capabilities(path: &Path) -> RuntimeCapabilities {
+    RuntimeCapabilities {
+        has_fastembed: crate::python_discovery::probe_python_module(path, PROBE_FASTEMBED),
+        has_paddle_vl: crate::python_discovery::probe_python_module(path, PROBE_PADDLE_VL),
+        has_faster_whisper: crate::python_discovery::probe_python_module(
+            path,
+            PROBE_FASTER_WHISPER,
+        ),
+        has_spacy: crate::python_discovery::probe_python_module(path, PROBE_SPACY_ES),
     }
 }
 
@@ -194,18 +285,24 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_probe_python_missing_key() {
+    fn test_resolve_probe_python_prefers_existing_managed_path() {
         let conn = in_memory_conn();
-        // No key inserted → should return None
+        let current_exe = std::env::current_exe().expect("current exe path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["deps_venv_python_path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert managed python path");
+
         let result = resolve_probe_python(&conn);
         assert!(
-            result.is_none(),
-            "Expected None when deps_venv_python_path key is absent"
+            result.as_ref() == Some(&current_exe),
+            "Expected managed venv path to be preferred when present"
         );
     }
 
     #[test]
-    fn test_resolve_probe_python_stale_path() {
+    fn test_resolve_probe_python_with_stale_managed_path_does_not_panic() {
         let conn = in_memory_conn();
         // Insert a path that does not exist on disk
         conn.execute(
@@ -216,8 +313,33 @@ mod tests {
 
         let result = resolve_probe_python(&conn);
         assert!(
-            result.is_none(),
-            "Expected None when path in setting does not exist on disk"
+            result.as_ref().map(|path| path.is_file()).unwrap_or(true),
+            "A stale managed path should either fall back to a valid runtime or return None"
         );
+    }
+
+    #[test]
+    fn test_persisted_runtime_candidates_ignore_missing_and_duplicate_paths() {
+        let conn = in_memory_conn();
+        let current_exe = std::env::current_exe().expect("current exe path");
+
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["python.fastembed.path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert fastembed path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["python.paddle_vl.path", current_exe.to_string_lossy().as_ref()],
+        )
+        .expect("insert duplicate path");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["python.spacy.path", "/nonexistent/path/python.exe"],
+        )
+        .expect("insert stale path");
+
+        let candidates = persisted_runtime_candidates(&conn);
+        assert_eq!(candidates, vec![current_exe]);
     }
 }

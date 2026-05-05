@@ -851,10 +851,6 @@
     line-height: 1.5;
   }
 
-  .modal-message strong {
-    color: var(--color-text-primary);
-  }
-
   .modal-error {
     font-size: var(--font-size-sm);
     color: var(--color-danger);

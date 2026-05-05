@@ -186,6 +186,10 @@
     if (status.type === 'failed') return status.message
     return ''
   }
+
+  function supportsInstallOne(id: DependencyId): boolean {
+    return id !== 'Python'
+  }
 </script>
 
 <div class="deps-tab">
@@ -312,7 +316,7 @@
 
         <!-- Action button -->
         <div class="deps-row__action">
-          {#if dep.status.type === 'missing'}
+          {#if supportsInstallOne(dep.id) && dep.status.type === 'missing'}
             <Button
               variant="secondary"
               size="sm"
@@ -321,7 +325,7 @@
             >
               Instalar
             </Button>
-          {:else if dep.status.type === 'failed'}
+          {:else if supportsInstallOne(dep.id) && dep.status.type === 'failed'}
             <Button
               variant="secondary"
               size="sm"

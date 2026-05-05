@@ -59,11 +59,11 @@ fn extract_triples_with_spacy(text: &str) -> Result<Vec<Triple>, String> {
     let python = crate::python_discovery::which_python_for_module(
         "nlp/triples",
         "spacy",
-        "spacy+es_core_news_lg",
-        "import spacy, es_core_news_lg; print('ok')",
+        "spacy+es_core_news_sm",
+        "import spacy, es_core_news_sm; print('ok')",
         None,
     )
-    .ok_or_else(|| "No Python with spaCy/es_core_news_lg found".to_string())?;
+    .ok_or_else(|| "No Python with spaCy/es_core_news_sm found".to_string())?;
 
     let script_path = resolve_spacy_triples_script();
     if !script_path.exists() {
