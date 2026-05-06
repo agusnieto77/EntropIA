@@ -4,6 +4,13 @@ use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;
 use tauri::{AppHandle, State};
 
+#[tauri::command]
+pub async fn test_assemblyai_connection(api_key: String) -> Result<(), String> {
+    super::assemblyai::AssemblyAiClient::new(api_key)
+        .test_connection()
+        .await
+}
+
 /// Submit a transcription job to the background worker queue.
 ///
 /// Returns immediately with `Ok("queued")`. The worker will process the job
@@ -19,7 +26,16 @@ pub async fn transcribe_audio(
     asset_id: String,
     asset_path: String,
     transcription_queue: State<'_, TranscriptionQueue>,
+    db: State<'_, AppDbState>,
 ) -> Result<String, String> {
+    {
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|e| format!("DB lock poisoned: {e}"))?;
+        super::ensure_selected_cloud_key(&conn)?;
+    }
+
     let job = TranscriptionJob {
         asset_id,
         asset_path,
@@ -72,10 +88,33 @@ pub async fn update_transcription_text_cmd(
 }
 
 #[tauri::command]
-pub async fn transcribe_dictation(audio_path: String, app_handle: AppHandle) -> Result<String, String> {
+pub async fn transcribe_dictation(
+    audio_path: String,
+    app_handle: AppHandle,
+    db: State<'_, AppDbState>,
+) -> Result<String, String> {
+    let db_path = db.db_path.clone();
+    {
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|e| format!("DB lock poisoned: {e}"))?;
+        super::ensure_selected_cloud_key(&conn)?;
+    }
+
     let audio_path_for_worker = audio_path.clone();
     let transcription_result = tauri::async_runtime::spawn_blocking(move || {
-        super::transcribe_audio_file(&app_handle, None, &audio_path_for_worker)
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| format!("Failed to open settings DB for dictation: {e}"))?;
+
+        super::transcribe_with_selected_provider(
+            &app_handle,
+            Some(db_path.as_path()),
+            &conn,
+            None,
+            &audio_path_for_worker,
+        )
+        .map(|result| result.transcription)
     })
     .await
     .map_err(|e| format!("Dictation task failed: {e}"))?;

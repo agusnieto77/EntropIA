@@ -33,6 +33,7 @@ export interface TranscriptionResult {
 export interface AssetTranscriptionState {
   status: TranscriptionStatus
   progress: number
+  stage?: string
   error?: string
   text?: string
   language?: string
@@ -135,7 +136,7 @@ export class TranscriptionStore {
   ): Promise<void> {
     const unlistenProgress = await listen('transcription:progress', (e) => {
       const p = e.payload as ProgressPayload
-      this._updateState(p.asset_id, { status: 'running', progress: p.pct })
+      this._updateState(p.asset_id, { status: 'running', progress: p.pct, stage: p.stage })
     })
 
     const unlistenComplete = await listen('transcription:complete', (e) => {
@@ -143,6 +144,7 @@ export class TranscriptionStore {
       this._updateState(p.asset_id, {
         status: 'done',
         progress: 100,
+        stage: 'done',
         text: p.text,
         language: p.language,
         durationMs: p.duration_ms,
@@ -154,7 +156,7 @@ export class TranscriptionStore {
 
     const unlistenError = await listen('transcription:error', (e) => {
       const p = e.payload as ErrorPayload
-      this._updateState(p.asset_id, { status: 'error', error: p.error })
+      this._updateState(p.asset_id, { status: 'error', error: p.error, stage: 'error' })
     })
 
     this.cleanupFns = [unlistenProgress, unlistenComplete, unlistenError]

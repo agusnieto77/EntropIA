@@ -3,15 +3,28 @@
 // #[allow(dead_code)]
 // mod audio;
 pub mod commands;
+mod assemblyai;
 mod engine;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::path_utils::normalize_windows_path;
+use assemblyai::AssemblyAiClient;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+
+const STT_MODE_LOCAL: &str = "local";
+const STT_MODE_ASSEMBLYAI: &str = "assemblyai";
+const STT_MODE_AUTO: &str = "auto";
+const STT_SETTING_MODE: &str = "stt_mode";
+const STT_SETTING_ASSEMBLYAI_API_KEY: &str = "assemblyai_api_key";
+
+pub(super) struct ManagedTranscriptionResult {
+    pub(super) transcription: TranscriptionResult,
+    pub(super) model_name: &'static str,
+}
 
 // ── Event payloads ──────────────────────────────────────────────────────────
 
@@ -108,8 +121,9 @@ impl TranscriptionQueue {
                 // ── Main work loop ──────────────────────────────────────────
                 while let Some(job) = receiver.blocking_recv() {
                     let asset_id = job.asset_id.clone();
+                    let stt_mode = get_stt_mode(&conn);
 
-                    if engine.is_none() && init_error.is_none() {
+                    if stt_mode != STT_MODE_ASSEMBLYAI && engine.is_none() && init_error.is_none() {
                         match create_whisper_engine(&app_handle, Some(&db_path)) {
                             Ok(resolved_engine) => {
                                 eprintln!("[transcription] Engine ready (lazy init)");
@@ -123,10 +137,20 @@ impl TranscriptionQueue {
                     }
 
                     let result = match engine.as_ref() {
-                        Some(engine) => process_job(engine, &conn, &job, &app_handle),
-                        None => Err(init_error.clone().unwrap_or_else(|| {
-                            "Transcription engine unavailable after lazy init".to_string()
-                        })),
+                        Some(_) => process_job(&conn, &job, &db_path, &app_handle),
+                        None => {
+                            let has_cloud_fallback = !get_assemblyai_api_key(&conn).is_empty();
+
+                            if stt_mode == STT_MODE_ASSEMBLYAI
+                                || (stt_mode == STT_MODE_AUTO && has_cloud_fallback)
+                            {
+                                process_job(&conn, &job, &db_path, &app_handle)
+                            } else {
+                                Err(init_error.clone().unwrap_or_else(|| {
+                                    "Transcription engine unavailable after lazy init".to_string()
+                                }))
+                            }
+                        }
                     };
 
                     match result {
@@ -221,6 +245,149 @@ pub fn transcribe_audio_file(
     engine.transcribe(audio_path, 0)
 }
 
+fn get_stt_mode(conn: &rusqlite::Connection) -> String {
+    crate::settings::get_setting(conn, STT_SETTING_MODE)
+        .unwrap_or_else(|| STT_MODE_LOCAL.to_string())
+        .to_lowercase()
+}
+
+fn get_assemblyai_api_key(conn: &rusqlite::Connection) -> String {
+    crate::settings::get_setting(conn, STT_SETTING_ASSEMBLYAI_API_KEY)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+pub(super) fn ensure_selected_cloud_key(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mode = get_stt_mode(conn);
+    if mode == STT_MODE_ASSEMBLYAI && get_assemblyai_api_key(conn).is_empty() {
+        return Err(
+            "AssemblyAI no está configurado. Andá a Configuración > STT y cargá una API key antes de transcribir."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+pub fn local_transcription_available(settings_db_path: Option<&Path>) -> bool {
+    which_python(settings_db_path).is_some()
+}
+
+fn transcribe_with_local_provider(
+    app_handle: &AppHandle,
+    settings_db_path: Option<&Path>,
+    audio_path: &str,
+) -> Result<ManagedTranscriptionResult, String> {
+    let result = transcribe_audio_file(app_handle, settings_db_path, audio_path)?;
+    Ok(ManagedTranscriptionResult {
+        transcription: result,
+        model_name: "faster-whisper/base",
+    })
+}
+
+fn transcribe_with_assemblyai_provider(
+    audio_path: &str,
+    api_key: &str,
+    enable_role_speaker_identification: bool,
+    on_progress: impl FnMut(u8, &str),
+) -> Result<ManagedTranscriptionResult, String> {
+    let client = AssemblyAiClient::new(api_key.to_string());
+    let result = tauri::async_runtime::block_on(client.transcribe_file(
+        Path::new(audio_path),
+        enable_role_speaker_identification,
+        on_progress,
+    ))?;
+
+    Ok(ManagedTranscriptionResult {
+        transcription: result,
+        model_name: "assemblyai/universal",
+    })
+}
+
+pub(super) fn transcribe_with_selected_provider(
+    app_handle: &AppHandle,
+    settings_db_path: Option<&Path>,
+    conn: &rusqlite::Connection,
+    asset_id: Option<&str>,
+    audio_path: &str,
+) -> Result<ManagedTranscriptionResult, String> {
+    let mode = get_stt_mode(conn);
+    let assemblyai_api_key = get_assemblyai_api_key(conn);
+
+    let emit_provider_progress = |pct: u8, stage: &str| {
+        if let Some(asset_id) = asset_id {
+            emit_progress(app_handle, asset_id, pct, stage);
+        }
+    };
+    let enable_role_speaker_identification = asset_id.is_some();
+
+    match mode.as_str() {
+        STT_MODE_LOCAL => transcribe_with_local_provider(app_handle, settings_db_path, audio_path),
+        STT_MODE_ASSEMBLYAI => {
+            if assemblyai_api_key.is_empty() {
+                return Err(
+                    "AssemblyAI no está configurado. Andá a Configuración > STT y cargá una API key antes de transcribir."
+                        .to_string(),
+                );
+            }
+
+            transcribe_with_assemblyai_provider(
+                audio_path,
+                &assemblyai_api_key,
+                enable_role_speaker_identification,
+                emit_provider_progress,
+            )
+        }
+        STT_MODE_AUTO => {
+            let local_available = local_transcription_available(settings_db_path);
+
+            if local_available {
+                match transcribe_with_local_provider(app_handle, settings_db_path, audio_path) {
+                    Ok(result) => return Ok(result),
+                    Err(local_error) => {
+                        eprintln!("[transcription] Local STT failed in auto mode, trying AssemblyAI fallback: {local_error}");
+
+                        if assemblyai_api_key.is_empty() {
+                            return Err(format!(
+                                "La transcripción local falló y no hay fallback cloud configurado. Error local: {local_error}"
+                            ));
+                        }
+
+                        return transcribe_with_assemblyai_provider(
+                            audio_path,
+                            &assemblyai_api_key,
+                            enable_role_speaker_identification,
+                            emit_provider_progress,
+                        )
+                            .map_err(|cloud_error| {
+                                format!(
+                                    "La transcripción local falló y el fallback con AssemblyAI también falló. Error local: {local_error}\nError AssemblyAI: {cloud_error}"
+                                )
+                            });
+                    }
+                }
+            }
+
+            if assemblyai_api_key.is_empty() {
+                return Err(
+                    "No hay motor local disponible y AssemblyAI no está configurado. Andá a Configuración > STT para resolverlo."
+                        .to_string(),
+                );
+            }
+
+            eprintln!("[transcription] Local STT unavailable in auto mode, using AssemblyAI fallback");
+            transcribe_with_assemblyai_provider(
+                audio_path,
+                &assemblyai_api_key,
+                enable_role_speaker_identification,
+                emit_provider_progress,
+            )
+        }
+        _ => transcribe_with_local_provider(app_handle, settings_db_path, audio_path),
+    }
+}
+
 pub fn cleanup_temp_audio_file(audio_path: &str) -> Result<(), String> {
     match std::fs::remove_file(audio_path) {
         Ok(()) => Ok(()),
@@ -294,23 +461,31 @@ fn save_transcription(
 
 /// Process a single transcription job.
 fn process_job(
-    engine: &WhisperEngine,
     conn: &rusqlite::Connection,
     job: &TranscriptionJob,
+    settings_db_path: &Path,
     app_handle: &AppHandle,
 ) -> Result<TranscriptionResult, String> {
     emit_progress(app_handle, &job.asset_id, 10, "reading");
 
-    // Stage 1 — the Python script handles both decoding and transcription
     eprintln!("[transcription] Transcribing: {}", job.asset_path);
     emit_progress(app_handle, &job.asset_id, 30, "transcribing");
 
-    let result = engine.transcribe(&job.asset_path, 0)?; // duration_ms comes from Python output
+    let ManagedTranscriptionResult {
+        transcription: result,
+        model_name,
+    } = transcribe_with_selected_provider(
+        app_handle,
+        Some(settings_db_path),
+        conn,
+        Some(&job.asset_id),
+        &job.asset_path,
+    )?;
 
     emit_progress(app_handle, &job.asset_id, 80, "saving");
 
     // Stage 2 — persist to SQLite
-    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, "faster-whisper/base")?
+    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, model_name)?
     {
         // Asset-level NER + triples: only re-extract for the transcribed asset,
         // not the entire item. Avoids reprocessing unchanged pages.

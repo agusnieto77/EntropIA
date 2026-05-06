@@ -6,10 +6,13 @@
     settingsGet,
     settingsSet,
     testOpenrouterConnection,
+    testAssemblyaiConnection,
     SETTINGS_KEYS,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_LLM_MODE,
+    DEFAULT_STT_MODE,
     type LlmMode,
+    type SttMode,
     type ModelInfo,
   } from '$lib/settings'
   import { llmIsAvailable } from '$lib/llm'
@@ -25,13 +28,19 @@
   let showApiKey = $state(false)
   let model = $state(DEFAULT_OPENROUTER_MODEL)
   let llmMode = $state<LlmMode>(DEFAULT_LLM_MODE)
+  let sttMode = $state<SttMode>(DEFAULT_STT_MODE)
   let localAvailable = $state(false)
   let selectedLocale = $state<Locale>('es')
   let languageTouched = $state(false)
+  let assemblyAiApiKey = $state('')
+  let maskedAssemblyAiApiKey = $state('')
+  let showAssemblyAiApiKey = $state(false)
 
   // Test connection state
   let testing = $state(false)
   let testResult = $state<{ success: boolean; message: string } | null>(null)
+  let testingAssemblyAi = $state(false)
+  let assemblyAiTestResult = $state<{ success: boolean; message: string } | null>(null)
   let availableModels = $state<ModelInfo[]>([])
 
   const LANGUAGE_KEY = 'language'
@@ -56,13 +65,23 @@
         : t('settings.llmMode.auto.summary')
   )
 
+  let currentSttModeDescription = $derived(
+    sttMode === 'local'
+      ? t('settings.sttMode.local.summary')
+      : sttMode === 'assemblyai'
+        ? t('settings.sttMode.assemblyai.summary')
+        : t('settings.sttMode.auto.summary')
+  )
+
   const activeLocale = $derived($locale)
 
   onMount(async () => {
-    const [storedKey, storedModel, storedMode, storedLanguage, isAvail] = await Promise.all([
+    const [storedKey, storedModel, storedMode, storedSttMode, storedAssemblyAiKey, storedLanguage, isAvail] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
       settingsGet(SETTINGS_KEYS.LLM_MODE),
+      settingsGet(SETTINGS_KEYS.STT_MODE),
+      settingsGet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY),
       settingsGet(LANGUAGE_KEY),
       llmIsAvailable(),
     ])
@@ -73,15 +92,22 @@
     }
     if (storedModel) model = storedModel
     if (storedMode) llmMode = storedMode as LlmMode
+    if (storedSttMode) sttMode = storedSttMode as SttMode
+    if (storedAssemblyAiKey) {
+      assemblyAiApiKey = storedAssemblyAiKey
+      maskedAssemblyAiApiKey = maskKey(storedAssemblyAiKey, 5)
+    }
     if (!languageTouched) {
       selectedLocale = isLocale(storedLanguage) ? storedLanguage : get(locale)
     }
     localAvailable = isAvail
   })
 
-  function maskKey(key: string): string {
-    if (key.length <= 8) return '*'.repeat(key.length)
-    return key.slice(0, 4) + '*'.repeat(key.length - 8) + key.slice(-4)
+  function maskKey(key: string, prefixLength = 4): string {
+    const trimmed = key.trim()
+    if (!trimmed) return ''
+    if (trimmed.length <= prefixLength + 4) return '*'.repeat(trimmed.length)
+    return `${trimmed.slice(0, prefixLength)}****...****${trimmed.slice(-4)}`
   }
 
   async function handleTestConnection() {
@@ -108,6 +134,30 @@
     }
   }
 
+  async function handleTestAssemblyAiConnection() {
+    if (!assemblyAiApiKey.trim()) {
+      assemblyAiTestResult = { success: false, message: t('settings.enterAssemblyAiApiKey') }
+      return
+    }
+
+    testingAssemblyAi = true
+    assemblyAiTestResult = null
+    try {
+      await testAssemblyaiConnection(assemblyAiApiKey.trim())
+      assemblyAiTestResult = {
+        success: true,
+        message: t('settings.assemblyAiConnectionReady'),
+      }
+    } catch (e) {
+      assemblyAiTestResult = {
+        success: false,
+        message: e instanceof Error ? e.message : String(e),
+      }
+    } finally {
+      testingAssemblyAi = false
+    }
+  }
+
   async function handleSave() {
     saving = true
     saveFeedback = null
@@ -116,9 +166,12 @@
         settingsSet(SETTINGS_KEYS.OPENROUTER_API_KEY, apiKey.trim()),
         settingsSet(SETTINGS_KEYS.OPENROUTER_MODEL, model),
         settingsSet(SETTINGS_KEYS.LLM_MODE, llmMode),
+        settingsSet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY, assemblyAiApiKey.trim()),
+        settingsSet(SETTINGS_KEYS.STT_MODE, sttMode),
         settingsSet(LANGUAGE_KEY, selectedLocale),
       ])
       maskedApiKey = maskKey(apiKey)
+      maskedAssemblyAiApiKey = maskKey(assemblyAiApiKey, 5)
       saveFeedback = {
         tone: 'success',
         text: t('settings.saved'),
@@ -175,7 +228,7 @@
         type="button"
         onclick={() => (activeTab = 'openrouter')}
       >
-        LLM y OpenRouter
+        LLM y STT
       </button>
       <button
         class="settings-tab"
@@ -273,6 +326,47 @@
     <Card>
       <section class="settings-card-section">
         <div class="settings-card-section__copy">
+          <h2>{t('settings.sttModeTitle')}</h2>
+          <p>{currentSttModeDescription}</p>
+        </div>
+
+        <div class="settings__mode-options">
+          <label class="settings__radio" class:active={sttMode === 'local'}>
+            <input type="radio" name="stt_mode" value="local" bind:group={sttMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.sttMode.local.label')}</strong>
+              <span class="settings__radio-desc">{t('settings.sttMode.local.description')}</span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={sttMode === 'assemblyai'}>
+            <input type="radio" name="stt_mode" value="assemblyai" bind:group={sttMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.sttMode.assemblyai.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.sttMode.assemblyai.description')}
+              </span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={sttMode === 'auto'}>
+            <input type="radio" name="stt_mode" value="auto" bind:group={sttMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.sttMode.auto.label')}</strong>
+              <span class="settings__radio-desc">{t('settings.sttMode.auto.description')}</span>
+            </div>
+          </label>
+        </div>
+
+        {#if sttMode !== 'local'}
+          <p class="settings__hint settings__hint--privacy">{t('settings.sttPrivacyNotice')}</p>
+        {/if}
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
           <h2>{t('settings.openrouter.title')}</h2>
           <p>{t('settings.openrouter.description')}</p>
         </div>
@@ -357,6 +451,59 @@
                 </button>
               {/each}
             </div>
+          {/if}
+        </div>
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.assemblyai.title')}</h2>
+          <p>{t('settings.assemblyai.description')}</p>
+        </div>
+
+        <div class="settings__field settings__field--stacked">
+          <label class="settings__label" for="assemblyai-api-key">{t('settings.apiKey')}</label>
+          <div class="settings__input-row">
+            <input
+              id="assemblyai-api-key"
+              type={showAssemblyAiApiKey ? 'text' : 'password'}
+              class="settings__input"
+              bind:value={assemblyAiApiKey}
+              placeholder={t('settings.assemblyAiApiKeyPlaceholder')}
+            />
+            <button
+              class="settings__icon-btn"
+              type="button"
+              onclick={() => (showAssemblyAiApiKey = !showAssemblyAiApiKey)}
+              title={showAssemblyAiApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+              aria-label={showAssemblyAiApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+            >
+              {showAssemblyAiApiKey ? '🙈' : '👁'}
+            </button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={handleTestAssemblyAiConnection}
+              disabled={testingAssemblyAi || !assemblyAiApiKey.trim()}
+            >
+              {testingAssemblyAi ? t('settings.testingConnection') : t('settings.testConnection')}
+            </Button>
+          </div>
+
+          {#if maskedAssemblyAiApiKey}
+            <p class="settings__hint">{t('settings.loadedKey', { key: maskedAssemblyAiApiKey })}</p>
+          {/if}
+
+          {#if assemblyAiTestResult}
+            <p
+              class="surface-message settings__feedback"
+              class:surface-message--success={assemblyAiTestResult.success}
+              class:surface-message--error={!assemblyAiTestResult.success}
+            >
+              {assemblyAiTestResult.message}
+            </p>
           {/if}
         </div>
       </section>
@@ -567,6 +714,14 @@
 
   .settings__feedback {
     margin: 0;
+  }
+
+  .settings__hint--privacy {
+    margin: 0;
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 35%, transparent);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--color-warning, #f59e0b) 8%, var(--color-surface));
   }
 
   .settings__model-list {

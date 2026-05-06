@@ -1254,6 +1254,21 @@
     return busy ? translate('item.transcribeBusyAction') : translate('item.transcribeShortAction')
   }
 
+  function getTranscriptionStageLabel(stage?: string) {
+    if (!stage) return ''
+
+    switch (stage) {
+      case 'uploading':
+        return translate('item.transcriptionStage.uploading')
+      case 'submitting_remote':
+        return translate('item.transcriptionStage.submitting_remote')
+      case 'polling_remote':
+        return translate('item.transcriptionStage.polling_remote')
+      default:
+        return ''
+    }
+  }
+
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
@@ -3283,6 +3298,9 @@
                   </progress>
                   <p class="ocr-status-text">
                     {translate('item.transcriptionRunning', { progress: ts.progress })}
+                    {#if getTranscriptionStageLabel(ts.stage)}
+                      · {getTranscriptionStageLabel(ts.stage)}
+                    {/if}
                   </p>
                 {:else if ts.status === 'pending'}
                   <p class="ocr-status-text">{translate('item.transcriptionStarting')}</p>
