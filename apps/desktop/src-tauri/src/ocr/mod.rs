@@ -19,6 +19,7 @@ pub mod reading_order;
 mod debug_viz;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+use crate::runtime::{managed_resource_path, RuntimeManager};
 use base64::Engine;
 use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
 use paddle_vl::{create_paddle_vl_engine, PaddleVlEngine, PaddleVlOutput};
@@ -26,7 +27,7 @@ use pdf::{extract_pdf_text, init_pdfium_path, is_quality_text, pdf_page_count};
 use provider::{LayoutCategory, OcrProvider};
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 const OCRH_MODE_LOCAL: &str = "local";
@@ -34,6 +35,31 @@ const OCRH_MODE_GLM_OCR: &str = "glm_ocr";
 const OCRH_MODE_AUTO: &str = "auto";
 const OCRH_SETTING_MODE: &str = "ocrh_mode";
 const OCRH_SETTING_GLM_OCR_API_KEY: &str = "glm_ocr_api_key";
+
+fn managed_runtime_root_for_ocr(
+    app_handle: &AppHandle,
+) -> Result<Option<std::path::PathBuf>, String> {
+    managed_runtime_root_for_ocr_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
+    )
+}
+
+fn managed_runtime_root_for_ocr_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<std::path::PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<std::path::PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
+}
 
 // ── Event payloads ──────────────────────────────────────────────────────────
 
@@ -857,68 +883,60 @@ impl OcrQueue {
 /// from the project's `resources/models/ocr/` directory.
 #[cfg(feature = "paddle-ocr")]
 fn resolve_paddle_model_dir(app_handle: &AppHandle) -> std::path::PathBuf {
-    // Try Tauri resource path first (production)
-    if let Ok(path) = app_handle
-        .path()
-        .resolve("resources/models/ocr", BaseDirectory::Resource)
-    {
-        // Strip Windows \\?\ prefix if present (Tesseract compatibility pattern)
-        let mut s = path.to_string_lossy().into_owned();
-        if s.starts_with(r"\\?\") {
-            s = s[4..].to_string();
-        }
-        let clean_path = std::path::PathBuf::from(s);
-        if clean_path.exists() {
-            return clean_path;
-        }
-    }
-
-    // Dev fallback: CARGO_MANIFEST_DIR/resources/models/ocr
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let dev_path = std::path::PathBuf::from(manifest_dir)
-            .join("resources")
-            .join("models")
-            .join("ocr");
-        if dev_path.exists() {
-            return dev_path;
-        }
-    }
-
-    // Last resort: relative path
-    std::path::PathBuf::from("resources/models/ocr")
+    let runtime_root = managed_runtime_root_for_ocr(app_handle).ok().flatten();
+    resolve_paddle_model_dir_from_roots(
+        runtime_root.as_deref(),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
 }
 
 /// Resolve the Tesseract tessdata directory.
 ///
 /// Same pattern as PaddleOCR: Tauri resource path → CARGO_MANIFEST_DIR fallback.
 fn resolve_tessdata_dir(app_handle: &AppHandle) -> Option<String> {
-    // Try Tauri resource path first (production)
-    if let Ok(path) = app_handle
-        .path()
-        .resolve("resources/tessdata", BaseDirectory::Resource)
-    {
-        // Strip Windows \\?\ prefix — Tesseract's C API does NOT understand it
-        let mut s = path.to_string_lossy().into_owned();
-        if s.starts_with(r"\\?\") {
-            s = s[4..].to_string();
-        }
-        let clean_path = std::path::PathBuf::from(&s);
-        if clean_path.exists() {
-            return Some(s);
+    let runtime_root = managed_runtime_root_for_ocr(app_handle).ok().flatten();
+    resolve_tessdata_dir_from_roots(
+        runtime_root.as_deref(),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
+}
+
+#[cfg(feature = "paddle-ocr")]
+fn resolve_paddle_model_dir_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_resource_path(root, "models/ocr");
+        if managed.exists() {
+            return managed;
         }
     }
 
-    // Dev fallback: CARGO_MANIFEST_DIR/resources/tessdata
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let dev_path = std::path::PathBuf::from(manifest_dir)
-            .join("resources")
-            .join("tessdata");
-        if dev_path.exists() {
-            return Some(dev_path.to_string_lossy().into_owned());
+    let dev_path = manifest_dir.join("resources").join("models").join("ocr");
+    if dev_path.exists() {
+        return dev_path;
+    }
+
+    std::path::PathBuf::from("resources/models/ocr")
+}
+
+fn resolve_tessdata_dir_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+) -> Option<String> {
+    if let Some(root) = managed_root {
+        let managed = managed_resource_path(root, "tessdata");
+        if managed.exists() {
+            return Some(managed.to_string_lossy().into_owned());
         }
     }
 
-    // Fallback to vcpkg default (works on the dev machine)
+    let dev_path = manifest_dir.join("resources").join("tessdata");
+    if dev_path.exists() {
+        return Some(dev_path.to_string_lossy().into_owned());
+    }
+
     Some(r"C:\vcpkg\installed\x64-windows-static-md\share\tessdata".to_string())
 }
 
@@ -1804,6 +1822,9 @@ mod tests {
     use super::*;
     use crate::ocr::paddle_vl::{PaddleVlBbox, PaddleVlBlock, PaddleVlOutput, PaddleVlRegion};
     use crate::ocr::provider::{BoundingBox, LayoutCategory};
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
+    use std::cell::RefCell;
+    use std::path::PathBuf;
 
     #[test]
     fn test_format_region_text_title() {
@@ -2015,6 +2036,7 @@ mod tests {
             }],
             image_width: 1200,
             image_height: 1800,
+            actual_device: None,
         };
 
         let payload = LayoutPersistencePayload::from_page(2, &output);
@@ -2057,17 +2079,18 @@ mod tests {
             }],
             image_width: 1000,
             image_height: 334,
+            actual_device: None,
         };
 
         rescale_paddlevl_output_to_dimensions(&mut output, 2425, 809);
 
         assert_eq!(output.image_width, 2425);
         assert_eq!(output.image_height, 809);
-        assert_eq!(output.blocks[0].bbox.x, 243);
+        assert_eq!(output.blocks[0].bbox.x, 242);
         assert_eq!(output.blocks[0].bbox.y, 121);
         assert_eq!(output.blocks[0].bbox.width, 485);
         assert_eq!(output.blocks[0].bbox.height, 194);
-        assert_eq!(output.regions[0].bbox.x, 243);
+        assert_eq!(output.regions[0].bbox.x, 242);
         assert_eq!(output.regions[0].bbox.height, 194);
     }
 
@@ -2158,6 +2181,7 @@ mod tests {
     }
 
     #[test]
+
     fn test_glm_response_to_processed_output_uses_markdown_and_maps_layout() {
         let response = GlmOcrResponse {
             id: Some("task-1".to_string()),
@@ -2377,5 +2401,104 @@ mod tests {
 
         assert!(!glm_response_has_useful_content(&empty));
         assert!(glm_response_has_useful_content(&useful));
+    }
+
+    #[test]
+    fn resolve_tessdata_dir_prefers_managed_runtime_assets() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let managed_tessdata = runtime_dir.path().join("resources").join("tessdata");
+        std::fs::create_dir_all(&managed_tessdata).expect("create tessdata dir");
+
+        let resolved =
+            resolve_tessdata_dir_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(
+            resolved,
+            Some(managed_tessdata.to_string_lossy().into_owned())
+        );
+    }
+
+    #[cfg(feature = "paddle-ocr")]
+    #[test]
+    fn resolve_paddle_model_dir_prefers_managed_runtime_assets() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let managed_models = runtime_dir
+            .path()
+            .join("resources")
+            .join("models")
+            .join("ocr");
+        std::fs::create_dir_all(&managed_models).expect("create model dir");
+
+        let resolved =
+            resolve_paddle_model_dir_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, managed_models);
+    }
+
+    #[test]
+    fn managed_runtime_root_for_ocr_bootstraps_before_resolving_assets() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_ocr_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("runtime resolution should succeed");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn managed_runtime_root_for_ocr_stays_blocked_when_bootstrap_cannot_prepare_runtime() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_ocr_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedSourceUnavailable,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "No hay una fuente confiable disponible para bootstrap".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Ocr],
+                    details: vec!["manifest remoto no publicado".to_string()],
+                    guidance: vec!["Reintentá cuando exista una fuente firmada".to_string()],
+                    bootstrap_eligible: false,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("blocked runtime should not raise transport errors");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
     }
 }

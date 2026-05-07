@@ -6,12 +6,13 @@
 //!
 //! Fallback chain: PaddleVL → Tesseract (if PaddleVL fails or unavailable)
 
+use crate::path_utils::normalize_windows_path;
+use crate::runtime::{
+    managed_hf_cache_dir, managed_paddlex_cache_dir, managed_script_path, RuntimeManager,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::Manager;
-
-use crate::path_utils::normalize_windows_path;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -29,6 +30,10 @@ pub struct PaddleVlOutput {
     pub regions: Vec<PaddleVlRegion>,
     pub image_width: u32,
     pub image_height: u32,
+    /// The device that was actually used by the Python subprocess.
+    /// May differ from the requested device if GPU init failed and fell back to CPU.
+    #[serde(default)]
+    pub actual_device: Option<String>,
 }
 
 /// A single block from PaddleOCR-VL with text content.
@@ -67,6 +72,14 @@ pub struct PaddleVlConfig {
     pub python_path: PathBuf,
     /// Path to the paddle_vl.py script.
     pub script_path: PathBuf,
+    /// Managed HuggingFace cache directory, if available.
+    pub hf_cache_dir: Option<PathBuf>,
+    /// Managed PaddleX cache directory, if available.
+    pub paddlex_cache_dir: Option<PathBuf>,
+    /// Preferred compute device: "gpu" or "cpu".
+    /// The Python subprocess will validate GPU support and fall back to CPU
+    /// if the paddlepaddle-gpu stack is not installed or GPU init fails.
+    pub device: String,
 }
 
 /// The PaddleOCR-VL engine — spawns Python as a child process.
@@ -134,7 +147,10 @@ impl PaddleVlEngine {
     ///   - FLAGS_use_mkldnn=1: enable Paddle's oneDNN acceleration
     ///   - HF_HUB_DISABLE_PROGRESS_BARS=1: silence noisy HF download progress
     pub fn detect(&self, image_path: &str) -> Result<PaddleVlOutput, String> {
-        eprintln!("[paddle_vl] Spawning PaddleOCR-VL for: {}", image_path);
+        eprintln!(
+            "[paddle_vl] Spawning PaddleOCR-VL for: {} (device={})",
+            image_path, self.config.device
+        );
 
         // Determine optimal thread count: all logical cores capped at 8.
         // Going beyond 8 typically hurts due to memory bandwidth + scheduler overhead.
@@ -150,6 +166,8 @@ impl PaddleVlEngine {
         }
         cmd.arg(&self.config.script_path)
             .arg(image_path)
+            .arg("--device")
+            .arg(&self.config.device)
             // CPU performance tuning — must be set BEFORE the Python process starts
             // because OMP/MKL libraries read these once at import time.
             .env("OMP_NUM_THREADS", &cpu_threads)
@@ -157,14 +175,33 @@ impl PaddleVlEngine {
             .env("OPENBLAS_NUM_THREADS", &cpu_threads)
             .env("FLAGS_use_mkldnn", "1")
             .env("FLAGS_use_avx", "1")
+            // Disable Paddle's new PIR executor — it crashes with
+            // ConvertPirAttribute2RuntimeAttribute on some paddle/paddleocr combos.
+            .env("FLAGS_enable_pir_api", "0")
             // Silence HuggingFace progress bars (would pollute stderr/stdout)
             .env("HF_HUB_DISABLE_PROGRESS_BARS", "1")
             .env("HF_HUB_DISABLE_TELEMETRY", "1")
-            .env("TRANSFORMERS_OFFLINE", "0") // allow first-run downloads
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        eprintln!("[paddle_vl] CPU threads: {cpu_threads}, MKLDNN+AVX enabled");
+        let offline_mode =
+            self.config.hf_cache_dir.is_some() || self.config.paddlex_cache_dir.is_some();
+        let offline_value = if offline_mode { "1" } else { "0" };
+        cmd.env("HF_HUB_OFFLINE", offline_value)
+            .env("TRANSFORMERS_OFFLINE", offline_value);
+
+        if let Some(ref cache_dir) = self.config.hf_cache_dir {
+            cmd.env("HF_HOME", cache_dir).env("HF_HUB_CACHE", cache_dir);
+        }
+
+        if let Some(ref cache_dir) = self.config.paddlex_cache_dir {
+            cmd.env("PADDLEX_HOME", cache_dir);
+        }
+
+        eprintln!(
+            "[paddle_vl] device={}, CPU threads: {cpu_threads}, MKLDNN+AVX enabled, offline_mode={}",
+            self.config.device, offline_value
+        );
 
         let child = cmd.spawn().map_err(|e| {
             format!(
@@ -217,8 +254,15 @@ impl PaddleVlEngine {
 
                     if !status.success() {
                         let exit_code = status.code().unwrap_or(-1);
+
+                        // Classify known internal errors so fallback messages are actionable
+                        let diagnostic = classify_paddlevl_failure(&stderr, &stdout);
+                        let diagnostic_note = diagnostic
+                            .as_deref()
+                            .unwrap_or("PaddleVL subprocess exited with a non-zero code.");
+
                         return Err(format!(
-                            "PaddleVL script failed (exit code {exit_code}).\n\
+                            "PaddleVL script failed (exit code {exit_code}). {diagnostic_note}\n\
                              Python: {}\n\
                              Script: {}\n\
                              Stderr: {}\n\
@@ -267,10 +311,12 @@ impl PaddleVlEngine {
                         )
                     })?;
 
+                    let actual = result.actual_device.as_deref().unwrap_or("unknown");
                     eprintln!(
-                        "[paddle_vl] Complete: {} blocks, {} regions (took {:.1}s)",
+                        "[paddle_vl] Complete: {} blocks, {} regions, device={} (took {:.1}s)",
                         result.blocks.len(),
                         result.regions.len(),
+                        actual,
                         start.elapsed().as_secs_f64()
                     );
 
@@ -351,6 +397,37 @@ fn extract_sentinel_json(output: &str) -> &str {
     output.trim()
 }
 
+/// Detect whether a PaddleVL failure is caused by the known PIR executor bug.
+///
+/// When PaddlePaddle's new PIR executor encounters an unsupported attribute
+/// conversion, it emits:
+///   `(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support [...]`
+/// This is a framework-level bug, not a user error. Disabling PIR via
+/// `FLAGS_enable_pir_api=0` is the recommended workaround.
+fn is_pir_executor_error(stderr: &str) -> bool {
+    stderr.contains("ConvertPirAttribute2RuntimeAttribute")
+        || stderr.contains("pir::ArrayAttribute")
+        || stderr.contains("FLAGS_enable_pir_api")
+}
+
+/// Classify a PaddleVL failure and return a human-readable diagnostic string.
+///
+/// This helps the Rust-side logs and fallback messages explain *why* PaddleVL
+/// failed, so users (and maintainers) don't waste time chasing red herrings.
+fn classify_paddlevl_failure(stderr: &str, stdout: &str) -> Option<String> {
+    if is_pir_executor_error(stderr) || is_pir_executor_error(stdout) {
+        return Some(
+            "PaddlePaddle PIR/oneDNN executor bug detected (Paddle#77340). \
+             This crash affects paddlepaddle >=3.3.0 on CPU. \
+             EntropIA's dependency registry enforces paddlepaddle>=3.2.1,<3.3.0. \
+             If you see this error, your environment may have an unsupported version installed manually. \
+             Fix: Reset the environment from the app (Entorno → Resetear entorno) so EntropIA can install the correct version automatically."
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// Score a Python candidate by how likely it is to be a dedicated PaddleOCR-VL env.
 ///
 /// Higher score = better candidate. Used to prioritize purpose-built envs (e.g.
@@ -411,58 +488,124 @@ pub fn which_python_for_paddle_vl(settings_db_path: Option<&std::path::Path>) ->
     )
 }
 
+/// Detect whether an NVIDIA GPU is present on the system.
+///
+/// This is a *hardware* check only — it does NOT verify that the Python
+/// paddlepaddle-gpu stack is installed or functional. The Python subprocess
+/// will validate software-level GPU support and fall back to CPU if needed.
+///
+/// Detection strategy (fast, non-blocking):
+///   1. Run `nvidia-smi -L` (list GPUs). If it returns successfully with
+///      output containing "GPU", an NVIDIA GPU is present.
+///   2. Fall back to OS hardware inventory. This matters on Linux when
+///      `nvidia-smi` fails with a driver/library mismatch after driver updates;
+///      the hardware still exists, even if runtime GPU use may require rebooting
+///      or fixing the driver stack.
+///   3. On Windows, also check for `nvidia-smi.exe` in Program Files.
+///
+/// Returns `false` if no hardware signal reports an NVIDIA GPU.
+fn detect_nvidia_gpu() -> bool {
+    // Fast path: nvidia-smi -L lists GPUs in ~50-100ms.
+    match Command::new("nvidia-smi").arg("-L").output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let has_gpu = !stdout.trim().is_empty() && stdout.contains("GPU");
+            if has_gpu {
+                eprintln!("[paddle_vl] detect_nvidia_gpu: found GPU via nvidia-smi -L");
+            }
+            has_gpu
+        }
+        _ => {
+            // nvidia-smi not available or temporarily broken — try hardware inventory.
+            detect_nvidia_gpu_from_system_inventory()
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    if std::fs::read_dir("/proc/driver/nvidia/gpus")
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+    {
+        eprintln!("[paddle_vl] detect_nvidia_gpu: found GPU via /proc/driver/nvidia/gpus");
+        return true;
+    }
+
+    let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let vendor = std::fs::read_to_string(path.join("vendor")).unwrap_or_default();
+        if vendor.trim() != "0x10de" {
+            continue;
+        }
+
+        let class = std::fs::read_to_string(path.join("class")).unwrap_or_default();
+        if class.trim().starts_with("0x03") {
+            eprintln!("[paddle_vl] detect_nvidia_gpu: found GPU via PCI inventory");
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    let candidates = [
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramW6432").map(PathBuf::from),
+    ];
+
+    for base in candidates.into_iter().flatten() {
+        let smi = base
+            .join("NVIDIA Corporation")
+            .join("NVSMI")
+            .join("nvidia-smi.exe");
+        if !smi.exists() {
+            continue;
+        }
+        if let Ok(output) = Command::new(&smi).arg("-L").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if output.status.success() && stdout.contains("GPU") {
+                eprintln!(
+                    "[paddle_vl] detect_nvidia_gpu: found GPU via {}",
+                    smi.display()
+                );
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    false
+}
+
 /// Create a PaddleVlEngine for use by the OCR worker.
 ///
 /// Resolves the script path and Python interpreter, initializes the engine.
+/// Automatically prefers GPU when an NVIDIA GPU is detected, falling back to
+/// CPU if the Python paddlepaddle-gpu stack is unavailable.
 /// Returns None if PaddleVL is unavailable (no Python with paddleocr, or missing script).
 pub fn create_paddle_vl_engine(
     app_handle: &tauri::AppHandle,
     settings_db_path: &std::path::Path,
 ) -> Option<PaddleVlEngine> {
-    // Resolve script path: try Resource directory first (production), then source (dev).
-    // CRITICAL: Tauri's resolve() returns a path but doesn't verify the file exists.
-    let script_path = {
-        let resource_path: Option<std::path::PathBuf> = app_handle
-            .path()
-            .resolve("scripts/paddle_vl.py", tauri::path::BaseDirectory::Resource)
-            .ok();
-
-        // Strip Windows \\?\ prefix if present
-        let clean_resource_path = resource_path.map(normalize_windows_path);
-
-        // Check if the resource path actually exists on disk
-        if let Some(ref path) = clean_resource_path {
-            if path.exists() {
-                path.clone()
-            } else {
-                eprintln!(
-                    "[paddle_vl] Resource path does not exist: {}, trying dev fallback",
-                    path.display()
-                );
-                let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("resources/scripts/paddle_vl.py");
-                if dev_path.exists() {
-                    normalize_windows_path(dev_path)
-                } else {
-                    normalize_windows_path(
-                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("scripts/paddle_vl.py"),
-                    )
-                }
-            }
-        } else {
-            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("resources/scripts/paddle_vl.py");
-            if dev_path.exists() {
-                normalize_windows_path(dev_path)
-            } else {
-                normalize_windows_path(
-                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("scripts/paddle_vl.py"),
-                )
-            }
-        }
-    };
+    let runtime_root = managed_runtime_root_for_paddle_vl(app_handle)
+        .ok()
+        .flatten();
+    let script_path = resolve_paddle_vl_script_path_from_roots(
+        runtime_root.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    let (hf_cache_dir, paddlex_cache_dir) = resolve_paddle_vl_cache_dirs(runtime_root.as_deref());
 
     // Find Python interpreter with paddleocr
     let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
@@ -475,9 +618,22 @@ pub fn create_paddle_vl_engine(
         }
     };
 
+    // Auto-detect GPU and prefer it, but let the Python subprocess validate
+    // software-level support and fall back to CPU if GPU init fails.
+    let device = if detect_nvidia_gpu() {
+        eprintln!("[paddle_vl] NVIDIA GPU detected — preferring GPU for PaddleOCR-VL");
+        "gpu".to_string()
+    } else {
+        eprintln!("[paddle_vl] No NVIDIA GPU detected — using CPU for PaddleOCR-VL");
+        "cpu".to_string()
+    };
+
     match PaddleVlEngine::init(PaddleVlConfig {
         python_path,
         script_path,
+        hf_cache_dir,
+        paddlex_cache_dir,
+        device,
     }) {
         Ok(engine) => Some(engine),
         Err(e) => {
@@ -487,9 +643,56 @@ pub fn create_paddle_vl_engine(
     }
 }
 
+fn resolve_paddle_vl_script_path_from_roots(
+    managed_root: Option<&Path>,
+    manifest_dir: &Path,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_script_path(root, "paddle_vl.py");
+        if managed.exists() {
+            return managed;
+        }
+    }
+
+    let dev_resource = manifest_dir.join("resources/scripts/paddle_vl.py");
+    if dev_resource.exists() {
+        return normalize_windows_path(dev_resource);
+    }
+
+    normalize_windows_path(manifest_dir.join("scripts/paddle_vl.py"))
+}
+
+fn managed_runtime_root_for_paddle_vl(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<PathBuf>, String> {
+    managed_runtime_root_for_paddle_vl_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
+    )
+}
+
+fn managed_runtime_root_for_paddle_vl_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
+    use std::cell::RefCell;
+    use tempfile::tempdir;
 
     #[test]
     fn test_extract_sentinel_json() {
@@ -505,4 +708,185 @@ mod tests {
         let extracted = extract_sentinel_json(output);
         assert_eq!(extracted, r#"{"text":"hello"}"#);
     }
+
+    #[test]
+    fn test_detects_pir_executor_error_from_stderr() {
+        let stderr = "Exception from the 'cv' worker: (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]";
+        assert!(is_pir_executor_error(stderr));
+        let classification = classify_paddlevl_failure(stderr, "");
+        assert!(classification.is_some());
+        let msg = classification.unwrap();
+        assert!(msg.contains("PIR/oneDNN executor bug"));
+        assert!(
+            msg.contains("<3.3.0"),
+            "diagnostic should mention the version cap"
+        );
+    }
+
+    #[test]
+    fn test_detects_pir_executor_error_from_stdout() {
+        let stdout = "some prefix\nConvertPirAttribute2RuntimeAttribute\nsuffix";
+        // The standalone check also detects it (the function scans any text)
+        assert!(is_pir_executor_error(stdout));
+        // classify_paddlevl_failure scans both stderr and stdout
+        let classification = classify_paddlevl_failure("", stdout);
+        assert!(classification.is_some());
+    }
+
+    #[test]
+    fn test_no_false_positive_on_unrelated_error() {
+        let stderr = "CUDA out of memory";
+        assert!(!is_pir_executor_error(stderr));
+        assert!(classify_paddlevl_failure(stderr, "").is_none());
+    }
+
+    #[test]
+    fn resolves_managed_paddle_vl_script_before_dev_fallbacks() {
+        let runtime_dir = tempdir().expect("runtime dir");
+        let manifest_dir = tempdir().expect("manifest dir");
+        let managed_script = runtime_dir.path().join("scripts").join("paddle_vl.py");
+        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
+            .expect("create script dir");
+        std::fs::write(&managed_script, "print('ok')").expect("write managed script");
+
+        let resolved =
+            resolve_paddle_vl_script_path_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, managed_script);
+    }
+
+    #[test]
+    fn derives_managed_paddle_vl_cache_dirs_from_runtime_root() {
+        let runtime_dir = tempdir().expect("runtime dir");
+
+        let (hf_cache, paddlex_cache) = resolve_paddle_vl_cache_dirs(Some(runtime_dir.path()));
+
+        assert_eq!(hf_cache, Some(runtime_dir.path().join("caches").join("hf")));
+        assert_eq!(
+            paddlex_cache,
+            Some(runtime_dir.path().join("caches").join("paddlex"))
+        );
+    }
+
+    #[test]
+    fn paddle_vl_runtime_resolution_bootstraps_before_using_managed_assets() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_paddle_vl_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("managed runtime should resolve");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn paddle_vl_runtime_resolution_honors_blocked_bootstrap_status() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_paddle_vl_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedOffline,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "Bootstrap offline".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Ocr],
+                    details: vec!["offline".to_string()],
+                    guidance: vec!["Reintentá".to_string()],
+                    bootstrap_eligible: true,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("blocked bootstrap should degrade gracefully");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
+    }
+
+    #[test]
+    fn detect_nvidia_gpu_returns_bool_without_panicking() {
+        // We can't assert true/false because the test environment may or may not
+        // have nvidia-smi. The contract is: it must return a bool and never panic.
+        let _result = detect_nvidia_gpu();
+        // If we get here, the function didn't panic — success.
+    }
+
+    #[test]
+    fn paddle_vl_output_deserializes_with_actual_device() {
+        let json = r#"{
+            "text": "hello",
+            "method": "paddle_vl",
+            "blocks": [],
+            "regions": [],
+            "image_width": 100,
+            "image_height": 200,
+            "actual_device": "gpu"
+        }"#;
+        let output: PaddleVlOutput = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(output.actual_device, Some("gpu".to_string()));
+    }
+
+    #[test]
+    fn paddle_vl_output_deserializes_without_actual_device() {
+        // Backwards compatibility: old Python script may not emit actual_device.
+        let json = r#"{
+            "text": "hello",
+            "method": "paddle_vl",
+            "blocks": [],
+            "regions": [],
+            "image_width": 100,
+            "image_height": 200
+        }"#;
+        let output: PaddleVlOutput = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(output.actual_device, None);
+    }
+
+    #[test]
+    fn paddle_vl_config_includes_device() {
+        let config = PaddleVlConfig {
+            python_path: PathBuf::from("/usr/bin/python"),
+            script_path: PathBuf::from("/tmp/paddle_vl.py"),
+            hf_cache_dir: None,
+            paddlex_cache_dir: None,
+            device: "gpu".to_string(),
+        };
+        assert_eq!(config.device, "gpu");
+    }
+}
+
+fn resolve_paddle_vl_cache_dirs(managed_root: Option<&Path>) -> (Option<PathBuf>, Option<PathBuf>) {
+    (
+        managed_root.map(managed_hf_cache_dir),
+        managed_root.map(managed_paddlex_cache_dir),
+    )
 }
