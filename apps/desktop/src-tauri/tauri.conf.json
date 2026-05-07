@@ -33,6 +33,19 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
-    "resources": ["resources/*", "resources/tessdata/*", "resources/models/*", "resources/models/ner/*", "resources/models/ocr/*", "resources/lib/*", "resources/tools/uv/windows-x86_64/*", "resources/tools/uv/windows-aarch64/*", "scripts/*"]
+    "resources": [
+      "resources/*",
+      "resources/tessdata/*",
+      "resources/models/*",
+      "resources/models/ner/*",
+      "resources/models/ocr/*",
+      "resources/lib/*",
+      "resources/lib/linux-x86_64/**/*",
+      "resources/tools/uv/windows-x86_64/*",
+      "resources/tools/uv/windows-aarch64/*",
+      "resources/runtime-pack/windows-x86_64/**/*",
+      "resources/runtime-pack/linux-x86_64/**/*",
+      "scripts/*"
+    ]
   }
 }
