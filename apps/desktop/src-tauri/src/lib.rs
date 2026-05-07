@@ -115,22 +115,43 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
 
             // Normalize legacy duplicates and enforce one-row-per-asset semantics
             // for extractions/transcriptions so Rust workers can use real UPSERT.
-            ui_conn
-                .execute_batch(
+            // Fresh installs may not have these tables yet (created later by JS migrations),
+            // so this must be conditional.
+            let has_extractions_table = table_exists(&ui_conn, "extractions");
+            let has_transcriptions_table = table_exists(&ui_conn, "transcriptions");
+            let mut legacy_uniques_sql = String::new();
+
+            if has_extractions_table {
+                legacy_uniques_sql.push_str(
                     "DELETE FROM extractions
                      WHERE rowid NOT IN (
                        SELECT MAX(rowid) FROM extractions GROUP BY asset_id
                      );
-                     DELETE FROM transcriptions
+                     CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+                     ON extractions(asset_id);",
+                );
+            }
+
+            if has_transcriptions_table {
+                legacy_uniques_sql.push_str(
+                    "DELETE FROM transcriptions
                      WHERE rowid NOT IN (
                        SELECT MAX(rowid) FROM transcriptions GROUP BY asset_id
                      );
-                     CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
-                     ON extractions(asset_id);
                      CREATE UNIQUE INDEX IF NOT EXISTS idx_transcriptions_asset_id_unique
                      ON transcriptions(asset_id);",
-                )
-                .expect("Failed to enforce unique asset_id indexes for extraction/transcription");
+                );
+            }
+
+            if !legacy_uniques_sql.is_empty() {
+                ui_conn
+                    .execute_batch(&legacy_uniques_sql)
+                    .expect("Failed to enforce unique asset_id indexes for extraction/transcription");
+            } else {
+                eprintln!(
+                    "[setup] extractions/transcriptions tables not found — skipping legacy unique-index enforcement"
+                );
+            }
 
             // Migrate extractions.method CHECK constraint: remove the legacy
             // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
@@ -146,7 +167,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             let modern_schema_bootstrapped =
                 migration_applied(&ui_conn, "0017_vec_assets").unwrap_or(false);
 
-            if !modern_schema_bootstrapped {
+            if !modern_schema_bootstrapped && table_exists(&ui_conn, "assets") {
                 // Legacy fallback for databases that haven't run JS migrations yet.
                 let has_sort_index: bool = ui_conn
                     .prepare("SELECT sort_index FROM assets LIMIT 0")
@@ -189,6 +210,10 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                         .expect("Failed to add asset_id columns");
                     eprintln!("[setup] Added asset_id columns to notes, entities, triples");
                 }
+            } else if !modern_schema_bootstrapped {
+                eprintln!(
+                    "[setup] assets table not found — skipping legacy fallback schema patching"
+                );
             }
 
             // Create app_settings table for user configuration (API keys, preferences).
@@ -215,6 +240,15 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
 
             // Dependency manager: tracks Python-package availability (OCR, embeddings, etc.)
             app.manage(deps::DepsState::new());
+            app.manage(runtime::manager::RuntimeManager::new());
+
+            if let Err(error) = app
+                .state::<runtime::manager::RuntimeManager>()
+                .inner()
+                .validate_startup(&app.handle().clone())
+            {
+                eprintln!("[runtime] startup validation failed: {error}");
+            }
 
             // Background dependency check — runs 2 s after startup so the window is visible first.
             let app_handle_deps = app.handle().clone();
@@ -292,6 +326,32 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 geo_receiver,
                 app.handle().clone(),
             );
+
+            // On Linux, WebKitGTK denies media-device permission requests by default.
+            // We must explicitly enable media-stream and auto-approve permission
+            // requests so getUserMedia / MediaRecorder work for dictation.
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.with_webview(|webview| {
+                        use webkit2gtk::WebViewExt;
+                        use webkit2gtk::PermissionRequestExt;
+                        use webkit2gtk::SettingsExt;
+                        let gtk_webview = webview.inner();
+                        if let Some(settings) = gtk_webview.settings() {
+                            settings.set_enable_media_stream(true);
+                            settings.set_enable_webrtc(true);
+                        }
+                        gtk_webview.connect_permission_request(|_webview, request| {
+                            request.allow();
+                            true
+                        });
+                    }) {
+                        eprintln!("[linux-setup] Failed to configure webview media permissions: {}", e);
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -333,10 +393,13 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             llm::commands::llm_extract_entities_asset,
             llm::commands::llm_extract_triples_asset,
             llm::commands::llm_summarize_asset,
-llm::commands::llm_get_results,
-        llm::commands::llm_get_result,
-        llm::commands::llm_is_available,
-        geo::commands::geocode_entity,
+            llm::commands::llm_get_results,
+            llm::commands::llm_get_result,
+            llm::commands::llm_is_available,
+            llm::commands::llm_local_model_info,
+            llm::commands::llm_open_models_dir,
+            llm::commands::llm_download_model,
+            geo::commands::geocode_entity,
             geo::commands::geocode_item_entities,
             image_edit::crop_image,
             image_edit::rotate_image,
@@ -460,6 +523,15 @@ fn table_row_count(conn: &Connection, table: &str) -> Option<u64> {
     conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
         .ok()
         .map(|count| count.max(0) as u64)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?1 LIMIT 1",
+        rusqlite::params![table],
+        |_row| Ok(true),
+    )
+    .unwrap_or(false)
 }
 
 fn copy_sqlite_bundle(from_db: &Path, to_db: &Path) -> Result<(), String> {
@@ -607,6 +679,32 @@ fn migrate_legacy_asset_paths(db_path: &Path, app_dir: &Path) -> Result<(), Stri
 
     let conn = Connection::open(db_path)
         .map_err(|error| format!("Failed to open database for asset-path migration: {error}"))?;
+
+    let has_assets_table: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='assets' LIMIT 1",
+            [],
+            |_row| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !has_assets_table {
+        eprintln!("[setup] assets table not found — skipping legacy asset-path migration");
+        return Ok(());
+    }
+
+    let has_path_column: bool = conn
+        .prepare("SELECT path FROM assets LIMIT 0")
+        .and_then(|mut stmt| {
+            let _ = stmt.query_map([], |_| Ok(()));
+            Ok(true)
+        })
+        .unwrap_or(false);
+
+    if !has_path_column {
+        eprintln!("[setup] assets.path column not found — skipping legacy asset-path migration");
+        return Ok(());
+    }
 
     conn.execute(
         "UPDATE assets SET path = REPLACE(path, ?1, ?2) WHERE path LIKE ?3",
