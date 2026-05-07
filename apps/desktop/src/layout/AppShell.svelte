@@ -11,6 +11,7 @@
   } from '$lib/deps'
   import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
+  import EntropicConstellation from './EntropicConstellation.svelte'
   import type { Snippet } from 'svelte'
 
   const HLAB_URL = 'https://hlab.com.ar/'
@@ -77,6 +78,9 @@
   }
 </script>
 
+<!-- Fondo constelación entrópica -->
+<EntropicConstellation />
+
 <div class="shell">
   <TopBar />
   <div class="workspace">
@@ -127,9 +131,13 @@
 
 <style>
   .shell {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     height: 100%;
+    /* Fondo transparente para que se vea la constelación */
+    background: transparent;
   }
 
   .workspace {
