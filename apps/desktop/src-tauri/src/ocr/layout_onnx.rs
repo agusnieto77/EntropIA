@@ -29,13 +29,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use super::provider::{BoundingBox, LayoutCategory, LayoutRegion};
+use crate::runtime::{managed_resource_path, RuntimeManager};
 use image::GenericImageView;
 use ndarray::{Array, Array2, Array4};
 use ort::session::Session;
 use ort::value::TensorRef;
-use tauri::Manager;
-
-use super::provider::{BoundingBox, LayoutCategory, LayoutRegion};
 
 /// Confidence threshold for detections. Detections below this are discarded.
 const CONFIDENCE_THRESHOLD: f32 = 0.50;
@@ -620,51 +619,20 @@ impl OnnxLayoutEngine {
 ///
 /// Returns None if the model file is not found (graceful degradation).
 pub fn create_layout_engine(app_handle: &tauri::AppHandle) -> Option<OnnxLayoutEngine> {
-    const MODEL_FILENAME: &str = "PP-DocLayout-L.onnx";
-    const MODEL_REL_PATH: &str = "resources/models/ocr/PP-DocLayout-L.onnx";
+    let runtime_root = managed_runtime_root_for_layout(app_handle).ok().flatten();
 
-    if let Ok(path) = app_handle
-        .path()
-        .resolve(MODEL_REL_PATH, tauri::path::BaseDirectory::Resource)
-    {
-        let clean = {
-            let s = path.to_string_lossy().into_owned();
-            if s.starts_with(r"\\?\") {
-                std::path::PathBuf::from(&s[4..])
-            } else {
-                path
-            }
-        };
-        if clean.exists() {
-            eprintln!(
-                "[ocr/layout_onnx] Found layout model at: {}",
-                clean.display()
-            );
-            match OnnxLayoutEngine::new(&clean) {
-                Ok(engine) => return Some(engine),
-                Err(e) => {
-                    eprintln!("[ocr/layout_onnx] ❌ Failed to load model from resource path: {e}");
-                }
-            }
-        }
-    }
-
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let dev_path = std::path::PathBuf::from(manifest_dir)
-            .join("resources")
-            .join("models")
-            .join("ocr")
-            .join(MODEL_FILENAME);
-        if dev_path.exists() {
-            eprintln!(
-                "[ocr/layout_onnx] Found layout model at dev path: {}",
-                dev_path.display()
-            );
-            match OnnxLayoutEngine::new(&dev_path) {
-                Ok(engine) => return Some(engine),
-                Err(e) => {
-                    eprintln!("[ocr/layout_onnx] ❌ Failed to load model from dev path: {e}");
-                }
+    if let Some(path) = resolve_layout_model_path_from_roots(
+        runtime_root.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    ) {
+        eprintln!(
+            "[ocr/layout_onnx] Found layout model at: {}",
+            path.display()
+        );
+        match OnnxLayoutEngine::new(&path) {
+            Ok(engine) => return Some(engine),
+            Err(e) => {
+                eprintln!("[ocr/layout_onnx] ❌ Failed to load model from resolved path: {e}");
             }
         }
     }
@@ -673,10 +641,63 @@ pub fn create_layout_engine(app_handle: &tauri::AppHandle) -> Option<OnnxLayoutE
     None
 }
 
+fn managed_runtime_root_for_layout(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<PathBuf>, String> {
+    managed_runtime_root_for_layout_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
+    )
+}
+
+fn managed_runtime_root_for_layout_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
+}
+
+fn resolve_layout_model_path_from_roots(
+    managed_root: Option<&Path>,
+    manifest_dir: &Path,
+) -> Option<PathBuf> {
+    const MODEL_FILENAME: &str = "PP-DocLayout-L.onnx";
+
+    if let Some(root) = managed_root {
+        let managed = managed_resource_path(root, "models/ocr").join(MODEL_FILENAME);
+        if managed.exists() {
+            return Some(managed);
+        }
+    }
+
+    let dev_path = manifest_dir
+        .join("resources")
+        .join("models")
+        .join("ocr")
+        .join(MODEL_FILENAME);
+    if dev_path.exists() {
+        return Some(dev_path);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ocr::provider::LayoutCategory;
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
+    use std::cell::RefCell;
+    use tempfile::tempdir;
 
     #[test]
     fn test_map_label_known_labels() {
@@ -729,5 +750,90 @@ mod tests {
         assert_eq!(map_class_id(999), LayoutCategory::PlainText);
         assert_eq!(map_class_id(50), LayoutCategory::PlainText);
         assert_eq!(map_class_id(100), LayoutCategory::PlainText);
+    }
+
+    #[test]
+    fn resolve_layout_model_prefers_managed_runtime_assets() {
+        let runtime_dir = tempdir().expect("runtime dir");
+        let manifest_dir = tempdir().expect("manifest dir");
+        let managed_model = runtime_dir
+            .path()
+            .join("resources")
+            .join("models")
+            .join("ocr")
+            .join("PP-DocLayout-L.onnx");
+        std::fs::create_dir_all(managed_model.parent().expect("model parent"))
+            .expect("create model dir");
+        std::fs::write(&managed_model, b"onnx").expect("write model");
+
+        let resolved =
+            resolve_layout_model_path_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, Some(managed_model));
+    }
+
+    #[test]
+    fn layout_runtime_resolution_bootstraps_before_using_managed_model() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_layout_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("runtime resolution should succeed");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn layout_runtime_resolution_respects_blocked_bootstrap_status() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_layout_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedSourceUnavailable,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "Bootstrap bloqueado".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Ocr],
+                    details: vec!["manifest remoto no publicado".to_string()],
+                    guidance: vec!["Reintentá".to_string()],
+                    bootstrap_eligible: false,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("blocked bootstrap should degrade gracefully");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
     }
 }
