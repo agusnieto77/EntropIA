@@ -461,51 +461,11 @@
 </script>
 
 <aside
-  class="explorer"
-  class:is-open={isOpen}
-  style:width={`${isOpen ? explorerWidth : COLLAPSED_WIDTH}px`}
+  class="explorer is-open"
+  style:width={`${explorerWidth}px`}
   aria-label={$currentLocale && translateExplorer('explorer.aria')}
 >
   <div id="document-explorer-panel" class="explorer__panel">
-    <header class="explorer__header">
-      <button
-        class="explorer__toggle"
-        type="button"
-        onclick={toggleOpen}
-        aria-expanded={isOpen}
-        aria-controls="document-explorer-content"
-        aria-label={isOpen
-          ? translateExplorer('explorer.collapse')
-          : translateExplorer('explorer.expand')}
-        title={isOpen ? translateExplorer('explorer.collapse') : translateExplorer('explorer.expand')}
-      >
-        <svg
-          class="explorer__toggle-icon"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          {#if isOpen}
-            <path d="m10 3.5-4.5 4.5 4.5 4.5" />
-          {:else}
-            <path d="m6 3.5 4.5 4.5L6 12.5" />
-          {/if}
-        </svg>
-      </button>
-
-      {#if isOpen}
-        <div class="explorer__header-copy">
-          <p class="explorer__eyebrow">{$currentLocale && translateExplorer('explorer.eyebrow')}</p>
-          <h2>{$currentLocale && translateExplorer('explorer.title')}</h2>
-        </div>
-      {/if}
-    </header>
-
-    {#if isOpen}
       <div id="document-explorer-content" class="explorer__scroll">
         {#if loadError}
           <p class="explorer__message explorer__message--error">{loadError}</p>
@@ -787,7 +747,6 @@
         title={$currentLocale && translateExplorer('explorer.resize')}
         onpointerdown={startResize}
       ></div>
-    {/if}
   </div>
 </aside>
 
@@ -795,54 +754,12 @@
   .explorer {
     display: flex;
     flex: 0 0 auto;
-    min-width: 34px;
-    max-width: 268px;
-    border-right: 1px solid var(--color-hairline);
-    background:
-      radial-gradient(circle at 24px 18px, rgba(255, 255, 255, 0.026), transparent 18%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.002)),
-      var(--color-surface-glass);
+    min-width: 180px;
+    max-width: 300px;
+    border-right: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
     overflow: hidden;
     font-size: 12px;
-  }
-
-  .explorer.is-open {
-    min-width: 220px;
-  }
-
-  .explorer__toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    transition:
-      color var(--transition-base),
-      border-color var(--transition-base),
-      background-color var(--transition-base),
-      box-shadow var(--transition-base);
-  }
-
-  .explorer__toggle:hover {
-    color: var(--color-text-primary);
-    border-color: var(--color-hairline);
-    background: color-mix(in srgb, var(--color-surface-raised) 64%, transparent);
-  }
-
-  .explorer__toggle:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
-  }
-
-  .explorer__toggle-icon {
-    width: 14px;
-    height: 14px;
-    flex: 0 0 14px;
   }
 
   .explorer__panel {
@@ -851,40 +768,6 @@
     flex: 1;
     min-width: 0;
     flex-direction: column;
-  }
-
-  .explorer__header {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    min-height: 38px;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--color-hairline);
-    background: color-mix(in srgb, var(--color-surface-sunken) 24%, transparent);
-  }
-
-  .explorer__header-copy {
-    min-width: 0;
-  }
-
-  .explorer__header h2,
-  .explorer__eyebrow {
-    margin: 0;
-  }
-
-  .explorer__header h2 {
-    font-size: 12px;
-    font-weight: var(--font-weight-medium);
-    color: var(--color-text-primary);
-    line-height: 1.2;
-  }
-
-  .explorer__eyebrow {
-    margin-bottom: 2px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--color-text-muted);
   }
 
   .explorer__resize-handle {
