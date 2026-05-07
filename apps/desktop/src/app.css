@@ -24,7 +24,7 @@ body {
   font-family: var(--font-sans);
   font-size: var(--font-size-sm);
   line-height: var(--line-height-base);
-  background-color: var(--color-bg);
+  background: transparent;
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -33,9 +33,7 @@ body {
 }
 
 body {
-  background:
-    radial-gradient(circle at 16% -10%, rgba(174, 182, 216, 0.045), transparent 28%),
-    linear-gradient(180deg, var(--color-bg-ambient), var(--color-bg) 38%), var(--color-bg);
+  background: transparent;
 }
 
 * {

@@ -11,6 +11,7 @@
   } from '$lib/deps'
   import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
+  import EntropicConstellation from './EntropicConstellation.svelte'
   import type { Snippet } from 'svelte'
 
   const HLAB_URL = 'https://hlab.com.ar/'
@@ -78,6 +79,7 @@
 </script>
 
 <div class="shell">
+  <EntropicConstellation />
   <TopBar />
   <div class="workspace">
     {#if showExplorer}
@@ -130,16 +132,14 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    background: transparent;
   }
 
-  .workspace {
+.workspace {
     display: flex;
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.01), transparent 30%),
-      var(--color-bg);
   }
 
   .content {
@@ -147,9 +147,6 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-5);
-    background:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 18%),
-      var(--color-bg);
   }
 
   .deps-banner {
