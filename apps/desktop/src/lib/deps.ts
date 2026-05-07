@@ -36,8 +36,15 @@ export interface UvStatusResult {
   uv_ready: boolean
   uv_path: string | null
   uv_version: string | null
+  uv_source: string | null
+  uv_compatible_for_dev: boolean
   venv_exists: boolean
   venv_path: string | null
+  uv_warning: string | null
+  release_runtime_ready: boolean
+  release_runtime_state: string | null
+  dev_fallback_available: boolean
+  dev_fallback_reason: string | null
 }
 
 export interface DepsProgressEvent {

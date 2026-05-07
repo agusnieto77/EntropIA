@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { Button } from '@entropia/ui'
   import {
     checkAllDeps,
@@ -18,6 +18,17 @@
     type DependencyStatus,
     type UvStatusResult,
   } from '$lib/deps'
+  import {
+    getRuntimeStatus,
+    onRuntimeProgress,
+    onRuntimeStatus,
+    repairRuntime,
+    runtimeCanBootstrapAutomatically,
+    runtimeNeedsAttention,
+    shouldShowRuntimeRepairAction,
+    type RuntimeStatus,
+    type RuntimeOperation,
+  } from '$lib/runtime'
 
   // ---------------------------------------------------------------------------
   // State
@@ -28,12 +39,8 @@
   let installing = $state(false)
   let errorBanner = $state<string | null>(null)
   let expandedErrors = $state<Set<DependencyId>>(new Set())
-  let resetting = $state(false)
-  let showResetConfirm = $state(false)
-  let resetConfirmationValue = $state('')
-  let resetConfirmationInput = $state<HTMLInputElement | null>(null)
-
-  const RESET_CONFIRMATION_PHRASE = 'RESETEAR ENTORNO'
+  let runtimeStatus = $state<RuntimeStatus | null>(null)
+  let runtimeOperation = $state<RuntimeOperation | null>(null)
 
   // ---------------------------------------------------------------------------
   // Derived
@@ -61,9 +68,14 @@
 
   onMount(async () => {
     try {
-      const [checkResults, uv] = await Promise.all([checkAllDeps(), getUvStatus()])
+      const [checkResults, uv, runtime] = await Promise.all([
+        checkAllDeps(),
+        getUvStatus(),
+        getRuntimeStatus(),
+      ])
       deps = checkResults
       uvStatus = uv
+      runtimeStatus = runtime
     } catch (e) {
       errorBanner = `Error al verificar dependencias: ${String(e)}`
     }
@@ -79,6 +91,13 @@
       await onDepsError((event) => {
         errorBanner = event.error
         installing = false
+      }),
+      await onRuntimeStatus((status) => {
+        runtimeStatus = status
+        runtimeOperation = status.activeOperation ?? runtimeOperation
+      }),
+      await onRuntimeProgress((operation) => {
+        runtimeOperation = operation
       }),
     )
   })
@@ -116,35 +135,29 @@
     }
   }
 
-  async function handleResetDialogOpen() {
-    resetConfirmationValue = ''
-    showResetConfirm = true
-    await tick()
-    resetConfirmationInput?.focus()
-  }
-
-  function handleResetDialogCancel() {
-    if (resetting) return
-    showResetConfirm = false
-    resetConfirmationValue = ''
-  }
-
   async function handleReset() {
-    if (resetConfirmationValue.trim() !== RESET_CONFIRMATION_PHRASE) return
-
-    resetting = true
+    if (
+      !confirm(
+        '¿Estás seguro? Esto eliminará el entorno virtual y todas las dependencias instaladas.',
+      )
+    )
+      return
     errorBanner = null
     try {
       await resetDeps()
       const [checkResults, uv] = await Promise.all([checkAllDeps(), getUvStatus()])
       deps = checkResults
       uvStatus = uv
-      showResetConfirm = false
-      resetConfirmationValue = ''
     } catch (e) {
       errorBanner = String(e)
-    } finally {
-      resetting = false
+    }
+  }
+
+  async function handleRuntimeRepair() {
+    try {
+      runtimeStatus = await repairRuntime()
+    } catch (e) {
+      errorBanner = String(e)
     }
   }
 
@@ -178,13 +191,13 @@
   function statusColor(status: DependencyStatus): string {
     switch (status.type) {
       case 'installed':
-        return 'var(--color-success)'
+        return 'var(--color-success, #22c55e)'
       case 'missing':
-        return 'var(--color-danger)'
+        return 'var(--color-error, #ef4444)'
       case 'failed':
-        return 'var(--color-warning)'
+        return 'var(--color-warning, #f59e0b)'
       default:
-        return 'var(--color-text-muted)'
+        return 'var(--color-text-muted, #6b7280)'
     }
   }
 
@@ -211,12 +224,78 @@
     return id !== 'Python'
   }
 
-  let isResetConfirmationValid = $derived(
-    resetConfirmationValue.trim() === RESET_CONFIRMATION_PHRASE,
-  )
+  function isRuntimeFixture(status: RuntimeStatus | null): boolean {
+    return status?.state === 'fixture'
+  }
+
+  function shouldExplainDevFallback(): boolean {
+    return isRuntimeFixture(runtimeStatus) && Boolean(uvStatus?.dev_fallback_available)
+  }
+
+  function canInstallInCurrentDevState(): boolean {
+    if (runtimeStatus?.state === 'healthy') return true
+    return Boolean(uvStatus?.dev_fallback_available)
+  }
+
+  function bootstrapProgressLabel(): string | null {
+    if (!runtimeOperation) return null
+    if (runtimeOperation.progressPercent != null) {
+      return `${runtimeOperation.progressPercent}% · ${runtimeOperation.summary}`
+    }
+    if (runtimeOperation.totalBytes != null && runtimeOperation.downloadedBytes != null) {
+      return `${runtimeOperation.downloadedBytes}/${runtimeOperation.totalBytes} bytes · ${runtimeOperation.summary}`
+    }
+    return runtimeOperation.summary
+  }
 </script>
 
 <div class="deps-tab">
+  {#if runtimeNeedsAttention(runtimeStatus)}
+    <div class="deps-runtime-panel" role="status">
+      <div class="deps-runtime-panel__copy">
+        <strong>{runtimeStatus?.summary}</strong>
+        {#if isRuntimeFixture(runtimeStatus)}
+          <span>
+            El runtime-pack de release SIGUE sin estar listo. Eso no cambia.
+            {#if shouldExplainDevFallback()}
+              Pero en Linux dev podés usar un fallback honesto con Python/uv del sistema para instalar las dependencias localmente.
+            {:else}
+              Sin payloads reales ni fallback local usable, las capacidades bloqueadas no van a funcionar.
+            {/if}
+          </span>
+        {/if}
+        {#if runtimeStatus?.blockedCapabilities?.length}
+          <span>
+            Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}
+          </span>
+        {/if}
+        {#if runtimeStatus?.details?.length}
+          <ul>
+            {#each runtimeStatus?.details ?? [] as detail}
+              <li>{detail}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if runtimeStatus?.guidance?.length}
+          <ul class="deps-runtime-panel__guidance">
+            {#each runtimeStatus?.guidance ?? [] as item}
+              <li>{item}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if runtimeOperation}
+          <p class="deps-runtime-panel__progress">{bootstrapProgressLabel()}</p>
+        {/if}
+        {#if runtimeCanBootstrapAutomatically(runtimeStatus)}
+          <span>EntropIA va a intentar bootstrapear el runtime automáticamente cuando una fuente válida esté disponible.</span>
+        {/if}
+      </div>
+      {#if shouldShowRuntimeRepairAction(runtimeStatus)}
+        <Button variant="secondary" onclick={handleRuntimeRepair}>Reparar runtime</Button>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Error banner -->
   {#if errorBanner}
     <div class="deps-banner deps-banner--error">
@@ -235,7 +314,7 @@
   <!-- UV status row -->
   <div class="deps-uv-status">
     {#if uvStatus}
-      {#if uvStatus.uv_ready}
+      {#if uvStatus.release_runtime_ready}
         <span class="deps-uv-status__text">
           uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
           {#if uvStatus.venv_exists}
@@ -244,10 +323,35 @@
             · sin entorno virtual
           {/if}
         </span>
+      {:else if uvStatus.dev_fallback_available}
+        <span class="deps-uv-status__text deps-uv-status__text--info">
+          Fallback dev disponible · uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
+          {#if uvStatus.venv_exists}
+            · entorno virtual local en {uvStatus.venv_path ?? ''}
+          {:else}
+            · sin entorno virtual local
+          {/if}
+        </span>
       {:else}
         <span class="deps-uv-status__text deps-uv-status__text--warn">
-          uv no instalado — las dependencias no pueden gestionarse automáticamente
+          No hay fallback usable: faltan prerequisitos locales para gestionar dependencias automáticamente
         </span>
+      {/if}
+      {#if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture'}
+        <p class="deps-uv-warning">
+          Runtime de release no listo ({runtimeStatus.summary}). La gestión local en dev NO hidrata ni valida payloads de release.
+        </p>
+      {/if}
+      {#if uvStatus.dev_fallback_reason}
+        <p class="deps-uv-warning">{uvStatus.dev_fallback_reason}</p>
+      {/if}
+      {#if uvStatus.uv_warning}
+        <p class="deps-uv-warning">{uvStatus.uv_warning}</p>
+      {/if}
+      {#if !uvStatus.uv_ready && uvStatus.uv_version && uvStatus.uv_path}
+        <p class="deps-uv-warning">
+          Detectado: uv {uvStatus.uv_version} en {uvStatus.uv_path}
+        </p>
       {/if}
     {:else}
       <span class="deps-uv-status__text">Verificando uv...</span>
@@ -257,9 +361,14 @@
   <!-- Install all button -->
   {#if hasMissingOrFailed && !installing}
     <div class="deps-actions">
-      <Button variant="primary" onclick={handleInstallAll} disabled={installing}>
+      <Button variant="primary" onclick={handleInstallAll} disabled={installing || !canInstallInCurrentDevState()}>
         Instalar todo
       </Button>
+      {#if !canInstallInCurrentDevState()}
+        <p class="deps-actions__hint">
+          Necesitás runtime release hidratado o, en Linux dev, tener Python + uv del sistema disponibles.
+        </p>
+      {/if}
     </div>
   {/if}
 
@@ -374,83 +483,14 @@
   </p>
 
   <!-- Reset button -->
-  <section class="deps-danger-zone" aria-labelledby="deps-danger-zone-title">
-    <div class="deps-danger-zone__content">
-      <p class="deps-danger-zone__eyebrow">Danger zone</p>
-      <h3 id="deps-danger-zone-title" class="deps-danger-zone__title">Resetear entorno</h3>
-      <p class="deps-danger-zone__hint">
-        Elimina el entorno virtual local y las dependencias de IA instaladas en esta máquina.
-        Después vas a tener que reinstalarlas para volver a usar estas funciones.
-      </p>
-    </div>
-
-    <div class="deps-danger-zone__action">
-      <Button variant="danger" onclick={handleResetDialogOpen} disabled={installing || resetting}>
-        Resetear entorno
-      </Button>
-    </div>
-  </section>
-
-  {#if showResetConfirm}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="modal-overlay" onclick={handleResetDialogCancel} role="presentation">
-      <div
-        class="modal deps-reset-modal"
-        tabindex="-1"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="deps-reset-modal-title"
-        aria-describedby="deps-reset-modal-description"
-        onclick={(event) => event.stopPropagation()}
-        onkeydown={(event) => {
-          if (event.key === 'Escape') handleResetDialogCancel()
-        }}
-      >
-        <div class="deps-reset-modal__header">
-          <span class="deps-reset-modal__eyebrow">Acción destructiva</span>
-          <h3 id="deps-reset-modal-title" class="modal-title">Resetear entorno</h3>
-        </div>
-        <p id="deps-reset-modal-description" class="modal-message">
-          Esto elimina el entorno virtual local y borra las dependencias de IA instaladas.
-          Después vas a tener que reinstalarlas para volver a usar estas funciones.
-        </p>
-
-        <div class="deps-reset-modal__warning" role="note" aria-label="Impacto del reseteo">
-          <p class="deps-reset-modal__warning-title">Esta acción no se puede deshacer desde la app.</p>
-          <p class="deps-reset-modal__warning-copy">
-            Para confirmar que entendés el impacto, escribí exactamente esta frase:
-          </p>
-          <code class="deps-reset-modal__phrase">{RESET_CONFIRMATION_PHRASE}</code>
-        </div>
-
-        <label class="deps-reset-modal__label" for="deps-reset-confirmation-input">
-          Escribí la frase exacta
-        </label>
-        <input
-          id="deps-reset-confirmation-input"
-          bind:this={resetConfirmationInput}
-          bind:value={resetConfirmationValue}
-          class="deps-reset-modal__input"
-          type="text"
-          spellcheck="false"
-          autocomplete="off"
-          autocapitalize="off"
-          placeholder={RESET_CONFIRMATION_PHRASE}
-          disabled={resetting}
-        />
-        <p class="deps-reset-modal__hint">La confirmación distingue espacios y mayúsculas.</p>
-
-        <div class="modal-actions">
-          <Button variant="secondary" onclick={handleResetDialogCancel} disabled={resetting}>
-            Cancelar
-          </Button>
-          <Button variant="danger" onclick={handleReset} disabled={!isResetConfirmationValid || resetting}>
-            {resetting ? 'Reseteando...' : 'Resetear entorno'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <div class="deps-danger-zone">
+    <Button variant="danger" onclick={handleReset} disabled={installing}>
+      Resetear entorno
+    </Button>
+    <p class="deps-danger-zone__hint">
+      Elimina el entorno virtual y todas las dependencias instaladas. Requiere reinstalación.
+    </p>
+  </div>
 </div>
 
 <style>
@@ -460,9 +500,39 @@
     gap: var(--space-4);
   }
 
-  .deps-tab {
-    --deps-panel-bg: color-mix(in srgb, var(--color-surface-raised) 58%, transparent);
-    --deps-panel-border: color-mix(in srgb, var(--color-hairline) 72%, transparent);
+  .deps-runtime-panel {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(245, 158, 11, 0.08);
+    color: #92400e;
+  }
+
+  .deps-runtime-panel__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-runtime-panel__copy ul {
+    margin: 0;
+    padding-left: var(--space-4);
+  }
+
+  .deps-runtime-panel__guidance {
+    margin-top: var(--space-1);
+    color: #78350f;
+  }
+
+  .deps-runtime-panel__progress {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: #78350f;
+    font-family: var(--font-mono, monospace);
   }
 
   /* Banner */
@@ -477,15 +547,15 @@
   }
 
   .deps-banner--error {
-    background: var(--color-danger-soft);
-    border: 1px solid color-mix(in srgb, var(--color-danger) 28%, transparent);
-    color: var(--color-danger);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #b91c1c;
   }
 
   .deps-banner--success {
-    background: var(--color-success-soft);
-    border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
-    color: var(--color-success);
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #15803d;
   }
 
   .deps-banner__message {
@@ -513,18 +583,36 @@
 
   .deps-uv-status__text {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     font-family: var(--font-mono, monospace);
   }
 
   .deps-uv-status__text--warn {
-    color: var(--color-warning);
+    color: var(--color-warning, #f59e0b);
+  }
+
+  .deps-uv-status__text--info {
+    color: var(--color-accent, #4f46e5);
+  }
+
+  .deps-uv-warning {
+    margin: var(--space-1) 0 0;
+    font-size: var(--font-size-xs);
+    color: #92400e;
   }
 
   /* Actions */
   .deps-actions {
     display: flex;
     gap: var(--space-3);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .deps-actions__hint {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted, #6b7280);
   }
 
   /* Progress bar */
@@ -537,8 +625,8 @@
   .deps-progress__bar {
     flex: 1;
     height: 6px;
-    background: var(--color-border-subtle);
-    border-radius: var(--radius-full);
+    background: var(--color-border-subtle, #e5e7eb);
+    border-radius: var(--radius-full, 9999px);
     overflow: hidden;
   }
 
@@ -550,14 +638,14 @@
 
   .deps-progress__fill {
     height: 100%;
-    background: var(--color-accent);
-    border-radius: var(--radius-full);
+    background: var(--color-accent, #6366f1);
+    border-radius: var(--radius-full, 9999px);
     transition: width 0.3s ease;
   }
 
   .deps-progress__label {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     white-space: nowrap;
   }
 
@@ -573,14 +661,14 @@
     align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--deps-panel-border);
+    border: 1px solid var(--color-border-subtle, #e5e7eb);
     border-radius: var(--radius-md);
-    background: var(--deps-panel-bg);
+    background: var(--color-surface);
   }
 
   .deps-row--failed {
-    border-color: color-mix(in srgb, var(--color-warning) 34%, transparent);
-    background: color-mix(in srgb, var(--color-warning) 10%, var(--deps-panel-bg));
+    border-color: rgba(245, 158, 11, 0.4);
+    background: rgba(245, 158, 11, 0.04);
   }
 
   .deps-row__icon {
@@ -611,7 +699,7 @@
 
   .deps-row__desc {
     font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
+    color: var(--color-text-secondary, #6b7280);
     margin: 0;
   }
 
@@ -624,7 +712,7 @@
 
   .deps-row__progress-pct {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
   }
 
   .deps-row__error-toggle {
@@ -632,7 +720,7 @@
     border: none;
     cursor: pointer;
     font-size: var(--font-size-xs);
-    color: var(--color-warning);
+    color: var(--color-warning, #f59e0b);
     padding: 0;
     text-decoration: underline;
     text-align: left;
@@ -641,9 +729,9 @@
   .deps-row__error-detail {
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--color-surface-sunken);
-    border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken, #f3f4f6);
+    border: 1px solid var(--color-border, #d1d5db);
+    border-radius: var(--radius-sm, 4px);
     padding: var(--space-2) var(--space-3);
     white-space: pre-wrap;
     word-break: break-all;
@@ -661,27 +749,27 @@
   .deps-badge {
     display: inline-block;
     padding: 2px 7px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-full, 9999px);
     font-size: 10px;
-    font-weight: var(--font-weight-medium);
+    font-weight: var(--font-weight-medium, 500);
     vertical-align: middle;
   }
 
   .deps-badge--required {
-    background: var(--color-accent-faint);
-    color: var(--color-accent-hover);
+    background: rgba(99, 102, 241, 0.12);
+    color: #4f46e5;
   }
 
   .deps-badge--version {
-    background: var(--color-success-soft);
-    color: var(--color-success);
+    background: rgba(34, 197, 94, 0.12);
+    color: #15803d;
     font-family: var(--font-mono, monospace);
   }
 
   /* Empty state */
   .deps-empty {
     font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     text-align: center;
     padding: var(--space-6) 0;
   }
@@ -689,223 +777,27 @@
   /* Disk estimate */
   .deps-disk-estimate {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     margin: 0;
     padding: var(--space-2) 0;
-    border-top: 1px solid var(--color-hairline);
+    border-top: 1px solid var(--color-border-subtle, #e5e7eb);
   }
 
   /* Danger zone */
   .deps-danger-zone {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-4);
-    padding: var(--space-4);
-    border: 1px solid color-mix(in srgb, var(--color-danger) 24%, transparent);
-    border-left: 4px solid color-mix(in srgb, var(--color-danger) 72%, transparent);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid rgba(239, 68, 68, 0.2);
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-danger) 10%, var(--deps-panel-bg));
-  }
-
-  .deps-danger-zone__content {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    flex: 1;
-    min-width: 0;
-  }
-
-  .deps-danger-zone__action {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-  }
-
-  .deps-danger-zone__eyebrow {
-    margin: 0;
-    font-size: 11px;
-    font-weight: var(--font-weight-semibold);
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    color: var(--color-danger);
-  }
-
-  .deps-danger-zone__title {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-    color: var(--color-text-primary);
+    background: rgba(239, 68, 68, 0.04);
   }
 
   .deps-danger-zone__hint {
-    margin: 0;
     font-size: var(--font-size-xs);
-    line-height: var(--line-height-relaxed);
-    color: var(--color-text-secondary);
-  }
-
-  .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background-color: var(--color-overlay);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    padding: var(--space-4);
-  }
-
-  .modal {
-    width: min(100%, 520px);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-5);
-    border-radius: var(--radius-xl);
-    border: 1px solid var(--color-border-strong);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--color-danger-soft) 46%, transparent), transparent 36%),
-      var(--color-surface-raised);
-    box-shadow: var(--shadow-overlay);
-  }
-
-  .modal-title {
+    color: var(--color-text-muted, #6b7280);
     margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: var(--font-weight-semibold);
-    color: var(--color-text-primary);
-  }
-
-  .modal-message {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    line-height: var(--line-height-relaxed);
-    color: var(--color-text-secondary);
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-  }
-
-  .deps-reset-modal__label {
-    font-size: var(--font-size-xs);
-    font-weight: var(--font-weight-medium);
-    color: var(--color-text-secondary);
-  }
-
-  .deps-reset-modal__header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .deps-reset-modal__eyebrow {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: var(--radius-full);
-    background: color-mix(in srgb, var(--color-danger) 12%, transparent);
-    color: var(--color-danger);
-    font-size: 11px;
-    font-weight: var(--font-weight-semibold);
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-  }
-
-  .deps-reset-modal__warning {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--color-danger) 22%, transparent);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-danger-soft) 68%, transparent);
-  }
-
-  .deps-reset-modal__warning-title {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-    color: var(--color-text-primary);
-  }
-
-  .deps-reset-modal__warning-copy {
-    margin: 0;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-    line-height: var(--line-height-relaxed);
-  }
-
-  .deps-reset-modal__phrase {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    padding: var(--space-3);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-hairline);
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
-    font-family: var(--font-mono, monospace);
-    font-weight: var(--font-weight-semibold);
-    text-align: center;
-  }
-
-  .deps-reset-modal__input {
-    width: 100%;
-    min-height: var(--control-height-md);
-    padding: 0 var(--space-3);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-hairline);
-    background-color: color-mix(in srgb, var(--color-surface-sunken) 88%, transparent);
-    color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
-    box-sizing: border-box;
-  }
-
-  .deps-reset-modal__input:focus,
-  .deps-reset-modal__input:focus-visible {
-    outline: none;
-    border-color: var(--color-accent);
-    box-shadow: var(--focus-ring);
-    background-color: var(--color-surface);
-  }
-
-  .deps-reset-modal__input:disabled {
-    cursor: not-allowed;
-    opacity: 0.56;
-  }
-
-  .deps-reset-modal__hint {
-    margin: calc(var(--space-2) * -1) 0 0;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-  }
-
-  @media (max-width: 640px) {
-    .deps-danger-zone {
-      flex-direction: column;
-    }
-
-    .deps-danger-zone__action {
-      width: 100%;
-    }
-
-    .deps-danger-zone__action :global(.btn) {
-      width: 100%;
-    }
-
-    .modal-actions {
-      flex-direction: column-reverse;
-    }
-
-    .modal-actions :global(.btn) {
-      width: 100%;
-    }
+    flex: 1;
   }
 </style>

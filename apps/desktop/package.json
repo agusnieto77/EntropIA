@@ -17,7 +17,14 @@
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-fs": "^2",
     "@tauri-apps/plugin-sql": "^2",
-    "leaflet": "^1.9.4"
+    "@tiptap/core": "^2.26.4",
+    "@tiptap/extension-link": "^2.26.4",
+    "@tiptap/extension-placeholder": "^2.26.4",
+    "@tiptap/extension-underline": "^2.26.4",
+    "@tiptap/starter-kit": "^2.26.4",
+    "drizzle-orm": "^0.40.0",
+    "leaflet": "^1.9.4",
+    "pdfjs-dist": "^4"
   },
   "devDependencies": {
     "@entropia/config-ts": "workspace:*",
@@ -26,6 +33,7 @@
     "@testing-library/jest-dom": "^6",
     "@testing-library/svelte": "^5",
     "@types/node": "^25.6.0",
+    "jsdom": "^26.1.0",
     "happy-dom": "^17",
     "svelte": "^5",
     "svelte-check": "^4",

@@ -67,6 +67,22 @@ describe('AppShell', () => {
         return Promise.resolve([])
       }
 
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'healthy',
+          packVersion: null,
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'Runtime listo',
+          blockedCapabilities: [],
+          details: [],
+          guidance: [],
+          bootstrapEligible: false,
+          bootstrapRequired: false,
+          activeOperation: null,
+        })
+      }
+
       return Promise.resolve(undefined)
     })
     listenMock.mockClear().mockImplementation(() => Promise.resolve(vi.fn()))
@@ -151,5 +167,69 @@ describe('AppShell', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       '⚠ Algunas funciones de IA no están disponibles.',
     )
+  })
+
+  it('shows runtime health alerts when the managed runtime is damaged', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'damaged',
+          packVersion: '2026.05.0',
+          repairNeeded: true,
+          repairAvailable: true,
+          summary: 'Runtime dañado',
+          blockedCapabilities: ['ocr', 'transcription'],
+          details: ['Checksum inválido'],
+          guidance: ['Ejecutá la reparación del runtime desde Ajustes > Dependencias.'],
+          bootstrapEligible: true,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime dañado')
+    expect(screen.getByRole('button', { name: 'Reparar runtime →' })).toBeInTheDocument()
+    expect(screen.getByText(/ocr, transcription/i)).toBeInTheDocument()
+  })
+
+  it('shows fixture runtime alerts without repair action', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'fixture',
+          packVersion: '2026.05.0',
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+          blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+          details: ['La app 0.0.10 arrancó correctamente, pero este runtime-pack todavía está en modo fixture/dev (app_version declarada: 0.0.10).'],
+          guidance: ['Esto no indica una caída: la UI puede abrir, pero OCR/NLP/transcripción quedan bloqueados hasta inyectar los payloads de release.'],
+          bootstrapEligible: false,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime de desarrollo detectado')
+    expect(screen.getByRole('alert')).toHaveTextContent(/app no se cayó/i)
+    expect(screen.queryByRole('button', { name: 'Reparar runtime →' })).not.toBeInTheDocument()
   })
 })

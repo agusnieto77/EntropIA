@@ -10,6 +10,14 @@
     setCriticalMissing,
     type DepCheckResult,
   } from '$lib/deps'
+  import {
+    getRuntimeStatus,
+    onRuntimeStatus,
+    repairRuntime,
+    runtimeNeedsAttention,
+    shouldShowRuntimeRepairAction,
+    type RuntimeStatus,
+  } from '$lib/runtime'
   import DocumentExplorer from './DocumentExplorer.svelte'
   import TopBar from './TopBar.svelte'
   import EntropicConstellation from './EntropicConstellation.svelte'
@@ -74,6 +82,7 @@
 
   // ── Deps banner ──
   let depsResults = $state<DepCheckResult[]>([])
+  let runtimeStatus = $state<RuntimeStatus | null>(null)
   let showToast = $state(false)
   let toastDismissed = $state(false)
 
@@ -84,6 +93,7 @@
         (d.status.type === 'missing' || d.status.type === 'failed'),
     ),
   )
+  const blockedRuntimeCapabilities = $derived((runtimeStatus?.blockedCapabilities ?? []).join(', '))
 
   // Sync shared state so TopBar can show the dot
   $effect(() => {
@@ -105,6 +115,7 @@
   }
 
   let unlistenDepsComplete: (() => void) | undefined
+  let unlistenRuntimeStatus: (() => void) | undefined
 
   onMount(async () => {
     document.addEventListener('keydown', handleKeydown)
@@ -120,15 +131,36 @@
       .catch((e) => {
         console.error('[AppShell] cached deps fetch failed', e)
       })
+
+    unlistenRuntimeStatus = await onRuntimeStatus((status) => {
+      runtimeStatus = status
+    })
+
+    void getRuntimeStatus()
+      .then((status) => {
+        runtimeStatus = status
+      })
+      .catch((e) => {
+        console.error('[AppShell] runtime status fetch failed', e)
+      })
   })
 
   onDestroy(() => {
     document.removeEventListener('keydown', handleKeydown)
     unlistenDepsComplete?.()
+    unlistenRuntimeStatus?.()
   })
 
   function goToDepSettings() {
     navigation.openRootSection({ name: 'settings' })
+  }
+
+  async function handleRuntimeRepair() {
+    try {
+      runtimeStatus = await repairRuntime()
+    } catch (error) {
+      console.error('[AppShell] runtime repair failed', error)
+    }
   }
 
   async function openHlabWebsite(event: MouseEvent) {
@@ -228,6 +260,40 @@
     </aside>
 
     <main class="content">
+      {#if runtimeNeedsAttention(runtimeStatus)}
+        <div class="deps-banner" role="alert">
+          <div class="deps-banner__copy">
+            <strong>{runtimeStatus?.summary}</strong>
+            {#if runtimeStatus?.state === 'fixture'}
+              <span>
+                La app no se cayó: estás viendo un runtime-pack de desarrollo que todavía requiere
+                payloads externos para habilitar OCR, NLP y transcripción.
+              </span>
+            {/if}
+            {#if blockedRuntimeCapabilities}
+              <span>Capacidades afectadas: {blockedRuntimeCapabilities}</span>
+            {/if}
+            {#if runtimeStatus?.guidance?.length}
+              <span>{runtimeStatus.guidance[0]}</span>
+            {/if}
+          </div>
+          {#if shouldShowRuntimeRepairAction(runtimeStatus)}
+            <button class="deps-banner__btn" type="button" onclick={handleRuntimeRepair}
+              >Reparar runtime →</button
+            >
+          {/if}
+        </div>
+      {/if}
+
+      {#if hasCriticalMissing}
+        <div class="deps-banner" role="alert">
+          <span>⚠ Algunas funciones de IA no están disponibles.</span>
+          <button class="deps-banner__btn" type="button" onclick={goToDepSettings}
+            >Configurar dependencias →</button
+          >
+        </div>
+      {/if}
+
       {@render children()}
     </main>
 
@@ -398,6 +464,46 @@
     overflow-y: auto;
     padding: var(--space-5);
     background: var(--color-bg);
+  }
+
+  .deps-banner {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+    padding: var(--space-3);
+    border: 1px solid rgba(245, 158, 11, 0.32);
+    border-radius: var(--radius-md);
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-banner__copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .deps-banner__copy strong {
+    color: var(--color-text-primary);
+  }
+
+  .deps-banner__btn {
+    flex-shrink: 0;
+    padding: 2px var(--space-3);
+    border: 1px solid rgba(245, 158, 11, 0.5);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-warning);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition: background-color var(--transition-base);
+  }
+
+  .deps-banner__btn:hover {
+    background: rgba(245, 158, 11, 0.12);
   }
 
   /* ── Toast notification ── */
