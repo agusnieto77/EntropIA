@@ -8,12 +8,13 @@ mod engine;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::path_utils::normalize_windows_path;
+use crate::runtime::{managed_hf_cache_dir, managed_script_path, RuntimeManager};
 use assemblyai::AssemblyAiClient;
 use engine::{TranscriptionResult, WhisperConfig, WhisperEngine};
 use serde::Serialize;
 use std::path::Path;
 use std::path::PathBuf;
-use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const STT_MODE_LOCAL: &str = "local";
 const STT_MODE_ASSEMBLYAI: &str = "assemblyai";
@@ -183,29 +184,55 @@ impl TranscriptionQueue {
     }
 }
 
-fn resolve_transcription_script_path(app_handle: &AppHandle) -> PathBuf {
-    normalize_windows_path(
-        app_handle
-            .path()
-            .resolve("scripts/transcribe.py", BaseDirectory::Resource)
-            .unwrap_or_else(|_| {
-                let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("resources/scripts/transcribe.py");
-                if dev_path.exists() {
-                    dev_path
-                } else {
-                    std::path::PathBuf::from("scripts/transcribe.py")
-                }
-            }),
+pub(crate) fn ensure_transcription_runtime_ready(app_handle: &AppHandle) -> Result<(), String> {
+    // Dev fallback is acceptable: Ok(None) means managed runtime is not healthy
+    // but callers will fall back to CARGO_MANIFEST_DIR / system Python.
+    managed_runtime_root_for_transcription(app_handle).map(|_| ())
+}
+
+fn managed_runtime_root_for_transcription(
+    app_handle: &AppHandle,
+) -> Result<Option<PathBuf>, String> {
+    managed_runtime_root_for_transcription_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
     )
 }
 
+fn managed_runtime_root_for_transcription_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<std::path::PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        // Dev fallback: return None so callers fall back to CARGO_MANIFEST_DIR resources.
+        // Honest blocking (e.g. no Python available) is handled at engine init time.
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
+}
+
+fn resolve_transcription_script_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let runtime_root = managed_runtime_root_for_transcription(app_handle)?;
+    Ok(resolve_transcription_script_path_from_roots(
+        runtime_root.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    ))
+}
+
 fn resolve_model_cache_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
-    let model_cache_dir = app_handle
+    let runtime_root = managed_runtime_root_for_transcription(app_handle)?;
+    let app_data_dir = app_handle
         .path()
         .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir for model cache: {e}"))?
-        .join("hf_cache");
+        .map_err(|e| format!("Failed to get app data dir for model cache: {e}"))?;
+    let model_cache_dir =
+        resolve_transcription_model_cache_dir(runtime_root.as_deref(), &app_data_dir)?;
 
     std::fs::create_dir_all(&model_cache_dir).map_err(|e| {
         format!(
@@ -215,6 +242,34 @@ fn resolve_model_cache_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     })?;
 
     Ok(model_cache_dir)
+}
+
+fn resolve_transcription_script_path_from_roots(
+    managed_root: Option<&Path>,
+    manifest_dir: &Path,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_script_path(root, "transcribe.py");
+        if managed.exists() {
+            return managed;
+        }
+    }
+
+    let dev_resource = manifest_dir.join("resources/scripts/transcribe.py");
+    if dev_resource.exists() {
+        return normalize_windows_path(dev_resource);
+    }
+
+    normalize_windows_path(manifest_dir.join("scripts/transcribe.py"))
+}
+
+fn resolve_transcription_model_cache_dir(
+    managed_root: Option<&Path>,
+    app_data_dir: &Path,
+) -> Result<PathBuf, String> {
+    Ok(managed_root
+        .map(managed_hf_cache_dir)
+        .unwrap_or_else(|| app_data_dir.join("hf_cache")))
 }
 
 fn create_whisper_engine(
@@ -228,7 +283,7 @@ fn create_whisper_engine(
 
     WhisperEngine::init(WhisperConfig {
         python_path,
-        script_path: resolve_transcription_script_path(app_handle),
+        script_path: resolve_transcription_script_path(app_handle)?,
         model_size: "base".to_string(),
         language: "es".to_string(),
         compute_type: "int8".to_string(),
@@ -412,6 +467,150 @@ fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<std::path:
         "import faster_whisper; print('ok')",
         settings_db_path,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
+    use std::cell::RefCell;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_transcription_script_prefers_managed_runtime_copy() {
+        let runtime_dir = tempdir().expect("runtime dir");
+        let manifest_dir = tempdir().expect("manifest dir");
+        let managed_script = runtime_dir.path().join("scripts").join("transcribe.py");
+        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
+            .expect("create script dir");
+        std::fs::write(&managed_script, "print('ok')").expect("write script");
+
+        let resolved = resolve_transcription_script_path_from_roots(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+        );
+
+        assert_eq!(resolved, managed_script);
+    }
+
+    #[test]
+    fn resolve_transcription_cache_prefers_managed_hf_cache() {
+        let runtime_dir = tempdir().expect("runtime dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_cache = runtime_dir.path().join("caches").join("hf");
+
+        let resolved =
+            resolve_transcription_model_cache_dir(Some(runtime_dir.path()), app_data_dir.path())
+                .expect("cache dir should resolve");
+
+        assert_eq!(resolved, managed_cache);
+    }
+
+    #[test]
+    fn transcription_runtime_resolution_bootstraps_before_using_managed_assets() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_transcription_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("managed runtime should resolve");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn transcription_runtime_resolution_returns_none_when_not_healthy_allowing_dev_fallback() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_transcription_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedSourceUnavailable,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "No hay una fuente confiable disponible para bootstrap".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Transcription],
+                    details: vec!["manifest remoto no publicado".to_string()],
+                    guidance: vec!["Reintentá cuando exista una fuente firmada".to_string()],
+                    bootstrap_eligible: false,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("non-healthy runtime should not raise transport errors");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
+    }
+
+    #[test]
+    fn transcription_path_resolution_falls_back_to_dev_when_runtime_root_is_none() {
+        let manifest_dir = tempdir().expect("manifest dir");
+        let dev_script = manifest_dir.path().join("resources/scripts/transcribe.py");
+        std::fs::create_dir_all(dev_script.parent().unwrap()).unwrap();
+        std::fs::write(&dev_script, "print('ok')").unwrap();
+
+        // With None runtime root, should fall back to manifest_dir
+        let resolved = resolve_transcription_script_path_from_roots(None, manifest_dir.path());
+        assert_eq!(resolved, dev_script);
+    }
+
+    #[test]
+    fn ensure_transcription_runtime_ready_accepts_dev_fallback() {
+        // ensure_transcription_runtime_ready should return Ok(()) even when managed runtime is not healthy,
+        // because callers fall back to dev paths / system Python.
+        let result = managed_runtime_root_for_transcription_with(
+            || {
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedSourceUnavailable,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "No hay una fuente confiable disponible para bootstrap".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Transcription],
+                    details: vec!["fixture".to_string()],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || Ok(None),
+        );
+        assert!(
+            result.is_ok(),
+            "ensure_transcription_runtime_ready should accept dev fallback"
+        );
+        assert_eq!(result.unwrap(), None);
+    }
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────

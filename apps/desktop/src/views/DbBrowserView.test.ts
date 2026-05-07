@@ -1,3 +1,5 @@
+/** @vitest-environment jsdom */
+
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { locale } from '$lib/i18n'
@@ -76,6 +78,11 @@ describe('DbBrowserView', () => {
       expect(listTablesMock).toHaveBeenCalledTimes(1)
       expect(describeTableMock).toHaveBeenCalledWith('documents')
       expect(queryRowsMock).toHaveBeenCalledTimes(1)
+    })
+
+    await flushPromises()
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copiar valor de body' })).toBeInTheDocument()
     })
   }
 
