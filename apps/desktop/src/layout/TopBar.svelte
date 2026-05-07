@@ -6,7 +6,7 @@
   import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
 
-  type AppTheme = 'dark' | 'dim'
+  type AppTheme = 'dark' | 'dim' | 'light'
 
   const THEME_STORAGE_KEY = 'entropia-theme'
 
@@ -28,13 +28,19 @@
   const currentLocale = locale
   const translate = (key: string, params?: Record<string, string | number>) =>
     t(key as never, params)
-  const themeToggleLabel = $derived(
-    theme === 'dark' ? translate('topbar.themeDim') : translate('topbar.themeDark')
-  )
+  const THEME_CYCLE: AppTheme[] = ['dark', 'dim', 'light']
+  const themeLabels: Record<AppTheme, string> = {
+    dark: 'Oscuro',
+    dim: 'Cálido',
+    light: 'Claro',
+  }
+  const themeToggleLabel = $derived(themeLabels[theme])
 
   function readPersistedTheme(): AppTheme {
     try {
-      return localStorage.getItem(THEME_STORAGE_KEY) === 'dim' ? 'dim' : 'dark'
+      const stored = localStorage.getItem(THEME_STORAGE_KEY)
+      if (stored === 'dim' || stored === 'light') return stored
+      return 'dark'
     } catch {
       return 'dark'
     }
@@ -44,22 +50,21 @@
     theme = nextTheme
 
     if (typeof document !== 'undefined') {
-      if (nextTheme === 'dim') {
-        document.documentElement.dataset.theme = 'dim'
-      } else {
+      if (nextTheme === 'dark') {
         delete document.documentElement.dataset.theme
+      } else {
+        document.documentElement.dataset.theme = nextTheme
       }
     }
 
     try {
       localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
-    } catch {
-      // Ignore storage failures; the visible theme still changes for this session.
-    }
+    } catch {}
   }
 
   function toggleTheme() {
-    applyTheme(theme === 'dark' ? 'dim' : 'dark')
+    const idx = THEME_CYCLE.indexOf(theme)
+    applyTheme(THEME_CYCLE[(idx + 1) % THEME_CYCLE.length])
   }
 
   onMount(() => {
