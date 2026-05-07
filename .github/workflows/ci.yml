@@ -563,6 +563,13 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: runtime-pack-smoke
+        run: |
+          python3 apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform linux-x86_64 --platform windows-x86_64
+          python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform linux-x86_64 --root apps/desktop/src-tauri/target/runtime-pack
+          python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform windows-x86_64 --root apps/desktop/src-tauri/target/runtime-pack
+          pnpm --filter @entropia/desktop test -- --run src/lib/runtime-packaging.test.ts
+
   build:
     name: Build
     runs-on: ubuntu-latest

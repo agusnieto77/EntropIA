@@ -1,0 +1,92 @@
+{
+  "pack_version": "2026.05.0",
+  "app_version": "0.0.10",
+  "platform": "windows-x86_64",
+  "payload_profile": "fixture",
+  "release_injection_required": true,
+  "external_artifacts_required": [
+    "relocatable-python-windows-x86_64",
+    "offline-wheelhouse-core",
+    "seeded-model-caches"
+  ],
+  "python_relpath": "python/python.exe",
+  "uv_relpath": "uv/uv.exe",
+  "python_files": [
+    {
+      "path": "python/python.exe",
+      "sha256": "78ecf9f069c4d7bbfe964c1a8f5bc98d9b63347ddd1711c470c970cdb8f2dcc8",
+      "size": 36,
+      "executable": false
+    }
+  ],
+  "uv_files": [
+    {
+      "path": "uv/uv.exe",
+      "sha256": "04a684724e9c3e9204bbe72b3fde56dacd01728bc8ff43e2d0fee9bba9eed9df",
+      "size": 23,
+      "executable": true
+    }
+  ],
+  "script_files": [
+    {
+      "path": "scripts/transcribe.py",
+      "sha256": "b7d23d95d4da7007d3589d078cf383a454b1778571ba7fb031e81496bb7f933a",
+      "size": 76,
+      "executable": false
+    },
+    {
+      "path": "scripts/embed.py",
+      "sha256": "99e9d86fe7dcc9200942878ae4e5403e23ea607a97db9cedcf72303ff4907862",
+      "size": 71,
+      "executable": false
+    },
+    {
+      "path": "scripts/paddle_vl.py",
+      "sha256": "09aa196d77db21bfbca6ee6efd8e31cfa701c697b20848d207fd961cf817a8d8",
+      "size": 11431,
+      "executable": false
+    },
+    {
+      "path": "scripts/spacy_triples.py",
+      "sha256": "709b748a8f580531000916e9b7d0fdb3e70282baf85a5db09ea60889f6519589",
+      "size": 79,
+      "executable": false
+    }
+  ],
+  "wheelhouse": [
+    {
+      "path": "wheelhouse/README.txt",
+      "sha256": "f668eb58876765e63c84fc0c4756bcdb6c9c309ab4c0534f4618d8ed5c2522e8",
+      "size": 159,
+      "executable": false
+    }
+  ],
+  "caches": [
+    {
+      "path": "caches/hf/README.txt",
+      "sha256": "accf908c1c5882cb873a2701606450a81a2b0f6c1803ef68018f01fc36d5cc84",
+      "size": 121,
+      "executable": false
+    },
+    {
+      "path": "caches/paddlex/README.txt",
+      "sha256": "8ae88605b2f66f0ed6df5e976e1a18204cef7893b74b447b93237c10aeed22de",
+      "size": 120,
+      "executable": false
+    },
+    {
+      "path": "caches/spacy/README.txt",
+      "sha256": "5772c31c62578e54c93229cc1b11c835bf4b04a5e637d912f423f76800702bea",
+      "size": 134,
+      "executable": false
+    }
+  ],
+  "native_assets": [
+    {
+      "path": "resources/lib/pdfium.dll",
+      "sha256": "119248df654016c84072875b7560ef6bd03c95af2d673428def42df6e139433a",
+      "size": 59,
+      "executable": false
+    }
+  ]
+}

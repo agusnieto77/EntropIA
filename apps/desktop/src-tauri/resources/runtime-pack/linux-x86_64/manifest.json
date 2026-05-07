@@ -1,0 +1,99 @@
+{
+  "pack_version": "2026.05.0",
+  "app_version": "0.0.10",
+  "platform": "linux-x86_64",
+  "payload_profile": "fixture",
+  "release_injection_required": true,
+  "external_artifacts_required": [
+    "relocatable-python-linux-x86_64",
+    "offline-wheelhouse-core",
+    "seeded-model-caches",
+    "linux-native-libs"
+  ],
+  "python_relpath": "python/bin/python3",
+  "uv_relpath": "uv/bin/uv",
+  "python_files": [
+    {
+      "path": "python/bin/python3",
+      "sha256": "ea73b1c0cb9796fe7e9d1adafe277d984b6e431e9b8dd2e2fa11b5518523de1c",
+      "size": 59,
+      "executable": true
+    }
+  ],
+  "uv_files": [
+    {
+      "path": "uv/bin/uv",
+      "sha256": "618a26a17482ae1f4838a41ff882302a4c04f1d2ad2b676d20b0af01b9150664",
+      "size": 46,
+      "executable": true
+    }
+  ],
+  "script_files": [
+    {
+      "path": "scripts/transcribe.py",
+      "sha256": "aec587160895c8718d7be8f82ca42e15338cb81059e1007cf71af61be8718f7b",
+      "size": 74,
+      "executable": false
+    },
+    {
+      "path": "scripts/embed.py",
+      "sha256": "62a37293f8ca82cd4f588543a5cef9215ff8bc8c8278eec19802cf7f84e629b1",
+      "size": 69,
+      "executable": false
+    },
+    {
+      "path": "scripts/paddle_vl.py",
+      "sha256": "09aa196d77db21bfbca6ee6efd8e31cfa701c697b20848d207fd961cf817a8d8",
+      "size": 11431,
+      "executable": false
+    },
+    {
+      "path": "scripts/spacy_triples.py",
+      "sha256": "86cf959b44c033cee43bb96fc87735b9d9c780949cfc18667fb22902a4694581",
+      "size": 77,
+      "executable": false
+    }
+  ],
+  "wheelhouse": [
+    {
+      "path": "wheelhouse/README.txt",
+      "sha256": "b601f71b7976de5bf467630ff1d874912e9ff534c84f699fc22d0a59bc92b7ac",
+      "size": 157,
+      "executable": false
+    }
+  ],
+  "caches": [
+    {
+      "path": "caches/hf/README.txt",
+      "sha256": "ede20041a93a5c23d72a5c2d733635567b485ce164b65628a90d317366a05703",
+      "size": 119,
+      "executable": false
+    },
+    {
+      "path": "caches/paddlex/README.txt",
+      "sha256": "a39973c7671ef02b926c2b2f282e9dadb21d18e96deac068a03448d530d6e942",
+      "size": 118,
+      "executable": false
+    },
+    {
+      "path": "caches/spacy/README.txt",
+      "sha256": "84be67b2aed84ea325e917400ab03cdd4f9f58ee0b03e561ae2acc251d2964c5",
+      "size": 132,
+      "executable": false
+    }
+  ],
+  "native_assets": [
+    {
+      "path": "resources/lib/libpdfium.so",
+      "sha256": "51e2766de282e16623f87ebb81c8592a05e342f33282d13400d0a5bdf2692b02",
+      "size": 50,
+      "executable": false
+    },
+    {
+      "path": "resources/lib/libonnxruntime.so",
+      "sha256": "88273cb9344e1f7037bfc5f472bca034153dc175f0ab542d38ee3438f85c1217",
+      "size": 55,
+      "executable": false
+    }
+  ]
+}
