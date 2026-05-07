@@ -10,6 +10,8 @@
   } from '$lib/document-explorer'
   import type { Asset, Collection, Item } from '@entropia/store'
 
+  let { filterText = '' }: { filterText?: string } = $props()
+
   const STORAGE_KEY = 'entropia-document-explorer-open'
   const TREE_STORAGE_KEY = 'entropia-document-explorer-tree'
   const WIDTH_STORAGE_KEY = 'entropia-document-explorer-width'
@@ -26,6 +28,11 @@
   let loading = $state(false)
   let loadError = $state<string | null>(null)
   let collections = $state<Collection[]>([])
+  const filteredCollections = $derived(
+    filterText
+      ? collections.filter((c) => c.name.toLowerCase().includes(filterText.toLowerCase()))
+      : collections,
+  )
   let itemsByCollection = $state<Record<string, Item[]>>({})
   let assetsByItem = $state<Record<string, Asset[]>>({})
   let itemCounts = $state<Record<string, number>>({})
@@ -471,9 +478,11 @@
           <p class="explorer__message explorer__message--error">{loadError}</p>
         {:else if loading}
           <p class="explorer__message">{$currentLocale && translateExplorer('explorer.loading')}</p>
-        {:else if collections.length === 0}
+        {:else if filteredCollections.length === 0}
           <p class="explorer__message">
-            {$currentLocale && translateExplorer('explorer.emptyCollections')}
+            {filterText
+              ? `Sin resultados para "${filterText}"`
+              : ($currentLocale && translateExplorer('explorer.emptyCollections'))}
           </p>
         {:else}
           <section
@@ -489,7 +498,7 @@
               role="tree"
               aria-label={$currentLocale && translateExplorer('explorer.aria')}
             >
-              {#each collections as collection (collection.id)}
+              {#each filteredCollections as collection (collection.id)}
                 {@const collectionExpanded = isCollectionExpanded(collection.id)}
                 {@const collectionItems = itemsByCollection[collection.id] ?? []}
                 <div

@@ -379,31 +379,15 @@
 
 <style>
   .topbar {
-    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(220px, 320px) auto;
     grid-template-areas: 'leading center search actions';
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--color-hairline);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 62%),
-      var(--color-surface-glass);
-    box-shadow: var(--shadow-sm);
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
     min-width: 0;
-  }
-
-  .topbar::after {
-    content: '';
-    position: absolute;
-    left: var(--space-4);
-    right: var(--space-4);
-    bottom: -1px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
-    opacity: 0.18;
-    pointer-events: none;
   }
 
   .topbar__leading {

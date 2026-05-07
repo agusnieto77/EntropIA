@@ -160,7 +160,7 @@
       {#if sidebarOpen}
         <div class="sidebar__body">
           {#if showExplorer}
-            <DocumentExplorer />
+            <DocumentExplorer filterText={searchFilter} />
           {:else}
             <div class="sidebar__placeholder">
               <p>Abrí una colección para ver el explorador</p>
