@@ -201,8 +201,11 @@
     {#if showToast}
       <div class="toast" role="alert">
         <span class="toast__icon">⚠</span>
-        <span class="toast__text">Algunas funciones de IA requieren dependencias.</span>
-        <button class="toast__action" onclick={goToDepSettings}>Configurar</button>
+        <div class="toast__body">
+          <span class="toast__title">Dependencias de IA pendientes</span>
+          <span class="toast__text">Se necesitan Python y paquetes para OCR, embeddings y transcripción.</span>
+        </div>
+        <button class="toast__action" onclick={goToDepSettings}>Configurar →</button>
         <button class="toast__close" onclick={dismissToast} aria-label="Cerrar">×</button>
       </div>
     {/if}
@@ -389,10 +392,24 @@
   .toast__icon {
     font-size: var(--font-size-sm);
     color: var(--color-warning);
+    align-self: flex-start;
+    margin-top: 2px;
+  }
+
+  .toast__body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .toast__title {
+    font-weight: 600;
+    color: var(--color-text-primary);
   }
 
   .toast__text {
-    flex: 1;
+    color: var(--color-text-muted);
   }
 
   .toast__action {

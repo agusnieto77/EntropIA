@@ -371,8 +371,12 @@
       class="topbar__icon-btn topbar__icon-btn--settings"
       type="button"
       onclick={() => navigation.openRootSection({ name: 'settings' })}
-      title={$currentLocale && t('topbar.settingsTitle')}
-      aria-label={$currentLocale && t('topbar.settingsAria')}
+      title={hasDepsWarning
+        ? 'Dependencias de IA pendientes — click para configurar'
+        : ($currentLocale && t('topbar.settingsTitle'))}
+      aria-label={hasDepsWarning
+        ? 'Dependencias de IA pendientes'
+        : ($currentLocale && t('topbar.settingsAria'))}
     >
       <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
         <path
@@ -563,6 +567,12 @@
     background: var(--color-warning);
     border: 1.5px solid var(--color-surface);
     pointer-events: none;
+    animation: badge-pulse 2s ease-in-out 3;
+  }
+
+  @keyframes badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-warning) 30%, transparent); }
   }
 
   .global-search {
