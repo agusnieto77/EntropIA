@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { locale, isLocale, t, type Locale } from '$lib/i18n'
   import {
@@ -19,11 +19,16 @@
     type ModelInfo,
   } from '$lib/settings'
   import { llmIsAvailable } from '$lib/llm'
+  import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
   import { Button, Card, Input } from '@entropia/ui'
   import DependenciasTab from './DependenciasTab.svelte'
 
-  // Tab state
-  let activeTab = $state<'openrouter' | 'dependencias'>('openrouter')
+  // Tab state — auto-open deps tab if critical deps are missing
+  let hasDepsWarning = $state(isCriticalMissing())
+  const unsubDeps = onCriticalMissingChange((v) => { hasDepsWarning = v })
+  let activeTab = $state<'openrouter' | 'dependencias'>(
+    isCriticalMissing() ? 'dependencias' : 'openrouter',
+  )
 
   // State
   let apiKey = $state('')
@@ -91,6 +96,8 @@
   )
 
   const activeLocale = $derived($locale)
+
+  onDestroy(() => { unsubDeps() })
 
   onMount(async () => {
     const [storedKey, storedModel, storedMode, storedSttMode, storedOcrhMode, storedAssemblyAiKey, storedGlmOcrKey, storedLanguage, isAvail] = await Promise.all([
@@ -288,6 +295,9 @@
         onclick={() => (activeTab = 'dependencias')}
       >
         Dependencias de IA
+        {#if hasDepsWarning}
+          <span class="settings-tab__badge"></span>
+        {/if}
       </button>
     </nav>
 
@@ -695,6 +705,22 @@
   .settings-tab--active {
     color: var(--color-accent);
     border-bottom-color: var(--color-accent);
+  }
+
+  .settings-tab__badge {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-warning);
+    margin-left: var(--space-1);
+    vertical-align: middle;
+    animation: tab-badge-pulse 2s ease-in-out 3;
+  }
+
+  @keyframes tab-badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 25%, transparent); }
   }
 
   .settings-view__toolbar {

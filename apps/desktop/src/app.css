@@ -1,6 +1,9 @@
 /* Import design tokens */
 @import '@entropia/ui/tokens';
 
+/* Google Fonts (Poppins + Source Sans Pro + JetBrains Mono) */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Source+Sans+3:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap');
+
 :root {
   --scrollbar-size: 7px;
   --scrollbar-radius: 999px;
@@ -8,6 +11,13 @@
   --scrollbar-thumb: rgba(210, 220, 255, 0.09);
   --scrollbar-thumb-hover: rgba(210, 220, 255, 0.22);
   --scrollbar-thumb-active: rgba(210, 220, 255, 0.32);
+}
+
+:root[data-theme='light'] {
+  --scrollbar-track: rgba(0, 0, 0, 0.02);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.1);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.2);
+  --scrollbar-thumb-active: rgba(0, 0, 0, 0.3);
 }
 
 *,
@@ -96,7 +106,9 @@ select {
 h1,
 h2,
 h3 {
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 h1 {

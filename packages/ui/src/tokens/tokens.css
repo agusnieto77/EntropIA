@@ -43,7 +43,8 @@
   --space-8: 32px;
 
   /* Typography */
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-display: 'Poppins', system-ui, sans-serif;
+  --font-sans: 'Source Sans Pro', 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --font-size-xs: 12px;
   --font-size-sm: 14px;
@@ -101,4 +102,45 @@
   --color-accent-soft: rgba(192, 180, 147, 0.15);
   --color-accent-faint: rgba(192, 180, 147, 0.07);
   --color-overlay: rgba(15, 12, 8, 0.58);
+}
+
+/* ─── Light Theme (HLab-inspired) ─── */
+:root[data-theme='light'] {
+  --color-bg: #ffffff;
+  --color-bg-ambient: #fafafa;
+  --color-surface: #fafafa;
+  --color-surface-raised: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-sunken: #f5f5f5;
+  --color-surface-glass: #fafafa;
+  --color-border: #e0e0e0;
+  --color-border-subtle: #f0f0f0;
+  --color-border-strong: #d0d0d0;
+  --color-border-hover: #bbb;
+  --color-hairline: rgba(0, 0, 0, 0.08);
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #777;
+  --color-text-muted: #999;
+  --color-accent: #5a67d8;
+  --color-accent-hover: #4c5ac7;
+  --color-accent-soft: rgba(90, 103, 216, 0.08);
+  --color-accent-faint: rgba(90, 103, 216, 0.04);
+  --color-danger: #e53e3e;
+  --color-danger-hover: #c53030;
+  --color-danger-soft: rgba(229, 62, 62, 0.06);
+  --color-success: #38a169;
+  --color-success-soft: rgba(56, 161, 105, 0.06);
+  --color-warning: #c77c2e;
+  --color-warning-soft: rgba(199, 124, 46, 0.08);
+  --color-info: #3182ce;
+  --color-info-soft: rgba(49, 130, 206, 0.08);
+  --color-overlay: rgba(0, 0, 0, 0.3);
+  --color-primary: var(--color-accent);
+  --color-primary-subtle: var(--color-accent-soft);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-glow: 0 0 0 1px var(--color-hairline);
+  --focus-ring: 0 0 0 2px rgba(90, 103, 216, 0.25);
+  --focus-ring-danger: 0 0 0 2px rgba(229, 62, 62, 0.25);
 }

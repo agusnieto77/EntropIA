@@ -1,12 +1,16 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
+  import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
   import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
 
-  type AppTheme = 'dark' | 'dim'
+  let hasDepsWarning = $state(isCriticalMissing())
+  const unsubDeps = onCriticalMissingChange((v) => { hasDepsWarning = v })
+
+  type AppTheme = 'dark' | 'dim' | 'light'
 
   const THEME_STORAGE_KEY = 'entropia-theme'
 
@@ -28,13 +32,19 @@
   const currentLocale = locale
   const translate = (key: string, params?: Record<string, string | number>) =>
     t(key as never, params)
-  const themeToggleLabel = $derived(
-    theme === 'dark' ? translate('topbar.themeDim') : translate('topbar.themeDark')
-  )
+  const THEME_CYCLE: AppTheme[] = ['dark', 'dim', 'light']
+  const themeLabels: Record<AppTheme, string> = {
+    dark: 'Oscuro',
+    dim: 'Cálido',
+    light: 'Claro',
+  }
+  const themeToggleLabel = $derived(themeLabels[theme])
 
   function readPersistedTheme(): AppTheme {
     try {
-      return localStorage.getItem(THEME_STORAGE_KEY) === 'dim' ? 'dim' : 'dark'
+      const stored = localStorage.getItem(THEME_STORAGE_KEY)
+      if (stored === 'dim' || stored === 'light') return stored
+      return 'dark'
     } catch {
       return 'dark'
     }
@@ -44,26 +54,29 @@
     theme = nextTheme
 
     if (typeof document !== 'undefined') {
-      if (nextTheme === 'dim') {
-        document.documentElement.dataset.theme = 'dim'
-      } else {
+      if (nextTheme === 'dark') {
         delete document.documentElement.dataset.theme
+      } else {
+        document.documentElement.dataset.theme = nextTheme
       }
     }
 
     try {
       localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
-    } catch {
-      // Ignore storage failures; the visible theme still changes for this session.
-    }
+    } catch {}
   }
 
   function toggleTheme() {
-    applyTheme(theme === 'dark' ? 'dim' : 'dark')
+    const idx = THEME_CYCLE.indexOf(theme)
+    applyTheme(THEME_CYCLE[(idx + 1) % THEME_CYCLE.length])
   }
 
   onMount(() => {
     applyTheme(readPersistedTheme())
+  })
+
+  onDestroy(() => {
+    unsubDeps()
   })
 
   function buildItemView(item: Item) {
@@ -355,11 +368,15 @@
     </button>
 
     <button
-      class="topbar__icon-btn"
+      class="topbar__icon-btn topbar__icon-btn--settings"
       type="button"
       onclick={() => navigation.openRootSection({ name: 'settings' })}
-      title={$currentLocale && t('topbar.settingsTitle')}
-      aria-label={$currentLocale && t('topbar.settingsAria')}
+      title={hasDepsWarning
+        ? 'Dependencias de IA pendientes — click para configurar'
+        : ($currentLocale && t('topbar.settingsTitle'))}
+      aria-label={hasDepsWarning
+        ? 'Dependencias de IA pendientes'
+        : ($currentLocale && t('topbar.settingsAria'))}
     >
       <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
         <path
@@ -368,37 +385,24 @@
           clip-rule="evenodd"
         />
       </svg>
+      {#if hasDepsWarning}
+        <span class="topbar__badge" aria-label="Dependencias pendientes"></span>
+      {/if}
     </button>
   </div>
 </header>
 
 <style>
   .topbar {
-    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(220px, 320px) auto;
     grid-template-areas: 'leading center search actions';
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--color-hairline);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 62%),
-      var(--color-surface-glass);
-    box-shadow: var(--shadow-sm);
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface);
     min-width: 0;
-  }
-
-  .topbar::after {
-    content: '';
-    position: absolute;
-    left: var(--space-4);
-    right: var(--space-4);
-    bottom: -1px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
-    opacity: 0.18;
-    pointer-events: none;
   }
 
   .topbar__leading {
@@ -547,6 +551,28 @@
   .topbar__icon-btn:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
+  }
+
+  .topbar__icon-btn--settings {
+    position: relative;
+  }
+
+  .topbar__badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-warning);
+    border: 1.5px solid var(--color-surface);
+    pointer-events: none;
+    animation: badge-pulse 2s ease-in-out 3;
+  }
+
+  @keyframes badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-warning) 30%, transparent); }
   }
 
   .global-search {
