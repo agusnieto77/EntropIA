@@ -62,6 +62,8 @@ vi.mock('$lib/db', () => ({
 describe('TopBar', () => {
   beforeEach(() => {
     locale.set('es')
+    localStorage.clear()
+    delete document.documentElement.dataset.theme
     vi.useFakeTimers()
     navigateMock.mockReset()
     replaceMock.mockReset()
@@ -88,6 +90,8 @@ describe('TopBar', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    localStorage.clear()
+    delete document.documentElement.dataset.theme
   })
 
   it('renders accessible controls for navigation and global search', () => {
@@ -96,6 +100,7 @@ describe('TopBar', () => {
     expect(
       screen.getByRole('button', { name: 'Abrir navegador de base de datos' })
     ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Usar tema menos oscuro' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Abrir configuración' })).toBeInTheDocument()
     expect(screen.getByRole('searchbox', { name: 'Buscar archivos' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
@@ -117,6 +122,20 @@ describe('TopBar', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Abrir configuración' }))
 
     expect(openRootSectionMock).toHaveBeenCalledWith({ name: 'settings' })
+  })
+
+
+  it('toggles and persists the less dark theme from the topbar', async () => {
+    render(TopBar)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Usar tema menos oscuro' }))
+
+    expect(document.documentElement.dataset.theme).toBe('dim')
+    expect(localStorage.getItem('entropia-theme')).toBe('dim')
+    expect(screen.getByRole('button', { name: 'Usar tema oscuro' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
   })
 
   it('updates translated top bar labels when locale changes', async () => {

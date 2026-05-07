@@ -790,8 +790,8 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-3);
   }
 
   .empty {
@@ -800,13 +800,13 @@
 
   .drop-hint {
     padding: var(--space-4);
-    border: 1px dashed var(--color-accent);
+    border: 1px dashed color-mix(in srgb, var(--color-accent) 44%, transparent);
     border-radius: var(--radius-lg);
     color: var(--color-text-secondary);
     text-align: center;
     background:
-      linear-gradient(180deg, rgba(124, 149, 255, 0.1), rgba(124, 149, 255, 0.05)),
-      var(--color-surface);
+      linear-gradient(180deg, var(--color-accent-faint), transparent),
+      var(--color-surface-sunken);
   }
 
   .collection-view.drag-active {
@@ -819,7 +819,7 @@
   .modal-overlay {
     position: fixed;
     inset: 0;
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: var(--color-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -828,8 +828,10 @@
   }
 
   .modal {
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 58%),
+      var(--color-surface-glass);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-lg);
     padding: var(--space-6);
     max-width: 420px;
@@ -856,7 +858,7 @@
     color: var(--color-danger);
     margin: 0 0 var(--space-4) 0;
     padding: var(--space-2) var(--space-3);
-    background-color: rgba(224, 92, 106, 0.1);
+    background-color: var(--color-danger-soft);
     border-radius: var(--radius-sm);
   }
 
@@ -876,14 +878,14 @@
     border: 1px solid var(--color-danger);
     border-radius: var(--radius-md);
     background-color: var(--color-danger);
-    color: #ffffff;
+    color: var(--color-bg);
     cursor: pointer;
     transition:
-      background-color var(--transition-base),
-      border-color var(--transition-base),
-      box-shadow var(--transition-base),
-      transform var(--transition-base);
-    box-shadow: 0 8px 18px rgba(225, 109, 123, 0.18);
+      background-color var(--transition-smooth),
+      border-color var(--transition-smooth),
+      box-shadow var(--transition-smooth),
+      transform var(--transition-smooth);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--color-danger) 18%, transparent);
   }
 
   .modal-delete-button:hover:not(:disabled) {

@@ -43,10 +43,15 @@
     heading2: 'Heading 2',
     heading3: 'Heading 3',
     bulletList: 'Bullet list',
+    bulletListShort: 'List',
     orderedList: 'Ordered list',
+    orderedListShort: '1. List',
     quote: 'Quote',
+    quoteShort: 'Quote',
     addLink: 'Add link',
+    addLinkShort: 'Link',
     removeLink: 'Remove link',
+    removeLinkShort: 'Unlink',
     dictationStart: 'Start dictation',
     dictationStop: 'Stop dictation',
     dictationProcessing: 'Processing dictation...',
@@ -191,19 +196,19 @@
         },
         {
           label: labels.bulletList,
-          shortLabel: '• List',
+          shortLabel: labels.bulletListShort,
           isActive: () => editor?.isActive('bulletList') ?? false,
           action: () => editor?.chain().focus().toggleBulletList().run(),
         },
         {
           label: labels.orderedList,
-          shortLabel: '1. List',
+          shortLabel: labels.orderedListShort,
           isActive: () => editor?.isActive('orderedList') ?? false,
           action: () => editor?.chain().focus().toggleOrderedList().run(),
         },
         {
           label: labels.quote,
-          shortLabel: 'Quote',
+          shortLabel: labels.quoteShort,
           isActive: () => editor?.isActive('blockquote') ?? false,
           action: () => editor?.chain().focus().toggleBlockquote().run(),
         },
@@ -214,13 +219,13 @@
       buttons: [
         {
           label: labels.addLink,
-          shortLabel: 'Link',
+          shortLabel: labels.addLinkShort,
           isActive: () => editor?.isActive('link') ?? false,
           action: () => updateLink(),
         },
         {
           label: labels.removeLink,
-          shortLabel: 'Unlink',
+          shortLabel: labels.removeLinkShort,
           isActive: () => false,
           action: () => removeLink(),
         },
@@ -939,8 +944,8 @@
 
   .note-editor__tool {
     min-width: 2.5rem;
-    background: transparent;
-    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-surface-raised) 45%, transparent);
+    color: var(--color-text-primary);
     border-color: transparent;
   }
 
@@ -1212,8 +1217,15 @@
 
   .note-editor__btn--save {
     background-color: var(--color-accent);
-    color: #ffffff;
+    color: var(--color-bg);
     border-color: var(--color-accent);
+  }
+
+  .note-editor__btn--save:disabled {
+    opacity: 1;
+    background-color: var(--color-surface-elevated);
+    color: var(--color-text-secondary);
+    border-color: var(--color-border-strong);
   }
 
   .note-editor__btn--save:hover:not(:disabled) {

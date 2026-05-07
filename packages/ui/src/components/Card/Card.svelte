@@ -28,10 +28,12 @@
   .card {
     display: flex;
     flex-direction: column;
-    background-color: var(--color-surface-elevated);
-    border: 1px solid var(--color-border-subtle);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004) 58%),
+      var(--color-surface-elevated);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-glow);
     overflow: hidden;
     transition:
       box-shadow var(--transition-base),
@@ -68,8 +70,8 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    background-color: var(--color-surface);
-    border-bottom: 1px solid var(--color-border-subtle);
+    background-color: color-mix(in srgb, var(--color-surface) 82%, transparent);
+    border-bottom: 1px solid var(--color-hairline);
     font-family: var(--font-sans);
     font-weight: var(--font-weight-medium);
     font-size: var(--font-size-sm);
@@ -85,8 +87,8 @@
   }
 
   .card__footer {
-    background-color: var(--color-surface);
-    border-top: 1px solid var(--color-border-subtle);
+    background-color: color-mix(in srgb, var(--color-surface) 82%, transparent);
+    border-top: 1px solid var(--color-hairline);
     font-family: var(--font-sans);
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
