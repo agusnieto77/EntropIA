@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      runtime_payload_artifact:
+        description: 'Artifact from Runtime Payload workflow, usually runtime-payloads. Leave blank only when another release job supplies payloads.'
+        required: false
+        type: string
 
 env:
   PNPM_VERSION: 9.15.4
@@ -33,6 +38,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Select runtime-pack platform
+        id: runtime_pack
+        shell: bash
+        run: |
+          case "${{ matrix.platform }}" in
+            windows-*) echo "platform=windows-x86_64" >> "$GITHUB_OUTPUT" ;;
+            ubuntu-*) echo "platform=linux-x86_64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "platform=" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -89,6 +104,34 @@ jobs:
       - name: Install frontend dependencies
         shell: pwsh
         run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
+
+      - name: Download runtime payload artifact
+        if: steps.runtime_pack.outputs.platform != '' && github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ inputs.runtime_payload_artifact }}
+          path: ${{ runner.temp }}/runtime-payloads
+
+      - name: Assemble runtime-pack payload (release required)
+        if: steps.runtime_pack.outputs.platform != ''
+        shell: bash
+        run: |
+          RUNTIME_PAYLOAD_ROOT="${RUNNER_TEMP}/runtime-payloads"
+          ASSEMBLED_RUNTIME_PACK_ROOT="apps/desktop/src-tauri/target/runtime-pack"
+          python3 apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform ${{ steps.runtime_pack.outputs.platform }} --payload-root "$RUNTIME_PAYLOAD_ROOT" --output-dir "$ASSEMBLED_RUNTIME_PACK_ROOT" --require-release-payload
+
+      - name: runtime-pack-smoke
+        if: steps.runtime_pack.outputs.platform != ''
+        shell: bash
+        run: python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform ${{ steps.runtime_pack.outputs.platform }} --root apps/desktop/src-tauri/target/runtime-pack --release
+
+      - name: Inject assembled runtime-pack into bundle resources
+        if: steps.runtime_pack.outputs.platform != ''
+        shell: bash
+        run: |
+          PLATFORM="${{ steps.runtime_pack.outputs.platform }}"
+          rm -rf "apps/desktop/src-tauri/resources/runtime-pack/$PLATFORM"
+          cp -R "apps/desktop/src-tauri/target/runtime-pack/$PLATFORM" "apps/desktop/src-tauri/resources/runtime-pack/$PLATFORM"
 
       - name: Build Tauri application
         uses: tauri-apps/tauri-action@v0
