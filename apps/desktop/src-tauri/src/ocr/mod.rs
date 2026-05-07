@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod glm_ocr;
 pub mod postprocess;
 pub mod provider;
 pub mod tesseract;
@@ -18,6 +19,8 @@ pub mod reading_order;
 mod debug_viz;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+use base64::Engine;
+use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
 use paddle_vl::{create_paddle_vl_engine, PaddleVlEngine, PaddleVlOutput};
 use pdf::{extract_pdf_text, init_pdfium_path, is_quality_text, pdf_page_count};
 use provider::{LayoutCategory, OcrProvider};
@@ -25,6 +28,12 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
+
+const OCRH_MODE_LOCAL: &str = "local";
+const OCRH_MODE_GLM_OCR: &str = "glm_ocr";
+const OCRH_MODE_AUTO: &str = "auto";
+const OCRH_SETTING_MODE: &str = "ocrh_mode";
+const OCRH_SETTING_GLM_OCR_API_KEY: &str = "glm_ocr_api_key";
 
 // ── Event payloads ──────────────────────────────────────────────────────────
 
@@ -147,6 +156,406 @@ fn ocr_output_from_paddlevl(output: &PaddleVlOutput) -> provider::OcrOutput {
             .collect(),
         method: output.method.clone(),
     }
+}
+
+fn glm_label_to_layout_category(label: &str) -> Option<LayoutCategory> {
+    match label {
+        "title" => Some(LayoutCategory::Title),
+        "text" => Some(LayoutCategory::PlainText),
+        "table" => Some(LayoutCategory::Table),
+        "image" => Some(LayoutCategory::Figure),
+        "formula" => Some(LayoutCategory::PlainText),
+        _ => None,
+    }
+}
+
+fn strip_html_tags(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut inside_tag = false;
+
+    for ch in value.chars() {
+        match ch {
+            '<' => inside_tag = true,
+            '>' => {
+                inside_tag = false;
+                result.push(' ');
+            }
+            _ if !inside_tag => result.push(ch),
+            _ => {}
+        }
+    }
+
+    result
+}
+
+fn normalize_glm_text_fragment(value: &str) -> String {
+    strip_html_tags(value)
+        .replace("<br>", " ")
+        .replace("<br/>", " ")
+        .replace("<br />", " ")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_lowercase()
+}
+
+fn collect_glm_markdown_titles(markdown: &str) -> std::collections::HashSet<String> {
+    let mut titles = std::collections::HashSet::new();
+    let mut inside_centered_block = false;
+    let mut centered_block_has_heading = false;
+    let mut centered_lines: Vec<String> = Vec::new();
+
+    let flush_centered_block = |titles: &mut std::collections::HashSet<String>,
+                                centered_block_has_heading: bool,
+                                centered_lines: &mut Vec<String>| {
+        if centered_block_has_heading {
+            for line in centered_lines.iter() {
+                let normalized = normalize_glm_text_fragment(line);
+                if !normalized.is_empty() {
+                    titles.insert(normalized);
+                }
+            }
+        }
+        centered_lines.clear();
+    };
+
+    for raw_line in markdown.lines() {
+        let line = raw_line.trim();
+        let line_without_html = strip_html_tags(line);
+        let normalized_line = line_without_html.trim();
+
+        if line.starts_with("<div") && line.contains("align=\"center\"") {
+            inside_centered_block = true;
+            centered_block_has_heading = false;
+            centered_lines.clear();
+            continue;
+        }
+
+        if inside_centered_block {
+            if line.starts_with("</div") {
+                flush_centered_block(&mut titles, centered_block_has_heading, &mut centered_lines);
+                inside_centered_block = false;
+                centered_block_has_heading = false;
+                continue;
+            }
+
+            if normalized_line.starts_with('#') {
+                centered_block_has_heading = true;
+            }
+
+            let cleaned = normalized_line.trim_start_matches('#').trim();
+            if !cleaned.is_empty() {
+                centered_lines.push(cleaned.to_string());
+            }
+            continue;
+        }
+
+        if normalized_line.starts_with('#') {
+            let title = normalized_line.trim_start_matches('#').trim();
+            if !title.is_empty() {
+                titles.insert(normalize_glm_text_fragment(title));
+            }
+        }
+    }
+
+    if inside_centered_block {
+        flush_centered_block(&mut titles, centered_block_has_heading, &mut centered_lines);
+    }
+
+    titles
+}
+
+fn resolve_glm_effective_label(
+    raw_label: &str,
+    content: &str,
+    markdown_titles: &std::collections::HashSet<String>,
+) -> String {
+    if raw_label == "text" {
+        let normalized_content = normalize_glm_text_fragment(content.trim_start_matches('#').trim());
+        if !normalized_content.is_empty() && markdown_titles.contains(&normalized_content) {
+            return "title".to_string();
+        }
+        if content.trim_start().starts_with('#') {
+            return "title".to_string();
+        }
+    }
+
+    raw_label.to_string()
+}
+
+fn page_dimensions_from_glm_response(response: &GlmOcrResponse, page_index: usize) -> (u32, u32) {
+    response
+        .data_info
+        .as_ref()
+        .and_then(|info| info.pages.get(page_index))
+        .map(|page| (page.width, page.height))
+        .unwrap_or((0, 0))
+}
+
+fn normalized_bbox_to_pixels(
+    detail: &GlmOcrLayoutDetail,
+    fallback_width: u32,
+    fallback_height: u32,
+) -> Option<paddle_vl::PaddleVlBbox> {
+    if detail.bbox_2d.len() != 4 {
+        return None;
+    }
+
+    let width = detail.width.unwrap_or(fallback_width);
+    let height = detail.height.unwrap_or(fallback_height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let raw_x1 = detail.bbox_2d[0];
+    let raw_y1 = detail.bbox_2d[1];
+    let raw_3 = detail.bbox_2d[2];
+    let raw_4 = detail.bbox_2d[3];
+
+    let looks_normalized = [raw_x1, raw_y1, raw_3, raw_4]
+        .iter()
+        .all(|value| *value >= 0.0 && *value <= 1.0);
+
+    let (x1, y1, x2, y2) = if looks_normalized {
+        let norm_x1 = raw_x1.clamp(0.0, 1.0);
+        let norm_y1 = raw_y1.clamp(0.0, 1.0);
+        let norm_3 = raw_3.clamp(0.0, 1.0);
+        let norm_4 = raw_4.clamp(0.0, 1.0);
+
+        let x1 = (norm_x1 * width as f32).round() as i32;
+        let y1 = (norm_y1 * height as f32).round() as i32;
+
+        if norm_3 > norm_x1 && norm_4 > norm_y1 {
+            (
+                x1,
+                y1,
+                (norm_3 * width as f32).round() as i32,
+                (norm_4 * height as f32).round() as i32,
+            )
+        } else {
+            (
+                x1,
+                y1,
+                ((norm_x1 + norm_3).clamp(0.0, 1.0) * width as f32).round() as i32,
+                ((norm_y1 + norm_4).clamp(0.0, 1.0) * height as f32).round() as i32,
+            )
+        }
+    } else {
+        let x1 = raw_x1.round() as i32;
+        let y1 = raw_y1.round() as i32;
+
+        if raw_3 > raw_x1 && raw_4 > raw_y1 {
+            (x1, y1, raw_3.round() as i32, raw_4.round() as i32)
+        } else {
+            (
+                x1,
+                y1,
+                (raw_x1 + raw_3).round() as i32,
+                (raw_y1 + raw_4).round() as i32,
+            )
+        }
+    };
+
+    Some(paddle_vl::PaddleVlBbox {
+        x: x1,
+        y: y1,
+        width: (x2 - x1).max(0),
+        height: (y2 - y1).max(0),
+    })
+}
+
+fn glm_response_has_useful_content(response: &GlmOcrResponse) -> bool {
+    if !response.md_results.trim().is_empty() {
+        return true;
+    }
+
+    response.layout_details.iter().flatten().any(|detail| {
+        let label = detail.label.as_deref().unwrap_or_default();
+        let content = detail.content.as_deref().unwrap_or_default().trim();
+        !content.is_empty() && matches!(label, "text" | "table" | "formula")
+    })
+}
+
+fn glm_response_to_processed_output(
+    response: &GlmOcrResponse,
+    method: &str,
+) -> Result<ProcessedOcrOutput, String> {
+    let mut blocks = Vec::new();
+    let mut regions = Vec::new();
+    let mut ocr_regions = Vec::new();
+    let mut max_width = 0_u32;
+    let mut max_height = 0_u32;
+    let markdown_titles = collect_glm_markdown_titles(&response.md_results);
+
+    for (page_idx, page_details) in response.layout_details.iter().enumerate() {
+        let page = u32::try_from(page_idx + 1).map_err(|_| "GLM-OCR page index overflow".to_string())?;
+        let (fallback_width, fallback_height) =
+            page_dimensions_from_glm_response(response, page_idx);
+
+        for detail in page_details {
+            let raw_label = detail.label.as_deref().unwrap_or("text");
+            let content = detail.content.clone().unwrap_or_default();
+            let trimmed = content.trim();
+            let width = detail.width.unwrap_or(fallback_width);
+            let height = detail.height.unwrap_or(fallback_height);
+            let bbox = normalized_bbox_to_pixels(detail, fallback_width, fallback_height);
+            max_width = max_width.max(width);
+            max_height = max_height.max(height);
+            let effective_label = resolve_glm_effective_label(raw_label, trimmed, &markdown_titles);
+
+            let Some(mapped_category) = glm_label_to_layout_category(&effective_label) else {
+                continue;
+            };
+
+            if let (Some(formatted_text), Some(ref bbox)) =
+                (format_region_text(&mapped_category, &content), bbox.as_ref())
+            {
+                ocr_regions.push(provider::OcrRegion {
+                    text: formatted_text,
+                    confidence: 1.0,
+                    bbox: Some(provider::BoundingBox {
+                        x: bbox.x,
+                        y: bbox.y,
+                        width: bbox.width as u32,
+                        height: bbox.height as u32,
+                    }),
+                    column: None,
+                });
+            }
+
+            if let Some(bbox) = bbox {
+                let order = detail.index.unwrap_or((blocks.len() + 1) as i32);
+                regions.push(PersistedLayoutRegion {
+                    page,
+                    image_width: width,
+                    image_height: height,
+                    category: effective_label.clone(),
+                    bbox: bbox.clone(),
+                    confidence: 1.0,
+                });
+                blocks.push(PersistedLayoutBlock {
+                    page,
+                    image_width: width,
+                    image_height: height,
+                    label: effective_label,
+                    content: trimmed.to_string(),
+                    bbox,
+                    order,
+                    group_id: page as i32,
+                });
+            }
+        }
+    }
+
+    blocks.sort_by_key(|block| (block.page, block.order));
+
+    let text = if !response.md_results.trim().is_empty() {
+        response.md_results.trim().to_string()
+    } else {
+        blocks
+            .iter()
+            .filter_map(|block| {
+                glm_label_to_layout_category(block.label.as_str())
+                    .and_then(|category| format_region_text(&category, &block.content))
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+
+    Ok(ProcessedOcrOutput {
+        ocr: provider::OcrOutput {
+            text,
+            regions: ocr_regions,
+            method: method.to_string(),
+        },
+        layout: (!blocks.is_empty()).then_some(LayoutPersistencePayload {
+            model: method.to_string(),
+            image_width: max_width,
+            image_height: max_height,
+            regions,
+            blocks,
+        }),
+    })
+}
+
+fn get_ocrh_mode(conn: &rusqlite::Connection) -> String {
+    crate::settings::get_setting(conn, OCRH_SETTING_MODE)
+        .unwrap_or_else(|| OCRH_MODE_LOCAL.to_string())
+        .to_lowercase()
+}
+
+fn get_glm_ocr_api_key(conn: &rusqlite::Connection) -> String {
+    crate::settings::get_setting(conn, OCRH_SETTING_GLM_OCR_API_KEY)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+pub(super) fn ensure_selected_cloud_key(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mode = get_ocrh_mode(conn);
+    if mode == OCRH_MODE_GLM_OCR && get_glm_ocr_api_key(conn).is_empty() {
+        return Err(
+            "GLM-OCR no está configurado. Andá a Configuración > OCRH y cargá una API key antes de usar OCRH."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn encode_bytes_for_glm_ocr(bytes: &[u8]) -> Result<String, String> {
+    let mime = if bytes.starts_with(b"%PDF-") {
+        "application/pdf"
+    } else {
+        match image::guess_format(bytes)
+            .map_err(|e| format!("No pude detectar el formato de la imagen para GLM-OCR: {e}"))?
+        {
+            image::ImageFormat::Png => "image/png",
+            image::ImageFormat::Jpeg => "image/jpeg",
+            other => {
+                return Err(format!(
+                    "GLM-OCR sólo acepta PDF, PNG o JPG/JPEG. Formato detectado no soportado: {other:?}"
+                ))
+            }
+        }
+    };
+
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+async fn process_with_glm_ocr_provider(
+    bytes: &[u8],
+    asset_id: &str,
+    app_handle: &AppHandle,
+    api_key: &str,
+    method: &str,
+) -> Result<ProcessedOcrOutput, String> {
+    emit_progress(app_handle, asset_id, 55, "submitting_glm_ocr");
+    let payload = encode_bytes_for_glm_ocr(bytes)?;
+    let client = glm_ocr::GlmOcrClient::new(api_key.to_string());
+    emit_progress(app_handle, asset_id, 75, "waiting_glm_ocr");
+    let response = client.parse_file(&payload).await?;
+
+    #[cfg(debug_assertions)]
+    {
+        let _ = debug_viz::save_glm_ocr_response_debug(&response, method, asset_id);
+    }
+
+    if !glm_response_has_useful_content(&response) {
+        return Err("GLM-OCR devolvió una respuesta vacía para este asset.".to_string());
+    }
+
+    emit_progress(app_handle, asset_id, 92, "parsing_glm_ocr");
+    glm_response_to_processed_output(&response, method)
 }
 
 fn detect_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -346,6 +755,7 @@ impl OcrQueue {
                     let asset_id = job.asset_id.clone();
                     let result = tauri::async_runtime::block_on(process_job(
                         &provider,
+                        &conn,
                         &job,
                         &app_handle,
                         paddle_vl_engine.as_ref(),
@@ -848,6 +1258,7 @@ fn crop_region(
 /// production. PaddleVL handles layout in High mode.
 async fn process_job(
     provider: &Arc<dyn OcrProvider>,
+    conn: &rusqlite::Connection,
     job: &OcrJob,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
@@ -865,6 +1276,7 @@ async fn process_job(
         "pdf" => {
             process_pdf(
                 provider,
+                conn,
                 &file_bytes,
                 &asset_id,
                 app_handle,
@@ -876,6 +1288,7 @@ async fn process_job(
         _ => {
             process_image(
                 provider,
+                conn,
                 &file_bytes,
                 &asset_id,
                 app_handle,
@@ -894,12 +1307,48 @@ async fn process_job(
 /// then the results are concatenated with page separators.
 async fn process_pdf(
     provider: &Arc<dyn OcrProvider>,
+    conn: &rusqlite::Connection,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
     mode: &OcrMode,
 ) -> Result<ProcessedOcrOutput, String> {
+    if mode == &OcrMode::High {
+        let ocrh_mode = get_ocrh_mode(conn);
+        let glm_ocr_api_key = get_glm_ocr_api_key(conn);
+
+        match ocrh_mode.as_str() {
+            OCRH_MODE_GLM_OCR => {
+                return process_with_glm_ocr_provider(
+                    bytes,
+                    asset_id,
+                    app_handle,
+                    &glm_ocr_api_key,
+                    "pdf_glm_ocr",
+                )
+                .await;
+            }
+            OCRH_MODE_AUTO if !glm_ocr_api_key.is_empty() => {
+                match process_with_glm_ocr_provider(
+                    bytes,
+                    asset_id,
+                    app_handle,
+                    &glm_ocr_api_key,
+                    "pdf_glm_ocr",
+                )
+                .await
+                {
+                    Ok(result) => return Ok(result),
+                    Err(error) => {
+                        eprintln!("[OCRH] GLM-OCR failed in auto mode for {asset_id}, falling back to local OCRH: {error}");
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Stage 2 — extracting native text (50 %)
     emit_progress(app_handle, asset_id, 50, "extracting_native");
 
@@ -1103,6 +1552,7 @@ async fn process_pdf(
 /// **High mode** (OCRH): PaddleVL Python subprocess only. Slower but more accurate layout awareness.
 async fn process_image(
     provider: &Arc<dyn OcrProvider>,
+    conn: &rusqlite::Connection,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
@@ -1112,7 +1562,7 @@ async fn process_image(
     match mode {
         OcrMode::Light => process_image_light(provider, bytes, asset_id, app_handle).await,
         OcrMode::High => {
-            process_image_high(provider, bytes, asset_id, app_handle, paddle_vl_engine).await
+            process_image_high(provider, conn, bytes, asset_id, app_handle, paddle_vl_engine).await
         }
     }
 }
@@ -1182,11 +1632,45 @@ async fn process_image_light(
 /// Falls back to plain OCR if PaddleVL is unavailable or fails.
 async fn process_image_high(
     provider: &Arc<dyn OcrProvider>,
+    conn: &rusqlite::Connection,
     bytes: &[u8],
     asset_id: &str,
     app_handle: &AppHandle,
     paddle_vl_engine: Option<&PaddleVlEngine>,
 ) -> Result<ProcessedOcrOutput, String> {
+    let ocrh_mode = get_ocrh_mode(conn);
+    let glm_ocr_api_key = get_glm_ocr_api_key(conn);
+
+    match ocrh_mode.as_str() {
+        OCRH_MODE_GLM_OCR => {
+            return process_with_glm_ocr_provider(
+                bytes,
+                asset_id,
+                app_handle,
+                &glm_ocr_api_key,
+                "glm_ocr",
+            )
+            .await;
+        }
+        OCRH_MODE_AUTO if !glm_ocr_api_key.is_empty() => {
+            match process_with_glm_ocr_provider(
+                bytes,
+                asset_id,
+                app_handle,
+                &glm_ocr_api_key,
+                "glm_ocr",
+            )
+            .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    eprintln!("[OCRH] GLM-OCR failed in auto mode for {asset_id}, falling back to local OCRH: {error}");
+                }
+            }
+        }
+        _ => {}
+    }
+
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
     // Try PaddleVL (Python subprocess) if available
@@ -1660,5 +2144,215 @@ mod tests {
             )
             .expect("remaining row count");
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn test_glm_response_to_processed_output_uses_markdown_and_maps_layout() {
+        let response = GlmOcrResponse {
+            id: Some("task-1".to_string()),
+            created: Some(1),
+            model: Some("GLM-OCR".to_string()),
+            md_results: "# Título\n\nTexto".to_string(),
+            layout_details: vec![vec![
+                GlmOcrLayoutDetail {
+                    index: Some(1),
+                    label: Some("text".to_string()),
+                    bbox_2d: vec![0.1, 0.2, 0.5, 0.4],
+                    content: Some("Título".to_string()),
+                    height: Some(1000),
+                    width: Some(800),
+                },
+                GlmOcrLayoutDetail {
+                    index: Some(2),
+                    label: Some("table".to_string()),
+                    bbox_2d: vec![0.2, 0.5, 0.8, 0.9],
+                    content: Some("<table><tr><td>a</td></tr></table>".to_string()),
+                    height: Some(1000),
+                    width: Some(800),
+                },
+            ]],
+            data_info: None,
+            request_id: Some("req-1".to_string()),
+        };
+
+        let output = glm_response_to_processed_output(&response, "glm_ocr").expect("glm output");
+
+        assert_eq!(output.ocr.text, "# Título\n\nTexto");
+        assert_eq!(output.ocr.method, "glm_ocr");
+        assert_eq!(output.layout.as_ref().expect("layout").blocks.len(), 2);
+        assert_eq!(output.layout.as_ref().expect("layout").blocks[0].label, "title");
+        assert_eq!(output.layout.as_ref().expect("layout").blocks[1].label, "table");
+        assert_eq!(output.layout.as_ref().expect("layout").image_width, 800);
+        assert_eq!(output.layout.as_ref().expect("layout").image_height, 1000);
+    }
+
+    #[test]
+    fn test_glm_response_promotes_markdown_heading_inside_wrapped_html() {
+        let response = GlmOcrResponse {
+            id: None,
+            created: None,
+            model: None,
+            md_results: "<div align=\"center\">\n\n# MAR DEL PLATA: Lucha en la industria del pescado\n\n</div>".to_string(),
+            layout_details: vec![vec![GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("text".to_string()),
+                bbox_2d: vec![0.1, 0.1, 0.4, 0.1],
+                content: Some("MAR DEL PLATA: Lucha en la industria del pescado".to_string()),
+                height: Some(1000),
+                width: Some(800),
+            }]],
+            data_info: None,
+            request_id: None,
+        };
+
+        let output = glm_response_to_processed_output(&response, "glm_ocr").expect("glm output");
+        assert_eq!(output.layout.as_ref().expect("layout").blocks[0].label, "title");
+        assert_eq!(output.layout.as_ref().expect("layout").regions[0].category, "title");
+    }
+
+    #[test]
+    fn test_glm_response_promotes_multiline_centered_heading_lines_to_title() {
+        let response = GlmOcrResponse {
+            id: None,
+            created: None,
+            model: None,
+            md_results: "<div align=\"center\">\n\n# Trabajadores del Pescado\n\nRechazan una Impugnación\n\n</div>".to_string(),
+            layout_details: vec![vec![
+                GlmOcrLayoutDetail {
+                    index: Some(1),
+                    label: Some("text".to_string()),
+                    bbox_2d: vec![0.1, 0.1, 0.4, 0.1],
+                    content: Some("Trabajadores del Pescado".to_string()),
+                    height: Some(1000),
+                    width: Some(800),
+                },
+                GlmOcrLayoutDetail {
+                    index: Some(2),
+                    label: Some("text".to_string()),
+                    bbox_2d: vec![0.1, 0.22, 0.45, 0.1],
+                    content: Some("Rechazan una Impugnación".to_string()),
+                    height: Some(1000),
+                    width: Some(800),
+                },
+            ]],
+            data_info: None,
+            request_id: None,
+        };
+
+        let output = glm_response_to_processed_output(&response, "glm_ocr").expect("glm output");
+        let layout = output.layout.as_ref().expect("layout");
+        assert_eq!(layout.blocks[0].label, "title");
+        assert_eq!(layout.blocks[1].label, "title");
+        assert_eq!(layout.regions[0].category, "title");
+        assert_eq!(layout.regions[1].category, "title");
+    }
+
+    #[test]
+    fn test_glm_response_promotes_heading_when_html_precedes_markdown_on_same_line() {
+        let response = GlmOcrResponse {
+            id: None,
+            created: None,
+            model: None,
+            md_results: "<div align=\"center\"> ## Trabajadores del Pescado </div>".to_string(),
+            layout_details: vec![vec![GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("text".to_string()),
+                bbox_2d: vec![663.0, 521.0, 1323.0, 592.0],
+                content: Some("## Trabajadores del Pescado".to_string()),
+                height: Some(4950),
+                width: Some(3825),
+            }]],
+            data_info: None,
+            request_id: None,
+        };
+
+        let output = glm_response_to_processed_output(&response, "glm_ocr").expect("glm output");
+        let layout = output.layout.as_ref().expect("layout");
+        assert_eq!(layout.blocks[0].label, "title");
+        assert_eq!(layout.regions[0].category, "title");
+    }
+
+    #[test]
+    fn test_glm_bbox_conversion_supports_xywh_shape() {
+        let bbox = normalized_bbox_to_pixels(
+            &GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("text".to_string()),
+                bbox_2d: vec![0.1, 0.2, 0.3, 0.4],
+                content: Some("Texto".to_string()),
+                height: Some(1000),
+                width: Some(800),
+            },
+            800,
+            1000,
+        )
+        .expect("bbox");
+
+        assert_eq!(bbox.x, 80);
+        assert_eq!(bbox.y, 200);
+        assert_eq!(bbox.width, 240);
+        assert_eq!(bbox.height, 400);
+    }
+
+    #[test]
+    fn test_glm_bbox_conversion_supports_absolute_xywh_shape() {
+        let bbox = normalized_bbox_to_pixels(
+            &GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("text".to_string()),
+                bbox_2d: vec![1726.0, 2880.0, 640.0, 180.0],
+                content: Some("Texto".to_string()),
+                height: Some(3508),
+                width: Some(2480),
+            },
+            2480,
+            3508,
+        )
+        .expect("bbox");
+
+        assert_eq!(bbox.x, 1726);
+        assert_eq!(bbox.y, 2880);
+        assert_eq!(bbox.width, 640);
+        assert_eq!(bbox.height, 180);
+    }
+
+    #[test]
+    fn test_glm_response_has_useful_content_detects_empty_responses() {
+        let empty = GlmOcrResponse {
+            id: None,
+            created: None,
+            model: None,
+            md_results: "   ".to_string(),
+            layout_details: vec![vec![GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("image".to_string()),
+                bbox_2d: vec![0.0, 0.0, 1.0, 1.0],
+                content: Some("https://example.com/image.png".to_string()),
+                height: Some(10),
+                width: Some(10),
+            }]],
+            data_info: None,
+            request_id: None,
+        };
+
+        let useful = GlmOcrResponse {
+            id: None,
+            created: None,
+            model: None,
+            md_results: " ".to_string(),
+            layout_details: vec![vec![GlmOcrLayoutDetail {
+                index: Some(1),
+                label: Some("text".to_string()),
+                bbox_2d: vec![0.0, 0.0, 1.0, 1.0],
+                content: Some("hola".to_string()),
+                height: Some(10),
+                width: Some(10),
+            }]],
+            data_info: None,
+            request_id: None,
+        };
+
+        assert!(!glm_response_has_useful_content(&empty));
+        assert!(glm_response_has_useful_content(&useful));
     }
 }

@@ -7,11 +7,14 @@
     settingsSet,
     testOpenrouterConnection,
     testAssemblyaiConnection,
+    testGlmOcrConnection,
     SETTINGS_KEYS,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_LLM_MODE,
     DEFAULT_STT_MODE,
+    DEFAULT_OCRH_MODE,
     type LlmMode,
+    type OcrhMode,
     type SttMode,
     type ModelInfo,
   } from '$lib/settings'
@@ -29,18 +32,24 @@
   let model = $state(DEFAULT_OPENROUTER_MODEL)
   let llmMode = $state<LlmMode>(DEFAULT_LLM_MODE)
   let sttMode = $state<SttMode>(DEFAULT_STT_MODE)
+  let ocrhMode = $state<OcrhMode>(DEFAULT_OCRH_MODE)
   let localAvailable = $state(false)
   let selectedLocale = $state<Locale>('es')
   let languageTouched = $state(false)
   let assemblyAiApiKey = $state('')
   let maskedAssemblyAiApiKey = $state('')
   let showAssemblyAiApiKey = $state(false)
+  let glmOcrApiKey = $state('')
+  let maskedGlmOcrApiKey = $state('')
+  let showGlmOcrApiKey = $state(false)
 
   // Test connection state
   let testing = $state(false)
   let testResult = $state<{ success: boolean; message: string } | null>(null)
   let testingAssemblyAi = $state(false)
   let assemblyAiTestResult = $state<{ success: boolean; message: string } | null>(null)
+  let testingGlmOcr = $state(false)
+  let glmOcrTestResult = $state<{ success: boolean; message: string } | null>(null)
   let availableModels = $state<ModelInfo[]>([])
 
   const LANGUAGE_KEY = 'language'
@@ -73,15 +82,25 @@
         : t('settings.sttMode.auto.summary')
   )
 
+  let currentOcrhModeDescription = $derived(
+    ocrhMode === 'local'
+      ? t('settings.ocrhMode.local.summary')
+      : ocrhMode === 'glm_ocr'
+        ? t('settings.ocrhMode.glm_ocr.summary')
+        : t('settings.ocrhMode.auto.summary')
+  )
+
   const activeLocale = $derived($locale)
 
   onMount(async () => {
-    const [storedKey, storedModel, storedMode, storedSttMode, storedAssemblyAiKey, storedLanguage, isAvail] = await Promise.all([
+    const [storedKey, storedModel, storedMode, storedSttMode, storedOcrhMode, storedAssemblyAiKey, storedGlmOcrKey, storedLanguage, isAvail] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
       settingsGet(SETTINGS_KEYS.LLM_MODE),
       settingsGet(SETTINGS_KEYS.STT_MODE),
+      settingsGet(SETTINGS_KEYS.OCRH_MODE),
       settingsGet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY),
+      settingsGet(SETTINGS_KEYS.GLM_OCR_API_KEY),
       settingsGet(LANGUAGE_KEY),
       llmIsAvailable(),
     ])
@@ -93,9 +112,14 @@
     if (storedModel) model = storedModel
     if (storedMode) llmMode = storedMode as LlmMode
     if (storedSttMode) sttMode = storedSttMode as SttMode
+    if (storedOcrhMode) ocrhMode = storedOcrhMode as OcrhMode
     if (storedAssemblyAiKey) {
       assemblyAiApiKey = storedAssemblyAiKey
       maskedAssemblyAiApiKey = maskKey(storedAssemblyAiKey, 5)
+    }
+    if (storedGlmOcrKey) {
+      glmOcrApiKey = storedGlmOcrKey
+      maskedGlmOcrApiKey = maskKey(storedGlmOcrKey, 0)
     }
     if (!languageTouched) {
       selectedLocale = isLocale(storedLanguage) ? storedLanguage : get(locale)
@@ -158,6 +182,30 @@
     }
   }
 
+  async function handleTestGlmOcrConnection() {
+    if (!glmOcrApiKey.trim()) {
+      glmOcrTestResult = { success: false, message: t('settings.enterGlmOcrApiKey') }
+      return
+    }
+
+    testingGlmOcr = true
+    glmOcrTestResult = null
+    try {
+      await testGlmOcrConnection(glmOcrApiKey.trim())
+      glmOcrTestResult = {
+        success: true,
+        message: t('settings.glmOcrConnectionReady'),
+      }
+    } catch (e) {
+      glmOcrTestResult = {
+        success: false,
+        message: e instanceof Error ? e.message : String(e),
+      }
+    } finally {
+      testingGlmOcr = false
+    }
+  }
+
   async function handleSave() {
     saving = true
     saveFeedback = null
@@ -168,10 +216,13 @@
         settingsSet(SETTINGS_KEYS.LLM_MODE, llmMode),
         settingsSet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY, assemblyAiApiKey.trim()),
         settingsSet(SETTINGS_KEYS.STT_MODE, sttMode),
+        settingsSet(SETTINGS_KEYS.GLM_OCR_API_KEY, glmOcrApiKey.trim()),
+        settingsSet(SETTINGS_KEYS.OCRH_MODE, ocrhMode),
         settingsSet(LANGUAGE_KEY, selectedLocale),
       ])
       maskedApiKey = maskKey(apiKey)
       maskedAssemblyAiApiKey = maskKey(assemblyAiApiKey, 5)
+      maskedGlmOcrApiKey = maskKey(glmOcrApiKey, 0)
       saveFeedback = {
         tone: 'success',
         text: t('settings.saved'),
@@ -228,7 +279,7 @@
         type="button"
         onclick={() => (activeTab = 'openrouter')}
       >
-        LLM y STT
+        LLM, OCR y STT
       </button>
       <button
         class="settings-tab"
@@ -360,6 +411,47 @@
 
         {#if sttMode !== 'local'}
           <p class="settings__hint settings__hint--privacy">{t('settings.sttPrivacyNotice')}</p>
+        {/if}
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.ocrhModeTitle')}</h2>
+          <p>{currentOcrhModeDescription}</p>
+        </div>
+
+        <div class="settings__mode-options">
+          <label class="settings__radio" class:active={ocrhMode === 'local'}>
+            <input type="radio" name="ocrh_mode" value="local" bind:group={ocrhMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.ocrhMode.local.label')}</strong>
+              <span class="settings__radio-desc">{t('settings.ocrhMode.local.description')}</span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={ocrhMode === 'glm_ocr'}>
+            <input type="radio" name="ocrh_mode" value="glm_ocr" bind:group={ocrhMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.ocrhMode.glm_ocr.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.ocrhMode.glm_ocr.description')}
+              </span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={ocrhMode === 'auto'}>
+            <input type="radio" name="ocrh_mode" value="auto" bind:group={ocrhMode} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.ocrhMode.auto.label')}</strong>
+              <span class="settings__radio-desc">{t('settings.ocrhMode.auto.description')}</span>
+            </div>
+          </label>
+        </div>
+
+        {#if ocrhMode !== 'local'}
+          <p class="settings__hint settings__hint--privacy">{t('settings.ocrhPrivacyNotice')}</p>
         {/if}
       </section>
     </Card>
@@ -503,6 +595,59 @@
               class:surface-message--error={!assemblyAiTestResult.success}
             >
               {assemblyAiTestResult.message}
+            </p>
+          {/if}
+        </div>
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.glmOcr.title')}</h2>
+          <p>{t('settings.glmOcr.description')}</p>
+        </div>
+
+        <div class="settings__field settings__field--stacked">
+          <label class="settings__label" for="glm-ocr-api-key">{t('settings.apiKey')}</label>
+          <div class="settings__input-row">
+            <input
+              id="glm-ocr-api-key"
+              type={showGlmOcrApiKey ? 'text' : 'password'}
+              class="settings__input"
+              bind:value={glmOcrApiKey}
+              placeholder={t('settings.glmOcrApiKeyPlaceholder')}
+            />
+            <button
+              class="settings__icon-btn"
+              type="button"
+              onclick={() => (showGlmOcrApiKey = !showGlmOcrApiKey)}
+              title={showGlmOcrApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+              aria-label={showGlmOcrApiKey ? t('settings.hideApiKey') : t('settings.showApiKey')}
+            >
+              {showGlmOcrApiKey ? '🙈' : '👁'}
+            </button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={handleTestGlmOcrConnection}
+              disabled={testingGlmOcr || !glmOcrApiKey.trim()}
+            >
+              {testingGlmOcr ? t('settings.testingConnection') : t('settings.testConnection')}
+            </Button>
+          </div>
+
+          {#if maskedGlmOcrApiKey}
+            <p class="settings__hint">{t('settings.loadedKey', { key: maskedGlmOcrApiKey })}</p>
+          {/if}
+
+          {#if glmOcrTestResult}
+            <p
+              class="surface-message settings__feedback"
+              class:surface-message--success={glmOcrTestResult.success}
+              class:surface-message--error={!glmOcrTestResult.success}
+            >
+              {glmOcrTestResult.message}
             </p>
           {/if}
         </div>

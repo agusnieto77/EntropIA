@@ -200,6 +200,7 @@
   let lastAutoScrolledLayoutBlockId = $state<string | null>(null)
   let layoutInspectorCopyMessage = $state<{ tone: 'success' | 'error'; text: string } | null>(null)
   let layoutInspectorCopyTimer = $state<ReturnType<typeof setTimeout> | null>(null)
+  let layoutLoadToken = 0
   let viewerPage = $state(1)
   let viewerTotalPages = $state(1)
   let leftPanelTab = $state<'document' | 'text'>('document')
@@ -226,8 +227,9 @@
   const ocrStore = new OcrStore({
     onComplete: (assetId) => {
       // After OCR extraction completes on a specific asset, auto-trigger
-      // asset-level entity extraction only.
+      // asset-level refreshes and entity extraction.
       if (selectedAsset && selectedAsset.id === assetId) {
+        void reloadSelectedAssetPersistedState({ layout: true })
         void extractEntitiesForAsset(itemId, assetId).catch(() => {})
       }
     },
@@ -1269,6 +1271,29 @@
     }
   }
 
+  function getOcrStageLabel(stage?: string) {
+    if (!stage || stage === 'done' || stage === 'error') return ''
+
+    switch (stage) {
+      case 'reading':
+        return translate('item.ocrStage.reading')
+      case 'extracting_native':
+        return translate('item.ocrStage.extracting_native')
+      case 'ocr_inference':
+        return translate('item.ocrStage.ocr_inference')
+      case 'paddlevl_detection':
+        return translate('item.ocrStage.paddlevl_detection')
+      case 'submitting_glm_ocr':
+        return translate('item.ocrStage.submitting_glm_ocr')
+      case 'waiting_glm_ocr':
+        return translate('item.ocrStage.waiting_glm_ocr')
+      case 'parsing_glm_ocr':
+        return translate('item.ocrStage.parsing_glm_ocr')
+      default:
+        return ''
+    }
+  }
+
   function getOcrState(assetId: string) {
     // Depend on ocrTick to trigger Svelte reactivity when events arrive
     void ocrTick
@@ -1775,6 +1800,33 @@
     }
   }
 
+  async function reloadSelectedAssetPersistedState(options: {
+    layout?: boolean
+    entities?: boolean
+    triples?: boolean
+    similarAssets?: boolean
+  }) {
+    const asset = selectedAsset
+    if (!asset) return
+
+    const reloads: Promise<unknown>[] = []
+
+    if (options.layout && asset.type !== 'audio') {
+      reloads.push(reloadLayoutForAsset(asset))
+    }
+    if (options.entities) {
+      reloads.push(loadEntities())
+    }
+    if (options.triples) {
+      reloads.push(loadTriples())
+    }
+    if (options.similarAssets) {
+      reloads.push(loadSimilarAssets())
+    }
+
+    await Promise.allSettled(reloads)
+  }
+
   function handleMetadataChange(metadata: Record<string, string>) {
     if (metadataSaveTimer) clearTimeout(metadataSaveTimer)
     metadataSaveTimer = setTimeout(async () => {
@@ -1984,6 +2036,44 @@
     }
   }
 
+  async function reloadLayoutForAsset(asset: Asset | null) {
+    const requestToken = ++layoutLoadToken
+
+    if (!asset || asset.type === 'audio') {
+      assetLayout = null
+      layoutLoading = false
+      layoutError = null
+      return
+    }
+
+    layoutLoading = true
+    layoutError = null
+
+    try {
+      const layout = await getLayoutByAsset(asset.id)
+      if (layoutLoadToken !== requestToken || selectedAsset?.id !== asset.id) {
+        return
+      }
+
+      assetLayout = layout
+      if (!layout || layout.blocks.length === 0) {
+        showLayout = false
+      }
+    } catch (e) {
+      if (layoutLoadToken !== requestToken || selectedAsset?.id !== asset.id) {
+        return
+      }
+
+      assetLayout = null
+      layoutError = e instanceof Error ? e.message : 'Failed to load layout'
+      showLayout = false
+    } finally {
+      if (layoutLoadToken === requestToken && selectedAsset?.id === asset.id) {
+        layoutLoading = false
+      }
+    }
+  }
+
   $effect(() => {
     const asset = selectedAsset
     const currentAssetId = asset?.id ?? null
@@ -2057,44 +2147,7 @@
   })
 
   $effect(() => {
-    const asset = selectedAsset
-
-    if (!asset || asset.type === 'audio') {
-      assetLayout = null
-      layoutLoading = false
-      layoutError = null
-      return
-    }
-
-    let cancelled = false
-    layoutLoading = true
-    layoutError = null
-
-    void (async () => {
-      try {
-        const layout = await getLayoutByAsset(asset.id)
-        if (!cancelled && selectedAsset?.id === asset.id) {
-          assetLayout = layout
-          if (!layout || layout.blocks.length === 0) {
-            showLayout = false
-          }
-        }
-      } catch (e) {
-        if (!cancelled) {
-          assetLayout = null
-          layoutError = e instanceof Error ? e.message : 'Failed to load layout'
-          showLayout = false
-        }
-      } finally {
-        if (!cancelled) {
-          layoutLoading = false
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
+    void reloadLayoutForAsset(selectedAsset)
   })
 
   $effect(() => {
@@ -2244,13 +2297,13 @@
           nlpTick++
           // After NER completes, reload entities for the current context
           if (job === 'ner' && status === 'done' && id === itemId) {
-            loadEntities()
+            void reloadSelectedAssetPersistedState({ entities: true })
           }
           if (job === 'embed' && status === 'done' && id === itemId) {
-            loadSimilarAssets()
+            void reloadSelectedAssetPersistedState({ similarAssets: true })
           }
           if (job === 'triples' && status === 'done' && id === itemId) {
-            loadTriples()
+            void reloadSelectedAssetPersistedState({ triples: true })
           }
         }
       })
@@ -2291,6 +2344,7 @@
   })
 
   onDestroy(() => {
+    layoutLoadToken++
     window.removeEventListener(
       DOCUMENT_EXPLORER_ASSET_SELECT_REQUEST_EVENT,
       handleExplorerAssetSelectRequest
@@ -3205,11 +3259,17 @@
                 </div>
 
                 {#if ocr.status === 'running'}
+                  {@const ocrStageLabel = getOcrStageLabel(ocr.stage)}
                   <progress class="ocr-progress" value={ocr.progress} max="100">
                     {ocr.progress}%
                   </progress>
                   <p class="ocr-status-text">
-                    {translate('item.extractionRunning', { progress: ocr.progress })}
+                    {ocrStageLabel
+                      ? translate('item.extractionRunningStage', {
+                          progress: ocr.progress,
+                          stage: ocrStageLabel,
+                        })
+                      : translate('item.extractionRunning', { progress: ocr.progress })}
                   </p>
                 {:else if ocr.status === 'pending'}
                   <p class="ocr-status-text">{translate('item.extractionStarting')}</p>

@@ -100,6 +100,7 @@ describe('OcrStore', () => {
     const state = store.getState('asset-1')
     expect(state.status).toBe('running')
     expect(state.progress).toBe(45)
+    expect(state.stage).toBe('ocr')
   })
 
   it('startListening on ocr:progress updates to correct pct value', async () => {
@@ -119,6 +120,7 @@ describe('OcrStore', () => {
     const state = store.getState('asset-2')
     expect(state.progress).toBe(100)
     expect(state.status).toBe('running')
+    expect(state.stage).toBe('done')
   })
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -151,6 +153,7 @@ describe('OcrStore', () => {
     expect(state.textLength).toBe(1234)
     expect(state.method).toBe('ocr')
     expect(state.textContent).toBe('hello world')
+    expect(state.stage).toBe('done')
   })
 
   it('startListening on ocr:complete with native method', async () => {
@@ -204,6 +207,7 @@ describe('OcrStore', () => {
     const state = store.getState('asset-err')
     expect(state.status).toBe('error')
     expect(state.error).toBe('OCR model not found')
+    expect(state.stage).toBe('error')
   })
 
   it('startListening on ocr:error with different error message', async () => {

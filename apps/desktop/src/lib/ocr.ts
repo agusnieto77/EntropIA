@@ -28,6 +28,7 @@ export interface OcrResult {
 export interface AssetOcrState {
   status: OcrStatus
   progress: number
+  stage?: string
   error?: string
   textLength?: number
   method?: string
@@ -90,7 +91,7 @@ export class OcrStore {
   ): Promise<void> {
     const unlistenProgress = await listen('ocr:progress', (e) => {
       const p = e.payload as ProgressPayload
-      this._updateState(p.asset_id, { status: 'running', progress: p.pct })
+      this._updateState(p.asset_id, { status: 'running', progress: p.pct, stage: p.stage })
     })
 
     const unlistenComplete = await listen('ocr:complete', (e) => {
@@ -98,6 +99,7 @@ export class OcrStore {
       this._updateState(p.asset_id, {
         status: 'done',
         progress: 100,
+        stage: 'done',
         textLength: p.text_length,
         method: p.method,
         textContent: p.text_content,
@@ -108,7 +110,7 @@ export class OcrStore {
 
     const unlistenError = await listen('ocr:error', (e) => {
       const p = e.payload as ErrorPayload
-      this._updateState(p.asset_id, { status: 'error', error: p.error })
+      this._updateState(p.asset_id, { status: 'error', error: p.error, stage: 'error' })
     })
 
     this.cleanupFns = [unlistenProgress, unlistenComplete, unlistenError]

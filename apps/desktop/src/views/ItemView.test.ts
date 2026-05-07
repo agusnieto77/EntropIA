@@ -1330,6 +1330,46 @@ describe('ItemView image annotations', () => {
     expect(storeRef.current.annotations.findByAsset).not.toHaveBeenCalled()
   })
 
+  it('reloads persisted layout after ocr:complete for the current asset', async () => {
+    getLayoutByAssetMock.mockResolvedValueOnce(null).mockResolvedValueOnce(layoutFixture)
+    storeRef.current = createStore({
+      assetsRows: [
+        {
+          id: 'asset-image-1',
+          itemId: 'item-1',
+          path: 'docs/photo-a.jpg',
+          type: 'image',
+          createdAt: 1,
+        },
+      ],
+    })
+
+    render(ItemView, { itemId: 'item-1', collectionId: 'col-1' })
+
+    await screen.findByTestId('mock-document-viewer')
+
+    const layoutToggle = await screen.findByRole('button', { name: /mostrar overlay/i })
+    await waitFor(() => {
+      expect(getLayoutByAssetMock).toHaveBeenCalledTimes(1)
+    })
+    expect(layoutToggle).toBeDisabled()
+
+    nlpEventHandlers.get('ocr:complete')?.({
+      payload: {
+        asset_id: 'asset-image-1',
+        method: 'paddle_vl',
+        text_length: 128,
+        text_content: 'OCR listo',
+      },
+    })
+
+    await waitFor(() => {
+      expect(getLayoutByAssetMock).toHaveBeenCalledTimes(2)
+      expect(layoutToggle).toBeEnabled()
+    })
+    expect(screen.getByText(/paddle_vl · 5 bloques · 5 regiones/i)).toBeInTheDocument()
+  })
+
   it('syncs list hover/select with overlay state and keeps selection persistent', async () => {
     getLayoutByAssetMock.mockResolvedValue(layoutFixture)
     storeRef.current = createStore({
@@ -1493,20 +1533,20 @@ describe('ItemView image annotations', () => {
 
     expect(screen.getByTestId('layout-inspector-label')).toHaveTextContent('title')
     expect(screen.getByTestId('layout-inspector-overlay-source')).toHaveTextContent(
-      'Región matcheada'
+      'BBox del bloque'
     )
-    expect(screen.getByTestId('layout-inspector-bbox')).toHaveTextContent('x:10 y:20 w:200 h:80')
+    expect(screen.getByTestId('layout-inspector-bbox')).toHaveTextContent('x:8 y:18 w:180 h:70')
     expect(screen.getByTestId('layout-inspector-content')).toHaveTextContent('Bloque título')
 
     await fireEvent.click(screen.getByTestId('layout-inspector-copy-text'))
     expect(clipboardWriteTextMock).toHaveBeenCalledWith('Bloque título')
 
     await fireEvent.click(screen.getByTestId('layout-inspector-copy-bbox'))
-    expect(clipboardWriteTextMock).toHaveBeenCalledWith('x:10 y:20 w:200 h:80')
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith('x:8 y:18 w:180 h:70')
 
     await fireEvent.click(screen.getByTestId('layout-inspector-copy-json'))
     expect(clipboardWriteTextMock).toHaveBeenLastCalledWith(
-      expect.stringContaining('"overlaySource": "region"')
+      expect.stringContaining('"overlaySource": "block"')
     )
     expect(screen.getByTestId('layout-inspector-copy-message')).toHaveTextContent('JSON copiado.')
   })

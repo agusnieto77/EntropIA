@@ -19,8 +19,8 @@ describe('layout inspector helpers', () => {
     })
 
     expect(getLayoutOverlaySourceMeta('block')).toMatchObject({
-      shortLabel: 'Fallback',
-      label: 'Fallback bbox',
+      shortLabel: 'Bloque',
+      label: 'BBox del bloque',
     })
   })
 

@@ -1145,6 +1145,7 @@ dependencies = [
 name = "entropia-desktop"
 version = "0.0.10"
 dependencies = [
+ "base64 0.22.1",
  "encoding_rs",
  "image",
  "imageproc",

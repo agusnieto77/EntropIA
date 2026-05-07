@@ -23,7 +23,9 @@ use std::path::PathBuf;
 use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
+use serde_json::json;
 
+use super::glm_ocr::GlmOcrResponse;
 use super::provider::{BoundingBox, LayoutCategory, LayoutRegion, OcrRegion};
 
 /// Thickness of the rectangle outline in pixels.
@@ -499,6 +501,81 @@ pub fn save_ocr_lines_debug(
     }
 
     let _ = original_bytes.len();
+
+    Ok(())
+}
+
+/// Save a pretty-printed JSON snapshot of the real GLM-OCR response.
+///
+/// Uses the same dev-only guard as the OCR overlay artifacts:
+/// debug builds + `ENTROPIA_DEBUG_VIZ` enabled. The snapshot intentionally
+/// stores only the response payload and lightweight capture metadata.
+pub fn save_glm_ocr_response_debug(
+    response: &GlmOcrResponse,
+    method: &str,
+    asset_id: &str,
+) -> Result<(), String> {
+    if !is_debug_viz_enabled() {
+        return Ok(());
+    }
+
+    let root = match workspace_root() {
+        Some(r) => r,
+        None => {
+            eprintln!("[debug_viz] CARGO_MANIFEST_DIR unavailable — skipping GLM-OCR response dump");
+            return Ok(());
+        }
+    };
+
+    let ts = timestamp_ms();
+    let layouts_dir = root.join("tests_layouts");
+
+    if let Err(e) = std::fs::create_dir_all(&layouts_dir) {
+        eprintln!(
+            "[debug_viz] Failed to create {}: {e}",
+            layouts_dir.display()
+        );
+        return Ok(());
+    }
+
+    let short_id: String = asset_id.chars().take(32).collect();
+    let dump_path = layouts_dir.join(format!("glm_ocr_response_{short_id}_{ts}.json"));
+    let total_layout_items: usize = response.layout_details.iter().map(|page| page.len()).sum();
+
+    let payload = json!({
+        "asset_id": asset_id,
+        "method": method,
+        "captured_at_unix_ms": ts,
+        "summary": {
+            "md_results_length": response.md_results.len(),
+            "layout_pages": response.layout_details.len(),
+            "layout_items": total_layout_items,
+        },
+        "response": response,
+    });
+
+    let json = match serde_json::to_string_pretty(&payload) {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("[debug_viz] Failed to serialize GLM-OCR response for {asset_id}: {e}");
+            return Ok(());
+        }
+    };
+
+    match std::fs::write(&dump_path, json) {
+        Ok(_) => {
+            eprintln!(
+                "[debug_viz] ✅ GLM-OCR response dump saved: {}",
+                dump_path.display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[debug_viz] Failed to write GLM-OCR response dump {}: {e}",
+                dump_path.display()
+            );
+        }
+    }
 
     Ok(())
 }

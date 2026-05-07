@@ -302,6 +302,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             db::commands::db_browser_describe_table,
             db::commands::db_browser_query_rows,
             ocr::commands::extract_text,
+            ocr::commands::test_glm_ocr_connection,
             ocr::commands::update_extraction_text_cmd,
             ocr::commands::generate_pdf_thumbnail,
             ocr::commands::delete_pdf_thumbnail,

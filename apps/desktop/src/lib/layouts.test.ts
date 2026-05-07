@@ -107,8 +107,8 @@ describe('buildLayoutBlockViews', () => {
       page: 1,
       imageWidth: 900,
       imageHeight: 1300,
-      overlayBbox: { x: 2, y: 3, width: 90, height: 50 },
-      overlaySource: 'region',
+      overlayBbox: { x: 10, y: 20, width: 120, height: 60 },
+      overlaySource: 'block',
     })
     expect(blocks[0]?.preview).toHaveLength(120)
     expect(blocks[0]?.preview.endsWith('…')).toBe(true)
@@ -123,12 +123,12 @@ describe('buildLayoutBlockViews', () => {
       imageWidth: 1200,
       imageHeight: 1800,
       preview: 'Segundo bloque con espacios',
-      overlayBbox: { x: 8, y: 18, width: 32, height: 44 },
-      overlaySource: 'region',
+      overlayBbox: { x: 5, y: 15, width: 40, height: 55 },
+      overlaySource: 'block',
     })
   })
 
-  it('falls back to block bbox when no region matches', () => {
+  it('uses the block bbox for the overlay even when a region matches', () => {
     const layout = {
       id: 'layout-2',
       assetId: 'asset-2',

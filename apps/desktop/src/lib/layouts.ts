@@ -308,8 +308,6 @@ function sortBlocks(a: LayoutBlockView, b: LayoutBlockView) {
 export function buildLayoutBlockViews(layout: AssetLayout): LayoutBlockView[] {
   return layout.blocks
     .map<LayoutBlockView>((block, index) => {
-      const match = matchLayoutRegionToBlock(block, layout.regions)
-      const overlaySource: LayoutBlockView['overlaySource'] = match ? 'region' : 'block'
       const id = `layout-block-${index}`
 
       return {
@@ -320,8 +318,8 @@ export function buildLayoutBlockViews(layout: AssetLayout): LayoutBlockView[] {
         content: block.content,
         preview: normalizeTextPreview(block.content),
         bbox: block.bbox,
-        overlayBbox: match?.region.bbox ?? block.bbox,
-        overlaySource,
+        overlayBbox: block.bbox,
+        overlaySource: 'block',
         page: getPage(block),
         groupId: Number.isFinite(block.groupId) ? block.groupId : 0,
         imageWidth: block.imageWidth ?? layout.imageWidth,

@@ -48,6 +48,10 @@ export function testAssemblyaiConnection(apiKey: string): Promise<void> {
   return invoke<void>('test_assemblyai_connection', { apiKey })
 }
 
+export function testGlmOcrConnection(apiKey: string): Promise<void> {
+  return invoke<void>('test_glm_ocr_connection', { apiKey })
+}
+
 // ---------------------------------------------------------------------------
 // Well-known setting keys
 // ---------------------------------------------------------------------------
@@ -58,13 +62,17 @@ export const SETTINGS_KEYS = {
   LLM_MODE: 'llm_mode',
   ASSEMBLYAI_API_KEY: 'assemblyai_api_key',
   STT_MODE: 'stt_mode',
+  GLM_OCR_API_KEY: 'glm_ocr_api_key',
+  OCRH_MODE: 'ocrh_mode',
   LANGUAGE: 'language',
   DEPS_VENV_PYTHON_PATH: 'deps_venv_python_path',
 } as const
 
 export type LlmMode = 'local' | 'openrouter' | 'auto'
 export type SttMode = 'local' | 'assemblyai' | 'auto'
+export type OcrhMode = 'local' | 'glm_ocr' | 'auto'
 
 export const DEFAULT_OPENROUTER_MODEL = 'google/gemma-3-4b-it'
 export const DEFAULT_LLM_MODE: LlmMode = 'local'
 export const DEFAULT_STT_MODE: SttMode = 'local'
+export const DEFAULT_OCRH_MODE: OcrhMode = 'local'

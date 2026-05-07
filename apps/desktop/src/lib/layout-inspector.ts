@@ -14,9 +14,9 @@ const OVERLAY_SOURCE_META: Record<LayoutBlockView['overlaySource'], LayoutOverla
     description: 'El overlay usa la región detectada por layout porque hubo match con el bloque.',
   },
   block: {
-    shortLabel: 'Fallback',
-    label: 'Fallback bbox',
-    description: 'El overlay usa el bbox del bloque porque no hubo región confiable para matchear.',
+    shortLabel: 'Bloque',
+    label: 'BBox del bloque',
+    description: 'El overlay usa siempre el bbox detectado para este bloque, sin fusionarlo con una región más grande.',
   },
 }
 

@@ -31,11 +31,20 @@ pub async fn extract_text(
     asset_type: String,
     mode: Option<String>,
     ocr_queue: State<'_, OcrQueue>,
+    db: State<'_, AppDbState>,
 ) -> Result<String, String> {
     let ocr_mode = match mode.as_deref() {
         Some("high") => super::OcrMode::High,
         _ => super::OcrMode::Light, // default to light
     };
+
+    if ocr_mode == super::OcrMode::High {
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|e| format!("DB lock poisoned: {e}"))?;
+        super::ensure_selected_cloud_key(&conn)?;
+    }
 
     let job = super::OcrJob {
         asset_id,
@@ -46,6 +55,13 @@ pub async fn extract_text(
 
     ocr_queue.submit(job)?;
     Ok("queued".to_string())
+}
+
+#[tauri::command]
+pub async fn test_glm_ocr_connection(api_key: String) -> Result<(), String> {
+    super::glm_ocr::GlmOcrClient::new(api_key)
+        .test_connection()
+        .await
 }
 
 /// Update the text_content of the latest extraction for an asset.
