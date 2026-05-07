@@ -30,6 +30,7 @@
   let searchExpanded = $state(false)
   let searchFilter = $state('')
   let searchInputEl: HTMLInputElement | undefined = $state()
+  let showCreateForm = $state(false)
 
   function toggleSidebar() {
     sidebarOpen = !sidebarOpen
@@ -37,7 +38,6 @@
 
   function expandSearch() {
     searchExpanded = true
-    // Focus input on next tick
     setTimeout(() => searchInputEl?.focus(), 0)
   }
 
@@ -45,6 +45,13 @@
     if (!searchFilter) {
       searchExpanded = false
     }
+  }
+
+  function handleCreateCollection() {
+    // Navigate to collections view and signal to open the create form
+    navigation.navigateTo({ name: 'collections' })
+    // Dispatch custom event that CollectionsView can listen to
+    window.dispatchEvent(new CustomEvent('entropia:create-collection'))
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -143,17 +150,33 @@
     <aside class="sidebar" class:sidebar--collapsed={!sidebarOpen} aria-label="Panel lateral">
       <!-- Sidebar toolbar -->
       <div class="sidebar__toolbar">
+        <!-- Toggle sidebar -->
         <button
           class="sidebar__tool"
           onclick={toggleSidebar}
           title={sidebarOpen ? 'Colapsar panel (Ctrl+B)' : 'Expandir panel (Ctrl+B)'}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <line x1="9" y1="3" x2="9" y2="21"/>
           </svg>
         </button>
 
         {#if sidebarOpen}
+          <!-- New collection -->
+          <button
+            class="sidebar__tool"
+            onclick={handleCreateCollection}
+            title="Nueva colección"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <line x1="12" y1="11" x2="12" y2="17"/>
+              <line x1="9" y1="14" x2="15" y2="14"/>
+            </svg>
+          </button>
+
+          <!-- Search / filter -->
           {#if searchExpanded}
             <input
               bind:this={searchInputEl}

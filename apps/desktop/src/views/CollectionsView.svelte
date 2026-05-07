@@ -3,7 +3,7 @@
   import { navigation } from '$lib/navigation'
   import { locale, t } from '$lib/i18n'
   import { CollectionCard, SearchBar, Button, Input, Card } from '@entropia/ui'
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import type { Collection } from '@entropia/store'
 
   let collections = $state<Collection[]>([])
@@ -138,8 +138,20 @@
     }
   }
 
+  function handleExternalCreate() {
+    showCreate = true
+    setTimeout(() => {
+      document.querySelector<HTMLInputElement>('.create-form input')?.focus()
+    }, 100)
+  }
+
   onMount(() => {
     loadCollections()
+    window.addEventListener('entropia:create-collection', handleExternalCreate)
+  })
+
+  onDestroy(() => {
+    window.removeEventListener('entropia:create-collection', handleExternalCreate)
   })
 </script>
 
