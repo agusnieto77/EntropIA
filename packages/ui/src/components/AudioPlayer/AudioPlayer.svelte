@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
+
   interface AudioPlayerLabels {
     skipBack: string
     play: string
@@ -32,6 +34,21 @@
   let duration = $state(0)
   let volume = $state(1)
   let audioEl: HTMLAudioElement | undefined = $state()
+  let blobUrl = $state<string | null>(null)
+  let loadError = $state(false)
+
+  $effect(() => {
+    if (blobUrl) {
+      URL.revokeObjectURL(blobUrl)
+      blobUrl = null
+    }
+  })
+
+  onDestroy(() => {
+    if (blobUrl) {
+      URL.revokeObjectURL(blobUrl)
+    }
+  })
 
   const progress = $derived(duration > 0 ? currentTime / duration : 0)
 
@@ -106,12 +123,30 @@
     if (!audioEl) return
     volume = audioEl.volume
   }
+
+  function handleError() {
+    if (!src || blobUrl || !audioEl) return
+    fetch(src)
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.blob()
+      })
+      .then((blob) => {
+        blobUrl = URL.createObjectURL(blob)
+        audioEl!.src = blobUrl
+        void audioEl!.play()
+      })
+      .catch((err) => {
+        console.error('[AudioPlayer] Fallback load failed:', err)
+        loadError = true
+      })
+  }
 </script>
 
 <div class="audio-player" data-testid="audio-player">
   <audio
     bind:this={audioEl}
-    {src}
+    src={blobUrl ?? src}
     preload="metadata"
     ontimeupdate={handleTimeUpdate}
     onloadedmetadata={handleLoadedMetadata}
@@ -119,7 +154,15 @@
     onpause={handlePause}
     onended={handleEnded}
     onvolumechange={handleVolumeChange}
+    onerror={handleError}
   ></audio>
+
+  {#if loadError}
+    <p class="audio-player__error" data-testid="audio-load-error">
+      No se pudo reproducir el audio. En Linux, esto suele deberse a una incompatibilidad entre
+      WebKitGTK y GStreamer. Verificá que tu sistema tenga GStreamer ≥ 1.22.
+    </p>
+  {/if}
 
   <!-- Transport controls -->
   <div class="audio-player__transport">
@@ -306,5 +349,16 @@
   .audio-player__volume-slider {
     width: 80px;
     accent-color: var(--color-accent);
+  }
+
+  .audio-player__error {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background: rgba(255, 143, 143, 0.12);
+    color: #ff8f8f;
+    font-size: var(--font-size-sm);
+    text-align: center;
+    max-width: 480px;
   }
 </style>

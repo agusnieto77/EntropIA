@@ -17,7 +17,7 @@ class FakeMediaRecorder {
     FakeMediaRecorder.instances.push(this)
   }
 
-  start() {
+  start(_timeslice?: number) {
     this.state = 'recording'
   }
 
@@ -25,6 +25,10 @@ class FakeMediaRecorder {
     this.state = 'inactive'
     this.ondataavailable?.({ data: new Blob(['audio'], { type: this.mimeType }) })
     this.onstop?.()
+  }
+
+  requestData() {
+    // no-op: test data is delivered on stop()
   }
 }
 
