@@ -108,58 +108,69 @@
   <TopBar />
 
   <div class="workspace">
-    <!-- Ribbon: thin icon strip (Obsidian-style) -->
-    <nav class="ribbon" aria-label="Navegación principal">
-      <div class="ribbon__top">
-        {#if showExplorer}
+    <!-- Sidebar: Zotero-style unified panel -->
+    {#if sidebarOpen}
+      <aside class="sidebar" aria-label="Panel lateral">
+        <!-- Sidebar toolbar (Zotero-style icon actions) -->
+        <div class="sidebar__toolbar">
           <button
-            class="ribbon__btn"
-            class:ribbon__btn--active={activeRibbonTab === 'explorer' && sidebarOpen}
+            class="sidebar__tool"
+            class:sidebar__tool--active={showExplorer && activeRibbonTab === 'explorer'}
             onclick={() => toggleSidebar('explorer')}
             title="Explorador (Ctrl+B)"
-            aria-label="Explorador"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-        {/if}
+          <button
+            class="sidebar__tool"
+            class:sidebar__tool--active={activeRibbonTab === 'search'}
+            onclick={() => toggleSidebar('search')}
+            title="Buscar en colecciones"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </button>
 
-        <button
-          class="ribbon__btn"
-          class:ribbon__btn--active={activeRibbonTab === 'search' && sidebarOpen}
-          onclick={() => toggleSidebar('search')}
-          title="Buscar"
-          aria-label="Buscar"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8"/>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-        </button>
-      </div>
+          <div class="sidebar__toolbar-spacer"></div>
 
-      <div class="ribbon__bottom">
-        <button
-          class="ribbon__btn"
-          onclick={() => navigation.openRootSection({ name: 'settings' })}
-          title="Configuración"
-          aria-label="Configuración"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-          </svg>
-        </button>
-      </div>
-    </nav>
+          <button
+            class="sidebar__tool"
+            onclick={() => navigation.openRootSection({ name: 'settings' })}
+            title="Configuración"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button
+            class="sidebar__tool"
+            onclick={() => { sidebarOpen = false }}
+            title="Cerrar panel (Ctrl+B)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/>
+            </svg>
+          </button>
+        </div>
 
-    <!-- Sidebar: contextual content -->
-    {#if sidebarOpen && showExplorer && activeRibbonTab === 'explorer'}
-      <DocumentExplorer />
-    {:else if sidebarOpen && activeRibbonTab === 'search'}
-      <aside class="sidebar-placeholder">
-        <p class="sidebar-placeholder__text">Usá la barra de búsqueda en el header</p>
+        <!-- Sidebar content -->
+        <div class="sidebar__body">
+          {#if showExplorer && activeRibbonTab === 'explorer'}
+            <DocumentExplorer />
+          {:else if activeRibbonTab === 'search'}
+            <div class="sidebar__placeholder">
+              <p>Usá la barra de búsqueda en el header</p>
+            </div>
+          {:else}
+            <div class="sidebar__placeholder">
+              <p>Abrí una colección para ver el explorador</p>
+            </div>
+          {/if}
+        </div>
       </aside>
     {/if}
 
@@ -225,66 +236,67 @@
     background: var(--color-bg);
   }
 
-  /* ── Ribbon (Obsidian-style icon strip) ── */
-  .ribbon {
+  /* ── Sidebar (Zotero-style unified panel) ── */
+  .sidebar {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    width: 42px;
+    width: 240px;
     flex-shrink: 0;
-    background: var(--color-surface-sunken);
     border-right: 1px solid var(--color-border-subtle);
-    padding: var(--space-2) 0;
+    background: var(--color-surface);
+    overflow: hidden;
   }
 
-  .ribbon__top,
-  .ribbon__bottom {
+  .sidebar__toolbar {
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
+    padding: 3px 4px;
+    border-bottom: 1px solid var(--color-border-subtle);
+    background: var(--color-surface-sunken);
   }
 
-  .ribbon__btn {
+  .sidebar__toolbar-spacer {
+    flex: 1;
+  }
+
+  .sidebar__tool {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 34px;
+    width: 28px;
+    height: 28px;
     border: none;
-    border-radius: 4px;
+    border-radius: 3px;
     background: transparent;
     color: var(--color-text-muted);
     cursor: pointer;
     transition: color var(--transition-base), background-color var(--transition-base);
   }
 
-  .ribbon__btn:hover {
-    color: var(--color-text-secondary);
+  .sidebar__tool:hover {
+    color: var(--color-text-primary);
     background: var(--color-accent-soft);
   }
 
-  .ribbon__btn--active {
+  .sidebar__tool--active {
     color: var(--color-accent);
-    background: var(--color-accent-soft);
   }
 
-  /* ── Sidebar placeholder ── */
-  .sidebar-placeholder {
-    width: 220px;
-    flex-shrink: 0;
-    border-right: 1px solid var(--color-border-subtle);
-    background: var(--color-surface);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-4);
+  .sidebar__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
-  .sidebar-placeholder__text {
+  .sidebar__placeholder {
+    padding: var(--space-6) var(--space-4);
+    text-align: center;
+  }
+
+  .sidebar__placeholder p {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    text-align: center;
   }
 
   /* ── Main content ── */
