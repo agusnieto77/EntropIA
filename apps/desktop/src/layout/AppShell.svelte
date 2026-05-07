@@ -25,16 +25,24 @@
   )
 
   // ── Ribbon sidebar state ──
-  type RibbonTab = 'explorer' | 'search'
   let sidebarOpen = $state(true)
-  let activeRibbonTab = $state<RibbonTab>('explorer')
+  let searchExpanded = $state(false)
+  let searchFilter = $state('')
+  let searchInputEl: HTMLInputElement | undefined = $state()
 
-  function toggleSidebar(tab?: RibbonTab) {
-    if (tab && tab === activeRibbonTab && sidebarOpen) {
-      sidebarOpen = false
-    } else {
-      if (tab) activeRibbonTab = tab
-      sidebarOpen = true
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen
+  }
+
+  function expandSearch() {
+    searchExpanded = true
+    // Focus input on next tick
+    setTimeout(() => searchInputEl?.focus(), 0)
+  }
+
+  function collapseSearch() {
+    if (!searchFilter) {
+      searchExpanded = false
     }
   }
 
@@ -114,49 +122,45 @@
       <div class="sidebar__toolbar">
         <button
           class="sidebar__tool"
-          class:sidebar__tool--active={activeRibbonTab === 'explorer' && sidebarOpen}
-          onclick={() => toggleSidebar('explorer')}
-          title="Explorador (Ctrl+B)"
+          onclick={toggleSidebar}
+          title={sidebarOpen ? 'Colapsar panel (Ctrl+B)' : 'Expandir panel (Ctrl+B)'}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>
         </button>
-        <button
-          class="sidebar__tool"
-          class:sidebar__tool--active={activeRibbonTab === 'search' && sidebarOpen}
-          onclick={() => toggleSidebar('search')}
-          title="Buscar en colecciones"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-        </button>
 
         {#if sidebarOpen}
-          <div class="sidebar__toolbar-spacer"></div>
-          <button
-            class="sidebar__tool"
-            onclick={() => navigation.openRootSection({ name: 'settings' })}
-            title="Configuración"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
+          {#if searchExpanded}
+            <input
+              bind:this={searchInputEl}
+              class="sidebar__search-input"
+              type="text"
+              placeholder="Filtrar colecciones..."
+              bind:value={searchFilter}
+              onblur={collapseSearch}
+              onkeydown={(e) => { if (e.key === 'Escape') { searchFilter = ''; searchExpanded = false } }}
+            />
+          {:else}
+            <div class="sidebar__toolbar-spacer"></div>
+            <button
+              class="sidebar__tool"
+              onclick={expandSearch}
+              title="Filtrar colecciones"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </button>
+          {/if}
         {/if}
       </div>
 
       <!-- Sidebar body (hidden when collapsed) -->
       {#if sidebarOpen}
         <div class="sidebar__body">
-          {#if showExplorer && activeRibbonTab === 'explorer'}
+          {#if showExplorer}
             <DocumentExplorer />
-          {:else if activeRibbonTab === 'search'}
-            <div class="sidebar__placeholder">
-              <p>Usá la barra de búsqueda en el header</p>
-            </div>
           {:else}
             <div class="sidebar__placeholder">
               <p>Abrí una colección para ver el explorador</p>
@@ -285,6 +289,28 @@
 
   .sidebar__tool--active {
     color: var(--color-accent);
+  }
+
+  .sidebar__search-input {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: 3px;
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    outline: none;
+    transition: border-color var(--transition-base);
+  }
+
+  .sidebar__search-input:focus {
+    border-color: var(--color-accent);
+  }
+
+  .sidebar__search-input::placeholder {
+    color: var(--color-text-muted);
   }
 
   .sidebar__body {
