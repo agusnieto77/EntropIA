@@ -12,6 +12,11 @@
 
   const STORAGE_KEY = 'entropia-document-explorer-open'
   const TREE_STORAGE_KEY = 'entropia-document-explorer-tree'
+  const WIDTH_STORAGE_KEY = 'entropia-document-explorer-width'
+  const DEFAULT_WIDTH = 244
+  const MIN_WIDTH = 220
+  const MAX_WIDTH = Math.round(DEFAULT_WIDTH * 1.1)
+  const COLLAPSED_WIDTH = 36
 
   const pendingItemLoads = new Map<string, Promise<void>>()
   const pendingAssetLoads = new Map<string, Promise<void>>()
@@ -29,6 +34,7 @@
   let openCollections = $state<string[]>([])
   let openItems = $state<string[]>([])
   let activeAssetId = $state<string | null>(null)
+  let explorerWidth = $state(DEFAULT_WIDTH)
   const currentLocale = locale
   const translateExplorer = (key: string) => t(key as I18nKey)
 
@@ -46,6 +52,45 @@
     try {
       localStorage.setItem(STORAGE_KEY, String(value))
     } catch {}
+  }
+
+
+  function clampExplorerWidth(value: number) {
+    return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(value)))
+  }
+
+  function readPersistedWidth() {
+    try {
+      const stored = Number(localStorage.getItem(WIDTH_STORAGE_KEY))
+      if (Number.isFinite(stored)) return clampExplorerWidth(stored)
+    } catch {}
+
+    return DEFAULT_WIDTH
+  }
+
+  function persistExplorerWidth(value: number) {
+    try {
+      localStorage.setItem(WIDTH_STORAGE_KEY, String(clampExplorerWidth(value)))
+    } catch {}
+  }
+
+  function startResize(event: PointerEvent) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = explorerWidth
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      explorerWidth = clampExplorerWidth(startWidth + moveEvent.clientX - startX)
+    }
+
+    const handleUp = () => {
+      persistExplorerWidth(explorerWidth)
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+    }
+
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp, { once: true })
   }
 
   function uniqueIds(ids: string[]) {
@@ -395,6 +440,7 @@
 
   onMount(() => {
     isOpen = readPersistedOpenState()
+    explorerWidth = readPersistedWidth()
     const persistedTree = readPersistedTreeState()
     openCollections = persistedTree.collections
     openItems = persistedTree.items
@@ -417,47 +463,50 @@
 <aside
   class="explorer"
   class:is-open={isOpen}
+  style:width={`${isOpen ? explorerWidth : COLLAPSED_WIDTH}px`}
   aria-label={$currentLocale && translateExplorer('explorer.aria')}
 >
-  <div class="explorer__rail">
-    <button
-      class="explorer__toggle"
-      type="button"
-      onclick={toggleOpen}
-      aria-expanded={isOpen}
-      aria-controls="document-explorer-panel"
-      aria-label={isOpen
-        ? translateExplorer('explorer.collapse')
-        : translateExplorer('explorer.expand')}
-      title={isOpen ? translateExplorer('explorer.collapse') : translateExplorer('explorer.expand')}
-    >
-      <svg
-        class="explorer__toggle-icon"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
+  <div id="document-explorer-panel" class="explorer__panel">
+    <header class="explorer__header">
+      <button
+        class="explorer__toggle"
+        type="button"
+        onclick={toggleOpen}
+        aria-expanded={isOpen}
+        aria-controls="document-explorer-content"
+        aria-label={isOpen
+          ? translateExplorer('explorer.collapse')
+          : translateExplorer('explorer.expand')}
+        title={isOpen ? translateExplorer('explorer.collapse') : translateExplorer('explorer.expand')}
       >
-        {#if isOpen}
-          <path d="m10 3.5-4.5 4.5 4.5 4.5" />
-        {:else}
-          <path d="m6 3.5 4.5 4.5L6 12.5" />
-        {/if}
-      </svg>
-    </button>
-  </div>
+        <svg
+          class="explorer__toggle-icon"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          {#if isOpen}
+            <path d="m10 3.5-4.5 4.5 4.5 4.5" />
+          {:else}
+            <path d="m6 3.5 4.5 4.5L6 12.5" />
+          {/if}
+        </svg>
+      </button>
 
-  {#if isOpen}
-    <div id="document-explorer-panel" class="explorer__panel">
-      <header class="explorer__header">
-        <p class="explorer__eyebrow">{$currentLocale && translateExplorer('explorer.eyebrow')}</p>
-        <h2>{$currentLocale && translateExplorer('explorer.title')}</h2>
-      </header>
+      {#if isOpen}
+        <div class="explorer__header-copy">
+          <p class="explorer__eyebrow">{$currentLocale && translateExplorer('explorer.eyebrow')}</p>
+          <h2>{$currentLocale && translateExplorer('explorer.title')}</h2>
+        </div>
+      {/if}
+    </header>
 
-      <div class="explorer__scroll">
+    {#if isOpen}
+      <div id="document-explorer-content" class="explorer__scroll">
         {#if loadError}
           <p class="explorer__message explorer__message--error">{loadError}</p>
         {:else if loading}
@@ -729,8 +778,17 @@
           </section>
         {/if}
       </div>
-    </div>
-  {/if}
+
+      <div
+        class="explorer__resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={$currentLocale && translateExplorer('explorer.resize')}
+        title={$currentLocale && translateExplorer('explorer.resize')}
+        onpointerdown={startResize}
+      ></div>
+    {/if}
+  </div>
 </aside>
 
 <style>
@@ -738,7 +796,7 @@
     display: flex;
     flex: 0 0 auto;
     min-width: 34px;
-    max-width: min(13vw, 244px);
+    max-width: 268px;
     border-right: 1px solid var(--color-hairline);
     background:
       radial-gradient(circle at 24px 18px, rgba(255, 255, 255, 0.026), transparent 18%),
@@ -749,15 +807,7 @@
   }
 
   .explorer.is-open {
-    width: min(13vw, 244px);
-  }
-
-  .explorer__rail {
-    display: flex;
-    justify-content: center;
-    padding: 8px 5px;
-    border-right: 1px solid var(--color-hairline);
-    background: color-mix(in srgb, var(--color-surface-sunken) 72%, transparent);
+    min-width: 220px;
   }
 
   .explorer__toggle {
@@ -796,6 +846,7 @@
   }
 
   .explorer__panel {
+    position: relative;
     display: flex;
     flex: 1;
     min-width: 0;
@@ -803,9 +854,17 @@
   }
 
   .explorer__header {
-    padding: 8px 10px 6px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 38px;
+    padding: 6px 8px;
     border-bottom: 1px solid var(--color-hairline);
     background: color-mix(in srgb, var(--color-surface-sunken) 24%, transparent);
+  }
+
+  .explorer__header-copy {
+    min-width: 0;
   }
 
   .explorer__header h2,
@@ -817,6 +876,7 @@
     font-size: 12px;
     font-weight: var(--font-weight-medium);
     color: var(--color-text-primary);
+    line-height: 1.2;
   }
 
   .explorer__eyebrow {
@@ -825,6 +885,40 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--color-text-muted);
+  }
+
+  .explorer__resize-handle {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    bottom: 0;
+    z-index: 4;
+    width: 7px;
+    cursor: col-resize;
+  }
+
+  .explorer__resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 48px;
+    right: 3px;
+    bottom: 8px;
+    width: 1px;
+    border-radius: 999px;
+    background: transparent;
+    transition: background-color var(--transition-base);
+  }
+
+  .explorer__resize-handle:hover::after {
+    background: color-mix(in srgb, var(--color-accent) 44%, transparent);
+  }
+
+  .explorer__resize-handle:focus-visible {
+    outline: none;
+  }
+
+  .explorer__resize-handle:focus-visible::after {
+    background: color-mix(in srgb, var(--color-accent) 58%, transparent);
   }
 
   .explorer__scroll {
