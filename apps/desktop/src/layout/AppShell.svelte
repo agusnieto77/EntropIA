@@ -108,56 +108,48 @@
   <TopBar />
 
   <div class="workspace">
-    <!-- Sidebar: Zotero-style unified panel -->
-    {#if sidebarOpen}
-      <aside class="sidebar" aria-label="Panel lateral">
-        <!-- Sidebar toolbar (Zotero-style icon actions) -->
-        <div class="sidebar__toolbar">
-          <button
-            class="sidebar__tool"
-            class:sidebar__tool--active={showExplorer && activeRibbonTab === 'explorer'}
-            onclick={() => toggleSidebar('explorer')}
-            title="Explorador (Ctrl+B)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-          </button>
-          <button
-            class="sidebar__tool"
-            class:sidebar__tool--active={activeRibbonTab === 'search'}
-            onclick={() => toggleSidebar('search')}
-            title="Buscar en colecciones"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-            </svg>
-          </button>
+    <!-- Sidebar: always visible, collapses to icon strip -->
+    <aside class="sidebar" class:sidebar--collapsed={!sidebarOpen} aria-label="Panel lateral">
+      <!-- Sidebar toolbar -->
+      <div class="sidebar__toolbar">
+        <button
+          class="sidebar__tool"
+          class:sidebar__tool--active={activeRibbonTab === 'explorer' && sidebarOpen}
+          onclick={() => toggleSidebar('explorer')}
+          title="Explorador (Ctrl+B)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+        <button
+          class="sidebar__tool"
+          class:sidebar__tool--active={activeRibbonTab === 'search' && sidebarOpen}
+          onclick={() => toggleSidebar('search')}
+          title="Buscar en colecciones"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
 
+        {#if sidebarOpen}
           <div class="sidebar__toolbar-spacer"></div>
-
           <button
             class="sidebar__tool"
             onclick={() => navigation.openRootSection({ name: 'settings' })}
             title="Configuración"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
-          <button
-            class="sidebar__tool"
-            onclick={() => { sidebarOpen = false }}
-            title="Cerrar panel (Ctrl+B)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/>
-            </svg>
-          </button>
-        </div>
+        {/if}
+      </div>
 
-        <!-- Sidebar content -->
+      <!-- Sidebar body (hidden when collapsed) -->
+      {#if sidebarOpen}
         <div class="sidebar__body">
           {#if showExplorer && activeRibbonTab === 'explorer'}
             <DocumentExplorer />
@@ -171,8 +163,8 @@
             </div>
           {/if}
         </div>
-      </aside>
-    {/if}
+      {/if}
+    </aside>
 
     <main class="content">
       {#if hasCriticalMissing}
@@ -236,7 +228,7 @@
     background: var(--color-bg);
   }
 
-  /* ── Sidebar (Zotero-style unified panel) ── */
+  /* ── Sidebar (Zotero-style, always visible) ── */
   .sidebar {
     display: flex;
     flex-direction: column;
@@ -245,6 +237,11 @@
     border-right: 1px solid var(--color-border-subtle);
     background: var(--color-surface);
     overflow: hidden;
+    transition: width var(--transition-base);
+  }
+
+  .sidebar--collapsed {
+    width: 36px;
   }
 
   .sidebar__toolbar {
@@ -254,6 +251,12 @@
     padding: 3px 4px;
     border-bottom: 1px solid var(--color-border-subtle);
     background: var(--color-surface-sunken);
+    flex-shrink: 0;
+  }
+
+  .sidebar--collapsed .sidebar__toolbar {
+    flex-direction: column;
+    padding: 4px 3px;
   }
 
   .sidebar__toolbar-spacer {
@@ -271,6 +274,7 @@
     background: transparent;
     color: var(--color-text-muted);
     cursor: pointer;
+    flex-shrink: 0;
     transition: color var(--transition-base), background-color var(--transition-base);
   }
 
