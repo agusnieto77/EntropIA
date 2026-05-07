@@ -1,0 +1,94 @@
+name: Runtime Payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Runtime payload platform to prepare'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows-x86_64
+          - linux-x86_64
+      payload_source_artifact:
+        description: 'Optional artifact name containing source payload files laid out as <platform>/...'
+        required: false
+        type: string
+      pack_version:
+        description: 'Runtime pack version to stamp into manifest overrides'
+        required: true
+        type: string
+      app_version:
+        description: 'App version to stamp into manifest overrides'
+        required: true
+        type: string
+      fixture:
+        description: 'Generate CI-only fixture payloads; never use for releasable installers'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  prepare:
+    name: Prepare runtime payloads
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download payload source artifact
+        if: inputs.payload_source_artifact != ''
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ inputs.payload_source_artifact }}
+          path: ${{ runner.temp }}/runtime-payload-source
+
+      - name: Prepare runtime payload directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_DIR="${RUNNER_TEMP}/runtime-payloads"
+          SOURCE_DIR="${RUNNER_TEMP}/runtime-payload-source"
+          mkdir -p "$OUTPUT_DIR"
+
+          if [ "${{ inputs.platform }}" = "all" ]; then
+            PLATFORMS="windows-x86_64 linux-x86_64"
+          else
+            PLATFORMS="${{ inputs.platform }}"
+          fi
+
+          for PLATFORM in $PLATFORMS; do
+            ARGS=(
+              --platform "$PLATFORM"
+              --output-dir "$OUTPUT_DIR"
+              --pack-version "${{ inputs.pack_version }}"
+              --app-version "${{ inputs.app_version }}"
+            )
+            if [ "${{ inputs.fixture }}" = "true" ]; then
+              ARGS+=(--fixture)
+            else
+              ARGS+=(--payload-source-dir "$SOURCE_DIR")
+            fi
+            python3 apps/desktop/src-tauri/scripts/prepare_runtime_payload.py "${ARGS[@]}"
+          done
+
+      - name: Upload runtime payload artifact
+        if: ${{ !inputs.fixture }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-payloads
+          path: ${{ runner.temp }}/runtime-payloads
+          if-no-files-found: error
+
+      - name: Upload fixture runtime payload artifact
+        if: ${{ inputs.fixture }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-payloads-fixture
+          path: ${{ runner.temp }}/runtime-payloads
+          if-no-files-found: error
