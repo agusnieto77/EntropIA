@@ -3,6 +3,7 @@
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
+  import { isCriticalMissing } from '$lib/deps'
   import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
 
@@ -360,7 +361,7 @@
     </button>
 
     <button
-      class="topbar__icon-btn"
+      class="topbar__icon-btn topbar__icon-btn--settings"
       type="button"
       onclick={() => navigation.openRootSection({ name: 'settings' })}
       title={$currentLocale && t('topbar.settingsTitle')}
@@ -373,6 +374,9 @@
           clip-rule="evenodd"
         />
       </svg>
+      {#if isCriticalMissing()}
+        <span class="topbar__badge" aria-label="Dependencias pendientes"></span>
+      {/if}
     </button>
   </div>
 </header>
@@ -536,6 +540,22 @@
   .topbar__icon-btn:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
+  }
+
+  .topbar__icon-btn--settings {
+    position: relative;
+  }
+
+  .topbar__badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-warning);
+    border: 1.5px solid var(--color-surface);
+    pointer-events: none;
   }
 
   .global-search {

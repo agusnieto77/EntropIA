@@ -7,6 +7,7 @@
     getCachedDepsStatuses,
     onDepsComplete,
     CRITICAL_DEPS,
+    setCriticalMissing,
     type DepCheckResult,
   } from '$lib/deps'
   import DocumentExplorer from './DocumentExplorer.svelte'
@@ -55,6 +56,9 @@
 
   // ── Deps banner ──
   let depsResults = $state<DepCheckResult[]>([])
+  let showToast = $state(false)
+  let toastDismissed = $state(false)
+
   const hasCriticalMissing = $derived(
     depsResults.some(
       (d) =>
@@ -62,6 +66,25 @@
         (d.status.type === 'missing' || d.status.type === 'failed'),
     ),
   )
+
+  // Sync shared state so TopBar can show the dot
+  $effect(() => {
+    setCriticalMissing(hasCriticalMissing)
+  })
+
+  // Show toast once when critical deps are missing
+  $effect(() => {
+    if (hasCriticalMissing && !toastDismissed) {
+      showToast = true
+      const timer = setTimeout(() => { showToast = false }, 8000)
+      return () => clearTimeout(timer)
+    }
+  })
+
+  function dismissToast() {
+    showToast = false
+    toastDismissed = true
+  }
 
   let unlistenDepsComplete: (() => void) | undefined
 
@@ -171,16 +194,18 @@
     </aside>
 
     <main class="content">
-      {#if hasCriticalMissing}
-        <div class="deps-banner" role="alert">
-          <span>⚠ Algunas funciones de IA no están disponibles.</span>
-          <button class="deps-banner__btn" onclick={goToDepSettings}
-            >Configurar dependencias →</button
-          >
-        </div>
-      {/if}
       {@render children()}
     </main>
+
+    <!-- Toast notification (appears once, auto-dismisses) -->
+    {#if showToast}
+      <div class="toast" role="alert">
+        <span class="toast__icon">⚠</span>
+        <span class="toast__text">Algunas funciones de IA requieren dependencias.</span>
+        <button class="toast__action" onclick={goToDepSettings}>Configurar</button>
+        <button class="toast__close" onclick={dismissToast} aria-label="Cerrar">×</button>
+      </div>
+    {/if}
   </div>
 
   <!-- Status bar -->
@@ -338,35 +363,70 @@
     background: var(--color-bg);
   }
 
-  /* ── Deps banner ── */
-  .deps-banner {
+  /* ── Toast notification ── */
+  .toast {
+    position: fixed;
+    bottom: 36px;
+    right: var(--space-4);
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
-    margin-bottom: var(--space-4);
-    padding: var(--space-2) var(--space-4);
-    background: var(--color-warning-soft);
-    border: 1px solid color-mix(in srgb, var(--color-warning) 36%, transparent);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
     border-radius: 4px;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    z-index: 1000;
+    animation: toast-in 0.3s ease;
+  }
+
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .toast__icon {
     font-size: var(--font-size-sm);
     color: var(--color-warning);
   }
 
-  .deps-banner__btn {
-    flex-shrink: 0;
-    padding: 2px var(--space-3);
-    border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
+  .toast__text {
+    flex: 1;
+  }
+
+  .toast__action {
+    padding: 2px var(--space-2);
+    border: 1px solid var(--color-accent);
     border-radius: 2px;
     background: transparent;
-    color: var(--color-warning);
-    font-size: var(--font-size-sm);
+    color: var(--color-accent);
+    font-size: var(--font-size-xs);
     cursor: pointer;
     transition: background-color var(--transition-base);
   }
 
-  .deps-banner__btn:hover {
-    background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  .toast__action:hover {
+    background: var(--color-accent-soft);
+  }
+
+  .toast__close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    transition: color var(--transition-base);
+  }
+
+  .toast__close:hover {
+    color: var(--color-text-primary);
   }
 
   /* ── Status bar (compact, replaces footer) ── */

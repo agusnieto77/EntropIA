@@ -128,3 +128,17 @@ export function onDepsComplete(callback: (event: DepsCompleteEvent) => void): Pr
 export function onDepsError(callback: (event: DepsErrorEvent) => void): Promise<UnlistenFn> {
   return listen<DepsErrorEvent>('deps://error', (e) => callback(e.payload))
 }
+
+// ---------------------------------------------------------------------------
+// Shared reactive state for critical deps status
+// ---------------------------------------------------------------------------
+
+let _criticalMissing = $state(false)
+
+export function setCriticalMissing(value: boolean) {
+  _criticalMissing = value
+}
+
+export function isCriticalMissing(): boolean {
+  return _criticalMissing
+}
