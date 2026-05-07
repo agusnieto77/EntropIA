@@ -66,6 +66,9 @@ export const SETTINGS_KEYS = {
   OCRH_MODE: 'ocrh_mode',
   LANGUAGE: 'language',
   DEPS_VENV_PYTHON_PATH: 'deps_venv_python_path',
+  PYTHON_RUNTIME_SELECTION: 'python.runtime_selection',
+  LOCAL_MODEL_FILENAME: 'local_model_filename',
+  LOCAL_MODEL_SOURCE_URL: 'local_model_source_url',
 } as const
 
 export type LlmMode = 'local' | 'openrouter' | 'auto'

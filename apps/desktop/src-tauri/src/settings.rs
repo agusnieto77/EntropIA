@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::state::AppDbState;
+use crate::runtime::bootstrap::BootstrapRemoteSource;
+
+pub const RUNTIME_BOOTSTRAP_MANIFEST_URL_KEY: &str = "runtime_bootstrap_manifest_url";
+pub const RUNTIME_BOOTSTRAP_PUBLIC_KEY_ID_KEY: &str = "runtime_bootstrap_public_key_id";
+pub const RUNTIME_BOOTSTRAP_PUBLIC_KEY_KEY_PREFIX: &str = "runtime_bootstrap_public_key.";
 
 async fn invalidate_dependency_probe_cache_if_needed(
     key: &str,
@@ -156,4 +161,156 @@ pub fn set_setting(
 pub fn delete_setting(conn: &rusqlite::Connection, key: &str) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
     Ok(())
+}
+
+pub fn get_runtime_bootstrap_remote_source(
+    conn: &rusqlite::Connection,
+) -> Result<Option<BootstrapRemoteSource>, String> {
+    let manifest_url = get_setting(conn, RUNTIME_BOOTSTRAP_MANIFEST_URL_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let public_key_id = get_setting(conn, RUNTIME_BOOTSTRAP_PUBLIC_KEY_ID_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match (manifest_url, public_key_id) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(
+            "Remote bootstrap source is partially configured: missing public key id".to_string(),
+        ),
+        (None, Some(_)) => {
+            Err("Remote bootstrap source is partially configured: missing manifest URL".to_string())
+        }
+        (Some(manifest_url), Some(public_key_id)) => {
+            if !manifest_url.starts_with("https://") {
+                return Err(
+                    "Remote bootstrap manifest URL must use HTTPS to be considered trusted"
+                        .to_string(),
+                );
+            }
+
+            Ok(Some(BootstrapRemoteSource {
+                manifest_url,
+                public_key_id,
+            }))
+        }
+    }
+}
+
+pub fn get_runtime_bootstrap_public_key(
+    conn: &rusqlite::Connection,
+    public_key_id: &str,
+) -> Result<String, String> {
+    let key = format!("{RUNTIME_BOOTSTRAP_PUBLIC_KEY_KEY_PREFIX}{public_key_id}");
+    get_setting(conn, &key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Bootstrap public key '{public_key_id}' is not configured"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn in_memory_settings_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .expect("create app_settings");
+        conn
+    }
+
+    #[test]
+    fn returns_none_when_runtime_bootstrap_source_is_not_configured() {
+        let conn = in_memory_settings_db();
+
+        let source = get_runtime_bootstrap_remote_source(&conn).expect("lookup should succeed");
+
+        assert_eq!(source, None);
+    }
+
+    #[test]
+    fn loads_runtime_bootstrap_source_from_settings_when_complete_and_https() {
+        let conn = in_memory_settings_db();
+        set_setting(
+            &conn,
+            RUNTIME_BOOTSTRAP_MANIFEST_URL_KEY,
+            "https://example.com/runtime/bootstrap.json",
+        )
+        .expect("save manifest url");
+        set_setting(&conn, RUNTIME_BOOTSTRAP_PUBLIC_KEY_ID_KEY, "entropia-root")
+            .expect("save public key id");
+
+        let source = get_runtime_bootstrap_remote_source(&conn).expect("lookup should succeed");
+
+        assert_eq!(
+            source,
+            Some(BootstrapRemoteSource {
+                manifest_url: "https://example.com/runtime/bootstrap.json".to_string(),
+                public_key_id: "entropia-root".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_partially_configured_runtime_bootstrap_source() {
+        let conn = in_memory_settings_db();
+        set_setting(
+            &conn,
+            RUNTIME_BOOTSTRAP_MANIFEST_URL_KEY,
+            "https://example.com/runtime/bootstrap.json",
+        )
+        .expect("save manifest url");
+
+        let error =
+            get_runtime_bootstrap_remote_source(&conn).expect_err("partial config must fail");
+
+        assert!(error.contains("missing public key id"));
+    }
+
+    #[test]
+    fn rejects_non_https_runtime_bootstrap_source() {
+        let conn = in_memory_settings_db();
+        set_setting(
+            &conn,
+            RUNTIME_BOOTSTRAP_MANIFEST_URL_KEY,
+            "http://example.com/runtime/bootstrap.json",
+        )
+        .expect("save manifest url");
+        set_setting(&conn, RUNTIME_BOOTSTRAP_PUBLIC_KEY_ID_KEY, "entropia-root")
+            .expect("save public key id");
+
+        let error =
+            get_runtime_bootstrap_remote_source(&conn).expect_err("non-https config must fail");
+
+        assert!(error.contains("HTTPS"));
+    }
+
+    #[test]
+    fn loads_runtime_bootstrap_public_key_by_key_id() {
+        let conn = in_memory_settings_db();
+        set_setting(
+            &conn,
+            "runtime_bootstrap_public_key.entropia-root",
+            "base64-public-key",
+        )
+        .expect("save key");
+
+        let public_key = get_runtime_bootstrap_public_key(&conn, "entropia-root")
+            .expect("public key should load");
+
+        assert_eq!(public_key, "base64-public-key");
+    }
+
+    #[test]
+    fn rejects_missing_runtime_bootstrap_public_key() {
+        let conn = in_memory_settings_db();
+
+        let error = get_runtime_bootstrap_public_key(&conn, "entropia-root")
+            .expect_err("missing public key should fail");
+
+        assert!(error.contains("entropia-root"));
+    }
 }

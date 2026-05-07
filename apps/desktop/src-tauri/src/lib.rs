@@ -7,6 +7,7 @@ mod nlp;
 mod ocr;
 mod path_utils;
 mod python_discovery;
+mod runtime;
 mod settings;
 mod transcription;
 
@@ -351,6 +352,9 @@ llm::commands::llm_get_results,
             deps::deps_install_one,
             deps::deps_get_uv_status,
             deps::deps_reset,
+            runtime::runtime_get_status,
+            runtime::runtime_get_bootstrap_plan,
+            runtime::runtime_repair,
             open_external_url,
         ])
         .run(tauri::generate_context!())

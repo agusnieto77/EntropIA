@@ -18,10 +18,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 use super::{DependencyId, DependencyStatus};
 use crate::deps::registry::all_deps;
+use crate::runtime::status::{RuntimeState, RuntimeStatus};
 
 const PROBE_TIMEOUT_SECS: u64 = 45;
 const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
 
+const PROBE_PADDLEPADDLE_CUDA: &str = "import paddle; assert paddle.device.is_compiled_with_cuda(), 'PaddlePaddle CPU wheel installed on NVIDIA hardware'; print('ok')";
 const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
 const PROBE_PADDLE_VL: &str = "from paddleocr import PaddleOCRVL; print('ok')";
 const PROBE_FASTER_WHISPER: &str = "import faster_whisper; print('ok')";
@@ -75,7 +77,7 @@ pub async fn probe_one(
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.args(["-c", dep.probe_code])
+    cmd.args(["-c", probe_code_for(dep)])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -125,7 +127,7 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
     for dep in deps {
         // SAFETY: DependencySpec is &'static so borrowing id/probe_code is fine.
         let id = dep.id.clone();
-        let probe_code = dep.probe_code;
+        let probe_code = probe_code_for(dep);
         let display_name = dep.display_name;
         let python = python_path.clone();
 
@@ -199,6 +201,88 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
     results
 }
 
+fn probe_code_for(dep: &crate::deps::registry::DependencySpec) -> &'static str {
+    if dep.id == DependencyId::PaddlePaddle && detect_nvidia_gpu_hardware() {
+        return PROBE_PADDLEPADDLE_CUDA;
+    }
+
+    dep.probe_code
+}
+
+fn detect_nvidia_gpu_hardware() -> bool {
+    match std::process::Command::new("nvidia-smi").arg("-L").output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() && stdout.contains("GPU") {
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    detect_nvidia_gpu_from_system_inventory()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    if std::fs::read_dir("/proc/driver/nvidia/gpus")
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let vendor = std::fs::read_to_string(path.join("vendor")).unwrap_or_default();
+        if vendor.trim() != "0x10de" {
+            continue;
+        }
+
+        let class = std::fs::read_to_string(path.join("class")).unwrap_or_default();
+        if class.trim().starts_with("0x03") {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    let candidates = [
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramW6432").map(PathBuf::from),
+    ];
+
+    for base in candidates.into_iter().flatten() {
+        let smi = base
+            .join("NVIDIA Corporation")
+            .join("NVSMI")
+            .join("nvidia-smi.exe");
+        if !smi.exists() {
+            continue;
+        }
+        if let Ok(output) = std::process::Command::new(&smi).arg("-L").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if output.status.success() && stdout.contains("GPU") {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Python path resolution
 // ---------------------------------------------------------------------------
@@ -240,7 +324,64 @@ pub fn resolve_probe_python_from_settings(
     settings: ProbePythonSettings,
     mode: ProbePythonMode,
 ) -> Option<PathBuf> {
-    if let Some(path) = settings.managed_path {
+    if let Some(path) = settings.managed_path.filter(|path| path.is_file()) {
+        return Some(path);
+    }
+
+    match mode {
+        ProbePythonMode::DependencyManager => None,
+        ProbePythonMode::RuntimeFallback => {
+            resolve_runtime_python_candidates(settings.runtime_candidates)
+        }
+    }
+}
+
+fn resolve_runtime_python_choice(
+    managed_path: Option<&Path>,
+    runtime_candidates: Vec<PathBuf>,
+    managed_runtime_python: Option<&Path>,
+    managed_runtime_status: Option<&RuntimeStatus>,
+) -> Option<PathBuf> {
+    if runtime_status_is_healthy(managed_runtime_status) {
+        if let Some(path) = managed_runtime_python.filter(|path| path.is_file()) {
+            return Some(path.to_path_buf());
+        }
+    }
+
+    managed_path
+        .filter(|path| path.is_file())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            if runtime_status_is_healthy(managed_runtime_status) {
+                managed_runtime_python
+                    .filter(|path| path.is_file())
+                    .map(Path::to_path_buf)
+            } else {
+                None
+            }
+        })
+        .or_else(|| resolve_runtime_python_candidates(runtime_candidates))
+}
+
+fn runtime_status_is_healthy(status: Option<&RuntimeStatus>) -> bool {
+    matches!(
+        status.map(|status| &status.state),
+        Some(RuntimeState::Healthy)
+    )
+}
+
+pub fn resolve_probe_python_with_runtime(
+    settings: ProbePythonSettings,
+    mode: ProbePythonMode,
+    managed_runtime_python: Option<&Path>,
+    managed_runtime_status: Option<&RuntimeStatus>,
+) -> Option<PathBuf> {
+    if let Some(path) = resolve_runtime_python_choice(
+        settings.managed_path.as_deref(),
+        settings.runtime_candidates.clone(),
+        managed_runtime_python,
+        managed_runtime_status,
+    ) {
         return Some(path);
     }
 
@@ -347,6 +488,7 @@ fn probe_runtime_capabilities(path: &Path) -> RuntimeCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     fn in_memory_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory SQLite");
@@ -484,5 +626,63 @@ mod tests {
             result.as_ref().map(|path| path.is_file()).unwrap_or(true),
             "runtime fallback mode may use runtime candidates when no managed venv exists"
         );
+    }
+
+    #[test]
+    fn test_runtime_python_choice_prefers_healthy_managed_runtime_python() {
+        let dir = tempdir().expect("temp dir");
+        let runtime_python = dir.path().join("python");
+        std::fs::write(&runtime_python, b"python").expect("write runtime python");
+
+        let resolution = resolve_runtime_python_choice(
+            None,
+            vec![],
+            Some(&runtime_python),
+            Some(&crate::runtime::status::RuntimeStatus {
+                state: crate::runtime::status::RuntimeState::Healthy,
+                pack_version: Some("2026.05.0".to_string()),
+                repair_needed: false,
+                repair_available: true,
+                summary: "Runtime listo".to_string(),
+                blocked_capabilities: vec![],
+                details: vec![],
+                guidance: vec![],
+                bootstrap_eligible: false,
+                bootstrap_required: false,
+                active_operation: None,
+            }),
+        );
+
+        assert_eq!(resolution, Some(runtime_python));
+    }
+
+    #[test]
+    fn test_runtime_python_choice_keeps_persisted_managed_path_when_runtime_unhealthy() {
+        let dir = tempdir().expect("temp dir");
+        let managed_python = dir.path().join("managed-python");
+        let runtime_python = dir.path().join("runtime-python");
+        std::fs::write(&managed_python, b"managed").expect("write managed python");
+        std::fs::write(&runtime_python, b"runtime").expect("write runtime python");
+
+        let resolution = resolve_runtime_python_choice(
+            Some(managed_python.as_path()),
+            vec![],
+            Some(&runtime_python),
+            Some(&crate::runtime::status::RuntimeStatus {
+                state: crate::runtime::status::RuntimeState::Damaged,
+                pack_version: Some("2026.05.0".to_string()),
+                repair_needed: true,
+                repair_available: true,
+                summary: "Runtime dañado".to_string(),
+                blocked_capabilities: vec![],
+                details: vec!["checksum".to_string()],
+                guidance: vec!["reparar".to_string()],
+                bootstrap_eligible: false,
+                bootstrap_required: false,
+                active_operation: None,
+            }),
+        );
+
+        assert_eq!(resolution, Some(managed_python));
     }
 }
