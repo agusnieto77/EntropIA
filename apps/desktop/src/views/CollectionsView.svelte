@@ -145,13 +145,20 @@
     }, 100)
   }
 
+  function handleExternalFilter(e: Event) {
+    const detail = (e as CustomEvent<string>).detail
+    searchQuery = detail || ''
+  }
+
   onMount(() => {
     loadCollections()
     window.addEventListener('entropia:create-collection', handleExternalCreate)
+    window.addEventListener('entropia:filter-collections', handleExternalFilter)
   })
 
   onDestroy(() => {
     window.removeEventListener('entropia:create-collection', handleExternalCreate)
+    window.removeEventListener('entropia:filter-collections', handleExternalFilter)
   })
 </script>
 

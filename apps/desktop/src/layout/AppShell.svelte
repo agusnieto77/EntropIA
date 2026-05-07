@@ -47,11 +47,22 @@
     }
   }
 
+  // Sync sidebar filter to CollectionsView via custom event
+  $effect(() => {
+    window.dispatchEvent(new CustomEvent('entropia:filter-collections', { detail: searchFilter }))
+  })
+
   function handleCreateCollection() {
-    // Navigate to collections view and signal to open the create form
-    navigation.navigateTo({ name: 'collections' })
-    // Dispatch custom event that CollectionsView can listen to
-    window.dispatchEvent(new CustomEvent('entropia:create-collection'))
+    // If already on collections, just open the form
+    if ($navigation.current.name === 'collections') {
+      window.dispatchEvent(new CustomEvent('entropia:create-collection'))
+    } else {
+      // Navigate to collections, then signal create form after a tick
+      navigation.navigate({ name: 'collections' })
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('entropia:create-collection'))
+      }, 200)
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
