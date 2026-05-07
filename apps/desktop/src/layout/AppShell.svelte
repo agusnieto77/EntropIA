@@ -147,7 +147,7 @@
     overflow: hidden;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.01), transparent 30%),
-      var(--color-bg);
+      color-mix(in srgb, var(--color-bg) 34%, transparent);
   }
 
   .content {
@@ -157,7 +157,7 @@
     padding: var(--space-5);
     background:
       linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 18%),
-      var(--color-bg);
+      color-mix(in srgb, var(--color-bg) 24%, transparent);
   }
 
   .deps-banner {

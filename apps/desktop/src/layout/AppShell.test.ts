@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShellHost from './__fixtures__/AppShellHost.svelte'
@@ -84,6 +86,14 @@ describe('AppShell', () => {
     expect(screen.getByText('EntropIA β')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'GitHub' })).toBeInTheDocument()
     expect(screen.getByText('Desarrollado por')).toBeInTheDocument()
+  })
+
+  it('keeps the entropic constellation visible behind workspace surfaces', () => {
+    const source = readFileSync(resolve(import.meta.dirname, 'AppShell.svelte'), 'utf-8')
+
+    expect(source).toContain('<EntropicConstellation />')
+    expect(source).toContain('color-mix(in srgb, var(--color-bg) 34%, transparent)')
+    expect(source).toContain('color-mix(in srgb, var(--color-bg) 24%, transparent)')
   })
 
   it('opens external links through the desktop bridge', async () => {
