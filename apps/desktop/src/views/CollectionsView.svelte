@@ -354,8 +354,8 @@
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-3);
   }
 
   .empty {
@@ -384,7 +384,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: rgba(0, 0, 0, 0.5);
+    background-color: var(--color-overlay);
     z-index: 100;
   }
   .confirm-dialog {
@@ -422,14 +422,14 @@
     border: 1px solid var(--color-danger);
     border-radius: var(--radius-md);
     background-color: var(--color-danger);
-    color: #ffffff;
+    color: var(--color-bg);
     cursor: pointer;
     transition:
-      background-color var(--transition-base),
-      border-color var(--transition-base),
-      box-shadow var(--transition-base),
-      transform var(--transition-base);
-    box-shadow: 0 8px 18px rgba(225, 109, 123, 0.18);
+      background-color var(--transition-smooth),
+      border-color var(--transition-smooth),
+      box-shadow var(--transition-smooth),
+      transform var(--transition-smooth);
+    box-shadow: 0 8px 18px color-mix(in srgb, var(--color-danger) 18%, transparent);
   }
 
   .confirm-dialog__delete-button:hover:not(:disabled) {

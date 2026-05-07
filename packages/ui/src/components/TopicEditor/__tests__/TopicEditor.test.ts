@@ -10,7 +10,7 @@ describe('TopicEditor', () => {
       },
     })
 
-    const removeButton = screen.getByRole('button', { name: 'Remove topic ARCHIVE' })
+    const removeButton = screen.getByRole('button', { name: 'Quitar tópico ARCHIVE' })
     expect(removeButton).toBeInTheDocument()
     expect(removeButton).not.toHaveTextContent('×')
   })
@@ -24,8 +24,22 @@ describe('TopicEditor', () => {
       },
     })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Remove topic ARCHIVE' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Quitar tópico ARCHIVE' }))
 
     expect(onchange).toHaveBeenCalledWith(['LETTER'])
+  })
+
+  it('renders Spanish placeholders for empty and populated topic input', async () => {
+    const { rerender } = render(TopicEditor, {
+      props: {
+        topics: [],
+      },
+    })
+
+    expect(screen.getByPlaceholderText('Escribí un tópico...')).toBeInTheDocument()
+
+    await rerender({ topics: ['ARCHIVE'] })
+
+    expect(screen.getByPlaceholderText('Agregar más...')).toBeInTheDocument()
   })
 })

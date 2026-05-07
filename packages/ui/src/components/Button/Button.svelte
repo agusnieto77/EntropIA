@@ -50,11 +50,11 @@
     line-height: var(--line-height-tight);
     cursor: pointer;
     transition:
-      background-color var(--transition-base),
-      border-color var(--transition-base),
-      color var(--transition-base),
-      box-shadow var(--transition-base),
-      transform var(--transition-base);
+      background-color var(--transition-smooth),
+      border-color var(--transition-smooth),
+      color var(--transition-smooth),
+      box-shadow var(--transition-smooth),
+      transform var(--transition-smooth);
     position: relative;
     white-space: nowrap;
     user-select: none;
@@ -78,10 +78,14 @@
 
   /* ─── Variants ─── */
   .btn--primary {
-    background-color: var(--color-accent);
-    color: #ffffff;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 44%),
+      var(--color-accent);
+    color: var(--color-bg);
     border-color: var(--color-accent);
-    box-shadow: 0 8px 18px rgba(124, 149, 255, 0.2);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 10px 24px color-mix(in srgb, var(--color-accent) 24%, transparent);
   }
   .btn--primary:hover:not(:disabled) {
     background-color: var(--color-accent-hover);
@@ -89,9 +93,11 @@
   }
 
   .btn--secondary {
-    background-color: var(--color-surface-raised);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 55%),
+      var(--color-surface-raised);
     color: var(--color-text-primary);
-    border-color: var(--color-border-subtle);
+    border-color: var(--color-hairline);
   }
   .btn--secondary:hover:not(:disabled) {
     background-color: var(--color-surface-elevated);
@@ -104,15 +110,19 @@
     border-color: transparent;
   }
   .btn--ghost:hover:not(:disabled) {
-    background-color: var(--color-surface-raised);
+    background-color: var(--color-accent-faint);
     color: var(--color-text-primary);
   }
 
   .btn--danger {
-    background-color: var(--color-danger);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 44%),
+      var(--color-danger);
     color: #ffffff;
     border-color: var(--color-danger);
-    box-shadow: 0 8px 18px rgba(225, 109, 123, 0.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.16),
+      0 10px 24px color-mix(in srgb, var(--color-danger) 22%, transparent);
   }
   .btn--danger:hover:not(:disabled) {
     background-color: var(--color-danger-hover);

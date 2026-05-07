@@ -73,14 +73,14 @@
     font-family: var(--font-sans);
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
-    background-color: var(--color-surface-sunken);
-    border: 1px solid var(--color-border-subtle);
+    background-color: color-mix(in srgb, var(--color-surface-sunken) 88%, transparent);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     outline: none;
     transition:
-      border-color var(--transition-base),
-      box-shadow var(--transition-base),
-      background-color var(--transition-base);
+      border-color var(--transition-smooth),
+      box-shadow var(--transition-smooth),
+      background-color var(--transition-smooth);
     box-sizing: border-box;
     line-height: var(--line-height-base);
   }

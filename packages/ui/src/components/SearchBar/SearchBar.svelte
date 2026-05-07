@@ -111,13 +111,13 @@
     gap: var(--space-2);
     min-height: var(--control-height-md);
     padding: 0 var(--space-3);
-    background-color: var(--color-surface-sunken);
-    border: 1px solid var(--color-border-subtle);
+    background-color: color-mix(in srgb, var(--color-surface-sunken) 88%, transparent);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     transition:
-      border-color var(--transition-base),
-      box-shadow var(--transition-base),
-      background-color var(--transition-base);
+      border-color var(--transition-smooth),
+      box-shadow var(--transition-smooth),
+      background-color var(--transition-smooth);
   }
 
   .search-bar:focus-within {
@@ -164,7 +164,7 @@
     padding: 0;
     border: none;
     border-radius: var(--radius-full);
-    background-color: var(--color-surface-raised);
+    background-color: var(--color-accent-faint);
     color: var(--color-text-secondary);
     cursor: pointer;
     transition:
@@ -178,7 +178,7 @@
   }
 
   .search-bar__clear:hover {
-    background-color: var(--color-border-subtle);
+    background-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
     color: var(--color-text-primary);
   }
 

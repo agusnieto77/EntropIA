@@ -18,7 +18,11 @@ describe('design system visual contract', () => {
     expect(tokens).toContain('--control-height-sm: 32px;')
     expect(tokens).toContain('--control-height-md: 40px;')
     expect(tokens).toContain('--control-height-lg: 48px;')
-    expect(tokens).toContain('--focus-ring: 0 0 0 3px rgba(124, 149, 255, 0.22);')
+    expect(tokens).toContain('--color-surface-glass: #11131b;')
+    expect(tokens).toContain('--color-accent-faint: rgba(174, 182, 216, 0.055);')
+    expect(tokens).toContain(":root[data-theme='dim']")
+    expect(tokens).toContain('--color-surface-glass: #211e17;')
+    expect(tokens).toContain('--focus-ring: 0 0 0 3px rgba(154, 167, 255, 0.24);')
   })
 
   it('aligns button, input and search controls on shared tokens', () => {
@@ -39,8 +43,8 @@ describe('design system visual contract', () => {
   it('gives cards elevated sections and subtle dividers', () => {
     const card = readSource('../Card/Card.svelte')
 
-    expect(card).toContain('background-color: var(--color-surface-elevated);')
-    expect(card).toContain('border-bottom: 1px solid var(--color-border-subtle);')
-    expect(card).toContain('border-top: 1px solid var(--color-border-subtle);')
+    expect(card).toContain('var(--color-surface-elevated)')
+    expect(card).toContain('border-bottom: 1px solid var(--color-hairline);')
+    expect(card).toContain('border-top: 1px solid var(--color-hairline);')
   })
 })

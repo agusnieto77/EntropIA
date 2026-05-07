@@ -137,13 +137,19 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.01), transparent 30%),
+      var(--color-bg);
   }
 
   .content {
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-    padding: var(--space-4);
+    padding: var(--space-5);
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 18%),
+      var(--color-bg);
   }
 
   .deps-banner {
@@ -153,27 +159,27 @@
     gap: var(--space-3);
     margin-bottom: var(--space-4);
     padding: var(--space-2) var(--space-4);
-    background: #fef3c7;
-    border: 1px solid #f59e0b;
+    background: var(--color-warning-soft);
+    border: 1px solid color-mix(in srgb, var(--color-warning) 36%, transparent);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
-    color: #92400e;
+    color: var(--color-warning);
   }
 
   .deps-banner__btn {
     flex-shrink: 0;
     padding: 2px var(--space-3);
-    border: 1px solid #f59e0b;
+    border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
     border-radius: var(--radius-sm);
     background: transparent;
-    color: #92400e;
+    color: var(--color-warning);
     font-size: var(--font-size-sm);
     cursor: pointer;
     transition: background-color var(--transition-base);
   }
 
   .deps-banner__btn:hover {
-    background: #fde68a;
+    background: color-mix(in srgb, var(--color-warning) 14%, transparent);
   }
 
   .footer {
@@ -181,12 +187,12 @@
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: var(--space-3);
-    border-top: 1px solid var(--color-border-subtle);
+    border-top: 1px solid var(--color-hairline);
     padding: var(--space-3) var(--space-4);
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--color-surface);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent), var(--color-surface-glass);
   }
 
   .footer__brand {
@@ -223,9 +229,9 @@
     justify-content: center;
     width: 32px;
     height: 32px;
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
-    background: var(--color-surface-raised);
+    background: var(--color-surface-glass);
     color: var(--color-text-secondary);
     transition:
       color var(--transition-base),

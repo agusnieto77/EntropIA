@@ -96,7 +96,7 @@
         <button
           type="button"
           class="topic-editor__chip-remove"
-          aria-label={`Remove topic ${topic}`}
+          aria-label={`Quitar tópico ${topic}`}
           onclick={() => removeTopic(topic)}
         >
           <ActionIcon name="close" size={14} />
@@ -107,7 +107,7 @@
       bind:this={inputEl}
       class="topic-editor__input"
       type="text"
-      placeholder={topics.length === 0 ? 'Type a topic…' : 'Add more…'}
+      placeholder={topics.length === 0 ? 'Escribí un tópico...' : 'Agregar más...'}
       value={inputText}
       oninput={handleInput}
       onkeydown={handleKeydown}
@@ -163,7 +163,7 @@
     gap: var(--space-1);
     padding: var(--space-1) var(--space-2);
     background-color: var(--color-accent);
-    color: #ffffff;
+    color: var(--color-bg);
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-size: var(--font-size-xs);
@@ -180,7 +180,7 @@
     margin-left: 2px;
     border: none;
     background: transparent;
-    color: rgba(255, 255, 255, 0.8);
+    color: color-mix(in srgb, var(--color-bg) 76%, transparent);
     cursor: pointer;
     transition: color 0.15s ease;
   }
@@ -190,7 +190,7 @@
   }
 
   .topic-editor__chip-remove:hover {
-    color: #ffffff;
+    color: var(--color-bg);
   }
 
   .topic-editor__input {
@@ -243,6 +243,6 @@
 
   .topic-editor__suggestion:hover {
     background-color: var(--color-accent);
-    color: #ffffff;
+    color: var(--color-bg);
   }
 </style>

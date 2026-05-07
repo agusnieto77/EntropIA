@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
   import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
+
+  type AppTheme = 'dark' | 'dim'
+
+  const THEME_STORAGE_KEY = 'entropia-theme'
 
   interface SearchResult {
     item: Item
@@ -16,12 +21,50 @@
   let searching = $state(false)
   let previousItem = $state<Item | null>(null)
   let nextItem = $state<Item | null>(null)
+  let theme = $state<AppTheme>('dark')
   let siblingRequestId = 0
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let searchInputEl: HTMLInputElement | undefined = $state()
   const currentLocale = locale
   const translate = (key: string, params?: Record<string, string | number>) =>
     t(key as never, params)
+  const themeToggleLabel = $derived(
+    theme === 'dark' ? translate('topbar.themeDim') : translate('topbar.themeDark')
+  )
+
+  function readPersistedTheme(): AppTheme {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) === 'dim' ? 'dim' : 'dark'
+    } catch {
+      return 'dark'
+    }
+  }
+
+  function applyTheme(nextTheme: AppTheme) {
+    theme = nextTheme
+
+    if (typeof document !== 'undefined') {
+      if (nextTheme === 'dim') {
+        document.documentElement.dataset.theme = 'dim'
+      } else {
+        delete document.documentElement.dataset.theme
+      }
+    }
+
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
+    } catch {
+      // Ignore storage failures; the visible theme still changes for this session.
+    }
+  }
+
+  function toggleTheme() {
+    applyTheme(theme === 'dark' ? 'dim' : 'dark')
+  }
+
+  onMount(() => {
+    applyTheme(readPersistedTheme())
+  })
 
   function buildItemView(item: Item) {
     const currentView = $navigation.current
@@ -295,6 +338,25 @@
     <button
       class="topbar__icon-btn"
       type="button"
+      onclick={toggleTheme}
+      title={$currentLocale && themeToggleLabel}
+      aria-label={$currentLocale && themeToggleLabel}
+      aria-pressed={theme === 'dim'}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <circle cx="12" cy="12" r="8" stroke-width="1.7" />
+        <path
+          d="M12 4a8 8 0 0 1 0 16c2.2-1.7 3.2-4.2 3.2-8S14.2 5.7 12 4z"
+          fill="currentColor"
+          opacity="0.42"
+          stroke="none"
+        />
+      </svg>
+    </button>
+
+    <button
+      class="topbar__icon-btn"
+      type="button"
       onclick={() => navigation.openRootSection({ name: 'settings' })}
       title={$currentLocale && t('topbar.settingsTitle')}
       aria-label={$currentLocale && t('topbar.settingsAria')}
@@ -312,17 +374,31 @@
 
 <style>
   .topbar {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(220px, 320px) auto;
     grid-template-areas: 'leading center search actions';
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--color-border-subtle);
+    border-bottom: 1px solid var(--color-hairline);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--color-surface);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 62%),
+      var(--color-surface-glass);
     box-shadow: var(--shadow-sm);
     min-width: 0;
+  }
+
+  .topbar::after {
+    content: '';
+    position: absolute;
+    left: var(--space-4);
+    right: var(--space-4);
+    bottom: -1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+    opacity: 0.18;
+    pointer-events: none;
   }
 
   .topbar__leading {
@@ -447,7 +523,7 @@
     width: var(--control-height-sm);
     height: var(--control-height-sm);
     padding: 0;
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     background: var(--color-surface-raised);
     color: var(--color-text-secondary);
@@ -461,6 +537,11 @@
   .topbar__icon-btn:hover {
     color: var(--color-text-primary);
     background: var(--color-surface-elevated);
+    border-color: var(--color-border-strong);
+  }
+  .topbar__icon-btn[aria-pressed='true'] {
+    color: var(--color-accent-hover);
+    background: var(--color-accent-faint);
     border-color: var(--color-border-strong);
   }
   .topbar__icon-btn:focus-visible {
@@ -484,7 +565,7 @@
     width: 100%;
     min-height: var(--control-height-md);
     padding: 0 calc(var(--space-4) + 18px) 0 var(--space-3);
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     background: var(--color-surface-sunken);
     color: var(--color-text-primary);
@@ -537,8 +618,10 @@
     left: 0;
     right: 0;
     margin-top: var(--space-1);
-    background-color: var(--color-surface-elevated);
-    border: 1px solid var(--color-border-subtle);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+      var(--color-surface-elevated);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.15));
     max-height: 320px;

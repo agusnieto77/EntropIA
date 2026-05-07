@@ -82,6 +82,29 @@ describe('NoteEditor', () => {
     expect(screen.getByRole('button', { name: 'Remove link' })).toBeInTheDocument()
   })
 
+  it('uses localized compact labels for visible toolbar text', () => {
+    render(NoteEditor, {
+      props: {
+        labels: {
+          bulletList: 'Lista con viñetas',
+          bulletListShort: 'Lista',
+          orderedList: 'Lista ordenada',
+          orderedListShort: '1. Lista',
+          quote: 'Cita',
+          quoteShort: 'Cita',
+          addLink: 'Agregar link',
+          addLinkShort: 'Enlace',
+          removeLink: 'Quitar link',
+          removeLinkShort: 'Quitar',
+        },
+      },
+    })
+
+    expect(screen.getByRole('button', { name: 'Agregar link' })).toHaveTextContent('Enlace')
+    expect(screen.getByRole('button', { name: 'Quitar link' })).toHaveTextContent('Quitar')
+    expect(screen.getByRole('button', { name: 'Lista con viñetas' })).toHaveTextContent('Lista')
+  })
+
   it('shows concise helper text for note editing affordances', () => {
     render(NoteEditor, { props: {} })
 

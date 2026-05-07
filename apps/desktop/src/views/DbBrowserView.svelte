@@ -704,7 +704,7 @@
   .db-browser-toolbar__input {
     min-height: var(--control-height-md);
     padding: 0 var(--space-3);
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     background: var(--color-surface-sunken);
     color: var(--color-text-primary);
@@ -732,7 +732,8 @@
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-lg);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 55%), var(--color-surface);
+      linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 55%),
+      var(--color-surface-glass);
     box-shadow: var(--shadow-sm);
   }
 
@@ -767,9 +768,9 @@
 
   .db-browser-table-wrap {
     overflow: auto;
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
-    background: var(--color-surface);
+    background: var(--color-surface-sunken);
   }
 
   .db-browser-table {
@@ -781,7 +782,7 @@
   .db-browser-table th,
   .db-browser-table td {
     padding: var(--space-3);
-    border-bottom: 1px solid var(--color-border-subtle);
+    border-bottom: 1px solid var(--color-hairline);
     text-align: left;
     vertical-align: top;
     font-size: var(--font-size-sm);
@@ -791,7 +792,7 @@
     position: sticky;
     top: 0;
     z-index: 1;
-    background: var(--color-surface-raised);
+    background: var(--color-surface);
   }
 
   .db-browser-table__sort {
@@ -854,9 +855,7 @@
     padding: var(--space-1) var(--space-2);
     border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border-subtle));
     border-radius: var(--radius-sm);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 65%),
-      color-mix(in srgb, var(--color-surface-raised) 88%, black);
+    background: var(--color-surface-elevated);
     box-shadow: var(--shadow-md);
     color: var(--color-text-primary);
     font-size: 11px;
@@ -881,15 +880,15 @@
     width: 28px;
     height: 28px;
     padding: 0;
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-sm);
     background: var(--color-surface-raised);
     color: var(--color-text-secondary);
     cursor: pointer;
     transition:
-      border-color 0.16s ease,
-      color 0.16s ease,
-      background-color 0.16s ease;
+      border-color var(--transition-smooth),
+      color var(--transition-smooth),
+      background-color var(--transition-smooth);
   }
 
   .db-browser-table__cell-action svg {
@@ -929,7 +928,7 @@
     margin: 0;
     padding: var(--space-4);
     overflow: auto;
-    border: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-hairline);
     border-radius: var(--radius-md);
     background: var(--color-surface-sunken);
     color: var(--color-text-primary);
