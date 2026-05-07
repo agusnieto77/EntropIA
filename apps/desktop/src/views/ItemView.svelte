@@ -365,6 +365,7 @@
   let rightPanelTab = $state<'notes' | 'text' | 'analysis' | 'search' | 'layout' | 'metadata'>(
     'notes'
   )
+  let rightPanelOpen = $state(true)
 
   const metadataEditorLabels = {
     keyPlaceholder: 'Campo',
@@ -2387,7 +2388,7 @@
   <div
     class="item-view"
     bind:this={itemViewEl}
-    style="grid-template-columns: 1fr 6px {sidebarWidth}%"
+    style="grid-template-columns: 1fr auto {rightPanelOpen ? `6px ${sidebarWidth}%` : ''}"
   >
     <div class="left-panel">
       {#if selectedAsset}
@@ -2575,6 +2576,24 @@
       {/if}
     </div>
 
+    <!-- Right panel toggle -->
+    <button
+      class="right-panel-toggle"
+      type="button"
+      onclick={() => { rightPanelOpen = !rightPanelOpen }}
+      title={rightPanelOpen ? 'Ocultar panel' : 'Mostrar panel'}
+      aria-label={rightPanelOpen ? 'Ocultar panel derecho' : 'Mostrar panel derecho'}
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        {#if rightPanelOpen}
+          <path d="m6 3.5 4.5 4.5L6 12.5" />
+        {:else}
+          <path d="m10 3.5-4.5 4.5 4.5 4.5" />
+        {/if}
+      </svg>
+    </button>
+
+    {#if rightPanelOpen}
     <div
       class="resize-handle"
       role="separator"
@@ -3735,6 +3754,7 @@
         </div>
       </div>
     </div>
+    {/if}
   </div>
 {/if}
 
@@ -3977,6 +3997,24 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--color-accent);
+  }
+  .right-panel-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    flex-shrink: 0;
+    border: none;
+    background: var(--color-surface-sunken);
+    border-left: 1px solid var(--color-border-subtle);
+    border-right: 1px solid var(--color-border-subtle);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: color var(--transition-base), background-color var(--transition-base);
+  }
+  .right-panel-toggle:hover {
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
   }
   .resize-handle {
     width: 6px;

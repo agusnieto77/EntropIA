@@ -990,12 +990,11 @@
   .note-editor__surface {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-surface) 88%, black 12%);
+    background: var(--color-surface-raised);
     overflow: hidden;
     transition:
-      border-color 0.15s ease,
-      box-shadow 0.15s ease,
-      background-color 0.15s ease;
+      border-color var(--transition-base),
+      box-shadow var(--transition-base);
   }
 
   .note-editor__surface--focused {
