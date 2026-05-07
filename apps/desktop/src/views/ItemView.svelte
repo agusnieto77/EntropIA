@@ -3280,6 +3280,9 @@
                       </button>
                     {/if}
                   </div>
+                  {#if !llmAvailable}
+                    <p class="ocr-llm-hint">{translate('item.llmUnavailableHint')}</p>
+                  {/if}
                 </div>
 
                 {#if ocr.status === 'running'}
@@ -4876,6 +4879,12 @@
     border-color: var(--color-border);
     background: var(--color-surface);
     color: var(--color-text-muted);
+  }
+  .ocr-llm-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: var(--space-1) 0 0;
+    font-style: italic;
   }
   .ocr-progress {
     width: 100%;

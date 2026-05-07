@@ -9,6 +9,8 @@ const {
   testOpenrouterConnectionMock,
   testAssemblyaiConnectionMock,
   llmIsAvailableMock,
+  llmLocalModelInfoMock,
+  llmDownloadModelMock,
 } =
   vi.hoisted(() => ({
     settingsGetMock: vi.fn(),
@@ -16,6 +18,8 @@ const {
     testOpenrouterConnectionMock: vi.fn(),
     testAssemblyaiConnectionMock: vi.fn(),
     llmIsAvailableMock: vi.fn(),
+    llmLocalModelInfoMock: vi.fn(),
+    llmDownloadModelMock: vi.fn(),
   }))
 
 vi.mock('$lib/settings', async () => {
@@ -31,6 +35,9 @@ vi.mock('$lib/settings', async () => {
 
 vi.mock('$lib/llm', () => ({
   llmIsAvailable: llmIsAvailableMock,
+  llmLocalModelInfo: llmLocalModelInfoMock,
+  llmOpenModelsDir: vi.fn(),
+  llmDownloadModel: llmDownloadModelMock,
 }))
 
 describe('SettingsView', () => {
@@ -41,6 +48,13 @@ describe('SettingsView', () => {
     testOpenrouterConnectionMock.mockReset()
     testAssemblyaiConnectionMock.mockReset().mockResolvedValue(undefined)
     llmIsAvailableMock.mockReset().mockResolvedValue(true)
+    llmDownloadModelMock.mockReset().mockResolvedValue(undefined)
+    llmLocalModelInfoMock.mockReset().mockResolvedValue({
+      exists: true,
+      path: '/home/test/.local/share/com.entropia.desktop/models/google_gemma-3-4b-it-Q4_K_M.gguf',
+      size_bytes: 2_500_000_000,
+      filename: 'google_gemma-3-4b-it-Q4_K_M.gguf',
+    })
 
     settingsGetMock.mockImplementation(async (key: string) => {
       if (key === 'openrouter_api_key') return 'sk-or-v1-test-key'

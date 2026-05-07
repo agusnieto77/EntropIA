@@ -18,8 +18,18 @@
     type SttMode,
     type ModelInfo,
   } from '$lib/settings'
-  import { llmIsAvailable } from '$lib/llm'
+  import {
+    llmIsAvailable,
+    llmLocalModelInfo,
+    llmOpenModelsDir,
+    llmDownloadModel,
+    type LocalModelInfo,
+    type LlmDownloadProgressPayload,
+    type LlmDownloadCompletePayload,
+    type LlmDownloadErrorPayload,
+  } from '$lib/llm'
   import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { Button, Card, Input } from '@entropia/ui'
   import DependenciasTab from './DependenciasTab.svelte'
 
@@ -39,6 +49,7 @@
   let sttMode = $state<SttMode>(DEFAULT_STT_MODE)
   let ocrhMode = $state<OcrhMode>(DEFAULT_OCRH_MODE)
   let localAvailable = $state(false)
+  let localModel = $state<LocalModelInfo | null>(null)
   let selectedLocale = $state<Locale>('es')
   let languageTouched = $state(false)
   let assemblyAiApiKey = $state('')
@@ -58,6 +69,14 @@
   let availableModels = $state<ModelInfo[]>([])
 
   const LANGUAGE_KEY = 'language'
+
+  // Local model download state
+  let downloading = $state(false)
+  let downloadPct = $state(0)
+  let downloadError = $state<string | null>(null)
+  let localModelSourceUrl = $state('')
+  let localModelFilename = $state('')
+  let downloadUnlisteners: UnlistenFn[] = []
 
   // Save state
   let saving = $state(false)
@@ -97,10 +116,27 @@
 
   const activeLocale = $derived($locale)
 
-  onDestroy(() => { unsubDeps() })
+  onDestroy(() => {
+    unsubDeps()
+    downloadUnlisteners.forEach((fn) => fn())
+    downloadUnlisteners = []
+  })
 
   onMount(async () => {
-    const [storedKey, storedModel, storedMode, storedSttMode, storedOcrhMode, storedAssemblyAiKey, storedGlmOcrKey, storedLanguage, isAvail] = await Promise.all([
+    const [
+      storedKey,
+      storedModel,
+      storedMode,
+      storedSttMode,
+      storedOcrhMode,
+      storedAssemblyAiKey,
+      storedGlmOcrKey,
+      storedLanguage,
+      isAvail,
+      modelInfo,
+      storedSourceUrl,
+      storedFilename,
+    ] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
       settingsGet(SETTINGS_KEYS.LLM_MODE),
@@ -110,6 +146,9 @@
       settingsGet(SETTINGS_KEYS.GLM_OCR_API_KEY),
       settingsGet(LANGUAGE_KEY),
       llmIsAvailable(),
+      llmLocalModelInfo().catch(() => null),
+      settingsGet(SETTINGS_KEYS.LOCAL_MODEL_SOURCE_URL),
+      settingsGet(SETTINGS_KEYS.LOCAL_MODEL_FILENAME),
     ])
 
     if (storedKey) {
@@ -132,6 +171,30 @@
       selectedLocale = isLocale(storedLanguage) ? storedLanguage : get(locale)
     }
     localAvailable = isAvail
+    localModel = modelInfo
+    localModelSourceUrl = storedSourceUrl ?? ''
+    localModelFilename = storedFilename ?? ''
+
+    // Listen to model download events
+    downloadUnlisteners.push(
+      await listen<LlmDownloadProgressPayload>('llm:download_progress', (event) => {
+        downloading = true
+        downloadPct = event.payload.pct
+        downloadError = null
+      }),
+      await listen<LlmDownloadCompletePayload>('llm:download_complete', async () => {
+        downloading = false
+        downloadPct = 100
+        downloadError = null
+        localModel = await llmLocalModelInfo().catch(() => null)
+        localAvailable = await llmIsAvailable()
+      }),
+      await listen<LlmDownloadErrorPayload>('llm:download_error', (event) => {
+        downloading = false
+        downloadPct = 0
+        downloadError = event.payload.error
+      }),
+    )
   })
 
   function maskKey(key: string, prefixLength = 4): string {
@@ -226,6 +289,8 @@
         settingsSet(SETTINGS_KEYS.GLM_OCR_API_KEY, glmOcrApiKey.trim()),
         settingsSet(SETTINGS_KEYS.OCRH_MODE, ocrhMode),
         settingsSet(LANGUAGE_KEY, selectedLocale),
+        settingsSet(SETTINGS_KEYS.LOCAL_MODEL_SOURCE_URL, localModelSourceUrl.trim()),
+        settingsSet(SETTINGS_KEYS.LOCAL_MODEL_FILENAME, (localModelFilename.trim() || localModel?.filename) ?? ''),
       ])
       maskedApiKey = maskKey(apiKey)
       maskedAssemblyAiApiKey = maskKey(assemblyAiApiKey, 5)
@@ -251,11 +316,33 @@
     model = modelId
   }
 
+  function formatBytes(bytes: number | null): string {
+    if (bytes == null) return '—'
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
+  }
+
   function handleLanguageChange(event: Event) {
     const nextLocale = (event.target as HTMLSelectElement).value as Locale
     languageTouched = true
     selectedLocale = nextLocale
     locale.set(nextLocale)
+  }
+
+  async function handleDownloadModel() {
+    if (downloading) return
+    downloading = true
+    downloadPct = 0
+    downloadError = null
+    try {
+      await llmDownloadModel()
+    } catch (e) {
+      downloading = false
+      downloadError = e instanceof Error ? e.message : String(e)
+    }
   }
 </script>
 
@@ -462,6 +549,90 @@
 
         {#if ocrhMode !== 'local'}
           <p class="settings__hint settings__hint--privacy">{t('settings.ocrhPrivacyNotice')}</p>
+        {/if}
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.localModel.title')}</h2>
+          <p>{t('settings.localModel.description')}</p>
+        </div>
+
+        {#if localModel}
+          <div class="settings__local-model">
+            <div class="settings__local-model-row">
+              <span class="settings__label">{t('settings.localModel.status')}</span>
+              {#if localModel.exists}
+                <span class="settings__badge settings__badge--ok">{t('settings.localModel.found')}</span>
+                <span class="settings__local-model-size">{formatBytes(localModel.size_bytes)}</span>
+              {:else}
+                <span class="settings__badge settings__badge--warn">{t('settings.localModel.missing')}</span>
+              {/if}
+            </div>
+
+            <div class="settings__local-model-row">
+              <span class="settings__label">{t('settings.localModel.path')}</span>
+              <code class="settings__local-model-path">{localModel.path}</code>
+            </div>
+
+            {#if !localModel.exists}
+              <p class="settings__local-model-guide">
+                {t('settings.localModel.guide')}
+                <code>{localModel.filename}</code>
+              </p>
+
+              <div class="settings__field settings__field--stacked">
+                <label class="settings__label" for="local-model-filename">{t('settings.localModel.filename')}</label>
+                <input
+                  id="local-model-filename"
+                  type="text"
+                  class="settings__input"
+                  bind:value={localModelFilename}
+                  placeholder={localModel?.filename ?? ''}
+                />
+              </div>
+
+              <div class="settings__field settings__field--stacked">
+                <label class="settings__label" for="local-model-source">{t('settings.localModel.sourceUrl')}</label>
+                <input
+                  id="local-model-source"
+                  type="text"
+                  class="settings__input"
+                  bind:value={localModelSourceUrl}
+                  placeholder="https://…"
+                />
+              </div>
+
+              {#if downloading}
+                <div class="settings__download-progress">
+                  <span class="settings__download-progress-bar" style="width: {downloadPct}%"></span>
+                  <span class="settings__download-progress-text">{downloadPct}% — {t('settings.localModel.downloading')}</span>
+                </div>
+              {:else}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onclick={handleDownloadModel}
+                  disabled={!localModelSourceUrl.trim()}
+                >
+                  {t('settings.localModel.download')}
+                </Button>
+              {/if}
+
+              {#if downloadError}
+                <p class="surface-message surface-message--error">{downloadError}</p>
+              {/if}
+            {/if}
+
+            <Button variant="secondary" size="sm" onclick={() => llmOpenModelsDir()}>
+              {t('settings.localModel.openFolder')}
+            </Button>
+          </div>
+        {:else}
+          <p class="settings__hint">Cargando estado del modelo local…</p>
+
         {/if}
       </section>
     </Card>
@@ -1016,6 +1187,80 @@
   .settings__model-ctx {
     color: var(--color-text-secondary);
     font-size: var(--font-size-xs);
+  }
+
+  .settings__local-model {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .settings__local-model-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+
+  .settings__local-model-path {
+    font-family: var(--font-mono, monospace);
+    font-size: var(--font-size-xs);
+    background: var(--color-surface-sunken);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-secondary);
+    word-break: break-all;
+  }
+
+  .settings__local-model-size {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .settings__local-model-guide {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .settings__local-model-guide code {
+    font-family: var(--font-mono, monospace);
+    background: var(--color-surface-sunken);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+  }
+
+  .settings__download-progress {
+    position: relative;
+    height: 24px;
+    background: var(--color-surface-sunken);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+
+  .settings__download-progress-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: var(--color-accent);
+    opacity: 0.25;
+    transition: width 0.2s ease;
+  }
+
+  .settings__download-progress-text {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-primary);
+    z-index: 1;
   }
 
   @media (max-width: 720px) {

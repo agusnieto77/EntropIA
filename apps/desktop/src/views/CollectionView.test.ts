@@ -196,6 +196,7 @@ describe('CollectionView asset deletion', () => {
   }
 
   beforeEach(() => {
+    locale.set('es')
     vi.useFakeTimers()
     navigationRef.navigate.mockReset()
     storeRef.current = createStore(
@@ -240,7 +241,7 @@ describe('CollectionView asset deletion', () => {
     // Modal should appear
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     expect(screen.getByText(/¿Seguro que querés eliminar/)).toBeInTheDocument()
-    expect(screen.getByText('uuid_acta.pdf')).toBeInTheDocument()
+    expect(screen.getByText(/uuid_acta\.pdf/)).toBeInTheDocument()
   })
 
   it('cancels deletion when Cancel is clicked', async () => {
@@ -355,6 +356,7 @@ describe('CollectionView PDF thumbnail', () => {
   }
 
   beforeEach(() => {
+    locale.set('es')
     vi.useFakeTimers()
     navigationRef.navigate.mockReset()
     storeRef.current = createStore(
