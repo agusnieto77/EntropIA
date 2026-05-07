@@ -19,6 +19,8 @@ pub struct DependencySpec {
     /// pip/uv install specifier, e.g. `"fastembed>=0.4.0"`.
     /// `None` means the dependency has a custom install path (e.g. spaCy model).
     pub pip_spec: Option<&'static str>,
+    /// Additional pip/uv install specifiers applied after the primary one.
+    pub extra_pip_specs: &'static [&'static str],
     /// One-liner Python code that prints `"ok"` when the dependency is available.
     pub probe_code: &'static str,
     /// Whether the main AI pipeline cannot function without this dependency.
@@ -30,7 +32,10 @@ pub struct DependencySpec {
 }
 
 const NO_PREREQUISITES: &[DependencyId] = &[];
+const NO_EXTRA_PIP_SPECS: &[&str] = &[];
 const SPACY_MODEL_PREREQUISITES: &[DependencyId] = &[DependencyId::Spacy];
+const PADDLE_OCR_PREREQUISITES: &[DependencyId] = &[DependencyId::Python, DependencyId::Fastembed];
+const PADDLE_OCR_EXTRA_PIP_SPECS: &[&str] = &["paddlepaddle>=3.2.0,<3.3.0"];
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -41,6 +46,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         id: DependencyId::Python,
         display_name: "Python",
         pip_spec: None,
+        extra_pip_specs: NO_EXTRA_PIP_SPECS,
         probe_code: "import sys; print('ok')",
         critical: true,
         managed_prerequisites: NO_PREREQUISITES,
@@ -50,6 +56,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         id: DependencyId::Fastembed,
         display_name: "fastembed",
         pip_spec: Some("fastembed>=0.4.0"),
+        extra_pip_specs: NO_EXTRA_PIP_SPECS,
         probe_code: "import fastembed; print('ok')",
         critical: true,
         managed_prerequisites: NO_PREREQUISITES,
@@ -58,16 +65,18 @@ static ALL_DEPS: &[DependencySpec] = &[
     DependencySpec {
         id: DependencyId::PaddleOcr,
         display_name: "PaddleOCR",
-        pip_spec: Some("paddleocr[doc-parser]>=2.9.0"),
-        probe_code: "import paddleocr; print('ok')",
+        pip_spec: Some("paddleocr[doc-parser]>=3.0.0,<3.6.0"),
+        extra_pip_specs: PADDLE_OCR_EXTRA_PIP_SPECS,
+        probe_code: "from paddleocr import PaddleOCRVL; PaddleOCRVL(device='cpu', use_doc_orientation_classify=False, use_doc_unwarping=False, use_layout_detection=True); print('ok')",
         critical: true,
-        managed_prerequisites: NO_PREREQUISITES,
+        managed_prerequisites: PADDLE_OCR_PREREQUISITES,
         install_order: 2,
     },
     DependencySpec {
         id: DependencyId::FasterWhisper,
         display_name: "faster-whisper",
         pip_spec: Some("faster-whisper>=1.0.0"),
+        extra_pip_specs: NO_EXTRA_PIP_SPECS,
         probe_code: "import faster_whisper; print('ok')",
         critical: false,
         managed_prerequisites: NO_PREREQUISITES,
@@ -77,6 +86,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         id: DependencyId::Spacy,
         display_name: "spaCy",
         pip_spec: Some("spacy>=3.7.0,<4.0.0"),
+        extra_pip_specs: NO_EXTRA_PIP_SPECS,
         probe_code: "import spacy; print('ok')",
         critical: false,
         managed_prerequisites: NO_PREREQUISITES,
@@ -86,6 +96,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         id: DependencyId::SpacyModelEs,
         display_name: "spaCy model (es_core_news_sm)",
         pip_spec: None, // installed from a pinned wheel URL via the managed uv venv flow
+        extra_pip_specs: NO_EXTRA_PIP_SPECS,
         probe_code: "import spacy; spacy.load('es_core_news_sm'); print('ok')",
         critical: false,
         managed_prerequisites: SPACY_MODEL_PREREQUISITES,

@@ -1430,7 +1430,7 @@ async fn process_pdf(
                                 .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                         }
                         OcrMode::High => {
-                            // High mode: try PaddleVL, fall back to plain OCR
+                            // High mode: require PaddleVL and surface failures explicitly
                             if let Some(engine) = engine_clone {
                                 // Downscale large PDF page renders before PaddleVL (same reason as images)
                                 let vl_bytes = maybe_downscale_for_paddlevl(&page_image);
@@ -1442,23 +1442,21 @@ async fn process_pdf(
                                 ));
 
                                 if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
-                                     eprintln!("[OCRH] Failed to write temp file for PaddleVL on PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
-                                     return provider_clone
-                                         .recognize(&page_image)
-                                         .map(|output| (output, None))
-                                         .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
-                                 }
+                                    return Err(format!(
+                                        "OCRH local no pudo crear el archivo temporal para PaddleOCR-VL en la página {}: {e}",
+                                        page_idx + 1
+                                    ));
+                                }
 
                                 let temp_path_str = match temp_path.to_str() {
                                     Some(s) => s.to_string(),
                                     None => {
-                                         eprintln!("[OCRH] Invalid temp path for PaddleVL on PDF page {}. Falling back.", page_idx + 1);
-                                         return provider_clone
-                                             .recognize(&page_image)
-                                             .map(|output| (output, None))
-                                             .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1));
-                                     }
-                                 };
+                                        return Err(format!(
+                                            "OCRH local generó una ruta temporal inválida para PaddleOCR-VL en la página {}",
+                                            page_idx + 1
+                                        ));
+                                    }
+                                };
 
                                 let vl_result = engine.detect(&temp_path_str);
                                 let _ = std::fs::remove_file(&temp_path);
@@ -1478,19 +1476,17 @@ async fn process_pdf(
                                         ))
                                     }
                                     Err(e) => {
-                                        eprintln!("[OCRH] PaddleVL failed for PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
-                                        provider_clone
-                                            .recognize(&page_image)
-                                            .map(|output| (output, None))
-                                            .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                                        Err(format!(
+                                            "OCRH local falló en PaddleOCR-VL para la página {}: {e}",
+                                            page_idx + 1
+                                        ))
                                     }
                                 }
                             } else {
-                                // No PaddleVL — plain OCR
-                                provider_clone
-                                    .recognize(&page_image)
-                                    .map(|output| (output, None))
-                                    .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                                Err(format!(
+                                    "OCRH local no disponible: no se encontró un Python compatible con PaddleOCR-VL para procesar la página {}.",
+                                    page_idx + 1
+                                ))
                             }
                         }
                     }
@@ -1631,7 +1627,7 @@ async fn process_image_light(
 /// Runs PaddleOCR-VL (layout + OCR in one pass) via Python subprocess.
 /// Falls back to plain OCR if PaddleVL is unavailable or fails.
 async fn process_image_high(
-    provider: &Arc<dyn OcrProvider>,
+    _provider: &Arc<dyn OcrProvider>,
     conn: &rusqlite::Connection,
     bytes: &[u8],
     asset_id: &str,
@@ -1673,12 +1669,15 @@ async fn process_image_high(
 
     emit_progress(app_handle, asset_id, 50, "ocr_inference");
 
+    let local_ocrh_unavailable = || {
+        "OCRH local no disponible: no se encontró un Python compatible con PaddleOCR-VL. Revisá Configuración > Dependencias o el entorno Python configurado.".to_string()
+    };
+
     // Try PaddleVL (Python subprocess) if available
     if let Some(engine) = paddle_vl_engine {
         emit_progress(app_handle, asset_id, 55, "paddlevl_detection");
 
         let engine_clone = engine.clone();
-        let provider_clone = Arc::clone(provider);
         let bytes_owned = bytes.to_vec();
         let asset_id_owned = asset_id.to_string();
         let original_image_dimensions = detect_image_dimensions(bytes);
@@ -1695,27 +1694,17 @@ async fn process_image_high(
                 .join(format!("entropia_paddlevl_{}.png", uuid::Uuid::new_v4()));
 
             if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
-                eprintln!(
-                    "[OCRH] Failed to write temp file for PaddleVL for {asset_id_owned}: {e}. \
-                     Falling back to plain OCR."
-                );
-                return provider_clone
-                    .recognize(&bytes_owned)
-                    .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
-                    .map_err(|e| format!("OCR inference failed: {e}"));
+                return Err(format!(
+                    "OCRH local no pudo crear el archivo temporal para PaddleOCR-VL en {asset_id_owned}: {e}"
+                ));
             }
 
             let temp_path_str = match temp_path.to_str() {
                 Some(s) => s.to_string(),
                 None => {
-                    eprintln!(
-                        "[OCRH] Invalid temp path for PaddleVL for {asset_id_owned}. \
-                         Falling back to plain OCR."
-                    );
-                    return provider_clone
-                        .recognize(&bytes_owned)
-                        .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
-                        .map_err(|e| format!("OCR inference failed: {e}"));
+                    return Err(format!(
+                        "OCRH local generó una ruta temporal inválida para PaddleOCR-VL en {asset_id_owned}"
+                    ));
                 }
             };
 
@@ -1742,14 +1731,9 @@ async fn process_image_high(
                     })
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[OCRH] PaddleVL failed for {asset_id_owned}: {e}. \
-                         Falling back to plain OCR."
-                    );
-                    provider_clone
-                        .recognize(&bytes_owned)
-                        .map(|ocr| ProcessedOcrOutput { ocr, layout: None })
-                        .map_err(|e| format!("OCR inference failed: {e}"))
+                    Err(format!(
+                        "OCRH local falló en PaddleOCR-VL para {asset_id_owned}: {e}"
+                    ))
                 }
             }
         })
@@ -1760,20 +1744,7 @@ async fn process_image_high(
         return Ok(output);
     }
 
-    // No PaddleVL — plain OCR
-    let provider_clone = Arc::clone(provider);
-    let bytes_owned = bytes.to_vec();
-
-    let output = tokio::task::spawn_blocking(move || provider_clone.recognize(&bytes_owned))
-        .await
-        .map_err(|e| format!("OCR task panicked: {e}"))?
-        .map_err(|e| format!("OCR inference failed: {e}"))?;
-
-    emit_progress(app_handle, asset_id, 100, "done");
-    Ok(ProcessedOcrOutput {
-        ocr: output,
-        layout: None,
-    })
+    Err(local_ocrh_unavailable())
 }
 
 /// Emit an `ocr:progress` event to the frontend.

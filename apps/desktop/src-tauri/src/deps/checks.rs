@@ -19,7 +19,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use super::{DependencyId, DependencyStatus};
 use crate::deps::registry::all_deps;
 
-const PROBE_TIMEOUT_SECS: u64 = 45;
+const PROBE_TIMEOUT_SECS: u64 = 180;
 const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
 
 const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
@@ -63,7 +63,7 @@ pub enum ProbePythonMode {
 
 /// Probe a single dependency by running its `probe_code` with `python_path`.
 ///
-/// - Spawns `python_path -c "<probe_code>"` with a 10 s per-probe timeout.
+/// - Spawns `python_path -c "<probe_code>"` with a per-probe timeout.
 /// - stdout contains `"ok"` → `Installed { version: None }`
 /// - Non-zero exit, timeout, or spawn error → `Missing`
 pub async fn probe_one(dep: &crate::deps::registry::DependencySpec, python_path: &Path) -> DependencyStatus {

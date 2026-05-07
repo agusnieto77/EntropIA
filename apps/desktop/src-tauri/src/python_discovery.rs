@@ -185,6 +185,41 @@ fn load_managed_venv_python(probe_code: &str, settings_db_path: Option<&Path>) -
     None
 }
 
+fn cache_probe_hit(cache_key: &str, path: &Path) {
+    if let Ok(mut cache) = get_probe_cache().lock() {
+        cache.insert(cache_key.to_string(), Some(path.to_path_buf()));
+    }
+}
+
+fn log_python_resolver_hit(tag: &str, cache_key: &str, source: &str, path: &Path) {
+    eprintln!(
+        "[{tag}] Python resolver hit ({cache_key}, source={source}): {}",
+        path.display()
+    );
+}
+
+fn resolve_preferred_python(
+    tag: &str,
+    cache_key: &str,
+    probe_code: &str,
+    settings_db_path: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(path) = load_managed_venv_python(probe_code, settings_db_path) {
+        log_python_resolver_hit(tag, cache_key, "managed_venv", &path);
+        cache_probe_hit(cache_key, &path);
+        persist_python_hit(cache_key, &path, settings_db_path);
+        return Some(path);
+    }
+
+    if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
+        log_python_resolver_hit(tag, cache_key, "persisted_cache", &path);
+        cache_probe_hit(cache_key, &path);
+        return Some(path);
+    }
+
+    None
+}
+
 fn load_persisted_python(
     cache_key: &str,
     probe_code: &str,
@@ -255,18 +290,6 @@ pub fn which_python_for_module(
     probe_code: &str,
     settings_db_path: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(path) = load_managed_venv_python(probe_code, settings_db_path) {
-        eprintln!(
-            "[{tag}] Python resolver hit ({cache_key}, source=managed_venv): {}",
-            path.display()
-        );
-        if let Ok(mut cache) = get_probe_cache().lock() {
-            cache.insert(cache_key.to_string(), Some(path.clone()));
-        }
-        persist_python_hit(cache_key, &path, settings_db_path);
-        return Some(path);
-    }
-
     // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {
@@ -284,14 +307,7 @@ pub fn which_python_for_module(
         }
     }
 
-    if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
-        eprintln!(
-            "[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}",
-            path.display()
-        );
-        if let Ok(mut cache) = get_probe_cache().lock() {
-            cache.insert(cache_key.to_string(), Some(path.clone()));
-        }
+    if let Some(path) = resolve_preferred_python(tag, cache_key, probe_code, settings_db_path) {
         return Some(path);
     }
 
@@ -309,9 +325,7 @@ pub fn which_python_for_module(
                     probe_start.elapsed().as_millis(),
                     python.display()
                 );
-                if let Ok(mut cache) = get_probe_cache().lock() {
-                    cache.insert(cache_key.to_string(), Some(python.clone()));
-                }
+                cache_probe_hit(cache_key, python);
                 persist_python_hit(cache_key, python, settings_db_path);
                 return Some(python.clone());
             }
@@ -348,10 +362,7 @@ pub fn which_python_for_module(
                 probe_start.elapsed().as_millis(),
                 candidate.display()
             );
-            // Cache the hit
-            if let Ok(mut cache) = get_probe_cache().lock() {
-                cache.insert(cache_key.to_string(), Some(candidate.clone()));
-            }
+            cache_probe_hit(cache_key, &candidate);
             persist_python_hit(cache_key, &candidate, settings_db_path);
             return Some(candidate.clone());
         }
@@ -451,18 +462,6 @@ pub fn which_python_for_module_scored(
     settings_db_path: Option<&Path>,
     scorer: &dyn Fn(&std::path::Path) -> i32,
 ) -> Option<PathBuf> {
-    if let Some(path) = load_managed_venv_python(probe_code, settings_db_path) {
-        eprintln!(
-            "[{tag}] Python resolver hit ({cache_key}, source=managed_venv): {}",
-            path.display()
-        );
-        if let Ok(mut cache) = get_probe_cache().lock() {
-            cache.insert(cache_key.to_string(), Some(path.clone()));
-        }
-        persist_python_hit(cache_key, &path, settings_db_path);
-        return Some(path);
-    }
-
     // Check probe cache — if we already resolved this capability, return the cached result.
     if let Ok(cache) = get_probe_cache().lock() {
         if let Some(cached) = cache.get(cache_key) {
@@ -480,14 +479,7 @@ pub fn which_python_for_module_scored(
         }
     }
 
-    if let Some(path) = load_persisted_python(cache_key, probe_code, settings_db_path) {
-        eprintln!(
-            "[{tag}] Python resolver hit ({cache_key}, source=persisted_cache): {}",
-            path.display()
-        );
-        if let Ok(mut cache) = get_probe_cache().lock() {
-            cache.insert(cache_key.to_string(), Some(path.clone()));
-        }
+    if let Some(path) = resolve_preferred_python(tag, cache_key, probe_code, settings_db_path) {
         return Some(path);
     }
 
@@ -508,10 +500,7 @@ pub fn which_python_for_module_scored(
                     probe_start.elapsed().as_millis(),
                     python.display()
                 );
-                // Cache the hit
-                if let Ok(mut cache) = get_probe_cache().lock() {
-                    cache.insert(cache_key.to_string(), Some(python.clone()));
-                }
+                cache_probe_hit(cache_key, python);
                 persist_python_hit(cache_key, python, settings_db_path);
                 return Some(python.clone());
             }
@@ -550,10 +539,7 @@ pub fn which_python_for_module_scored(
                 probe_start.elapsed().as_millis(),
                 candidate.display()
             );
-            // Cache the hit
-            if let Ok(mut cache) = get_probe_cache().lock() {
-                cache.insert(cache_key.to_string(), Some(candidate.clone()));
-            }
+            cache_probe_hit(cache_key, candidate);
             persist_python_hit(cache_key, candidate, settings_db_path);
             return Some(candidate.clone());
         }

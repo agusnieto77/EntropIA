@@ -4,6 +4,7 @@
 //! install each registered dependency into it.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -125,31 +126,42 @@ pub async fn install_package(
     uv: &UvBinary,
     dep: &DependencySpec,
     venv_python: &Path,
-    on_output: impl Fn(&str) + Send + 'static,
+    on_output: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<(), String> {
     if dep.id == DependencyId::Python {
         // Python itself is managed by `uv venv` — nothing to install.
         return Ok(());
     }
 
-    let spec = managed_install_spec(dep)
+    let specs = managed_install_specs(dep)
         .ok_or_else(|| format!("Sin spec de instalación para {}", dep.display_name))?;
 
     let python_str = venv_python.to_string_lossy().into_owned();
-    let mut cmd = uv.command();
-    cmd.args(["pip", "install", spec, "--python", &python_str])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    run_and_stream(&mut cmd, dep.display_name, on_output).await
+    let on_output = Arc::new(on_output);
+    for spec in specs {
+        let mut cmd = uv.command();
+        cmd.args(["pip", "install", spec, "--python", &python_str])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let on_output = Arc::clone(&on_output);
+        run_and_stream(&mut cmd, dep.display_name, move |line| on_output(line)).await?;
+    }
+
+    Ok(())
 }
 
-fn managed_install_spec(dep: &DependencySpec) -> Option<&'static str> {
-    match dep.id {
+fn managed_install_specs(dep: &DependencySpec) -> Option<Vec<&'static str>> {
+    let primary = match dep.id {
         DependencyId::Python => None,
         // Install the exact wheel version compatible with our managed spaCy 3.8 flow.
         DependencyId::SpacyModelEs => Some(SPACY_MODEL_ES_WHEEL_URL),
         _ => dep.pip_spec,
-    }
+    }?;
+
+    let mut specs = Vec::with_capacity(1 + dep.extra_pip_specs.len());
+    specs.push(primary);
+    specs.extend(dep.extra_pip_specs.iter().copied());
+    Some(specs)
 }
 
 async fn ensure_managed_prerequisites_installed(
@@ -234,7 +246,7 @@ fn collect_managed_install_plan(
 async fn run_and_stream(
     cmd: &mut Command,
     display_name: &str,
-    on_output: impl Fn(&str) + Send + 'static,
+    on_output: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<(), String> {
     let mut child = cmd
         .spawn()
