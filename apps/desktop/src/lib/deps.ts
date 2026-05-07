@@ -133,12 +133,19 @@ export function onDepsError(callback: (event: DepsErrorEvent) => void): Promise<
 // Shared reactive state for critical deps status
 // ---------------------------------------------------------------------------
 
-let _criticalMissing = $state(false)
+let _criticalMissing = false
+const _listeners = new Set<(value: boolean) => void>()
 
 export function setCriticalMissing(value: boolean) {
   _criticalMissing = value
+  _listeners.forEach((fn) => fn(value))
 }
 
 export function isCriticalMissing(): boolean {
   return _criticalMissing
+}
+
+export function onCriticalMissingChange(fn: (value: boolean) => void): () => void {
+  _listeners.add(fn)
+  return () => _listeners.delete(fn)
 }

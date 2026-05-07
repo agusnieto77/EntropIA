@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { navigation } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
-  import { isCriticalMissing } from '$lib/deps'
+  import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
   import { Button } from '@entropia/ui'
   import type { Collection, Item } from '@entropia/store'
+
+  let hasDepsWarning = $state(isCriticalMissing())
+  const unsubDeps = onCriticalMissingChange((v) => { hasDepsWarning = v })
 
   type AppTheme = 'dark' | 'dim' | 'light'
 
@@ -70,6 +73,10 @@
 
   onMount(() => {
     applyTheme(readPersistedTheme())
+  })
+
+  onDestroy(() => {
+    unsubDeps()
   })
 
   function buildItemView(item: Item) {
@@ -374,7 +381,7 @@
           clip-rule="evenodd"
         />
       </svg>
-      {#if isCriticalMissing()}
+      {#if hasDepsWarning}
         <span class="topbar__badge" aria-label="Dependencias pendientes"></span>
       {/if}
     </button>
