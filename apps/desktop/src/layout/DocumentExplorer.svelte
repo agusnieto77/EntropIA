@@ -459,10 +459,23 @@
       }
     }
 
+    const handleItemRenamed = (event: Event) => {
+      const { collectionId, itemId, newTitle } = (event as CustomEvent<{ collectionId: string; itemId: string; newTitle: string }>).detail
+      const items = itemsByCollection[collectionId]
+      if (items) {
+        itemsByCollection = {
+          ...itemsByCollection,
+          [collectionId]: items.map((i) => (i.id === itemId ? { ...i, title: newTitle } : i)),
+        }
+      }
+    }
+
     window.addEventListener(DOCUMENT_EXPLORER_ASSET_SELECTED_EVENT, handleAssetSelected)
+    window.addEventListener('entropia:item-renamed', handleItemRenamed)
 
     return () => {
       window.removeEventListener(DOCUMENT_EXPLORER_ASSET_SELECTED_EVENT, handleAssetSelected)
+      window.removeEventListener('entropia:item-renamed', handleItemRenamed)
     }
   })
 </script>

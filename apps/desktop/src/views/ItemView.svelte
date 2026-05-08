@@ -176,6 +176,8 @@
   })
   let selectedAssetIndex = $state(0)
   let savingMetadata = $state(false)
+  let renamingTitle = $state(false)
+  let renameValue = $state('')
   let annotations = $state<ViewerAnnotation[]>([])
   let selectedAnnotationId = $state<string | null>(null)
   let annotationTool = $state<'select' | 'rectangle' | 'underline'>('select')
@@ -1452,11 +1454,14 @@
     return entries
   }
 
-  let activeAssetSummary = $derived(
-    selectedAsset
-      ? `${getAssetTypeLabel(selectedAsset.type)} · ${getAssetPathLabel(selectedAsset.path)}`
-      : 'Sin asset seleccionado'
-  )
+  let activeAssetSummary = $derived.by(() => {
+    if (!selectedAsset) return translate('item.assetNoSelection')
+    const typeLabel = getAssetTypeLabel(selectedAsset.type)
+    if (assets.length > 1) {
+      return `${typeLabel} · ${translate('item.assetPageLabel', { page: selectedAssetIndex + 1 })} de ${assets.length}`
+    }
+    return typeLabel
+  })
 
   async function handleEmbedAsset() {
     if (!selectedAsset) {
@@ -1831,6 +1836,52 @@
     }
 
     await Promise.allSettled(reloads)
+  }
+
+  function startRename() {
+    if (!item) return
+    renameValue = item.title
+    renamingTitle = true
+    setTimeout(() => {
+      document.querySelector<HTMLInputElement>('.item-title-input')?.select()
+    }, 30)
+  }
+
+  async function confirmRename() {
+    if (!item || !renameValue.trim()) {
+      renamingTitle = false
+      return
+    }
+    const newTitle = renameValue.trim()
+    if (newTitle === item.title) {
+      renamingTitle = false
+      return
+    }
+    try {
+      const store = getStore()
+      await store.items.update(item.id, { title: newTitle })
+      item = { ...item, title: newTitle }
+      navigation.replace({
+        name: 'item',
+        collectionId: item.collectionId,
+        collectionName: collection?.name ?? '',
+        itemId: item.id,
+        itemTitle: newTitle,
+      })
+      window.dispatchEvent(
+        new CustomEvent('entropia:item-renamed', {
+          detail: { collectionId: item.collectionId, itemId: item.id, newTitle },
+        }),
+      )
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to rename'
+    } finally {
+      renamingTitle = false
+    }
+  }
+
+  function cancelRename() {
+    renamingTitle = false
   }
 
   function handleMetadataChange(metadata: Record<string, string>) {
@@ -2604,7 +2655,33 @@
     <div class="right-panel">
       <header class="item-header">
         <span class="item-header__eyebrow">{translate('item.activeDocument')}</span>
-        <h2 class="item-title">{item.title}</h2>
+        {#if renamingTitle}
+          <input
+            class="item-title-input"
+            type="text"
+            bind:value={renameValue}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') confirmRename()
+              if (e.key === 'Escape') cancelRename()
+            }}
+            onblur={confirmRename}
+          />
+        {:else}
+          <div class="item-title-row">
+            <h2 class="item-title">{item.title}</h2>
+            <button
+              type="button"
+              class="item-title-edit"
+              aria-label={translate('item.renameTitle')}
+              onclick={startRename}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                <path d="m15 5 4 4" />
+              </svg>
+            </button>
+          </div>
+        {/if}
         <p class="item-header__meta">{activeAssetSummary}</p>
       </header>
 
@@ -3981,11 +4058,48 @@
     user-select: none !important;
     -webkit-user-select: none !important;
   }
+  .item-title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
   .item-title {
     font-family: var(--font-display);
     font-size: var(--font-size-md);
     font-weight: var(--font-weight-bold);
     color: var(--color-text-primary);
+  }
+  .item-title-edit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--transition-smooth), color var(--transition-smooth);
+  }
+  .item-title-row:hover .item-title-edit {
+    opacity: 1;
+  }
+  .item-title-edit:hover {
+    color: var(--color-text-primary);
+  }
+  .item-title-input {
+    font-family: var(--font-display);
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-primary);
+    background: var(--color-surface-sunken);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    outline: none;
+    width: 100%;
+    box-shadow: var(--focus-ring);
   }
   .item-header__meta {
     font-size: var(--font-size-xs);
