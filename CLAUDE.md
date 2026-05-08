@@ -25,8 +25,9 @@ The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 
 - **`llm/`** — LLM pipeline with dual backend: local Gemma via llama.cpp sidecar OR OpenRouter API. Jobs: OCR correction, entity extraction, triple extraction, summarization, classification, Q&A. Results persisted in `llm_results` table. Asset-level variants avoid context-window overflow on multi-page documents.
 - **`geo/`** — Nominatim geocoding for place entities (populates latitude/longitude/geoStatus on entities)
-- **`settings/`** — Key-value settings store (`app_settings` table). Tauri commands: `settings_get`, `settings_set`, `settings_get_all`, `settings_delete`. Used for OpenRouter API key, model selection, and user preferences.
+- **`settings/`** — Key-value settings store (`app_settings` table). Tauri commands: `settings_get`, `settings_set`, `settings_get_all`, `settings_delete`. Keys: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `LLM_MODE`, `ASSEMBLYAI_API_KEY`, `STT_MODE`, `GLM_OCR_API_KEY`, `OCRH_MODE`, `LANGUAGE`, `DEPS_VENV_PYTHON_PATH`.
 - **`image_edit/`** — Image manipulation commands (rotation, cropping)
+- **`deps/`** — Python dependency manager using **uv** (venv creation + pip). Checks/installs: Python, fastembed, paddleocr, faster-whisper, spacy. Emits `deps://progress|complete|error` Tauri events. Frontend: `DependenciasTab.svelte` in settings. Critical deps block AI features if missing.
 
 `openspec/` contains SDD (Specification-Driven Development) specs and change archives — not code.
 `AGENTS.md` contains detailed build prerequisites (Windows toolchain, vcpkg Tesseract, LLVM/Clang) and engine architecture notes.
@@ -64,29 +65,39 @@ cargo fmt --check                     # check Rust formatting
 
 # Rust quality report (Windows, PowerShell)
 pnpm rust:quality:report
+
+# Vitest browser UI
+pnpm test:ui
 ```
 
 **First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, vcpkg Tesseract, LLVM/Clang, CMake). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
 
 ## Testing
 
-- **TypeScript/Svelte**: Vitest with happy-dom. Tests are co-located (`*.test.ts`).
+- **TypeScript/Svelte**: Vitest with happy-dom. Tests are co-located (`*.test.ts`). Desktop app uses `$lib` alias resolved in `vitest.config.ts` and a `test-setup.ts` setup file.
+- **`@entropia/store`**: Tests run in `environment: 'node'` (not happy-dom). Mock the Tauri SQL plugin via `packages/store/src/__mocks__/db.mock.ts`.
 - **Rust**: Standard `cargo test`. Modules have inline `#[cfg(test)]` tests.
-- Tests mock the Tauri SQL plugin via `packages/store/src/__mocks__/db.mock.ts`.
 - **Rust quality contract** (Windows): Pester `.ps1` test suites in `apps/desktop/src-tauri/scripts/` validate builds (`windows-feature-contract.ps1`, `rust-quality-contract.Tests.ps1`). ONNX Runtime is loaded dynamically (`load-dynamic` feature) — tests that need it will skip gracefully if the runtime is absent.
 
 ## Architecture Details
 
 ### Frontend Navigation (Not File-Based Routing)
 
-The desktop app does **not** use SvelteKit or file-based routing. Navigation is a manual state machine in `src/lib/navigation.ts` with four views conditionally rendered in `App.svelte`:
+The desktop app does **not** use SvelteKit or file-based routing. Navigation is a manual state machine in `src/lib/navigation.ts` (`NavigationStore` class) with five views conditionally rendered in `App.svelte`:
 
 - `collections` — list all collections
 - `collection` — single collection (requires `id`, `collectionName`)
 - `item` — single item (requires `itemId`, `collectionId`, `collectionName`, `itemTitle`)
-- `settings` — app settings (OpenRouter API key, model selection)
+- `db-browser` — SQLite table browser with pagination, sorting, search, column inspection
+- `settings` — app settings (API keys, model selection, dependency manager via `DependenciasTab`)
 
-Views live in `src/views/`, layout in `src/layout/` (AppShell, TopBar).
+NavigationStore supports `push()`, `back()`, `replace()` (sibling without stacking), `resetToPath()`, and breadcrumb-aware pub/sub that reacts to i18n locale changes.
+
+Views live in `src/views/`, layout in `src/layout/`:
+- `AppShell.svelte` — Zotero-style collapsible sidebar (`Ctrl+B`), toolbar, `DocumentExplorer` tree-view, deps toast system, status bar
+- `TopBar.svelte` — breadcrumb nav, back button, theme toggle (dim/dark), settings/db-browser buttons, prev/next document navigation
+- `DocumentExplorer.svelte` — tree-view sidebar (collections → items → assets), resizable (drag handle, persisted to `localStorage`)
+- `EntropicConstellation.svelte` — canvas-based animated background (spatial grid culling, respects `prefers-reduced-motion`)
 
 ### Data Flow (Frontend to Rust)
 
@@ -156,19 +167,25 @@ NER uses a multi-engine approach (`nlp/ner/`):
 
 Engine selection is configured via `NerConfig` with `NerEngineKind` (Onnx, Spacy, Hybrid, RuleBased). The `NerRegistry` initializes available engines at startup and logs preflight status.
 
+### Cloud Backend Alternatives
+
+OCR and transcription each support local and cloud modes, selectable in settings:
+
+- **GLM OCR** (`ocr/glm_ocr.rs`) — ZhipuAI cloud OCR API. Mode key: `OCRH_MODE` (`local` | `glm_ocr` | `auto`). API key: `GLM_OCR_API_KEY`.
+- **AssemblyAI** (`transcription/assemblyai.rs`) — Cloud speech-to-text. Mode key: `STT_MODE` (`local` | `assemblyai` | `auto`). API key: `ASSEMBLYAI_API_KEY`.
+
 ### LLM Architecture
 
-Dual-backend LLM system in `llm/`:
+LLM system in `llm/`:
 
 - **OpenRouter** (`openrouter.rs`) — Cloud API via `reqwest`. Model and API key stored in `app_settings` table. Frontend configures via `SettingsView`.
-- **Local sidecar** (`sidecar.rs`) — llama.cpp server process managed by `SidecarManager`/`SidecarHandle`. Runs Gemma models locally.
-- **Engine** (`engine.rs`) — `LlmEngine` abstracts both backends behind `LlmConfig`. Reads settings from `app_settings` to decide which backend to use.
+- **Engine** (`engine.rs`) — `LlmEngine` abstracts the backend behind `LlmConfig`. Reads settings from `app_settings` to decide configuration.
 - **Prompts** (`prompt.rs`) — All prompts in Spanish, matching source text language. Structured prompts for each job type (OCR correction, entity extraction, summarization, classification, Q&A, triple extraction).
 - **Results** persisted in `llm_results` table (target_id, job_type, result JSON, timestamp).
 
 ### Job Queue Pattern
 
-All background systems (OCR, NLP, Transcription, Layout, LLM) follow the same pattern:
+All background systems (OCR, NLP, Transcription, Layout, LLM, Geo) follow the same pattern:
 
 1. Frontend calls Tauri command → submits job to mpsc channel → returns "queued"
 2. Worker thread drains jobs serially, emits `progress/complete/error` events
@@ -193,6 +210,22 @@ CI includes extensive **pnpm lockfile forensics** (SHA256 + git blob verificatio
 - `@entropia/ui` — dual exports: `"."` (Svelte components) + `"./tokens"` (design tokens CSS)
 - Internal dependencies use `workspace:*` protocol.
 
+### i18n
+
+`src/lib/i18n.ts` provides `es`/`en` locale support via a Svelte writable store. Locale is persisted to `app_settings` via `SETTINGS_KEYS.LANGUAGE`. All UI strings go through `t('key')`. NavigationStore breadcrumbs react to locale changes.
+
+### Additional Schema Tables
+
+Beyond the core tables (collections, items, assets, notes, jobs, extractions, entities, embeddings, fts, triples, transcriptions, layouts, llm_results, app_settings), the Drizzle schema includes:
+
+- `annotations` — visual overlays on assets (rectangle/underline with bbox, color, page). Cascade delete from assets.
+- `topics` — reusable tags (unique name).
+- `item_topics` — many-to-many junction between items and topics.
+
+### Collection Export
+
+`src/lib/export.ts` — JSON export of entire collections (assets, notes, extractions, annotations, transcriptions). Uses `@tauri-apps/plugin-dialog` save dialog + `@tauri-apps/plugin-fs` write. Export format version 2.
+
 ## Code Style
 
 - **Prettier**: no semicolons, single quotes, trailing commas (es5), printWidth 100, tabWidth 2. Svelte files use `prettier-plugin-svelte`.
@@ -209,3 +242,5 @@ CI includes extensive **pnpm lockfile forensics** (SHA256 + git blob verificatio
 - Timestamps are integer (Unix epoch).
 - Tauri dev server is hardcoded to port 1420 (`strictPort: true`).
 - Rust release profile uses LTO + `opt-level = "s"` + strip for small binaries.
+- Cargo feature flag: `paddle-ocr` (default, enables `ocr-rs` MNN backend). Without it, PaddleOCR native engine is excluded.
+- Startup (`lib.rs`): suppresses Windows CRT error dialogs via `SetErrorMode`, runs deduplication of extractions/transcriptions rows (one-per-asset enforcement), then schema migrations.
