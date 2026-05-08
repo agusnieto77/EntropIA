@@ -164,7 +164,7 @@ describe('AppShell', () => {
       },
     })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByText(/Algunas funciones de IA/)).toHaveTextContent(
       '⚠ Algunas funciones de IA no están disponibles.',
     )
   })

@@ -357,7 +357,9 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    background: var(--color-bg);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.01), transparent 30%),
+      color-mix(in srgb, var(--color-bg) 34%, transparent);
   }
 
   /* ── Sidebar (Zotero-style, always visible) ── */
@@ -415,10 +417,6 @@
     background: var(--color-accent-soft);
   }
 
-  .sidebar__tool--active {
-    color: var(--color-accent);
-  }
-
   .sidebar__search-input {
     flex: 1;
     min-width: 0;
@@ -463,7 +461,9 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-5);
-    background: var(--color-bg);
+    background:
+      linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 18%),
+      color-mix(in srgb, var(--color-bg) 24%, transparent);
   }
 
   .deps-banner {
