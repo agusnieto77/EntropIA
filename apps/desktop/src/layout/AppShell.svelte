@@ -291,11 +291,7 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-<<<<<<< HEAD
     background: var(--color-bg);
-=======
-    background: var(--color-bg);
->>>>>>> origin/feat/hlab-reskin
   }
 
   /* ── Sidebar (Zotero-style, always visible) ── */
@@ -401,11 +397,7 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-5);
-<<<<<<< HEAD
     background: var(--color-bg);
-=======
-    background: var(--color-bg);
->>>>>>> origin/feat/hlab-reskin
   }
 
   /* ── Toast notification ── */

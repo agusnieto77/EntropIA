@@ -68,7 +68,8 @@
 
   function toggleTheme() {
     const idx = THEME_CYCLE.indexOf(theme)
-    applyTheme(THEME_CYCLE[(idx + 1) % THEME_CYCLE.length])
+    const nextTheme = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length] ?? 'dark'
+    applyTheme(nextTheme)
   }
 
   onMount(() => {

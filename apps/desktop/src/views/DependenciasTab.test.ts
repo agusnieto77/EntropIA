@@ -88,6 +88,9 @@ describe('DependenciasTab', () => {
     expect(screen.getByText('Esta acción no se puede deshacer desde la app.')).toBeInTheDocument()
     expect(screen.getByText('RESETEAR ENTORNO')).toBeInTheDocument()
 
+    expect(confirmButton).toBeDefined()
+    if (!confirmButton) throw new Error('Reset confirmation button was not found')
+
     expect(confirmButton).toBeDisabled()
 
     await fireEvent.input(confirmationInput, { target: { value: 'resetear entorno' } })
