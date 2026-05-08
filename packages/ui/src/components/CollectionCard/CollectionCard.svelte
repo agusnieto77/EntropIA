@@ -101,13 +101,13 @@
   .collection-card {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    padding: var(--space-4);
+    gap: var(--space-1);
+    padding: var(--space-3);
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.004) 62%),
       var(--color-surface);
     border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition:
       border-color var(--transition-smooth),
@@ -117,6 +117,7 @@
     width: 100%;
     font-family: var(--font-sans);
     color: var(--color-text-primary);
+    overflow: hidden;
   }
 
   .collection-card:hover {
@@ -139,8 +140,8 @@
 
   .collection-card__name {
     margin: 0;
-    font-size: var(--font-size-lg);
-    font-weight: var(--font-weight-bold);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-semibold);
     color: var(--color-text-primary);
   }
 
@@ -170,6 +171,15 @@
     display: flex;
     gap: var(--space-1);
     flex-shrink: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--transition-smooth);
+  }
+
+  .collection-card:hover .collection-card__actions,
+  .collection-card:focus-within .collection-card__actions {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   :global(.collection-card__edit-action) {

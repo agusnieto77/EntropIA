@@ -2,7 +2,7 @@
   import { getStore } from '$lib/db'
   import { navigation } from '$lib/navigation'
   import { locale, t } from '$lib/i18n'
-  import { CollectionCard, SearchBar, Button, Input, Card } from '@entropia/ui'
+  import { CollectionCard, Button, Input, Card } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import type { Collection } from '@entropia/store'
 
@@ -141,8 +141,8 @@
   function handleExternalCreate() {
     showCreate = true
     setTimeout(() => {
-      document.querySelector<HTMLInputElement>('.create-form input')?.focus()
-    }, 100)
+      document.querySelector<HTMLInputElement>('.modal-form input')?.focus()
+    }, 50)
   }
 
   function handleExternalFilter(e: Event) {
@@ -163,58 +163,10 @@
 </script>
 
 <div class="collections-view page-shell">
-  <section class="page-header">
-    <div class="page-header__content">
-      <span class="page-header__eyebrow">{$currentLocale && t('collections.eyebrow')}</span>
-      <h1>{$currentLocale && t('collections.title')}</h1>
-      <p>{$currentLocale && t('collections.subtitle')}</p>
-      <span class="page-header__meta">{visibleCountLabel}</span>
-    </div>
-
-    <div class="page-toolbar collections-toolbar">
-      <SearchBar
-        placeholder={$currentLocale && t('collections.searchPlaceholder')}
-        onsearch={(q) => (searchQuery = q)}
-        onclear={() => (searchQuery = '')}
-      />
-      <Button variant="primary" onclick={() => (showCreate = !showCreate)}>
-        {showCreate
-          ? $currentLocale && t('collections.cancel')
-          : $currentLocale && t('collections.new')}
-      </Button>
-    </div>
-  </section>
-
-  {#if showCreate}
-    <Card>
-      <form
-        class="create-form"
-        onsubmit={(e) => {
-          e.preventDefault()
-          handleCreate()
-        }}
-      >
-        <div class="section-copy">
-          <h2>{t('collections.createTitle')}</h2>
-          <p>{t('collections.createDescription')}</p>
-        </div>
-        <Input type="text" placeholder={t('collections.namePlaceholder')} bind:value={newName} />
-        <Input
-          type="text"
-          placeholder={t('collections.descriptionPlaceholder')}
-          bind:value={newDescription}
-        />
-        <div class="create-form__actions">
-          <Button variant="primary" type="submit" disabled={!newName.trim()}
-            >{t('collections.createAction')}</Button
-          >
-          <Button variant="ghost" onclick={() => (showCreate = false)}
-            >{t('collections.cancel')}</Button
-          >
-        </div>
-      </form>
-    </Card>
-  {/if}
+  <header class="collections-header">
+    <h1 class="collections-header__title">{$currentLocale && t('collections.title')}</h1>
+    <span class="collections-header__count">{visibleCountLabel}</span>
+  </header>
 
   {#if error}
     <p class="surface-message surface-message--error">{error}</p>
@@ -231,57 +183,92 @@
   {:else}
     <div class="grid">
       {#each filtered as collection (collection.id)}
-        {#if editingId === collection.id}
-          <Card>
-            <form
-              class="edit-form"
-              onsubmit={(e) => {
-                e.preventDefault()
-                handleSaveEdit()
-              }}
-            >
-              <Input
-                type="text"
-                placeholder={t('collections.editNamePlaceholder')}
-                bind:value={editName}
-              />
-              <Input
-                type="text"
-                placeholder={t('collections.descriptionPlaceholder')}
-                bind:value={editDescription}
-              />
-              <div class="edit-form__actions">
-                <Button variant="primary" type="submit" disabled={!editName.trim()}
-                  >{t('collections.save')}</Button
-                >
-                <Button variant="ghost" onclick={handleCancelEdit}>{t('collections.cancel')}</Button
-                >
-              </div>
-            </form>
-          </Card>
-        {:else}
-          <CollectionCard
-            id={collection.id}
-            name={collection.name}
-            description={collection.description ?? undefined}
-            itemCount={itemCounts[collection.id] ?? 0}
-            updatedAt={new Date(collection.updatedAt).getTime()}
-            onclick={() =>
-              navigation.navigate({
-                name: 'collection',
-                id: collection.id,
-                collectionName: collection.name,
-              })}
-            onedit={() => handleEdit(collection)}
-            ondelete={() => handleDeleteRequest(collection.id, collection.name)}
-          />
-        {/if}
+        <CollectionCard
+          id={collection.id}
+          name={collection.name}
+          description={collection.description ?? undefined}
+          itemCount={itemCounts[collection.id] ?? 0}
+          updatedAt={new Date(collection.updatedAt).getTime()}
+          onclick={() =>
+            navigation.navigate({
+              name: 'collection',
+              id: collection.id,
+              collectionName: collection.name,
+            })}
+          onedit={() => handleEdit(collection)}
+          ondelete={() => handleDeleteRequest(collection.id, collection.name)}
+        />
       {/each}
     </div>
   {/if}
 
+  {#if showCreate}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="modal-overlay" onkeydown={(e) => e.key === 'Escape' && (showCreate = false)} onclick={(e) => e.target === e.currentTarget && (showCreate = false)}>
+      <Card>
+        <form
+          class="modal-form"
+          onsubmit={(e) => {
+            e.preventDefault()
+            handleCreate()
+          }}
+        >
+          <h3 class="modal-form__title">{t('collections.createTitle')}</h3>
+          <p class="modal-form__description">{t('collections.createDescription')}</p>
+          <Input type="text" placeholder={t('collections.namePlaceholder')} bind:value={newName} />
+          <Input
+            type="text"
+            placeholder={t('collections.descriptionPlaceholder')}
+            bind:value={newDescription}
+          />
+          <div class="modal-form__actions">
+            <Button variant="ghost" onclick={() => (showCreate = false)}
+              >{t('collections.cancel')}</Button
+            >
+            <Button variant="primary" type="submit" disabled={!newName.trim()}
+              >{t('collections.createAction')}</Button
+            >
+          </div>
+        </form>
+      </Card>
+    </div>
+  {/if}
+
+  {#if editingId}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="modal-overlay" onkeydown={(e) => e.key === 'Escape' && handleCancelEdit()} onclick={(e) => e.target === e.currentTarget && handleCancelEdit()}>
+      <Card>
+        <form
+          class="modal-form"
+          onsubmit={(e) => {
+            e.preventDefault()
+            handleSaveEdit()
+          }}
+        >
+          <h3 class="modal-form__title">{t('collections.editTitle')}</h3>
+          <Input
+            type="text"
+            placeholder={t('collections.editNamePlaceholder')}
+            bind:value={editName}
+          />
+          <Input
+            type="text"
+            placeholder={t('collections.descriptionPlaceholder')}
+            bind:value={editDescription}
+          />
+          <div class="modal-form__actions">
+            <Button variant="ghost" onclick={handleCancelEdit}>{t('collections.cancel')}</Button>
+            <Button variant="primary" type="submit" disabled={!editName.trim()}
+              >{t('collections.save')}</Button
+            >
+          </div>
+        </form>
+      </Card>
+    </div>
+  {/if}
+
   {#if deletingId}
-    <div class="confirm-overlay">
+    <div class="modal-overlay">
       <Card>
         <div class="confirm-dialog">
           <h3 class="confirm-dialog__title">{t('collections.deleteTitle')}</h3>
@@ -332,69 +319,35 @@
     min-height: 100%;
   }
 
-  .collections-toolbar {
+  .collections-header {
     display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex: 1;
+    align-items: baseline;
+    gap: var(--space-3);
   }
 
-  .collections-toolbar :global(.search-bar) {
-    min-width: min(100%, 320px);
-    flex: 1 1 260px;
-  }
-
-  .create-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-4);
-  }
-
-  .create-form__actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-  }
-
-  .section-copy {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .section-copy h2 {
+  .collections-header__title {
     font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+    margin: 0;
   }
 
-  .section-copy p {
-    max-width: 56ch;
+  .collections-header__count {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: var(--space-3);
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: var(--space-2);
   }
 
   .empty {
     min-height: 220px;
   }
 
-  .edit-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-4);
-  }
-
-  .edit-form__actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-  }
-
-  .confirm-overlay {
+  .modal-overlay {
     position: fixed;
     top: 0;
     left: 0;
@@ -406,6 +359,33 @@
     background-color: var(--color-overlay);
     z-index: 100;
   }
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-5);
+    min-width: min(100vw - 32px, 440px);
+  }
+
+  .modal-form__title {
+    margin: 0;
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .modal-form__description {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .modal-form__actions {
+    display: flex;
+    gap: var(--space-2);
+    justify-content: flex-end;
+  }
+
   .confirm-dialog {
     display: flex;
     flex-direction: column;
@@ -469,18 +449,7 @@
   }
 
   @media (max-width: 720px) {
-    .collections-toolbar {
-      width: 100%;
-      justify-content: stretch;
-    }
-
-    .collections-toolbar :global(.search-bar),
-    .collections-toolbar :global(.btn) {
-      width: 100%;
-    }
-
-    .create-form__actions :global(.btn),
-    .edit-form__actions :global(.btn),
+    .modal-form__actions :global(.btn),
     .confirm-dialog__actions :global(.btn) {
       width: 100%;
     }
