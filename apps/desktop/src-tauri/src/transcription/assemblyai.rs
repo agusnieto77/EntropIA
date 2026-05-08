@@ -168,11 +168,12 @@ impl AssemblyAiClient {
             .await
             .map_err(|e| format!("AssemblyAI transcript request failed: {e}"))?;
 
-        let created: CreateTranscriptResponse = Self::ensure_success(transcript_response, "AssemblyAI")
-            .await?
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse AssemblyAI transcript response: {e}"))?;
+        let created: CreateTranscriptResponse =
+            Self::ensure_success(transcript_response, "AssemblyAI")
+                .await?
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse AssemblyAI transcript response: {e}"))?;
 
         let mut poll_attempt = 0_u8;
         loop {
@@ -188,11 +189,12 @@ impl AssemblyAiClient {
                 .await
                 .map_err(|e| format!("AssemblyAI polling failed: {e}"))?;
 
-            let transcript: TranscriptStatusResponse = Self::ensure_success(status_response, "AssemblyAI")
-                .await?
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse AssemblyAI polling response: {e}"))?;
+            let transcript: TranscriptStatusResponse =
+                Self::ensure_success(status_response, "AssemblyAI")
+                    .await?
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse AssemblyAI polling response: {e}"))?;
 
             match transcript.status.as_str() {
                 "completed" => {
@@ -217,15 +219,17 @@ impl AssemblyAiClient {
 
                     return Ok(TranscriptionResult {
                         text,
-                        language: transcript.language_code.unwrap_or_else(|| "auto".to_string()),
+                        language: transcript
+                            .language_code
+                            .unwrap_or_else(|| "auto".to_string()),
                         segments,
                         duration_ms,
                     });
                 }
                 "error" => {
-                    return Err(transcript
-                        .error
-                        .unwrap_or_else(|| "AssemblyAI returned an unknown transcription error".to_string()))
+                    return Err(transcript.error.unwrap_or_else(|| {
+                        "AssemblyAI returned an unknown transcription error".to_string()
+                    }))
                 }
                 _ => tokio::time::sleep(tokio::time::Duration::from_secs(3)).await,
             }
@@ -341,7 +345,10 @@ mod tests {
         .expect("valid transcript error payload");
 
         assert_eq!(payload.status, "error");
-        assert_eq!(payload.error.as_deref(), Some("Audio duration exceeds plan limit"));
+        assert_eq!(
+            payload.error.as_deref(),
+            Some("Audio duration exceeds plan limit")
+        );
     }
 
     #[test]

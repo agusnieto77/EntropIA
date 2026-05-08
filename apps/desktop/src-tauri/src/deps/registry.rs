@@ -120,7 +120,11 @@ mod tests {
 
     #[test]
     fn test_registry_length() {
-        assert_eq!(all_deps().len(), 6, "Registry should have exactly 6 entries");
+        assert_eq!(
+            all_deps().len(),
+            6,
+            "Registry should have exactly 6 entries"
+        );
     }
 
     #[test]
@@ -146,7 +150,10 @@ mod tests {
 
         let spacy_model = find_dep(&DependencyId::SpacyModelEs);
         assert!(spacy_model.is_some());
-        assert!(spacy_model.unwrap().pip_spec.is_none(), "SpacyModelEs has no pip_spec");
+        assert!(
+            spacy_model.unwrap().pip_spec.is_none(),
+            "SpacyModelEs has no pip_spec"
+        );
 
         assert!(
             find_dep(&DependencyId::Fastembed).is_some(),

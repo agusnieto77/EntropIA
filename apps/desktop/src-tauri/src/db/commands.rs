@@ -156,7 +156,9 @@ pub fn db_select_rows(
 }
 
 #[tauri::command]
-pub fn db_browser_list_tables(db: State<'_, AppDbState>) -> Result<Vec<DbBrowserTableInfo>, String> {
+pub fn db_browser_list_tables(
+    db: State<'_, AppDbState>,
+) -> Result<Vec<DbBrowserTableInfo>, String> {
     let conn = db.ui_conn.lock().map_err(|e| e.to_string())?;
     list_db_browser_tables(&conn)
 }
@@ -277,7 +279,12 @@ fn query_db_browser_rows(
     } else {
         let clauses = column_names
             .iter()
-            .map(|column| format!("CAST({} AS TEXT) LIKE ?1 COLLATE NOCASE", quote_identifier(column)))
+            .map(|column| {
+                format!(
+                    "CAST({} AS TEXT) LIKE ?1 COLLATE NOCASE",
+                    quote_identifier(column)
+                )
+            })
             .collect::<Vec<_>>()
             .join(" OR ");
         format!(" WHERE {clauses}")
@@ -294,7 +301,9 @@ fn query_db_browser_rows(
         conn.query_row(&total_sql, [], |row| row.get::<_, i64>(0))
     } else {
         let pattern = format!("%{search}%");
-        conn.query_row(&total_sql, rusqlite::params![pattern], |row| row.get::<_, i64>(0))
+        conn.query_row(&total_sql, rusqlite::params![pattern], |row| {
+            row.get::<_, i64>(0)
+        })
     }
     .map_err(|e| format!("Failed to count rows for '{table}': {e}"))?
     .max(0) as u64;
@@ -312,9 +321,10 @@ fn query_db_browser_rows(
         .map_err(|e| format!("Failed to collect rows for '{table}': {e}"))?
     } else {
         let pattern = format!("%{search}%");
-        stmt.query_map(rusqlite::params![pattern, page_size as i64, offset], |row| {
-            Ok(row_to_json(row, &column_names))
-        })
+        stmt.query_map(
+            rusqlite::params![pattern, page_size as i64, offset],
+            |row| Ok(row_to_json(row, &column_names)),
+        )
         .map_err(|e| format!("Failed to query rows for '{table}': {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect rows for '{table}': {e}"))?
@@ -347,7 +357,9 @@ fn ensure_db_browser_table_allowed(conn: &Connection, table: &str) -> Result<(),
     if allowed.iter().any(|candidate| candidate.name == table) {
         Ok(())
     } else {
-        Err(format!("Table '{table}' is not available in the DB browser"))
+        Err(format!(
+            "Table '{table}' is not available in the DB browser"
+        ))
     }
 }
 
@@ -569,6 +581,9 @@ mod tests {
 
         assert_eq!(response.total, 2);
         assert_eq!(response.rows.len(), 1);
-        assert_eq!(response.rows[0]["name"], serde_json::Value::String("Fotografías".to_string()));
+        assert_eq!(
+            response.rows[0]["name"],
+            serde_json::Value::String("Fotografías".to_string())
+        );
     }
 }

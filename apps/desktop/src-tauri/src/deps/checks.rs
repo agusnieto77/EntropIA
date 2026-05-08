@@ -4,9 +4,9 @@
 //! `"ok"` when the dependency is importable. This module runs those probes
 //! asynchronously and maps the results to `DependencyStatus` values.
 
-use std::sync::{Mutex, OnceLock};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::process::Command;
@@ -66,7 +66,10 @@ pub enum ProbePythonMode {
 /// - Spawns `python_path -c "<probe_code>"` with a 10 s per-probe timeout.
 /// - stdout contains `"ok"` → `Installed { version: None }`
 /// - Non-zero exit, timeout, or spawn error → `Missing`
-pub async fn probe_one(dep: &crate::deps::registry::DependencySpec, python_path: &Path) -> DependencyStatus {
+pub async fn probe_one(
+    dep: &crate::deps::registry::DependencySpec,
+    python_path: &Path,
+) -> DependencyStatus {
     let mut cmd = Command::new(python_path);
     #[cfg(windows)]
     {
@@ -218,7 +221,10 @@ pub fn load_probe_python_settings(conn: &rusqlite::Connection) -> ProbePythonSet
 }
 
 pub fn resolve_probe_python(conn: &rusqlite::Connection) -> Option<PathBuf> {
-    resolve_probe_python_from_settings(load_probe_python_settings(conn), ProbePythonMode::RuntimeFallback)
+    resolve_probe_python_from_settings(
+        load_probe_python_settings(conn),
+        ProbePythonMode::RuntimeFallback,
+    )
 }
 
 pub async fn resolve_probe_python_async(
@@ -240,12 +246,13 @@ pub fn resolve_probe_python_from_settings(
 
     match mode {
         ProbePythonMode::DependencyManager => None,
-        ProbePythonMode::RuntimeFallback => resolve_runtime_python_candidates(settings.runtime_candidates),
+        ProbePythonMode::RuntimeFallback => {
+            resolve_runtime_python_candidates(settings.runtime_candidates)
+        }
     }
 }
 
 fn resolve_runtime_python_candidates(mut candidates: Vec<PathBuf>) -> Option<PathBuf> {
-    
     for candidate in crate::python_discovery::discover_python_candidates() {
         if candidate.is_file() && !candidates.contains(candidate) {
             candidates.push(candidate.clone());
@@ -260,8 +267,8 @@ fn resolve_runtime_python_candidates(mut candidates: Vec<PathBuf>) -> Option<Pat
             continue;
         }
 
-        let optional_score = usize::from(capabilities.has_faster_whisper)
-            + usize::from(capabilities.has_spacy);
+        let optional_score =
+            usize::from(capabilities.has_faster_whisper) + usize::from(capabilities.has_spacy);
 
         match &best_match {
             Some((_, best_score)) if *best_score >= optional_score => {}
@@ -356,7 +363,10 @@ mod tests {
         let current_exe = std::env::current_exe().expect("current exe path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["deps_venv_python_path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "deps_venv_python_path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert managed python path");
 
@@ -391,12 +401,18 @@ mod tests {
 
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["python.fastembed.path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "python.fastembed.path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert fastembed path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["python.paddle_vl.path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "python.paddle_vl.path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert duplicate path");
         conn.execute(
@@ -415,7 +431,10 @@ mod tests {
         let current_exe = std::env::current_exe().expect("current exe path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["deps_venv_python_path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "deps_venv_python_path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert managed python path");
 
@@ -436,9 +455,13 @@ mod tests {
         .expect("insert runtime python path");
 
         let settings = load_probe_python_settings(&conn);
-        let result = resolve_probe_python_from_settings(settings, ProbePythonMode::DependencyManager);
+        let result =
+            resolve_probe_python_from_settings(settings, ProbePythonMode::DependencyManager);
 
-        assert_eq!(result, None, "dependency checks must not fall back to runtime python when managed venv is missing");
+        assert_eq!(
+            result, None,
+            "dependency checks must not fall back to runtime python when managed venv is missing"
+        );
     }
 
     #[test]
@@ -447,7 +470,10 @@ mod tests {
         let current_exe = std::env::current_exe().expect("current exe path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["python.fastembed.path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "python.fastembed.path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert runtime python path");
 

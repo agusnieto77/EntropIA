@@ -87,10 +87,7 @@ pub async fn create_venv(uv: &UvBinary, app_data_dir: &Path) -> Result<PathBuf, 
 
 /// Write all Python-path settings into `app_settings` so that every subsystem
 /// (embeddings, OCR, transcription, NER) can find the managed interpreter.
-pub fn persist_venv_paths(
-    conn: &rusqlite::Connection,
-    python_path: &Path,
-) -> Result<(), String> {
+pub fn persist_venv_paths(conn: &rusqlite::Connection, python_path: &Path) -> Result<(), String> {
     let path_str = python_path.to_string_lossy();
 
     let keys = [
@@ -158,8 +155,12 @@ async fn ensure_managed_prerequisites_installed(
     venv_python: &Path,
 ) -> Result<(), String> {
     for prerequisite_id in dep.managed_prerequisites {
-        let prerequisite = find_dep(prerequisite_id)
-            .ok_or_else(|| format!("Prerequisito desconocido para {}: {prerequisite_id:?}", dep.display_name))?;
+        let prerequisite = find_dep(prerequisite_id).ok_or_else(|| {
+            format!(
+                "Prerequisito desconocido para {}: {prerequisite_id:?}",
+                dep.display_name
+            )
+        })?;
 
         let prerequisite_status = probe_one(prerequisite, venv_python).await;
         if matches!(prerequisite_status, DependencyStatus::Installed { .. }) {
@@ -261,11 +262,7 @@ async fn run_and_stream(
         .map_err(|e| format!("Error esperando proceso de {display_name}: {e}"))?;
 
     if !status.success() {
-        let tail = last_lines
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let tail = last_lines.iter().cloned().collect::<Vec<_>>().join("\n");
         return Err(format!("Error instalando {display_name}: {tail}"));
     }
 
@@ -341,7 +338,9 @@ pub async fn install_all(
 
     let venv_python = match create_venv(&uv, app_data_dir).await {
         Ok(p) => {
-            let status = DependencyStatus::Installed { version: Some("3.11".to_string()) };
+            let status = DependencyStatus::Installed {
+                version: Some("3.11".to_string()),
+            };
             {
                 let mut map = state.0.lock().await;
                 map.statuses.insert(DependencyId::Python, status.clone());
@@ -386,7 +385,9 @@ pub async fn install_all(
     // Add Python result.
     results.push(DepCheckResult {
         id: DependencyId::Python,
-        status: DependencyStatus::Installed { version: Some("3.11".to_string()) },
+        status: DependencyStatus::Installed {
+            version: Some("3.11".to_string()),
+        },
         version: Some("3.11".to_string()),
     });
 
@@ -411,14 +412,9 @@ pub async fn install_all(
 
         // Clone handles for the closure (on_output captures dep.display_name).
         let display_name = dep.display_name;
-        let install_result = install_package(
-            &uv,
-            dep,
-            &venv_python,
-            move |line| {
-                eprintln!("[deps/install] [{display_name}] {line}");
-            },
-        )
+        let install_result = install_package(&uv, dep, &venv_python, move |line| {
+            eprintln!("[deps/install] [{display_name}] {line}");
+        })
         .await;
 
         let final_status = match install_result {
@@ -549,8 +545,7 @@ pub async fn install_one(
         created
     };
 
-    let dep = find_dep(id)
-        .ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
+    let dep = find_dep(id).ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
 
     let install_plan = managed_install_plan(dep);
 
@@ -625,8 +620,8 @@ pub async fn install_one(
         probe_settings,
         ProbePythonMode::DependencyManager,
     )
-        .await?
-        .unwrap_or(venv_python);
+    .await?
+    .unwrap_or(venv_python);
 
     let probed_status = probe_one(dep, &probe_python).await;
 
@@ -753,7 +748,10 @@ mod tests {
     fn test_managed_install_spec_uses_exact_spacy_model_wheel() {
         let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
 
-        assert_eq!(managed_install_spec(spacy_model), Some(SPACY_MODEL_ES_WHEEL_URL));
+        assert_eq!(
+            managed_install_spec(spacy_model),
+            Some(SPACY_MODEL_ES_WHEEL_URL)
+        );
         assert!(SPACY_MODEL_ES_WHEEL_URL.contains("es_core_news_sm-3.8.0"));
         assert!(SPACY_MODEL_ES_WHEEL_URL.ends_with("-py3-none-any.whl"));
     }

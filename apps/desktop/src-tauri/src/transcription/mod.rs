@@ -2,8 +2,8 @@
 // Will be re-enabled if we need audio duration/preview in Rust.
 // #[allow(dead_code)]
 // mod audio;
-pub mod commands;
 mod assemblyai;
+pub mod commands;
 mod engine;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
@@ -376,7 +376,9 @@ pub(super) fn transcribe_with_selected_provider(
                 );
             }
 
-            eprintln!("[transcription] Local STT unavailable in auto mode, using AssemblyAI fallback");
+            eprintln!(
+                "[transcription] Local STT unavailable in auto mode, using AssemblyAI fallback"
+            );
             transcribe_with_assemblyai_provider(
                 audio_path,
                 &assemblyai_api_key,
@@ -392,7 +394,9 @@ pub fn cleanup_temp_audio_file(audio_path: &str) -> Result<(), String> {
     match std::fs::remove_file(audio_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Failed to remove temporary audio file {audio_path}: {error}")),
+        Err(error) => Err(format!(
+            "Failed to remove temporary audio file {audio_path}: {error}"
+        )),
     }
 }
 
@@ -485,8 +489,7 @@ fn process_job(
     emit_progress(app_handle, &job.asset_id, 80, "saving");
 
     // Stage 2 — persist to SQLite
-    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, model_name)?
-    {
+    if let Some(item_id) = save_transcription(conn, &job.asset_id, &result, model_name)? {
         // Asset-level NER + triples: only re-extract for the transcribed asset,
         // not the entire item. Avoids reprocessing unchanged pages.
         let nlp_queue = app_handle.state::<NlpQueue>();
