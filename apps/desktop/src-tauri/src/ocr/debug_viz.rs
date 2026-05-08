@@ -522,7 +522,9 @@ pub fn save_glm_ocr_response_debug(
     let root = match workspace_root() {
         Some(r) => r,
         None => {
-            eprintln!("[debug_viz] CARGO_MANIFEST_DIR unavailable — skipping GLM-OCR response dump");
+            eprintln!(
+                "[debug_viz] CARGO_MANIFEST_DIR unavailable — skipping GLM-OCR response dump"
+            );
             return Ok(());
         }
     };

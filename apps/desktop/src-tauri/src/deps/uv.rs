@@ -208,9 +208,7 @@ fn version_from_output(output: &std::process::Output) -> Option<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let version_str = stdout.trim();
     if !version_str.contains(UV_VERSION) {
-        eprintln!(
-            "[deps/uv] version mismatch: expected {UV_VERSION}, got {version_str:?}"
-        );
+        eprintln!("[deps/uv] version mismatch: expected {UV_VERSION}, got {version_str:?}");
         return None;
     }
 
@@ -354,10 +352,10 @@ pub async fn download(
     let exe_path = uv_exe_path(app_data_dir);
 
     let extract_result = (|| -> Result<(), String> {
-        let zip_file = std::fs::File::open(&tmp_zip_path)
-            .map_err(|e| format!("Error abriendo ZIP: {e}"))?;
-        let mut archive = zip::ZipArchive::new(zip_file)
-            .map_err(|e| format!("Error extrayendo uv: {e}"))?;
+        let zip_file =
+            std::fs::File::open(&tmp_zip_path).map_err(|e| format!("Error abriendo ZIP: {e}"))?;
+        let mut archive =
+            zip::ZipArchive::new(zip_file).map_err(|e| format!("Error extrayendo uv: {e}"))?;
 
         let entry_index = (0..archive.len())
             .find(|&i| {

@@ -960,7 +960,10 @@ mod tests {
                 item_id: "item-enrich".to_string(),
             },
         );
-        assert!(result.is_ok(), "EnrichItem should succeed for remaining item-level jobs");
+        assert!(
+            result.is_ok(),
+            "EnrichItem should succeed for remaining item-level jobs"
+        );
 
         // FTS should have indexed the item
         let fts_rows: i64 = conn
@@ -1058,7 +1061,10 @@ mod tests {
                 item_id: "item-trans-enrich".to_string(),
             },
         );
-        assert!(result.is_ok(), "EnrichItem should complete for transcription-only text");
+        assert!(
+            result.is_ok(),
+            "EnrichItem should complete for transcription-only text"
+        );
 
         // FTS should find the transcription text
         let fts_rows: i64 = conn

@@ -44,15 +44,11 @@ pub enum DependencyStatus {
     /// A probe is currently running.
     Checking,
     /// Dependency is present and (optionally) at a known version.
-    Installed {
-        version: Option<String>,
-    },
+    Installed { version: Option<String> },
     /// Dependency was probed and was not found.
     Missing,
     /// An installation is in progress.
-    Installing {
-        percent: u8,
-    },
+    Installing { percent: u8 },
     /// The last install attempt failed with this message.
     Failed(String),
 }
@@ -77,7 +73,14 @@ fn default_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
     use DependencyId::*;
 
     let mut map = HashMap::new();
-    for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
+    for id in [
+        Python,
+        Fastembed,
+        PaddleOcr,
+        FasterWhisper,
+        Spacy,
+        SpacyModelEs,
+    ] {
         map.insert(id, DependencyStatus::Unknown);
     }
     map
@@ -114,15 +117,13 @@ fn dep_results_from_map(
 impl DepsState {
     /// Create a new state map with all dependencies initialised to `Unknown`.
     pub fn new() -> Self {
-        Self(
-            Arc::new(Mutex::new(DepsStateData {
-                statuses: default_dependency_statuses(),
-                cached_probe_python: None,
-                cached_probe_results: None,
-                probe_in_flight: false,
-                probe_generation: 0,
-            })),
-        )
+        Self(Arc::new(Mutex::new(DepsStateData {
+            statuses: default_dependency_statuses(),
+            cached_probe_python: None,
+            cached_probe_results: None,
+            probe_in_flight: false,
+            probe_generation: 0,
+        })))
     }
 }
 
@@ -236,11 +237,9 @@ pub async fn probe_all_once(
                 settings
             } else {
                 finish_probe_attempt(state, probe_generation, None, None).await;
-                return Err(
-                    probe_settings
-                        .err()
-                        .unwrap_or_else(|| "DB lock error".to_string()),
-                );
+                return Err(probe_settings
+                    .err()
+                    .unwrap_or_else(|| "DB lock error".to_string()));
             };
 
             let python_path = checks::resolve_probe_python_async(
@@ -254,8 +253,13 @@ pub async fn probe_all_once(
                 None => missing_dependency_statuses(),
             };
 
-            finish_probe_attempt(state, probe_generation, python_path, Some(results_map.clone()))
-                .await;
+            finish_probe_attempt(
+                state,
+                probe_generation,
+                python_path,
+                Some(results_map.clone()),
+            )
+            .await;
 
             return Ok(results_map);
         }
@@ -371,13 +375,19 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
 
     let uv_binary = uv::UvBinary::detect(Some(&app), &app_data_dir);
     let uv_ready = uv_binary.is_some();
-    let uv_path = uv_binary.as_ref().map(|b| b.path.to_string_lossy().into_owned());
+    let uv_path = uv_binary
+        .as_ref()
+        .map(|b| b.path.to_string_lossy().into_owned());
     let uv_version = uv_binary.map(|b| b.version);
 
     let venv_python = install::venv_python_path(&app_data_dir);
     let venv_exists = venv_python.is_file();
     let venv_path = if venv_exists {
-        Some(install::venv_path(&app_data_dir).to_string_lossy().into_owned())
+        Some(
+            install::venv_path(&app_data_dir)
+                .to_string_lossy()
+                .into_owned(),
+        )
     } else {
         None
     };
@@ -441,7 +451,14 @@ pub async fn deps_reset(
     {
         use DependencyId::*;
         let mut map = state.0.lock().await;
-        for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
+        for id in [
+            Python,
+            Fastembed,
+            PaddleOcr,
+            FasterWhisper,
+            Spacy,
+            SpacyModelEs,
+        ] {
             map.statuses.insert(id, DependencyStatus::Missing);
         }
     }

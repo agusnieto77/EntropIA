@@ -112,8 +112,11 @@ pub async fn settings_delete(
             .ui_conn
             .lock()
             .map_err(|e| format!("DB lock error: {e}"))?;
-        conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key.as_str()])
-            .map_err(|e| format!("Failed to delete setting: {e}"))?;
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = ?1",
+            params![key.as_str()],
+        )
+        .map_err(|e| format!("Failed to delete setting: {e}"))?;
     }
     if should_invalidate {
         invalidate_dependency_probe_cache_if_needed(&key, Some(&deps)).await;

@@ -277,7 +277,8 @@ fn resolve_glm_effective_label(
     markdown_titles: &std::collections::HashSet<String>,
 ) -> String {
     if raw_label == "text" {
-        let normalized_content = normalize_glm_text_fragment(content.trim_start_matches('#').trim());
+        let normalized_content =
+            normalize_glm_text_fragment(content.trim_start_matches('#').trim());
         if !normalized_content.is_empty() && markdown_titles.contains(&normalized_content) {
             return "title".to_string();
         }
@@ -394,7 +395,8 @@ fn glm_response_to_processed_output(
     let markdown_titles = collect_glm_markdown_titles(&response.md_results);
 
     for (page_idx, page_details) in response.layout_details.iter().enumerate() {
-        let page = u32::try_from(page_idx + 1).map_err(|_| "GLM-OCR page index overflow".to_string())?;
+        let page =
+            u32::try_from(page_idx + 1).map_err(|_| "GLM-OCR page index overflow".to_string())?;
         let (fallback_width, fallback_height) =
             page_dimensions_from_glm_response(response, page_idx);
 
@@ -413,9 +415,10 @@ fn glm_response_to_processed_output(
                 continue;
             };
 
-            if let (Some(formatted_text), Some(ref bbox)) =
-                (format_region_text(&mapped_category, &content), bbox.as_ref())
-            {
+            if let (Some(formatted_text), Some(ref bbox)) = (
+                format_region_text(&mapped_category, &content),
+                bbox.as_ref(),
+            ) {
                 ocr_regions.push(provider::OcrRegion {
                     text: formatted_text,
                     confidence: 1.0,
@@ -1562,7 +1565,15 @@ async fn process_image(
     match mode {
         OcrMode::Light => process_image_light(provider, bytes, asset_id, app_handle).await,
         OcrMode::High => {
-            process_image_high(provider, conn, bytes, asset_id, app_handle, paddle_vl_engine).await
+            process_image_high(
+                provider,
+                conn,
+                bytes,
+                asset_id,
+                app_handle,
+                paddle_vl_engine,
+            )
+            .await
         }
     }
 }
@@ -2180,8 +2191,14 @@ mod tests {
         assert_eq!(output.ocr.text, "# Título\n\nTexto");
         assert_eq!(output.ocr.method, "glm_ocr");
         assert_eq!(output.layout.as_ref().expect("layout").blocks.len(), 2);
-        assert_eq!(output.layout.as_ref().expect("layout").blocks[0].label, "title");
-        assert_eq!(output.layout.as_ref().expect("layout").blocks[1].label, "table");
+        assert_eq!(
+            output.layout.as_ref().expect("layout").blocks[0].label,
+            "title"
+        );
+        assert_eq!(
+            output.layout.as_ref().expect("layout").blocks[1].label,
+            "table"
+        );
         assert_eq!(output.layout.as_ref().expect("layout").image_width, 800);
         assert_eq!(output.layout.as_ref().expect("layout").image_height, 1000);
     }
@@ -2206,8 +2223,14 @@ mod tests {
         };
 
         let output = glm_response_to_processed_output(&response, "glm_ocr").expect("glm output");
-        assert_eq!(output.layout.as_ref().expect("layout").blocks[0].label, "title");
-        assert_eq!(output.layout.as_ref().expect("layout").regions[0].category, "title");
+        assert_eq!(
+            output.layout.as_ref().expect("layout").blocks[0].label,
+            "title"
+        );
+        assert_eq!(
+            output.layout.as_ref().expect("layout").regions[0].category,
+            "title"
+        );
     }
 
     #[test]
