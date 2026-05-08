@@ -8,6 +8,7 @@ const {
   settingsSetMock,
   testOpenrouterConnectionMock,
   testAssemblyaiConnectionMock,
+  testGlmOcrConnectionMock,
   llmIsAvailableMock,
   llmLocalModelInfoMock,
   llmDownloadModelMock,
@@ -17,6 +18,7 @@ const {
     settingsSetMock: vi.fn(),
     testOpenrouterConnectionMock: vi.fn(),
     testAssemblyaiConnectionMock: vi.fn(),
+    testGlmOcrConnectionMock: vi.fn(),
     llmIsAvailableMock: vi.fn(),
     llmLocalModelInfoMock: vi.fn(),
     llmDownloadModelMock: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('$lib/settings', async () => {
     settingsSet: settingsSetMock,
     testOpenrouterConnection: testOpenrouterConnectionMock,
     testAssemblyaiConnection: testAssemblyaiConnectionMock,
+    testGlmOcrConnection: testGlmOcrConnectionMock,
   }
 })
 
@@ -47,6 +50,7 @@ describe('SettingsView', () => {
     settingsSetMock.mockReset().mockResolvedValue(undefined)
     testOpenrouterConnectionMock.mockReset()
     testAssemblyaiConnectionMock.mockReset().mockResolvedValue(undefined)
+    testGlmOcrConnectionMock.mockReset().mockResolvedValue(undefined)
     llmIsAvailableMock.mockReset().mockResolvedValue(true)
     llmDownloadModelMock.mockReset().mockResolvedValue(undefined)
     llmLocalModelInfoMock.mockReset().mockResolvedValue({
@@ -92,12 +96,14 @@ describe('SettingsView', () => {
     render(SettingsView)
 
     const testButtons = await screen.findAllByRole('button', { name: 'Probar conexión' })
-    expect(testButtons).toHaveLength(2)
+    expect(testButtons).toHaveLength(3)
 
     const openrouterTestButton = testButtons[0]
     const assemblyaiTestButton = testButtons[1]
+    const glmOcrTestButton = testButtons[2]
     expect(openrouterTestButton).toBeDefined()
     expect(assemblyaiTestButton).toBeDefined()
+    expect(glmOcrTestButton).toBeDefined()
 
     await fireEvent.click(openrouterTestButton!)
 
