@@ -15,11 +15,13 @@ use crate::runtime::status::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeManager;
+
+const RUNTIME_PACK_ROOT_ENV: &str = "ENTROPIA_RUNTIME_PACK_ROOT";
 
 impl RuntimeManager {
     pub fn new() -> Self {
@@ -501,6 +503,10 @@ impl RuntimeManager {
 
 fn resolve_bundle_root(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     let platform = current_runtime_platform();
+    if let Some(override_root) = resolve_env_bundle_root(&platform)? {
+        return Ok(override_root);
+    }
+
     if let Ok(resource_root) = app_handle.path().resolve(
         format!("runtime-pack/{platform}"),
         tauri::path::BaseDirectory::Resource,
@@ -521,6 +527,37 @@ fn resolve_bundle_root(app_handle: &AppHandle) -> Result<std::path::PathBuf, Str
     Err(format!(
         "Bundled runtime-pack not found for platform {platform}. Tried Tauri resources and {}/resources/runtime-pack/{platform}",
         env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+fn resolve_env_bundle_root(platform: &str) -> Result<Option<PathBuf>, String> {
+    resolve_env_bundle_root_from_value(platform, std::env::var_os(RUNTIME_PACK_ROOT_ENV))
+}
+
+fn resolve_env_bundle_root_from_value(
+    platform: &str,
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(None);
+    };
+
+    let root = crate::path_utils::normalize_windows_path(PathBuf::from(value));
+    if root.join("manifest.json").is_file() {
+        return Ok(Some(root));
+    }
+
+    let platform_root = root.join(platform);
+    if platform_root.join("manifest.json").is_file() {
+        return Ok(Some(platform_root));
+    }
+
+    Err(format!(
+        "{RUNTIME_PACK_ROOT_ENV} apunta a {}, pero no se encontró manifest.json ni layout {platform}/manifest.json",
+        root.display()
     ))
 }
 
@@ -1092,7 +1129,7 @@ fn app_version_incompatible_status(app_version: &str, pack_version: &str) -> Run
 
 fn fixture_guidance(manifest: &RuntimeManifest) -> Vec<String> {
     let mut guidance = vec![
-        "Esto no indica una caída: la UI puede abrir, pero OCR/NLP/transcripción quedan bloqueados hasta inyectar los payloads de release.".to_string(),
+        "Esto no indica una caída: el runtime-pack de release no aporta sus payloads todavía. En dev, OCR/NLP/transcripción pueden funcionar si hay dependencias locales ya instaladas.".to_string(),
     ];
 
     if manifest.release_injection_required {
@@ -2244,5 +2281,56 @@ mod tests {
         } else {
             assert_eq!(discovered, None);
         }
+    }
+
+    #[test]
+    fn resolves_env_runtime_pack_override_as_platform_parent() {
+        let root = tempdir().expect("override root");
+        let platform = crate::runtime::paths::current_runtime_platform();
+        let platform_root = root.path().join(&platform);
+        fs::create_dir_all(&platform_root).expect("platform root");
+        fs::write(platform_root.join("manifest.json"), "{}").expect("manifest");
+
+        let resolved = resolve_env_bundle_root_from_value(
+            &platform,
+            Some(root.path().as_os_str().to_os_string()),
+        )
+        .expect("override should be valid");
+
+        assert_eq!(resolved, Some(platform_root));
+    }
+
+    #[test]
+    fn resolves_env_runtime_pack_override_as_direct_pack() {
+        let root = tempdir().expect("override root");
+        let platform = crate::runtime::paths::current_runtime_platform();
+        fs::write(root.path().join("manifest.json"), "{}").expect("manifest");
+
+        let resolved = resolve_env_bundle_root_from_value(
+            &platform,
+            Some(root.path().as_os_str().to_os_string()),
+        )
+        .expect("override should be valid");
+
+        assert_eq!(
+            resolved,
+            Some(crate::path_utils::normalize_windows_path(
+                root.path().to_path_buf()
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_env_runtime_pack_override() {
+        let root = tempdir().expect("override root");
+
+        let error = resolve_env_bundle_root_from_value(
+            "windows-x86_64",
+            Some(root.path().as_os_str().to_os_string()),
+        )
+        .expect_err("invalid override should fail fast");
+
+        assert!(error.contains(RUNTIME_PACK_ROOT_ENV));
+        assert!(error.contains("windows-x86_64/manifest.json"));
     }
 }

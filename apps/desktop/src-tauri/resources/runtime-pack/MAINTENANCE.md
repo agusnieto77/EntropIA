@@ -14,7 +14,7 @@ Antes de publicar una release que diga “self-contained”, CI/release DEBE ree
 1. Python relocatable redistribuible por plataforma.
 2. `uv` auditado si cambia respecto del fixture.
 3. Wheelhouse offline real para OCR/transcripción/NLP.
-4. Caches/modelos presembrados (HF, PaddleX, spaCy) requeridos por los flujos core.
+4. Caches/modelos presembrados (HF y PaddleX) requeridos por los flujos core; spaCy se cubre por wheelhouse offline.
 5. Shared libraries Linux auditadas (`libpdfium.so`, `libonnxruntime.so`, y cualquier dependencia adicional que resulte obligatoria).
 
 ## Contrato de payload externo
@@ -81,6 +81,54 @@ python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform windows-
 python3 apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform linux-x86_64 --payload-root /abs/path/runtime-payloads --output-dir apps/desktop/src-tauri/target/runtime-pack
 python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform linux-x86_64 --root apps/desktop/src-tauri/target/runtime-pack
 ```
+
+### Windows x86_64 desde el venv administrado local
+
+Cuando una máquina Windows ya tiene `managed_venv` funcionando, se puede materializar un payload release reproducible desde ese entorno sin subir binarios pesados a git:
+
+```powershell
+python apps/desktop/src-tauri/scripts/materialize_windows_runtime_payload.py `
+  --pack-version 2026.05.0 `
+  --app-version 0.0.11 `
+  --output-dir apps/desktop/src-tauri/target/runtime-payloads
+
+python apps/desktop/src-tauri/scripts/build_runtime_pack.py `
+  --platform windows-x86_64 `
+  --payload-root apps/desktop/src-tauri/target/runtime-payloads `
+  --output-dir apps/desktop/src-tauri/target/runtime-pack `
+  --require-release-payload
+
+python apps/desktop/src-tauri/scripts/runtime-pack-smoke.py `
+  --platform windows-x86_64 `
+  --root apps/desktop/src-tauri/target/runtime-pack `
+  --release `
+  --install-probe
+```
+
+Ese output queda bajo `target/`: es artefacto de release, no fuente commiteable.
+
+### Criterio de cierre Windows x86_64
+
+Windows se considera cerrado cuando se cumplen estas condiciones:
+
+1. `materialize_windows_runtime_payload.py` genera `target/runtime-payloads/windows-x86_64` desde un `managed_venv` funcional.
+2. `build_runtime_pack.py --require-release-payload` genera `target/runtime-pack/windows-x86_64` con `payload_profile=release`, `release_injection_required=false` y `external_artifacts_required=[]`.
+3. `runtime-pack-smoke.py --release --install-probe` pasa en Windows.
+4. El pack release no contiene ningun `CACHE_NOT_SEEDED.txt`; si aparece ese marcador, el smoke release debe fallar.
+5. En dev, `ENTROPIA_RUNTIME_PACK_ROOT` puede apuntar a `target/runtime-pack` para validar la app sin copiar el payload pesado a `resources/`.
+
+### Politica OCRH / PaddleOCR-VL en CPU
+
+En Windows sin GPU NVIDIA, PaddleOCR-VL puede usar CPU. El timeout de 900s es aceptado: no es senal de runtime roto por si mismo. Si vence, OCRH debe fallar de forma controlada y caer a OCR plano; no hay que bajar este timeout salvo nueva decision de producto.
+
+Para probarlo en dev sin copiar 3GB a `resources/`, arrancá Tauri con:
+
+```powershell
+$env:ENTROPIA_RUNTIME_PACK_ROOT = "F:\POSITRON\EntropIA\apps\desktop\src-tauri\target\runtime-pack"
+pnpm --filter @entropia/desktop tauri dev
+```
+
+El override acepta tanto el directorio padre (`target/runtime-pack`) como el pack directo (`target/runtime-pack/windows-x86_64`).
 
 Ejemplo mínimo de `manifest.overrides.json` para una inyección completa:
 

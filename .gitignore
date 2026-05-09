@@ -3,6 +3,11 @@ node_modules/
 
 # scripts
 scripts/
+!apps/desktop/src-tauri/scripts/
+!apps/desktop/src-tauri/scripts/materialize_windows_runtime_payload.py
+!apps/desktop/src-tauri/scripts/spacy_triples.py
+!apps/desktop/src-tauri/resources/runtime-pack/*/scripts/
+!apps/desktop/src-tauri/resources/runtime-pack/*/scripts/*.py
 
 # Ignore
 .gitignore

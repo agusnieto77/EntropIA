@@ -5,15 +5,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform as host_platform
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TAURI_ROOT = REPO_ROOT / 'apps' / 'desktop' / 'src-tauri'
 RUNTIME_PACK_ROOT = TAURI_ROOT / 'resources' / 'runtime-pack'
-REQUIRED_RELEASE_SCRIPTS = {'scripts/paddle_vl.py', 'scripts/transcribe.py', 'scripts/embed.py'}
+REQUIRED_RELEASE_SCRIPTS = {
+    'scripts/paddle_vl.py',
+    'scripts/transcribe.py',
+    'scripts/embed.py',
+    'scripts/spacy_ner.py',
+    'scripts/spacy_triples.py',
+}
 REQUIRED_RELEASE_WHEELS = {
     'paddleocr',
     'paddlepaddle',
@@ -22,6 +30,24 @@ REQUIRED_RELEASE_WHEELS = {
     'fastembed',
     'es_core_news_sm',
 }
+REQUIRED_RELEASE_CACHE_DIRS = (
+    'caches/hf',
+    'caches/paddlex',
+)
+CACHE_NOT_SEEDED_MARKER = 'CACHE_NOT_SEEDED.txt'
+INSTALL_PROBE_SPECS = (
+    'fastembed>=0.4.0',
+    'paddlepaddle>=3.2.1,<3.3.0',
+    'paddleocr[doc-parser]>=2.9.0',
+    'faster-whisper>=1.0.0',
+    'spacy>=3.7.0,<4.0.0',
+)
+INSTALL_PROBE_IMPORTS = (
+    'import fastembed; print("fastembed ok")',
+    'import paddle; from paddleocr import PaddleOCRVL; print("paddleocr ok")',
+    'import faster_whisper, ctranslate2; print("faster_whisper ok")',
+    'import spacy, es_core_news_sm; spacy.load("es_core_news_sm"); print("spacy ok")',
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -107,6 +133,97 @@ def run_version_probe(executable: Path, expected_platform: str) -> dict:
     return probe
 
 
+def run_command(args: list[str], env: dict[str, str]) -> dict:
+    completed = subprocess.run(
+        args,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=600,
+        env=env,
+    )
+    return {
+        'args': args,
+        'ok': completed.returncode == 0,
+        'returncode': completed.returncode,
+        'stdout': completed.stdout.strip(),
+        'stderr': completed.stderr.strip(),
+    }
+
+
+def run_install_probe(pack_root: Path, manifest: dict, expected_platform: str) -> dict:
+    probe = {
+        'host_compatible': current_host_pack_platform() == expected_platform,
+        'attempted': False,
+        'ok': None,
+        'steps': [],
+        'error': None,
+    }
+    if not probe['host_compatible']:
+        return probe
+
+    python_path = pack_root / manifest['python_relpath']
+    uv_path = pack_root / manifest['uv_relpath']
+    wheelhouse = pack_root / 'wheelhouse'
+    spacy_wheels = sorted(wheelhouse.glob('es_core_news_sm-*.whl'))
+    if not spacy_wheels:
+        probe['ok'] = False
+        probe['error'] = 'missing es_core_news_sm wheel for install probe'
+        return probe
+
+    probe['attempted'] = True
+    with tempfile.TemporaryDirectory(prefix='entropia-runtime-probe-') as temp_dir:
+        temp_root = Path(temp_dir)
+        venv_dir = temp_root / 'venv'
+        venv_python = venv_dir / ('Scripts/python.exe' if expected_platform == 'windows-x86_64' else 'bin/python')
+        env = dict(os.environ)
+        env['UV_CACHE_DIR'] = str(temp_root / 'uv-cache')
+
+        commands = [
+            [str(uv_path), 'venv', str(venv_dir), '--python', str(python_path), '--offline'],
+        ]
+        commands.extend(
+            [
+                str(uv_path),
+                'pip',
+                'install',
+                spec,
+                '--python',
+                str(venv_python),
+                '--no-index',
+                '--find-links',
+                str(wheelhouse),
+            ]
+            for spec in INSTALL_PROBE_SPECS
+        )
+        commands.append(
+            [
+                str(uv_path),
+                'pip',
+                'install',
+                str(spacy_wheels[0]),
+                '--python',
+                str(venv_python),
+                '--no-index',
+                '--find-links',
+                str(wheelhouse),
+            ]
+        )
+        commands.extend([str(venv_python), '-c', code] for code in INSTALL_PROBE_IMPORTS)
+
+        for command in commands:
+            step = run_command(command, env)
+            probe['steps'].append(step)
+            if not step['ok']:
+                probe['ok'] = False
+                probe['error'] = step['stderr'] or step['stdout'] or f"command failed: {command}"
+                return probe
+
+    probe['ok'] = True
+    return probe
+
+
 def normalized_wheel_name(path: str) -> str:
     name = Path(path).name.lower().replace('-', '_')
     return name
@@ -125,7 +242,20 @@ def missing_release_wheels(manifest: dict) -> list[str]:
     return missing
 
 
-def run_smoke(platform: str, root: Path, release: bool = False) -> dict:
+def unseeded_cache_markers(pack_root: Path) -> list[str]:
+    return sorted(path.relative_to(pack_root).as_posix() for path in pack_root.rglob(CACHE_NOT_SEEDED_MARKER))
+
+
+def missing_release_cache_dirs(pack_root: Path) -> list[str]:
+    missing = []
+    for rel in REQUIRED_RELEASE_CACHE_DIRS:
+        cache_dir = pack_root / rel
+        if not cache_dir.is_dir() or not any(path.is_file() for path in cache_dir.rglob('*')):
+            missing.append(rel)
+    return missing
+
+
+def run_smoke(platform: str, root: Path, release: bool = False, install_probe: bool = False) -> dict:
     pack_root = resolve_pack_root(root, platform)
     manifest = load_manifest(root, platform)
     missing = [rel for rel in required_paths(manifest) if not (pack_root / rel).exists()]
@@ -156,6 +286,7 @@ def run_smoke(platform: str, root: Path, release: bool = False) -> dict:
     release_errors = []
     missing_wheels = []
     version_probes = {}
+    install_probe_result = None
     if release:
         if manifest.get('payload_profile') != 'release':
             release_errors.append('release smoke requires payload_profile=release')
@@ -175,6 +306,10 @@ def run_smoke(platform: str, root: Path, release: bool = False) -> dict:
         missing_wheels = missing_release_wheels(manifest)
         for wheel in missing_wheels:
             release_errors.append(f'release smoke missing wheelhouse package: {wheel}')
+        for cache_dir in missing_release_cache_dirs(pack_root):
+            release_errors.append(f'release smoke missing seeded cache directory: {cache_dir}')
+        for marker in unseeded_cache_markers(pack_root):
+            release_errors.append(f'release smoke found unseeded cache marker: {marker}')
         if python_relpath and (pack_root / python_relpath).exists():
             version_probes['python'] = run_version_probe(pack_root / python_relpath, platform)
         if uv_relpath and (pack_root / uv_relpath).exists():
@@ -182,6 +317,10 @@ def run_smoke(platform: str, root: Path, release: bool = False) -> dict:
         for name, probe in version_probes.items():
             if probe['attempted'] and not probe['ok']:
                 release_errors.append(f'{name} --version failed')
+        if install_probe and not release_errors:
+            install_probe_result = run_install_probe(pack_root, manifest, platform)
+            if install_probe_result['attempted'] and not install_probe_result['ok']:
+                release_errors.append('release install probe failed')
 
     if manifest.get('payload_profile') == 'release' and manifest.get('external_artifacts_required'):
         contract_errors.append('release pack still declares external_artifacts_required')
@@ -204,6 +343,7 @@ def run_smoke(platform: str, root: Path, release: bool = False) -> dict:
         'release_errors': release_errors,
         'missing_release_wheels': missing_wheels,
         'version_probes': version_probes,
+        'install_probe': install_probe_result,
         'ok': not missing
         and not manifest_missing
         and not manifest_mismatched
@@ -221,9 +361,14 @@ def main() -> int:
         help='Runtime-pack parent directory or the platform-specific assembled directory to inspect.',
     )
     parser.add_argument('--release', action='store_true', help='Enforce release payload hardening checks.')
+    parser.add_argument(
+        '--install-probe',
+        action='store_true',
+        help='In release mode, create a temporary offline venv, install core packages from wheelhouse, and import them.',
+    )
     args = parser.parse_args()
 
-    result = run_smoke(args.platform, Path(args.root), release=args.release)
+    result = run_smoke(args.platform, Path(args.root), release=args.release, install_probe=args.install_probe)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result['ok'] else 1
 

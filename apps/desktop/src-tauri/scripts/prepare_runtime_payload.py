@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 TAURI_ROOT = REPO_ROOT / 'apps' / 'desktop' / 'src-tauri'
 SCRIPT_SOURCE_DIR = TAURI_ROOT / 'scripts'
 SUPPORTED_PLATFORMS = ('windows-x86_64', 'linux-x86_64')
-REQUIRED_SCRIPTS = ('paddle_vl.py', 'transcribe.py', 'embed.py')
+REQUIRED_SCRIPTS = ('paddle_vl.py', 'transcribe.py', 'embed.py', 'spacy_ner.py', 'spacy_triples.py')
 REQUIRED_WHEEL_PREFIXES = (
     'paddleocr',
     'paddlepaddle',
@@ -24,7 +24,7 @@ REQUIRED_WHEEL_PREFIXES = (
     'fastembed',
     'es_core_news_sm',
 )
-REQUIRED_CACHE_DIRS = ('hf', 'paddlex', 'spacy')
+REQUIRED_CACHE_DIRS = ('hf', 'paddlex')
 REQUIRED_LAYOUT_DIRS = ('python', 'uv', 'scripts', 'wheelhouse', 'caches', 'resources/lib')
 OVERRIDES_FILENAME = 'manifest.overrides.json'
 

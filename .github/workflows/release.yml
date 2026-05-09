@@ -123,7 +123,7 @@ jobs:
       - name: runtime-pack-smoke
         if: steps.runtime_pack.outputs.platform != ''
         shell: bash
-        run: python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform ${{ steps.runtime_pack.outputs.platform }} --root apps/desktop/src-tauri/target/runtime-pack --release
+        run: python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform ${{ steps.runtime_pack.outputs.platform }} --root apps/desktop/src-tauri/target/runtime-pack --release --install-probe
 
       - name: Inject assembled runtime-pack into bundle resources
         if: steps.runtime_pack.outputs.platform != ''

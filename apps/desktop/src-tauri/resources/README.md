@@ -29,7 +29,7 @@ This directory is reserved for bundled Tauri resources.
 2. Run the **Release** workflow with `runtime_payload_artifact=runtime-payloads`; release assembly injects that payload, regenerates manifests, and runs release smoke checks.
 3. Installers are self-contained only when the release payload is real. `runtime-payloads-fixture` is CI/test-only and must never be used for releasable installers.
 
-See `scripts/prepare_runtime_payload.py`, `scripts/build_runtime_pack.py`, `scripts/runtime-pack-smoke.py`, and each platform `ASSEMBLY_NOTES.md` for the release handoff contract.
+See `scripts/prepare_runtime_payload.py`, `scripts/materialize_windows_runtime_payload.py`, `scripts/build_runtime_pack.py`, `scripts/runtime-pack-smoke.py`, and each platform `ASSEMBLY_NOTES.md` for the release handoff contract.
 
 ## OCR Models
 

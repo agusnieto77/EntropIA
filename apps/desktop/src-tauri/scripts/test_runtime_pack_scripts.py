@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -16,7 +18,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 BUILD_SCRIPT = SCRIPT_DIR / 'build_runtime_pack.py'
 PREPARE_SCRIPT = SCRIPT_DIR / 'prepare_runtime_payload.py'
 SMOKE_SCRIPT = SCRIPT_DIR / 'runtime-pack-smoke.py'
+MATERIALIZE_WINDOWS_SCRIPT = SCRIPT_DIR / 'materialize_windows_runtime_payload.py'
 REPO_ROOT = SCRIPT_DIR.parents[3]
+
+_materialize_spec = importlib.util.spec_from_file_location(
+    'materialize_windows_runtime_payload',
+    MATERIALIZE_WINDOWS_SCRIPT,
+)
+materialize_windows_runtime_payload = importlib.util.module_from_spec(_materialize_spec)
+assert _materialize_spec.loader is not None
+_materialize_spec.loader.exec_module(materialize_windows_runtime_payload)
 
 
 def sha256_file(path: Path) -> str:
@@ -59,6 +70,8 @@ def create_fixture_root(root: Path, platform: str = 'linux-x86_64') -> Path:
         write_fixture_file(pack_root, 'scripts/paddle_vl.py', 'print("paddle fixture")\n'),
         write_fixture_file(pack_root, 'scripts/transcribe.py', 'print("transcribe fixture")\n'),
         write_fixture_file(pack_root, 'scripts/embed.py', 'print("embed fixture")\n'),
+        write_fixture_file(pack_root, 'scripts/spacy_ner.py', 'print("spacy ner fixture")\n'),
+        write_fixture_file(pack_root, 'scripts/spacy_triples.py', 'print("spacy triples fixture")\n'),
     ]
     manifest = {
         'platform': platform,
@@ -197,6 +210,58 @@ class RuntimePackScriptTests(unittest.TestCase):
             self.assertEqual(smoke_payload['external_artifacts_required'], [])
             self.assertGreaterEqual(smoke_payload['entry_counts']['wheelhouse'], 6)
 
+    def test_materialize_windows_repackages_installed_dist_info_as_wheel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            site_packages = root / 'site-packages'
+            package_dir = site_packages / 'demo_pkg'
+            dist_info = site_packages / 'demo_pkg-1.2.3.dist-info'
+            package_dir.mkdir(parents=True)
+            dist_info.mkdir(parents=True)
+            (package_dir / '__init__.py').write_text('__version__ = "1.2.3"\n', encoding='utf-8')
+            (dist_info / 'METADATA').write_text(
+                'Metadata-Version: 2.1\nName: demo-pkg\nVersion: 1.2.3\n',
+                encoding='utf-8',
+            )
+            (dist_info / 'WHEEL').write_text(
+                'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n',
+                encoding='utf-8',
+            )
+            (dist_info / 'RECORD').write_text(
+                'demo_pkg/__init__.py,,\n'
+                'demo_pkg-1.2.3.dist-info/METADATA,,\n'
+                'demo_pkg-1.2.3.dist-info/WHEEL,,\n'
+                'demo_pkg-1.2.3.dist-info/RECORD,,\n',
+                encoding='utf-8',
+            )
+
+            created = materialize_windows_runtime_payload.repack_site_packages_as_wheels(
+                site_packages,
+                root / 'wheelhouse',
+            )
+
+            self.assertEqual(created, ['demo_pkg-1.2.3-py3-none-any.whl'])
+            wheel_path = root / 'wheelhouse' / created[0]
+            with zipfile.ZipFile(wheel_path) as archive:
+                self.assertIn('demo_pkg/__init__.py', archive.namelist())
+                self.assertIn('demo_pkg-1.2.3.dist-info/METADATA', archive.namelist())
+
+    def test_materialize_compresses_multiple_wheel_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dist_info = Path(temp_dir) / 'colorama-0.4.6.dist-info'
+            dist_info.mkdir()
+            (dist_info / 'WHEEL').write_text(
+                'Wheel-Version: 1.0\n'
+                'Root-Is-Purelib: true\n'
+                'Tag: py2-none-any\n'
+                'Tag: py3-none-any\n',
+                encoding='utf-8',
+            )
+
+            tags = materialize_windows_runtime_payload.wheel_tags(dist_info)
+
+            self.assertEqual(tags, 'py2.py3-none-any')
+
     def test_prepare_normal_mode_without_source_fails_honestly(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             result = self.run_script(
@@ -213,6 +278,59 @@ class RuntimePackScriptTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('--payload-source-dir is required unless --fixture is used', result.stderr)
+
+    def test_release_smoke_rejects_unseeded_cache_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload_root = root / 'payloads'
+            pack_root = root / 'runtime-pack'
+            fixture_root = create_fixture_root(root / 'fixtures')
+
+            prepare_result = self.run_script(
+                str(PREPARE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(payload_root),
+                '--pack-version',
+                'test-pack',
+                '--app-version',
+                'test-app',
+                '--fixture',
+            )
+            self.assertEqual(prepare_result.returncode, 0, prepare_result.stderr)
+
+            build_result = self.run_script(
+                str(BUILD_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(pack_root),
+                '--fixture-root',
+                str(fixture_root),
+                '--payload-root',
+                str(payload_root),
+                '--require-release-payload',
+            )
+            self.assertEqual(build_result.returncode, 0, build_result.stderr)
+
+            marker = pack_root / 'linux-x86_64' / 'caches' / 'hf' / 'CACHE_NOT_SEEDED.txt'
+            marker.write_text('cache was not seeded\n', encoding='utf-8')
+
+            smoke_result = self.run_script(
+                str(SMOKE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--root',
+                str(pack_root),
+                '--release',
+            )
+            self.assertNotEqual(smoke_result.returncode, 0)
+            smoke_payload = json.loads(smoke_result.stdout)
+            self.assertIn(
+                'release smoke found unseeded cache marker: caches/hf/CACHE_NOT_SEEDED.txt',
+                smoke_payload['release_errors'],
+            )
 
     def test_fixture_smoke_passes_but_release_smoke_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
