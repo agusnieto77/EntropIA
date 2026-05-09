@@ -100,7 +100,7 @@ describe('TopBar', () => {
     expect(
       screen.getByRole('button', { name: 'Abrir navegador de base de datos' })
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Usar tema menos oscuro' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Oscuro' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Abrir configuración' })).toBeInTheDocument()
     expect(screen.getByRole('searchbox', { name: 'Buscar archivos' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
@@ -128,11 +128,11 @@ describe('TopBar', () => {
   it('toggles and persists the less dark theme from the topbar', async () => {
     render(TopBar)
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Usar tema menos oscuro' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Oscuro' }))
 
     expect(document.documentElement.dataset.theme).toBe('dim')
     expect(localStorage.getItem('entropia-theme')).toBe('dim')
-    expect(screen.getByRole('button', { name: 'Usar tema oscuro' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Cálido' })).toHaveAttribute(
       'aria-pressed',
       'true'
     )

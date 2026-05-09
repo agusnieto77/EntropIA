@@ -8,14 +8,20 @@ const {
   settingsSetMock,
   testOpenrouterConnectionMock,
   testAssemblyaiConnectionMock,
+  testGlmOcrConnectionMock,
   llmIsAvailableMock,
+  llmLocalModelInfoMock,
+  llmDownloadModelMock,
 } =
   vi.hoisted(() => ({
     settingsGetMock: vi.fn(),
     settingsSetMock: vi.fn(),
     testOpenrouterConnectionMock: vi.fn(),
     testAssemblyaiConnectionMock: vi.fn(),
+    testGlmOcrConnectionMock: vi.fn(),
     llmIsAvailableMock: vi.fn(),
+    llmLocalModelInfoMock: vi.fn(),
+    llmDownloadModelMock: vi.fn(),
   }))
 
 vi.mock('$lib/settings', async () => {
@@ -26,11 +32,15 @@ vi.mock('$lib/settings', async () => {
     settingsSet: settingsSetMock,
     testOpenrouterConnection: testOpenrouterConnectionMock,
     testAssemblyaiConnection: testAssemblyaiConnectionMock,
+    testGlmOcrConnection: testGlmOcrConnectionMock,
   }
 })
 
 vi.mock('$lib/llm', () => ({
   llmIsAvailable: llmIsAvailableMock,
+  llmLocalModelInfo: llmLocalModelInfoMock,
+  llmOpenModelsDir: vi.fn(),
+  llmDownloadModel: llmDownloadModelMock,
 }))
 
 describe('SettingsView', () => {
@@ -40,7 +50,17 @@ describe('SettingsView', () => {
     settingsSetMock.mockReset().mockResolvedValue(undefined)
     testOpenrouterConnectionMock.mockReset()
     testAssemblyaiConnectionMock.mockReset().mockResolvedValue(undefined)
+    testGlmOcrConnectionMock.mockReset().mockResolvedValue(undefined)
     llmIsAvailableMock.mockReset().mockResolvedValue(true)
+    llmDownloadModelMock.mockReset().mockResolvedValue(undefined)
+    llmLocalModelInfoMock.mockReset().mockResolvedValue({
+      exists: true,
+      path: '/home/test/.local/share/com.entropia.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf',
+      size_bytes: 2_500_000_000,
+      filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
+      source_url:
+        'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true',
+    })
 
     settingsGetMock.mockImplementation(async (key: string) => {
       if (key === 'openrouter_api_key') return 'sk-or-v1-test-key'
@@ -78,12 +98,14 @@ describe('SettingsView', () => {
     render(SettingsView)
 
     const testButtons = await screen.findAllByRole('button', { name: 'Probar conexión' })
-    expect(testButtons).toHaveLength(2)
+    expect(testButtons).toHaveLength(3)
 
     const openrouterTestButton = testButtons[0]
     const assemblyaiTestButton = testButtons[1]
+    const glmOcrTestButton = testButtons[2]
     expect(openrouterTestButton).toBeDefined()
     expect(assemblyaiTestButton).toBeDefined()
+    expect(glmOcrTestButton).toBeDefined()
 
     await fireEvent.click(openrouterTestButton!)
 
@@ -123,6 +145,42 @@ describe('SettingsView', () => {
       expect(settingsSetMock).toHaveBeenCalledWith('language', 'en')
       expect(settingsSetMock).toHaveBeenCalledWith('stt_mode', 'assemblyai')
       expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    })
+  })
+
+  it('prefills the local Gemma download source from backend defaults', async () => {
+    llmIsAvailableMock.mockResolvedValue(false)
+    llmLocalModelInfoMock.mockResolvedValue({
+      exists: false,
+      path: '/home/test/.local/share/com.entropia.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf',
+      size_bytes: null,
+      filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
+      source_url:
+        'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true',
+    })
+
+    render(SettingsView)
+
+    const sourceInput = await screen.findByLabelText('Fuente de descarga')
+    expect(sourceInput).toHaveValue(
+      'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true'
+    )
+    expect(screen.getByLabelText('Nombre de archivo esperado')).toHaveValue(
+      'gemma-4-E2B-it-Q4_K_M.gguf'
+    )
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Descargar modelo' }))
+
+    await waitFor(() => {
+      expect(settingsSetMock).toHaveBeenCalledWith(
+        'local_model_source_url',
+        'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true'
+      )
+      expect(settingsSetMock).toHaveBeenCalledWith(
+        'local_model_filename',
+        'gemma-4-E2B-it-Q4_K_M.gguf'
+      )
+      expect(llmDownloadModelMock).toHaveBeenCalled()
     })
   })
 })

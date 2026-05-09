@@ -13,11 +13,14 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::llm::LlmQueue;
 use crate::path_utils::normalize_windows_path;
+use crate::runtime::{
+    managed_hf_cache_dir, managed_resource_path, managed_script_path, RuntimeManager,
+};
 use embeddings::EmbeddingEngine;
 use ner::{
     types::{NerConfig, NerEngineKind},
@@ -207,38 +210,12 @@ impl NlpQueue {
                 eprintln!("[nlp] Failed to create embedding tables: {e} — embedding storage will be unavailable");
             }
 
-            // Resolve embedding script path: try Resource directory first (production),
-            // then source (dev) — mirrors transcription script resolution.
-            let embed_script_path = normalize_windows_path(
-                app_handle
-                    .path()
-                    .resolve("scripts/embed.py", BaseDirectory::Resource)
-                    .unwrap_or_else(|_| {
-                        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("resources/scripts/embed.py");
-                        if dev_path.exists() {
-                            dev_path
-                        } else {
-                            std::path::PathBuf::from("scripts/embed.py")
-                        }
-                    }),
-            );
-
-            // Resolve model cache directory for HuggingFace (avoids broken symlinks on Windows)
-            let embed_cache_dir = app_handle
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data dir for NLP cache")
-                .join("hf_cache");
-
-            let ner_model_path = resolve_ner_resource(&app_handle, "model.onnx");
-            let ner_tokenizer_path = resolve_ner_resource(&app_handle, "tokenizer.json");
-            let ner_script_path = resolve_ner_script(&app_handle, "spacy_ner.py");
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let ner_engine = resolve_ner_engine_kind();
 
             let mut embed_engine: Option<Arc<EmbeddingEngine>> = None;
-            let mut embed_init_attempted = false;
             let mut ner_registry: Option<NerRegistry> = None;
+            let mut ner_last_python_path: Option<PathBuf> = None;
 
             while let Some(job) = receiver.recv().await {
                 match job {
@@ -256,21 +233,32 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        if ner_registry.is_none() {
-                            let ner_config = NerConfig {
-                                engine: ner_engine.clone(),
-                                model_path: Some(ner_model_path.clone()),
-                                tokenizer_path: Some(ner_tokenizer_path.clone()),
-                                python_path: ner::spacy::which_python(Some(&db_path)),
-                                script_path: Some(ner_script_path.clone()),
-                                model_name: Some("es_core_news_sm".to_string()),
-                                max_length: 256,
-                                stride: 32,
-                                score_threshold: 0.65,
+                        let current_python_path = ner::spacy::which_python(Some(&db_path));
+                        if should_reinit_ner_registry(
+                            &ner_registry,
+                            &ner_last_python_path,
+                            &current_python_path,
+                        ) {
+                            if ner_registry.is_none() || ner_last_python_path.is_none() {
+                                crate::python_discovery::invalidate_probe_cache_entry("spacy");
+                            }
+                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
+                                Ok(root) => root,
+                                Err(error) => {
+                                    if let Ok(mut pending) = ner_pending.lock() {
+                                        pending.remove(&item_id);
+                                    }
+                                    emit_error(&app_handle, &item_id, "ner", &error);
+                                    continue;
+                                }
                             };
-                            ner::log_startup_status(&ner_config);
-                            eprintln!("[nlp/ner] Registry ready (lazy init)");
-                            ner_registry = Some(NerRegistry::init(ner_config));
+                            ner_registry = Some(try_init_ner_registry(
+                                runtime_root.as_deref(),
+                                &manifest_dir,
+                                ner_engine.clone(),
+                                current_python_path.clone(),
+                            ));
+                            ner_last_python_path = current_python_path;
                         }
                         let registry = ner_registry
                             .as_ref()
@@ -343,21 +331,29 @@ impl NlpQueue {
                         if ner_already_pending {
                             eprintln!("[nlp/ner] Skipping NER in EnrichItem for item_id={item_id} — already queued or in progress");
                         } else {
-                            if ner_registry.is_none() {
-                                let ner_config = NerConfig {
-                                    engine: ner_engine.clone(),
-                                    model_path: Some(ner_model_path.clone()),
-                                    tokenizer_path: Some(ner_tokenizer_path.clone()),
-                                    python_path: ner::spacy::which_python(Some(&db_path)),
-                                    script_path: Some(ner_script_path.clone()),
-                                    model_name: Some("es_core_news_sm".to_string()),
-                                    max_length: 256,
-                                    stride: 32,
-                                    score_threshold: 0.65,
+                            let current_python_path = ner::spacy::which_python(Some(&db_path));
+                            if should_reinit_ner_registry(
+                                &ner_registry,
+                                &ner_last_python_path,
+                                &current_python_path,
+                            ) {
+                                if ner_registry.is_none() || ner_last_python_path.is_none() {
+                                    crate::python_discovery::invalidate_probe_cache_entry("spacy");
+                                }
+                                let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
+                                    Ok(root) => root,
+                                    Err(error) => {
+                                        emit_error(&app_handle, &item_id, "ner", &error);
+                                        continue;
+                                    }
                                 };
-                                ner::log_startup_status(&ner_config);
-                                eprintln!("[nlp/ner] Registry ready (lazy init)");
-                                ner_registry = Some(NerRegistry::init(ner_config));
+                                ner_registry = Some(try_init_ner_registry(
+                                    runtime_root.as_deref(),
+                                    &manifest_dir,
+                                    ner_engine.clone(),
+                                    current_python_path.clone(),
+                                ));
+                                ner_last_python_path = current_python_path;
                             }
                             let registry = ner_registry
                                 .as_ref()
@@ -404,29 +400,27 @@ impl NlpQueue {
                     // (for ownership/cascade) and asset_id (for filtering).
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
-                        if !embed_init_attempted {
-                            embed_init_attempted = true;
-                            embed_engine = match embeddings::which_python(Some(&db_path)) {
-                                Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-                                    python_path,
-                                    script_path: embed_script_path.clone(),
-                                    model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                                    cache_dir: Some(embed_cache_dir.clone()),
-                                }) {
-                                    Ok(engine) => {
-                                        eprintln!("[nlp/embeddings] Engine ready (lazy init)");
-                                        Some(Arc::new(engine))
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
-                                        None
-                                    }
-                                },
-                                None => {
-                                    eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
-                                    None
+                        if embed_engine.is_none() {
+                            // Clear cached miss so we re-probe for fastembed
+                            crate::python_discovery::invalidate_probe_cache_entry("fastembed");
+                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
+                                Ok(root) => root,
+                                Err(error) => {
+                                    emit_error(&app_handle, &item_id, "embed", &error);
+                                    continue;
                                 }
                             };
+                            let app_data_dir = app_handle
+                                .path()
+                                .app_data_dir()
+                                .expect("Failed to get app data dir for NLP cache");
+                            embed_engine = try_init_embed_engine(
+                                &db_path,
+                                runtime_root.as_deref(),
+                                &manifest_dir,
+                                &app_data_dir,
+                                embeddings::which_python,
+                            );
                         }
                         let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
@@ -454,21 +448,32 @@ impl NlpQueue {
 
                     NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        if ner_registry.is_none() {
-                            let ner_config = NerConfig {
-                                engine: ner_engine.clone(),
-                                model_path: Some(ner_model_path.clone()),
-                                tokenizer_path: Some(ner_tokenizer_path.clone()),
-                                python_path: ner::spacy::which_python(Some(&db_path)),
-                                script_path: Some(ner_script_path.clone()),
-                                model_name: Some("es_core_news_sm".to_string()),
-                                max_length: 256,
-                                stride: 32,
-                                score_threshold: 0.65,
+                        let current_python_path = ner::spacy::which_python(Some(&db_path));
+                        if should_reinit_ner_registry(
+                            &ner_registry,
+                            &ner_last_python_path,
+                            &current_python_path,
+                        ) {
+                            if ner_registry.is_none() || ner_last_python_path.is_none() {
+                                crate::python_discovery::invalidate_probe_cache_entry("spacy");
+                            }
+                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
+                                Ok(root) => root,
+                                Err(error) => {
+                                    if let Ok(mut pending) = ner_pending.lock() {
+                                        pending.remove(&item_id);
+                                    }
+                                    emit_error(&app_handle, &item_id, "ner", &error);
+                                    continue;
+                                }
                             };
-                            ner::log_startup_status(&ner_config);
-                            eprintln!("[nlp/ner] Registry ready (lazy init)");
-                            ner_registry = Some(NerRegistry::init(ner_config));
+                            ner_registry = Some(try_init_ner_registry(
+                                runtime_root.as_deref(),
+                                &manifest_dir,
+                                ner_engine.clone(),
+                                current_python_path.clone(),
+                            ));
+                            ner_last_python_path = current_python_path;
                         }
                         let registry = ner_registry
                             .as_ref()
@@ -524,6 +529,124 @@ impl NlpQueue {
             }
         });
     }
+}
+
+/// Decide whether the NER registry should be re-initialized.
+///
+/// Re-init is needed when:
+/// - No registry exists yet
+/// - The Python path has changed since the last init (e.g. deps were installed)
+pub(crate) fn should_reinit_ner_registry(
+    registry: &Option<NerRegistry>,
+    last_python_path: &Option<PathBuf>,
+    current_python_path: &Option<PathBuf>,
+) -> bool {
+    registry.is_none() || last_python_path != current_python_path
+}
+
+/// Attempt to initialize the embedding engine.
+///
+/// Accepts an injected `which_python` resolver so tests can mock Python
+/// availability without touching the filesystem or global caches.
+pub(crate) fn try_init_embed_engine(
+    db_path: &std::path::Path,
+    runtime_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+    app_data_dir: &std::path::Path,
+    which_python: impl FnOnce(Option<&std::path::Path>) -> Option<PathBuf>,
+) -> Option<Arc<EmbeddingEngine>> {
+    let embed_script_path = resolve_embed_script_path_from_roots(runtime_root, manifest_dir);
+    let embed_cache_dir = resolve_embed_cache_dir(runtime_root, app_data_dir);
+    match which_python(Some(db_path)) {
+        Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
+            python_path,
+            script_path: embed_script_path,
+            model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
+            cache_dir: Some(embed_cache_dir),
+        }) {
+            Ok(engine) => {
+                eprintln!("[nlp/embeddings] Engine ready (lazy init)");
+                Some(Arc::new(engine))
+            }
+            Err(e) => {
+                eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
+                None
+            }
+        },
+        None => {
+            eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+            None
+        }
+    }
+}
+
+/// Attempt to initialize the NER registry.
+///
+/// Returns the registry along with the `python_path` that was used, so the
+/// caller can track it for retry decisions.
+pub(crate) fn try_init_ner_registry(
+    runtime_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+    ner_engine: NerEngineKind,
+    python_path: Option<PathBuf>,
+) -> NerRegistry {
+    let ner_config = NerConfig {
+        engine: ner_engine,
+        model_path: Some(resolve_ner_resource_path_from_roots(
+            runtime_root,
+            manifest_dir,
+            "model.onnx",
+        )),
+        tokenizer_path: Some(resolve_ner_resource_path_from_roots(
+            runtime_root,
+            manifest_dir,
+            "tokenizer.json",
+        )),
+        python_path: python_path.clone(),
+        script_path: Some(resolve_ner_script_path_from_roots(
+            runtime_root,
+            manifest_dir,
+            "spacy_ner.py",
+        )),
+        model_name: Some("es_core_news_sm".to_string()),
+        max_length: 256,
+        stride: 32,
+        score_threshold: 0.65,
+    };
+    ner::log_startup_status(&ner_config);
+    eprintln!("[nlp/ner] Registry ready (lazy init)");
+    NerRegistry::init(ner_config)
+}
+
+pub(crate) fn ensure_nlp_runtime_ready(app_handle: &AppHandle) -> Result<(), String> {
+    // Dev fallback is acceptable: Ok(None) means managed runtime is not healthy
+    // but callers will fall back to CARGO_MANIFEST_DIR / system Python.
+    managed_runtime_root_for_nlp(app_handle).map(|_| ())
+}
+
+fn managed_runtime_root_for_nlp(app_handle: &AppHandle) -> Result<Option<PathBuf>, String> {
+    managed_runtime_root_for_nlp_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
+    )
+}
+
+fn managed_runtime_root_for_nlp_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        // Dev fallback: return None so callers fall back to CARGO_MANIFEST_DIR resources.
+        // Honest blocking (e.g. no Python available) is handled at engine init time.
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -632,70 +755,72 @@ fn run_coalesced_fts_reindex(
     }
 }
 
-fn resolve_ner_resource(app_handle: &AppHandle, file_name: &str) -> PathBuf {
-    let resource_rel = format!("models/ner/{file_name}");
-    let resolved = normalize_windows_path(
-        app_handle
-            .path()
-            .resolve(&resource_rel, BaseDirectory::Resource)
-            .unwrap_or_else(|_| PathBuf::from(&resource_rel)),
-    );
-
-    if resolved.exists() {
-        return resolved;
-    }
-
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources/models/ner")
-        .join(file_name);
-    if dev_path.exists() {
-        if std::env::var("ENTROPIA_VERBOSE_STARTUP")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-        {
-            eprintln!(
-                "[nlp/ner] Dev fallback resolved {} -> {}",
-                file_name,
-                dev_path.display()
-            );
+fn resolve_embed_script_path_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_script_path(root, "embed.py");
+        if managed.exists() {
+            return managed;
         }
-        return dev_path;
     }
 
-    resolved
+    let dev_path = manifest_dir.join("resources/scripts/embed.py");
+    if dev_path.exists() {
+        return normalize_windows_path(dev_path);
+    }
+
+    normalize_windows_path(manifest_dir.join("scripts/embed.py"))
 }
 
-fn resolve_ner_script(app_handle: &AppHandle, file_name: &str) -> PathBuf {
-    let resource_rel = format!("scripts/{file_name}");
-    let resolved = normalize_windows_path(
-        app_handle
-            .path()
-            .resolve(&resource_rel, BaseDirectory::Resource)
-            .unwrap_or_else(|_| PathBuf::from(&resource_rel)),
-    );
+fn resolve_embed_cache_dir(
+    managed_root: Option<&std::path::Path>,
+    app_data_dir: &std::path::Path,
+) -> PathBuf {
+    managed_root
+        .map(managed_hf_cache_dir)
+        .unwrap_or_else(|| app_data_dir.join("hf_cache"))
+}
 
-    if resolved.exists() {
-        return resolved;
+fn resolve_ner_resource_path_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+    file_name: &str,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_resource_path(root, "models/ner").join(file_name);
+        if managed.exists() {
+            return managed;
+        }
     }
 
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join(file_name);
+    let dev_path = manifest_dir.join("resources/models/ner").join(file_name);
     if dev_path.exists() {
-        if std::env::var("ENTROPIA_VERBOSE_STARTUP")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-        {
-            eprintln!(
-                "[nlp/ner] Dev fallback resolved script {} -> {}",
-                file_name,
-                dev_path.display()
-            );
-        }
         return dev_path;
     }
 
-    resolved
+    normalize_windows_path(PathBuf::from(format!("models/ner/{file_name}")))
+}
+
+fn resolve_ner_script_path_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+    file_name: &str,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_script_path(root, file_name);
+        if managed.exists() {
+            return managed;
+        }
+    }
+
+    let dev_path = manifest_dir.join("scripts").join(file_name);
+    if dev_path.exists() {
+        return dev_path;
+    }
+
+    normalize_windows_path(PathBuf::from(format!("scripts/{file_name}")))
 }
 
 fn resolve_ner_engine_kind() -> NerEngineKind {
@@ -773,7 +898,9 @@ fn ensure_entities_schema(conn: &rusqlite::Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
     use rusqlite::{params, Connection};
+    use std::cell::RefCell;
 
     #[test]
     fn submit_coalesces_duplicate_fts_jobs_while_pending() {
@@ -861,6 +988,7 @@ mod tests {
               item_id TEXT NOT NULL,
               path TEXT NOT NULL,
               type TEXT NOT NULL,
+              sort_index INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
 
@@ -929,8 +1057,8 @@ mod tests {
         .expect("item should be inserted");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![asset_id, item_id, "asset.txt", "txt", 1_i64],
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![asset_id, item_id, "asset.txt", "txt", 0_i64, 1_i64],
         )
         .expect("asset should be inserted");
 
@@ -960,7 +1088,10 @@ mod tests {
                 item_id: "item-enrich".to_string(),
             },
         );
-        assert!(result.is_ok(), "EnrichItem should succeed for remaining item-level jobs");
+        assert!(
+            result.is_ok(),
+            "EnrichItem should succeed for remaining item-level jobs"
+        );
 
         // FTS should have indexed the item
         let fts_rows: i64 = conn
@@ -1034,12 +1165,13 @@ mod tests {
         .expect("item insert");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 "asset-trans-enrich",
                 "item-trans-enrich",
                 "audio.mp3",
                 "audio",
+                0_i64,
                 1_i64
             ],
         )
@@ -1058,7 +1190,10 @@ mod tests {
                 item_id: "item-trans-enrich".to_string(),
             },
         );
-        assert!(result.is_ok(), "EnrichItem should complete for transcription-only text");
+        assert!(
+            result.is_ok(),
+            "EnrichItem should complete for transcription-only text"
+        );
 
         // FTS should find the transcription text
         let fts_rows: i64 = conn
@@ -1067,6 +1202,361 @@ mod tests {
         assert_eq!(
             fts_rows, 1,
             "FTS should index the item with transcription text"
+        );
+    }
+
+    #[test]
+    fn resolve_embed_script_prefers_managed_runtime_copy() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let managed_script = runtime_dir.path().join("scripts").join("embed.py");
+        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
+            .expect("create script dir");
+        std::fs::write(&managed_script, "print('ok')").expect("write script");
+
+        let resolved =
+            resolve_embed_script_path_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, managed_script);
+    }
+
+    #[test]
+    fn resolve_embed_cache_prefers_managed_hf_cache() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+
+        let resolved = resolve_embed_cache_dir(Some(runtime_dir.path()), app_data_dir.path());
+
+        assert_eq!(resolved, runtime_dir.path().join("caches").join("hf"));
+    }
+
+    #[test]
+    fn resolve_ner_assets_prefer_managed_runtime_copy() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let managed_model = runtime_dir
+            .path()
+            .join("resources")
+            .join("models")
+            .join("ner")
+            .join("model.onnx");
+        let managed_script = runtime_dir.path().join("scripts").join("spacy_ner.py");
+        std::fs::create_dir_all(managed_model.parent().expect("model parent"))
+            .expect("create ner dir");
+        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
+            .expect("create script dir");
+        std::fs::write(&managed_model, b"model").expect("write model");
+        std::fs::write(&managed_script, "print('ok')").expect("write script");
+
+        let resolved_model = resolve_ner_resource_path_from_roots(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            "model.onnx",
+        );
+        let resolved_script = resolve_ner_script_path_from_roots(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            "spacy_ner.py",
+        );
+
+        assert_eq!(resolved_model, managed_model);
+        assert_eq!(resolved_script, managed_script);
+    }
+
+    #[test]
+    fn nlp_runtime_resolution_bootstraps_before_using_managed_assets() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_nlp_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("managed runtime should resolve");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn nlp_runtime_resolution_returns_none_when_not_healthy_allowing_dev_fallback() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_nlp_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedOffline,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "Bootstrap offline".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Nlp],
+                    details: vec!["offline".to_string()],
+                    guidance: vec!["Reintentá".to_string()],
+                    bootstrap_eligible: true,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("non-healthy runtime should not raise transport errors");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
+    }
+
+    #[test]
+    fn nlp_path_resolution_falls_back_to_dev_when_runtime_root_is_none() {
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let dev_script = manifest_dir.path().join("resources/scripts/embed.py");
+        std::fs::create_dir_all(dev_script.parent().unwrap()).unwrap();
+        std::fs::write(&dev_script, "print('ok')").unwrap();
+
+        // With None runtime root, should fall back to manifest_dir
+        let resolved = resolve_embed_script_path_from_roots(None, manifest_dir.path());
+        assert_eq!(resolved, dev_script);
+    }
+
+    #[test]
+    fn ensure_nlp_runtime_ready_accepts_dev_fallback() {
+        // ensure_nlp_runtime_ready should return Ok(()) even when managed runtime is not healthy,
+        // because callers fall back to dev paths / system Python.
+        let result = managed_runtime_root_for_nlp_with(
+            || {
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedSourceUnavailable,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "No hay una fuente confiable disponible para bootstrap".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Nlp],
+                    details: vec!["fixture".to_string()],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || Ok(None),
+        );
+        assert!(
+            result.is_ok(),
+            "ensure_nlp_runtime_ready should accept dev fallback"
+        );
+        assert_eq!(result.unwrap(), None);
+    }
+
+    // ── Retry behaviour tests ───────────────────────────────────────────────
+
+    #[test]
+    fn should_reinit_ner_registry_when_registry_none() {
+        assert!(
+            should_reinit_ner_registry(&None, &None, &None),
+            "Should re-init when no registry exists"
+        );
+    }
+
+    #[test]
+    fn should_reinit_ner_registry_when_python_becomes_available() {
+        let registry = Some(rule_based_registry());
+        let old_path: Option<PathBuf> = None;
+        let new_path = Some(PathBuf::from("/usr/bin/python"));
+        assert!(
+            should_reinit_ner_registry(&registry, &old_path, &new_path),
+            "Should re-init when Python path changes from None to Some"
+        );
+    }
+
+    #[test]
+    fn should_not_reinit_ner_registry_when_unchanged() {
+        let registry = Some(rule_based_registry());
+        let path = Some(PathBuf::from("/usr/bin/python"));
+        assert!(
+            !should_reinit_ner_registry(&registry, &path, &path),
+            "Should NOT re-init when Python path is unchanged"
+        );
+    }
+
+    #[test]
+    fn should_reinit_ner_registry_when_python_removed() {
+        let registry = Some(rule_based_registry());
+        let old_path = Some(PathBuf::from("/usr/bin/python"));
+        let new_path: Option<PathBuf> = None;
+        assert!(
+            should_reinit_ner_registry(&registry, &old_path, &new_path),
+            "Should re-init when Python path changes from Some to None"
+        );
+    }
+
+    #[test]
+    fn try_init_embed_engine_returns_none_when_python_unavailable() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+
+        let result = try_init_embed_engine(
+            runtime_dir.path(),
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            app_data_dir.path(),
+            |_| None,
+        );
+        assert!(
+            result.is_none(),
+            "Engine should be None when Python resolver returns None"
+        );
+    }
+
+    #[test]
+    fn try_init_embed_engine_returns_some_when_script_exists() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+
+        // Create the embed script so init succeeds
+        let script = manifest_dir.path().join("resources/scripts/embed.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print('ok')").unwrap();
+
+        let result = try_init_embed_engine(
+            runtime_dir.path(),
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            app_data_dir.path(),
+            |_| Some(PathBuf::from("/bin/true")),
+        );
+        assert!(
+            result.is_some(),
+            "Engine should be Some when script exists and Python is available"
+        );
+    }
+
+    #[test]
+    fn embed_engine_retries_after_failed_init() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let script = manifest_dir.path().join("resources/scripts/embed.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print('ok')").unwrap();
+
+        // First attempt: no Python → None
+        let first = try_init_embed_engine(
+            runtime_dir.path(),
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            app_data_dir.path(),
+            |_| None,
+        );
+        assert!(
+            first.is_none(),
+            "First init should fail when Python unavailable"
+        );
+
+        // Second attempt: Python available → Some
+        let second = try_init_embed_engine(
+            runtime_dir.path(),
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            app_data_dir.path(),
+            |_| Some(PathBuf::from("/bin/true")),
+        );
+        assert!(
+            second.is_some(),
+            "Second init should succeed after Python becomes available"
+        );
+    }
+
+    #[test]
+    fn try_init_ner_registry_captures_python_path() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let script = manifest_dir.path().join("scripts/spacy_ner.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print('ok')").unwrap();
+
+        let python_path = Some(PathBuf::from("/usr/bin/python"));
+        let registry = try_init_ner_registry(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            NerEngineKind::Hybrid,
+            python_path.clone(),
+        );
+
+        // The registry should exist and fall back to rule-based when ONNX/spaCy
+        // assets are missing (which they are in this test).
+        let entities = registry
+            .extract("Don Manuel Belgrano en Buenos Aires")
+            .expect("rule-based fallback should always work");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.entity_type == ner::types::EntityType::Person),
+            "Fallback should still detect person entities"
+        );
+    }
+
+    #[test]
+    fn ner_registry_reinitializes_when_python_path_changes() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let script = manifest_dir.path().join("scripts/spacy_ner.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print('ok')").unwrap();
+
+        let first_python: Option<PathBuf> = None;
+        let first_registry = try_init_ner_registry(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            NerEngineKind::Hybrid,
+            first_python.clone(),
+        );
+
+        // Simulate Python becoming available
+        let second_python = Some(PathBuf::from("/usr/bin/python"));
+        assert!(
+            should_reinit_ner_registry(&Some(first_registry), &first_python, &second_python),
+            "Should re-init when Python becomes available"
+        );
+
+        let second_registry = try_init_ner_registry(
+            Some(runtime_dir.path()),
+            manifest_dir.path(),
+            NerEngineKind::Hybrid,
+            second_python.clone(),
+        );
+        // Both should work because rule-based is always present
+        let entities = second_registry
+            .extract("Don Manuel Belgrano")
+            .expect("second registry should work");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.entity_type == ner::types::EntityType::Person),
+            "Re-initialized registry should still extract entities"
         );
     }
 }

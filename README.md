@@ -8,7 +8,7 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 **EntropIA** es una app de escritorio open-source orientada a investigación en humanidades y ciencias sociales. Está pensada para trabajar con **imágenes, PDFs y audio** de forma **local/offline-first**, construir corpus y sumar capas de análisis asistido sobre las fuentes.
 
-**Release actual:** [`v0.0.11`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.11)
+**Release actual:** [`v0.0.13`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.13)
 
 > Si querés probar la app sin compilar, andá directo a [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
 
@@ -202,9 +202,20 @@ Podés bajar instaladores desde [GitHub Releases](https://github.com/agusnieto77
 
 > En macOS, si aparece el warning de “desarrollador no identificado”, abrí con clic derecho → **Abrir**.
 
-### Qué necesitás para la experiencia completa
+### Runtime-pack y alcance real del modo self-contained
 
-La app puede abrirse y usarse sin tener todo el stack local instalado, pero algunas capacidades avanzadas dependen de runtimes externos.
+EntropIA ahora incluye en el repo y en el bundle de Tauri la estructura `resources/runtime-pack/<platform>` para `windows-x86_64` y `linux-x86_64`.
+
+- **Self-contained ahora**: contrato de manifiesto, estructura de payload, scripts administrados, placeholders de caches/wheelhouse, espejos de libs nativas, wiring de bundle, assembly script y smoke validation de runtime-pack.
+- **Todavía no self-contained al 100% desde git**: los binarios pesados y redistribuibles reales NO se commitean acá. Siguen entrando por **release-time artifact injection** en CI/release.
+- Eso pendiente incluye: Python relocatable real, wheelhouse offline real (`faster-whisper`, `fastembed`, `paddleocr`, `spaCy`), caches/modelos presembrados y libs Linux auditadas.
+- **Flujo de release**: primero se ejecuta el workflow **Runtime Payload** para producir el artifact `runtime-payloads`; después el workflow **Release** lo consume con `runtime_payload_artifact=runtime-payloads`, arma el runtime-pack final y valida smoke checks de release. El artifact `runtime-payloads-fixture` existe solo para CI/tests y NO es releasable.
+
+Mientras esos artifacts no se inyecten, los manifests del runtime-pack quedan marcados como `payload_profile: fixture` + `release_injection_required: true`, y la app reporta el runtime como incompatible para no mentir sobre soporte offline total.
+
+### Qué necesitás para la experiencia completa hoy
+
+La app puede abrirse y usarse sin tener todo el stack local instalado, pero algunas capacidades avanzadas todavía dependen de runtimes externos o de la futura inyección de artifacts de release.
 
 | Capacidad                | Requiere                             |
 | ------------------------ | ------------------------------------ |
@@ -235,7 +246,7 @@ Dependencias base por sistema:
 ```bash
 git clone https://github.com/agusnieto77/EntropIA.git
 cd EntropIA
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ### Ejecutar en desarrollo
@@ -243,6 +254,8 @@ pnpm install
 ```bash
 pnpm --filter @entropia/desktop tauri dev
 ```
+
+> Importante: en clones nuevos o cuando cambiás de sistema operativo, corré primero `pnpm install --frozen-lockfile`. Si no, Vite puede fallar resolviendo dependencias del workspace (por ejemplo `@tiptap/*`) aunque el código del repo esté bien.
 
 ### Validar sólo la app desktop
 
@@ -298,15 +311,21 @@ Necesitás **Python 3.8+** con estos paquetes:
 - `faster-whisper`
 - `fastembed`
 - `paddleocr[doc-parser]`
+- `paddlepaddle` — **must be `>=3.2.1,<3.3.0`** (e.g. `3.2.2` is the verified sweet spot)
 - `spacy`
 - `es_core_news_lg`
 
 Ejemplo:
 
 ```powershell
-pip install faster-whisper fastembed "paddleocr[doc-parser]" spacy
+pip install faster-whisper fastembed "paddleocr[doc-parser]" "paddlepaddle>=3.2.1,<3.3.0" spacy
 python -m spacy download es_core_news_lg
 ```
+
+> **Version compatibility note for Linux dev:**
+> - `paddlepaddle==2.6.2` is **incompatible** with `paddleocr>=3.x` (missing `AnalysisConfig.set_optimization_level`).
+> - `paddlepaddle==3.3.1` has a **confirmed upstream bug** in CPU inference with oneDNN/PIR that crashes with `ConvertPirAttribute2RuntimeAttribute` (see [Paddle#77340](https://github.com/PaddlePaddle/Paddle/issues/77340)).
+> - The documented working range is **3.2.1 – 3.2.2**.
 
 #### Variables útiles
 

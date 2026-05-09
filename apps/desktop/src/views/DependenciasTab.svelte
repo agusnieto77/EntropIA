@@ -18,6 +18,18 @@
     type DependencyStatus,
     type UvStatusResult,
   } from '$lib/deps'
+  import {
+    getRuntimeStatus,
+    onRuntimeProgress,
+    onRuntimeStatus,
+    repairRuntime,
+    runtimeBlocksCurrentUse,
+    runtimeCanBootstrapAutomatically,
+    runtimeNeedsAttention,
+    shouldShowRuntimeRepairAction,
+    type RuntimeStatus,
+    type RuntimeOperation,
+  } from '$lib/runtime'
 
   // ---------------------------------------------------------------------------
   // State
@@ -28,6 +40,13 @@
   let installing = $state(false)
   let errorBanner = $state<string | null>(null)
   let expandedErrors = $state<Set<DependencyId>>(new Set())
+  let runtimeStatus = $state<RuntimeStatus | null>(null)
+  let runtimeOperation = $state<RuntimeOperation | null>(null)
+  let resetConfirmationOpen = $state(false)
+  let resetConfirmationText = $state('')
+  let resetting = $state(false)
+
+  const RESET_CONFIRMATION_PHRASE = 'resetear entorno'
 
   // ---------------------------------------------------------------------------
   // Derived
@@ -38,6 +57,14 @@
   )
 
   let allInstalled = $derived(deps.length > 0 && deps.every((d) => d.status.type === 'installed'))
+  let runtimeBlocked = $derived(runtimeNeedsAttention(runtimeStatus))
+  let runtimeReleaseOnlyIssue = $derived(runtimeStatus?.state === 'fixture')
+  let depsReadyButReleaseRuntimePending = $derived(
+    allInstalled && runtimeBlocked && runtimeReleaseOnlyIssue,
+  )
+  let runtimeBlocksInstalledCapabilities = $derived(runtimeBlocksCurrentUse(runtimeStatus, allInstalled))
+  let canClaimAllReady = $derived(allInstalled && !runtimeBlocksInstalledCapabilities)
+  let depsInstalledButRuntimeBlocked = $derived(allInstalled && runtimeBlocksInstalledCapabilities)
 
   let overallProgress = $derived(() => {
     if (!installing || deps.length === 0) return 0
@@ -55,9 +82,14 @@
 
   onMount(async () => {
     try {
-      const [checkResults, uv] = await Promise.all([checkAllDeps(), getUvStatus()])
+      const [checkResults, uv, runtime] = await Promise.all([
+        checkAllDeps(),
+        getUvStatus(),
+        getRuntimeStatus(),
+      ])
       deps = checkResults
       uvStatus = uv
+      runtimeStatus = runtime
     } catch (e) {
       errorBanner = `Error al verificar dependencias: ${String(e)}`
     }
@@ -73,6 +105,13 @@
       await onDepsError((event) => {
         errorBanner = event.error
         installing = false
+      }),
+      await onRuntimeStatus((status) => {
+        runtimeStatus = status
+        runtimeOperation = status.activeOperation ?? runtimeOperation
+      }),
+      await onRuntimeProgress((operation) => {
+        runtimeOperation = operation
       }),
     )
   })
@@ -110,19 +149,43 @@
     }
   }
 
+  function openResetConfirmation() {
+    resetConfirmationOpen = true
+    resetConfirmationText = ''
+    errorBanner = null
+  }
+
+  function cancelResetConfirmation() {
+    resetConfirmationOpen = false
+    resetConfirmationText = ''
+  }
+
   async function handleReset() {
-    if (
-      !confirm(
-        '¿Estás seguro? Esto eliminará el entorno virtual y todas las dependencias instaladas.',
-      )
-    )
-      return
+    if (resetConfirmationText !== RESET_CONFIRMATION_PHRASE || resetting) return
+    resetting = true
     errorBanner = null
     try {
       await resetDeps()
-      const [checkResults, uv] = await Promise.all([checkAllDeps(), getUvStatus()])
+      const [checkResults, uv, runtime] = await Promise.all([
+        checkAllDeps(),
+        getUvStatus(),
+        getRuntimeStatus(),
+      ])
       deps = checkResults
       uvStatus = uv
+      runtimeStatus = runtime
+      resetConfirmationOpen = false
+      resetConfirmationText = ''
+    } catch (e) {
+      errorBanner = String(e)
+    } finally {
+      resetting = false
+    }
+  }
+
+  async function handleRuntimeRepair() {
+    try {
+      runtimeStatus = await repairRuntime()
     } catch (e) {
       errorBanner = String(e)
     }
@@ -158,13 +221,13 @@
   function statusColor(status: DependencyStatus): string {
     switch (status.type) {
       case 'installed':
-        return 'var(--color-success)'
+        return 'var(--color-success, #22c55e)'
       case 'missing':
-        return 'var(--color-danger)'
+        return 'var(--color-error, #ef4444)'
       case 'failed':
-        return 'var(--color-warning)'
+        return 'var(--color-warning, #f59e0b)'
       default:
-        return 'var(--color-text-muted)'
+        return 'var(--color-text-muted, #6b7280)'
     }
   }
 
@@ -187,12 +250,95 @@
     return ''
   }
 
+  function getDepDisplayName(dep: DepCheckResult): string {
+    return (DEP_DISPLAY_NAMES as Partial<Record<string, string>>)[dep.id] ?? dep.id
+  }
+
+  function getDepDescription(dep: DepCheckResult): string {
+    return (
+      (DEP_DESCRIPTIONS as Partial<Record<string, string>>)[dep.id] ??
+      'Dependencia administrada por EntropIA.'
+    )
+  }
+
   function supportsInstallOne(id: DependencyId): boolean {
     return id !== 'Python'
+  }
+
+  function isRuntimeFixture(status: RuntimeStatus | null): boolean {
+    return status?.state === 'fixture'
+  }
+
+  function shouldExplainDevFallback(): boolean {
+    return isRuntimeFixture(runtimeStatus) && Boolean(uvStatus?.dev_fallback_available)
+  }
+
+  function canInstallInCurrentDevState(): boolean {
+    if (runtimeStatus?.state === 'healthy') return true
+    if (depsReadyButReleaseRuntimePending) return false
+    return Boolean(uvStatus?.dev_fallback_available)
+  }
+
+  function bootstrapProgressLabel(): string | null {
+    if (!runtimeOperation) return null
+    if (runtimeOperation.progressPercent != null) {
+      return `${runtimeOperation.progressPercent}% · ${runtimeOperation.summary}`
+    }
+    if (runtimeOperation.totalBytes != null && runtimeOperation.downloadedBytes != null) {
+      return `${runtimeOperation.downloadedBytes}/${runtimeOperation.totalBytes} bytes · ${runtimeOperation.summary}`
+    }
+    return runtimeOperation.summary
   }
 </script>
 
 <div class="deps-tab">
+  {#if runtimeBlocksInstalledCapabilities}
+    <div
+      class="deps-runtime-panel"
+      role="status"
+    >
+      <div class="deps-runtime-panel__copy">
+        <strong>{runtimeStatus?.summary}</strong>
+        {#if isRuntimeFixture(runtimeStatus)}
+          <span>
+            El runtime-pack de release SIGUE sin estar listo. Eso no cambia.
+            {#if shouldExplainDevFallback()}
+              {uvStatus?.dev_fallback_reason ?? 'Hay un fallback de desarrollo disponible para instalar dependencias localmente sin validar el runtime de release.'}
+            {:else}
+              Sin payloads reales ni fallback local usable, las capacidades bloqueadas no van a funcionar.
+            {/if}
+          </span>
+        {/if}
+        {#if runtimeStatus?.blockedCapabilities?.length}
+          <span>Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}</span>
+        {/if}
+        {#if runtimeStatus?.details?.length}
+          <ul>
+            {#each runtimeStatus?.details ?? [] as detail}
+              <li>{detail}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if runtimeStatus?.guidance?.length}
+          <ul class="deps-runtime-panel__guidance">
+            {#each runtimeStatus?.guidance ?? [] as item}
+              <li>{item}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if runtimeOperation}
+          <p class="deps-runtime-panel__progress">{bootstrapProgressLabel()}</p>
+        {/if}
+        {#if runtimeCanBootstrapAutomatically(runtimeStatus)}
+          <span>EntropIA va a intentar bootstrapear el runtime automáticamente cuando una fuente válida esté disponible.</span>
+        {/if}
+      </div>
+      {#if shouldShowRuntimeRepairAction(runtimeStatus)}
+        <Button variant="secondary" onclick={handleRuntimeRepair}>Reparar runtime</Button>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Error banner -->
   {#if errorBanner}
     <div class="deps-banner deps-banner--error">
@@ -211,19 +357,54 @@
   <!-- UV status row -->
   <div class="deps-uv-status">
     {#if uvStatus}
-      {#if uvStatus.uv_ready}
+      {#if uvStatus.release_runtime_ready}
         <span class="deps-uv-status__text">
           uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
           {#if uvStatus.venv_exists}
             · entorno virtual en {uvStatus.venv_path ?? ''}
+          {:else if uvStatus.uv_source === 'managed-runtime'}
+            · runtime embebido · sin venv administrado
           {:else}
             · sin entorno virtual
           {/if}
         </span>
-      {:else}
-        <span class="deps-uv-status__text deps-uv-status__text--warn">
-          uv no instalado — las dependencias no pueden gestionarse automáticamente
+      {:else if uvStatus.dev_fallback_available}
+        <span class="deps-uv-status__text deps-uv-status__text--info">
+          Fallback dev disponible · uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
+          {#if uvStatus.venv_exists}
+            · entorno virtual local en {uvStatus.venv_path ?? ''}
+          {:else}
+            · sin entorno virtual local
+          {/if}
         </span>
+      {:else if hasMissingOrFailed}
+        <span class="deps-uv-status__text deps-uv-status__text--warn">
+          No hay fallback usable: faltan prerequisitos locales para gestionar dependencias automáticamente
+        </span>
+      {:else if runtimeBlocked}
+        <span class="deps-uv-status__text deps-uv-status__text--warn">
+          Gestión automática pausada hasta resolver el runtime de EntropIA.
+        </span>
+      {:else}
+        <span class="deps-uv-status__text deps-uv-status__text--info">
+          Dependencias Python detectadas; uv administrado no requiere acciones.
+        </span>
+      {/if}
+      {#if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture' && !depsReadyButReleaseRuntimePending}
+        <p class="deps-uv-warning">
+          Runtime de release no listo ({runtimeStatus.summary}). La gestión local en dev NO hidrata ni valida payloads de release.
+        </p>
+      {/if}
+      {#if uvStatus.dev_fallback_reason && !depsReadyButReleaseRuntimePending}
+        <p class="deps-uv-warning">{uvStatus.dev_fallback_reason}</p>
+      {/if}
+      {#if uvStatus.uv_warning && !depsReadyButReleaseRuntimePending}
+        <p class="deps-uv-warning">{uvStatus.uv_warning}</p>
+      {/if}
+      {#if !uvStatus.uv_ready && uvStatus.uv_version && uvStatus.uv_path}
+        <p class="deps-uv-warning">
+          Detectado: uv {uvStatus.uv_version} en {uvStatus.uv_path}
+        </p>
       {/if}
     {:else}
       <span class="deps-uv-status__text">Verificando uv...</span>
@@ -233,9 +414,14 @@
   <!-- Install all button -->
   {#if hasMissingOrFailed && !installing}
     <div class="deps-actions">
-      <Button variant="primary" onclick={handleInstallAll} disabled={installing}>
+      <Button variant="primary" onclick={handleInstallAll} disabled={installing || !canInstallInCurrentDevState()}>
         Instalar todo
       </Button>
+      {#if !canInstallInCurrentDevState()}
+        <p class="deps-actions__hint">
+          Necesitas runtime release hidratado/compatible o un fallback de desarrollo disponible para esta plataforma.
+        </p>
+      {/if}
     </div>
   {/if}
 
@@ -253,10 +439,16 @@
   {/if}
 
   <!-- All installed banner -->
-  {#if allInstalled && !installing}
+  {#if canClaimAllReady && !installing}
     <div class="deps-banner deps-banner--success">
       <span class="deps-banner__message">
         Todas las dependencias están instaladas y listas para usar.
+      </span>
+    </div>
+  {:else if depsInstalledButRuntimeBlocked && !installing}
+    <div class="deps-banner deps-banner--warning">
+      <span class="deps-banner__message">
+        Las dependencias Python están instaladas, pero el runtime de EntropIA necesita atención antes de habilitar OCR, transcripción y NLP.
       </span>
     </div>
   {/if}
@@ -273,7 +465,7 @@
         <!-- Name + description -->
         <div class="deps-row__info">
           <div class="deps-row__name-line">
-            <strong class="deps-row__name">{DEP_DISPLAY_NAMES[dep.id]}</strong>
+            <strong class="deps-row__name">{getDepDisplayName(dep)}</strong>
             {#if isCritical(dep.id)}
               <span class="deps-badge deps-badge--required">Requerido</span>
             {/if}
@@ -284,7 +476,7 @@
               {/if}
             {/if}
           </div>
-          <p class="deps-row__desc">{DEP_DESCRIPTIONS[dep.id]}</p>
+          <p class="deps-row__desc">{getDepDescription(dep)}</p>
 
           <!-- Installing progress per-item -->
           {#if dep.status.type === 'installing'}
@@ -351,13 +543,50 @@
 
   <!-- Reset button -->
   <div class="deps-danger-zone">
-    <Button variant="danger" onclick={handleReset} disabled={installing}>
+    <Button variant="danger" onclick={openResetConfirmation} disabled={installing || resetting}>
       Resetear entorno
     </Button>
     <p class="deps-danger-zone__hint">
-      Elimina el entorno virtual y todas las dependencias instaladas. Requiere reinstalación.
+      Elimina el entorno administrado y limpia la configuración de dependencias. Requiere reinstalación o rehidratación.
     </p>
   </div>
+
+  {#if resetConfirmationOpen}
+    <div class="deps-reset-confirmation" role="alertdialog" aria-labelledby="deps-reset-title">
+      <div class="deps-reset-confirmation__copy">
+        <strong id="deps-reset-title">Confirmar reseteo del entorno</strong>
+        <p>
+          Esta acción elimina el entorno administrado de IA y limpia las rutas Python usadas por OCR, transcripción y NLP.
+          Para confirmar, escribí <code>{RESET_CONFIRMATION_PHRASE}</code>.
+        </p>
+      </div>
+      <label class="deps-reset-confirmation__label" for="deps-reset-confirmation-input">
+        Confirmación requerida
+      </label>
+      <input
+        id="deps-reset-confirmation-input"
+        class="deps-reset-confirmation__input"
+        type="text"
+        bind:value={resetConfirmationText}
+        placeholder={RESET_CONFIRMATION_PHRASE}
+        disabled={resetting}
+        autocomplete="off"
+      />
+      <div class="deps-reset-confirmation__actions">
+        <Button variant="ghost" onclick={cancelResetConfirmation} disabled={resetting}>
+          Cancelar
+        </Button>
+        <Button
+          variant="danger"
+          onclick={handleReset}
+          disabled={resetConfirmationText !== RESET_CONFIRMATION_PHRASE || resetting}
+          loading={resetting}
+        >
+          Confirmar reseteo
+        </Button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -365,6 +594,41 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+  }
+
+  .deps-runtime-panel {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(245, 158, 11, 0.08);
+    color: #92400e;
+  }
+
+  .deps-runtime-panel__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-runtime-panel__copy ul {
+    margin: 0;
+    padding-left: var(--space-4);
+  }
+
+  .deps-runtime-panel__guidance {
+    margin-top: var(--space-1);
+    color: #78350f;
+  }
+
+  .deps-runtime-panel__progress {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: #78350f;
+    font-family: var(--font-mono, monospace);
   }
 
   /* Banner */
@@ -379,15 +643,21 @@
   }
 
   .deps-banner--error {
-    background: var(--color-danger-soft);
-    border: 1px solid color-mix(in srgb, var(--color-danger) 28%, transparent);
-    color: var(--color-danger);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #b91c1c;
   }
 
   .deps-banner--success {
-    background: var(--color-success-soft);
-    border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
-    color: var(--color-success);
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #15803d;
+  }
+
+  .deps-banner--warning {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: #92400e;
   }
 
   .deps-banner__message {
@@ -415,18 +685,36 @@
 
   .deps-uv-status__text {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     font-family: var(--font-mono, monospace);
   }
 
   .deps-uv-status__text--warn {
-    color: var(--color-warning);
+    color: var(--color-warning, #f59e0b);
+  }
+
+  .deps-uv-status__text--info {
+    color: var(--color-accent, #4f46e5);
+  }
+
+  .deps-uv-warning {
+    margin: var(--space-1) 0 0;
+    font-size: var(--font-size-xs);
+    color: #92400e;
   }
 
   /* Actions */
   .deps-actions {
     display: flex;
     gap: var(--space-3);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .deps-actions__hint {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted, #6b7280);
   }
 
   /* Progress bar */
@@ -439,8 +727,8 @@
   .deps-progress__bar {
     flex: 1;
     height: 6px;
-    background: var(--color-border-subtle);
-    border-radius: var(--radius-full);
+    background: var(--color-border-subtle, #e5e7eb);
+    border-radius: var(--radius-full, 9999px);
     overflow: hidden;
   }
 
@@ -452,14 +740,14 @@
 
   .deps-progress__fill {
     height: 100%;
-    background: var(--color-accent);
-    border-radius: var(--radius-full);
+    background: var(--color-accent, #6366f1);
+    border-radius: var(--radius-full, 9999px);
     transition: width 0.3s ease;
   }
 
   .deps-progress__label {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     white-space: nowrap;
   }
 
@@ -475,14 +763,14 @@
     align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--color-hairline);
+    border: 1px solid var(--color-border-subtle, #e5e7eb);
     border-radius: var(--radius-md);
     background: var(--color-surface);
   }
 
   .deps-row--failed {
-    border-color: color-mix(in srgb, var(--color-warning) 34%, transparent);
-    background: color-mix(in srgb, var(--color-warning) 5%, var(--color-surface));
+    border-color: rgba(245, 158, 11, 0.4);
+    background: rgba(245, 158, 11, 0.04);
   }
 
   .deps-row__icon {
@@ -513,7 +801,7 @@
 
   .deps-row__desc {
     font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
+    color: var(--color-text-secondary, #6b7280);
     margin: 0;
   }
 
@@ -526,7 +814,7 @@
 
   .deps-row__progress-pct {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
   }
 
   .deps-row__error-toggle {
@@ -534,7 +822,7 @@
     border: none;
     cursor: pointer;
     font-size: var(--font-size-xs);
-    color: var(--color-warning);
+    color: var(--color-warning, #f59e0b);
     padding: 0;
     text-decoration: underline;
     text-align: left;
@@ -543,9 +831,9 @@
   .deps-row__error-detail {
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--color-surface-sunken);
-    border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunken, #f3f4f6);
+    border: 1px solid var(--color-border, #d1d5db);
+    border-radius: var(--radius-sm, 4px);
     padding: var(--space-2) var(--space-3);
     white-space: pre-wrap;
     word-break: break-all;
@@ -563,27 +851,27 @@
   .deps-badge {
     display: inline-block;
     padding: 2px 7px;
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-full, 9999px);
     font-size: 10px;
-    font-weight: var(--font-weight-medium);
+    font-weight: var(--font-weight-medium, 500);
     vertical-align: middle;
   }
 
   .deps-badge--required {
-    background: var(--color-accent-faint);
-    color: var(--color-accent-hover);
+    background: rgba(99, 102, 241, 0.12);
+    color: #4f46e5;
   }
 
   .deps-badge--version {
-    background: var(--color-success-soft);
-    color: var(--color-success);
+    background: rgba(34, 197, 94, 0.12);
+    color: #15803d;
     font-family: var(--font-mono, monospace);
   }
 
   /* Empty state */
   .deps-empty {
     font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     text-align: center;
     padding: var(--space-6) 0;
   }
@@ -591,10 +879,10 @@
   /* Disk estimate */
   .deps-disk-estimate {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     margin: 0;
     padding: var(--space-2) 0;
-    border-top: 1px solid var(--color-hairline);
+    border-top: 1px solid var(--color-border-subtle, #e5e7eb);
   }
 
   /* Danger zone */
@@ -603,15 +891,78 @@
     align-items: center;
     gap: var(--space-4);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid color-mix(in srgb, var(--color-danger) 22%, transparent);
+    border: 1px solid rgba(239, 68, 68, 0.2);
     border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--color-danger) 5%, var(--color-surface));
+    background: rgba(239, 68, 68, 0.04);
   }
 
   .deps-danger-zone__hint {
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #6b7280);
     margin: 0;
     flex: 1;
+  }
+
+  .deps-reset-confirmation {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(127, 29, 29, 0.12);
+  }
+
+  .deps-reset-confirmation__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .deps-reset-confirmation__copy strong {
+    color: var(--color-text-primary);
+  }
+
+  .deps-reset-confirmation__copy p {
+    margin: 0;
+    color: var(--color-text-secondary, #6b7280);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-reset-confirmation__copy code {
+    padding: 2px 6px;
+    border-radius: var(--radius-sm, 4px);
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--color-danger);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .deps-reset-confirmation__label {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium, 500);
+    color: var(--color-text-primary);
+  }
+
+  .deps-reset-confirmation__input {
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--color-border-subtle, #e5e7eb);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .deps-reset-confirmation__input:focus {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-color: var(--color-danger);
+  }
+
+  .deps-reset-confirmation__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
   }
 </style>

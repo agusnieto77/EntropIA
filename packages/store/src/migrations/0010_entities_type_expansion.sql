@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS entities_v2;
+
 CREATE TABLE entities_v2 (
   id TEXT PRIMARY KEY NOT NULL,
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -17,7 +19,7 @@ INSERT INTO entities_v2 (
 )
 SELECT
   id, item_id, entity_type, value, start_offset, end_offset,
-  confidence, source, model_name, created_at
+  confidence, NULL, NULL, created_at
 FROM entities;
 
 DROP TABLE entities;

@@ -117,6 +117,7 @@ describe('settings', () => {
       expect(SETTINGS_KEYS.GLM_OCR_API_KEY).toBe('glm_ocr_api_key')
       expect(SETTINGS_KEYS.OCRH_MODE).toBe('ocrh_mode')
       expect(SETTINGS_KEYS.LANGUAGE).toBe('language')
+      expect(SETTINGS_KEYS.PYTHON_RUNTIME_SELECTION).toBe('python.runtime_selection')
     })
 
     it('has correct defaults', () => {

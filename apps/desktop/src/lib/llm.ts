@@ -239,3 +239,45 @@ export function llmGetResult(
 export function llmIsAvailable(): Promise<boolean> {
   return invoke<boolean>('llm_is_available')
 }
+
+/** Detailed status of the local GGUF model file. */
+export interface LocalModelInfo {
+  exists: boolean
+  path: string
+  size_bytes: number | null
+  filename: string
+  source_url: string
+}
+
+/** Query whether the local model file exists, its resolved path, and size. */
+export function llmLocalModelInfo(): Promise<LocalModelInfo> {
+  return invoke<LocalModelInfo>('llm_local_model_info')
+}
+
+/** Open the models directory in the system file manager. */
+export function llmOpenModelsDir(): Promise<void> {
+  return invoke<void>('llm_open_models_dir')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Download
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LlmDownloadProgressPayload {
+  pct: number
+  downloaded_bytes: number
+  total_bytes: number | null
+}
+
+export interface LlmDownloadCompletePayload {
+  path: string
+}
+
+export interface LlmDownloadErrorPayload {
+  error: string
+}
+
+/** Start downloading the local model from the configured source URL. */
+export function llmDownloadModel(): Promise<string> {
+  return invoke<string>('llm_download_model')
+}

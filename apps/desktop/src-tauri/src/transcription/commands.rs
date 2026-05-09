@@ -25,9 +25,11 @@ pub async fn test_assemblyai_connection(api_key: String) -> Result<(), String> {
 pub async fn transcribe_audio(
     asset_id: String,
     asset_path: String,
+    app_handle: AppHandle,
     transcription_queue: State<'_, TranscriptionQueue>,
     db: State<'_, AppDbState>,
 ) -> Result<String, String> {
+    super::ensure_transcription_runtime_ready(&app_handle)?;
     {
         let conn = db
             .ui_conn
@@ -93,6 +95,7 @@ pub async fn transcribe_dictation(
     app_handle: AppHandle,
     db: State<'_, AppDbState>,
 ) -> Result<String, String> {
+    super::ensure_transcription_runtime_ready(&app_handle)?;
     let db_path = db.db_path.clone();
     {
         let conn = db

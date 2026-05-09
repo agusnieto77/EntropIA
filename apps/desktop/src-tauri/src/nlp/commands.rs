@@ -4,8 +4,11 @@
 /// `Ok("queued")`. The worker emits `nlp:progress`, `nlp:complete`, or
 /// `nlp:error` events asynchronously.
 use super::{NlpJob, NlpQueue};
+use crate::path_utils::normalize_windows_path;
+use crate::runtime::{managed_hf_cache_dir, managed_script_path};
 use serde::Serialize;
-use tauri::State;
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, State};
 
 type SimilarAssetRow = (String, String, String, String, String, String, Vec<u8>);
 
@@ -43,6 +46,34 @@ fn triples_retired_error(target: &str) -> String {
     )
 }
 
+fn resolve_embedding_backfill_script_path(
+    managed_root: Option<&Path>,
+    manifest_dir: &Path,
+) -> PathBuf {
+    if let Some(root) = managed_root {
+        let managed = managed_script_path(root, "embed.py");
+        if managed.exists() {
+            return managed;
+        }
+    }
+
+    let resource_path = manifest_dir.join("resources/scripts/embed.py");
+    if resource_path.exists() {
+        return normalize_windows_path(resource_path);
+    }
+
+    normalize_windows_path(manifest_dir.join("scripts/embed.py"))
+}
+
+fn resolve_embedding_backfill_cache_dir(
+    managed_root: Option<&Path>,
+    app_data_dir: &Path,
+) -> PathBuf {
+    managed_root
+        .map(managed_hf_cache_dir)
+        .unwrap_or_else(|| app_data_dir.join("hf_cache"))
+}
+
 /// Submit an FTS5 indexing job for `item_id`.
 ///
 /// The worker will fetch the item's title + extracted text and upsert into
@@ -59,8 +90,10 @@ pub async fn index_fts(item_id: String, nlp_queue: State<'_, NlpQueue>) -> Resul
 #[tauri::command]
 pub async fn extract_entities(
     item_id: String,
+    app_handle: AppHandle,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
+    super::ensure_nlp_runtime_ready(&app_handle)?;
     super::enqueue_entity_refresh_for_item(&nlp_queue, &item_id).map(|_| "queued".to_string())
 }
 
@@ -81,8 +114,10 @@ pub async fn extract_triples(
 #[tauri::command]
 pub async fn enrich_item(
     item_id: String,
+    app_handle: AppHandle,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
+    super::ensure_nlp_runtime_ready(&app_handle)?;
     enqueue(&nlp_queue, NlpJob::EnrichItem { item_id })
 }
 
@@ -98,8 +133,10 @@ pub async fn enrich_item(
 pub async fn embed_asset(
     item_id: String,
     asset_id: String,
+    app_handle: AppHandle,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
+    super::ensure_nlp_runtime_ready(&app_handle)?;
     enqueue(
         &nlp_queue,
         NlpJob::ComputeAssetEmbedding { item_id, asset_id },
@@ -122,6 +159,8 @@ pub async fn backfill_asset_embeddings(
 
     tokio::task::spawn_blocking(move || {
         use tauri::Manager;
+
+        let runtime_root = super::managed_runtime_root_for_nlp(&app_handle)?;
 
         let app_data_dir = app_handle.path().app_data_dir().map_err(|e| {
             format!("Failed to resolve app data dir for asset embedding backfill: {e}")
@@ -165,25 +204,12 @@ pub async fn backfill_asset_embeddings(
             "No Python with fastembed available for asset embedding backfill".to_string()
         })?;
 
-        let script_path = crate::path_utils::normalize_windows_path(
-            app_handle
-                .path()
-                .resolve("scripts/embed.py", tauri::path::BaseDirectory::Resource)
-                .ok()
-                .filter(|path| path.exists())
-                .unwrap_or_else(|| {
-                    let resource_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("resources/scripts/embed.py");
-                    if resource_path.exists() {
-                        resource_path
-                    } else {
-                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                            .join("scripts/embed.py")
-                    }
-                }),
-        );
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let script_path =
+            resolve_embedding_backfill_script_path(runtime_root.as_deref(), &manifest_dir);
 
-        let embed_cache_dir = app_data_dir.join("hf_cache");
+        let embed_cache_dir =
+            resolve_embedding_backfill_cache_dir(runtime_root.as_deref(), &app_data_dir);
 
         let engine =
             super::embeddings::EmbeddingEngine::init(super::embeddings::EmbeddingConfig {
@@ -240,8 +266,10 @@ pub async fn backfill_asset_embeddings(
 pub async fn extract_entities_for_asset(
     item_id: String,
     asset_id: String,
+    app_handle: AppHandle,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
+    super::ensure_nlp_runtime_ready(&app_handle)?;
     enqueue(
         &nlp_queue,
         NlpJob::ExtractEntitiesForAsset { item_id, asset_id },
@@ -393,6 +421,33 @@ mod tests {
             }
             _ => panic!("Expected EnrichItem job, got: {:?}", job),
         }
+    }
+
+    #[test]
+    fn resolve_embedding_backfill_script_prefers_managed_runtime_copy() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let managed_script = runtime_dir.path().join("scripts").join("embed.py");
+        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
+            .expect("create script dir");
+        std::fs::write(&managed_script, "print('ok')").expect("write script");
+
+        let resolved =
+            resolve_embedding_backfill_script_path(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, managed_script);
+    }
+
+    #[test]
+    fn resolve_embedding_backfill_cache_prefers_managed_hf_cache() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let managed_cache = runtime_dir.path().join("caches").join("hf");
+
+        let resolved =
+            resolve_embedding_backfill_cache_dir(Some(runtime_dir.path()), app_data_dir.path());
+
+        assert_eq!(resolved, managed_cache);
     }
 
     #[test]

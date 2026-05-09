@@ -1,15 +1,117 @@
 use tauri::State;
 
+use super::download::download_model_file;
 use super::openrouter::{ModelInfo, OpenRouterClient};
-use super::LlmJob;
-use super::LlmQueue;
-use super::LlmResultEntry;
+use super::{
+    get_local_model_info, resolve_model_path, LlmDownloadErrorPayload, LlmJob, LlmQueue,
+    LlmResultEntry, LocalModelInfo,
+};
+use super::{resolve_local_model_filename, resolve_local_model_source_url};
 use crate::db::state::AppDbState;
+use tauri::Emitter;
 
 /// Returns `true` if the LLM engine loaded successfully and is ready to accept jobs.
 #[tauri::command]
 pub async fn llm_is_available(llm_queue: State<'_, LlmQueue>) -> Result<bool, String> {
     Ok(llm_queue.is_available())
+}
+
+/// Return the current status of the local Gemma GGUF model file.
+#[tauri::command]
+pub async fn llm_local_model_info(db: State<'_, AppDbState>) -> Result<LocalModelInfo, String> {
+    Ok(get_local_model_info(&db.db_path))
+}
+
+/// Open the models directory in the system file manager.
+#[tauri::command]
+pub async fn llm_open_models_dir(db: State<'_, AppDbState>) -> Result<(), String> {
+    let db_path = &db.db_path;
+    let models_dir = resolve_model_path(db_path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| db_path.parent().unwrap_or(db_path).join("models"));
+    std::fs::create_dir_all(&models_dir)
+        .map_err(|e| format!("Failed to create models dir: {e}"))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Start downloading the local model from the configured (or default) source URL.
+/// Emits `llm:download_progress`, `llm:download_complete`, and `llm:download_error` events.
+#[tauri::command]
+pub async fn llm_download_model(
+    db: State<'_, AppDbState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let db_path = db.db_path.clone();
+    let conn =
+        rusqlite::Connection::open(&db_path).map_err(|e| format!("Failed to open DB: {e}"))?;
+
+    let url = resolve_local_model_source_url(Some(&conn));
+
+    let filename = resolve_local_model_filename(Some(&conn));
+
+    let models_dir = db_path
+        .parent()
+        .map(|p| p.join("models"))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("models"));
+    std::fs::create_dir_all(&models_dir)
+        .map_err(|e| format!("Failed to create models dir: {e}"))?;
+
+    let dest = models_dir.join(&filename);
+
+    if dest.exists() {
+        return Err("Model file already exists at the destination".to_string());
+    }
+
+    let app_handle_clone = app_handle.clone();
+    let tmp_path = dest.with_extension("download.tmp");
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            download_model_file(&url, &dest, &app_handle_clone)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = app_handle.emit("llm:download_error", LlmDownloadErrorPayload { error: e });
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "llm:download_error",
+                    LlmDownloadErrorPayload {
+                        error: format!("Download task panicked: {e}"),
+                    },
+                );
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+        }
+    });
+
+    Ok("started".to_string())
 }
 
 #[tauri::command]

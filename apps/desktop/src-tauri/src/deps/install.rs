@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use tauri::Manager;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::process::Command;
 
@@ -14,10 +15,264 @@ use super::{DepCheckResult, DependencyId, DependencyStatus, DepsState};
 use crate::deps::checks::{probe_one, ProbePythonMode};
 use crate::deps::registry::{all_deps_in_install_order, find_dep, DependencySpec};
 use crate::deps::uv::{self, UvBinary};
+use crate::runtime::manifest::RuntimeManifest;
+use crate::runtime::status::{RuntimeState, RuntimeStatus};
+use crate::runtime::{
+    managed_entry_path, managed_venv_dir, managed_venv_python_path, managed_wheelhouse_dir,
+    RuntimeManager,
+};
 
 #[cfg(test)]
 const SPACY_MODEL_ES_VERSION: &str = "3.8.0";
-const SPACY_MODEL_ES_WHEEL_URL: &str =
+
+// ---------------------------------------------------------------------------
+// GPU / CUDA detection for PaddlePaddle automatic GPU selection
+// ---------------------------------------------------------------------------
+
+/// Detect whether an NVIDIA GPU is present on the system.
+///
+/// Uses multiple hardware signals, not only `nvidia-smi`.
+///
+/// `nvidia-smi` can fail during driver/library mismatch windows (common after
+/// driver upgrades before reboot). In that state the hardware still exists and
+/// the dependency manager should install the GPU Paddle wheel; runtime GPU use
+/// will still depend on the driver becoming healthy.
+///
+/// This is intentionally duplicated from `ocr::paddle_vl` to keep the
+/// dependency manager decoupled from the OCR module.
+fn detect_nvidia_gpu() -> bool {
+    match std::process::Command::new("nvidia-smi").arg("-L").output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let has_gpu = !stdout.trim().is_empty() && stdout.contains("GPU");
+            if has_gpu {
+                eprintln!("[deps/install] detect_nvidia_gpu: found GPU via nvidia-smi -L");
+            }
+            if has_gpu {
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    detect_nvidia_gpu_from_system_inventory()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    if std::fs::read_dir("/proc/driver/nvidia/gpus")
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+    {
+        eprintln!("[deps/install] detect_nvidia_gpu: found GPU via /proc/driver/nvidia/gpus");
+        return true;
+    }
+
+    let Ok(entries) = std::fs::read_dir("/sys/bus/pci/devices") else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let vendor = std::fs::read_to_string(path.join("vendor")).unwrap_or_default();
+        if vendor.trim() != "0x10de" {
+            continue;
+        }
+
+        let class = std::fs::read_to_string(path.join("class")).unwrap_or_default();
+        if class.trim().starts_with("0x03") {
+            eprintln!("[deps/install] detect_nvidia_gpu: found GPU via PCI inventory");
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    let candidates = [
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramW6432").map(PathBuf::from),
+    ];
+
+    for base in candidates.into_iter().flatten() {
+        let smi = base
+            .join("NVIDIA Corporation")
+            .join("NVSMI")
+            .join("nvidia-smi.exe");
+        if !smi.exists() {
+            continue;
+        }
+        if let Ok(output) = std::process::Command::new(&smi).arg("-L").output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if output.status.success() && stdout.contains("GPU") {
+                eprintln!(
+                    "[deps/install] detect_nvidia_gpu: found GPU via {}",
+                    smi.display()
+                );
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn detect_nvidia_gpu_from_system_inventory() -> bool {
+    false
+}
+
+/// Detect the system's CUDA version string (e.g. "12.6").
+///
+/// Tries, in order:
+/// 1. `nvcc --version`
+/// 2. `/usr/local/cuda/version.json`
+/// 3. `/usr/local/cuda/version.txt`
+///
+/// Returns `None` if CUDA is not installed or the version cannot be parsed.
+fn detect_cuda_version() -> Option<String> {
+    // 1. nvcc --version
+    if let Ok(output) = std::process::Command::new("nvcc").arg("--version").output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(re) = regex::Regex::new(r"release\s+(\d+\.\d+)") {
+                if let Some(caps) = re.captures(&stdout) {
+                    if let Some(m) = caps.get(1) {
+                        return Some(m.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. /usr/local/cuda/version.json
+    if let Ok(content) = std::fs::read_to_string("/usr/local/cuda/version.json") {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(ver) = json.get("version").and_then(|v| v.as_str()) {
+                return Some(ver.to_string());
+            }
+        }
+    }
+
+    // 3. /usr/local/cuda/version.txt
+    if let Ok(content) = std::fs::read_to_string("/usr/local/cuda/version.txt") {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
+}
+
+/// Map a detected CUDA version to the PaddlePaddle stable package index URL.
+///
+/// PaddlePaddle distributes GPU builds on their own index (not PyPI).
+/// The index path is determined by the CUDA major/minor version.
+///
+/// Defaults to `cu126` (CUDA 12.6) when the version is unknown — this is
+/// the safest modern default for recent NVIDIA drivers.
+fn paddlepaddle_cuda_index(cuda_version: Option<&str>) -> &'static str {
+    let major = cuda_version
+        .and_then(|v| v.split('.').next())
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(12);
+
+    let minor = cuda_version
+        .and_then(|v| v.split('.').nth(1))
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(6);
+
+    match (major, minor) {
+        (11, _) => "https://www.paddlepaddle.org.cn/packages/stable/cu118/",
+        (12, 0..=5) => "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
+        (12, 6..=8) => "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
+        (12, 9..=99) => "https://www.paddlepaddle.org.cn/packages/stable/cu129/",
+        (13, _) => "https://www.paddlepaddle.org.cn/packages/stable/cu130/",
+        _ => "https://www.paddlepaddle.org.cn/packages/stable/cu126/",
+    }
+}
+
+/// Find a wheel file in a directory whose filename starts with the given package prefix.
+///
+/// Wheel filenames use the format `<package>-<version>-... .whl`. This helper
+/// requires the prefix to be followed by a separator (`-` or `_`) and then a
+/// version digit. This prevents `paddlepaddle` from falsely matching
+/// `paddlepaddle_gpu-...` (the character after the separator is `g`, not a digit).
+fn find_wheel_in_dir(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if !name.ends_with(".whl") {
+            continue;
+        }
+        if let Some(rest) = name.strip_prefix(prefix) {
+            if rest.starts_with('-') || rest.starts_with('_') {
+                if rest.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the install target (spec + optional extra index) for PaddlePaddle.
+///
+/// Strategy:
+/// 1. **Managed runtime** (`wheelhouse_dir` is `Some`): prefer a GPU wheel
+///    (`paddlepaddle_gpu-*.whl`) in the wheelhouse, then a CPU wheel
+///    (`paddlepaddle-*.whl`). This lets production builds bundle GPU support
+///    without forcing a ~759 MB wheel by default.
+/// 2. **Dev fallback** (`wheelhouse_dir` is `None`): detect NVIDIA GPU hardware.
+///    If present, select `paddlepaddle-gpu` from the PaddlePaddle CUDA index.
+///    If absent, select `paddlepaddle` (CPU) from PyPI.
+///
+/// The caller (`install_package`) passes `--extra-index-url` when an index
+/// is returned, so PyPI remains available for transitive dependencies.
+fn resolve_paddlepaddle_install_target(wheelhouse_dir: Option<&Path>) -> (String, Option<String>) {
+    const VERSION_SPEC: &str = ">=3.2.1,<3.3.0";
+
+    if let Some(dir) = wheelhouse_dir {
+        if let Some(gpu_wheel) = find_wheel_in_dir(dir, "paddlepaddle_gpu") {
+            eprintln!(
+                "[deps/install] Using bundled GPU wheel: {}",
+                gpu_wheel.display()
+            );
+            return (gpu_wheel.to_string_lossy().into_owned(), None);
+        }
+        if let Some(cpu_wheel) = find_wheel_in_dir(dir, "paddlepaddle") {
+            eprintln!(
+                "[deps/install] Using bundled CPU wheel: {}",
+                cpu_wheel.display()
+            );
+            return (cpu_wheel.to_string_lossy().into_owned(), None);
+        }
+        // No matching wheel in wheelhouse — fall through to online spec.
+        // In managed mode this will likely fail (offline), but that's the
+        // honest behaviour; the wheelhouse should contain the wheel.
+    }
+
+    if detect_nvidia_gpu() {
+        let spec = format!("paddlepaddle-gpu{VERSION_SPEC}");
+        let cuda_ver = detect_cuda_version();
+        let index = paddlepaddle_cuda_index(cuda_ver.as_deref()).to_string();
+        eprintln!("[deps/install] NVIDIA GPU detected — selecting {spec} from {index}");
+        (spec, Some(index))
+    } else {
+        eprintln!(
+            "[deps/install] No NVIDIA GPU detected — selecting paddlepaddle{VERSION_SPEC} (CPU) from PyPI"
+        );
+        (format!("paddlepaddle{VERSION_SPEC}"), None)
+    }
+}
+const SPACY_MODEL_ES_WHEEL_SPEC: &str =
     "https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl";
 
 // ---------------------------------------------------------------------------
@@ -26,40 +281,310 @@ const SPACY_MODEL_ES_WHEEL_URL: &str =
 
 /// Returns the directory where the managed venv lives.
 ///
-/// Example: `<app_data_dir>/venv/entropia-env`
-pub fn venv_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("venv").join("entropia-env")
+/// Example: `<managed_runtime_root>/venv/entropia-env`
+pub fn venv_path(managed_runtime_root: &Path) -> PathBuf {
+    managed_venv_dir(managed_runtime_root)
 }
 
 /// Returns the path to the Python interpreter inside the managed venv.
 ///
-/// Example: `<app_data_dir>/venv/entropia-env/Scripts/python.exe`
-pub fn venv_python_path(app_data_dir: &Path) -> PathBuf {
-    venv_path(app_data_dir).join("Scripts").join("python.exe")
+/// Example: `<managed_runtime_root>/venv/entropia-env/Scripts/python.exe`
+pub fn venv_python_path(managed_runtime_root: &Path) -> PathBuf {
+    managed_venv_python_path(managed_runtime_root)
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedRuntimeContext {
+    pub managed_root: PathBuf,
+    pub manifest: RuntimeManifest,
+    pub status: RuntimeStatus,
+}
+
+impl ManagedRuntimeContext {
+    pub fn managed_python(&self) -> PathBuf {
+        managed_entry_path(&self.managed_root, &self.manifest.python_relpath)
+    }
+
+    pub fn managed_uv(&self) -> PathBuf {
+        managed_entry_path(&self.managed_root, &self.manifest.uv_relpath)
+    }
+
+    pub fn wheelhouse_dir(&self) -> PathBuf {
+        managed_wheelhouse_dir(&self.managed_root)
+    }
+
+    pub fn venv_dir(&self) -> PathBuf {
+        venv_path(&self.managed_root)
+    }
+
+    pub fn venv_python(&self) -> PathBuf {
+        venv_python_path(&self.managed_root)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum InstallRuntime {
+    Managed(ManagedRuntimeContext),
+    DevFallback(DevFallbackContext),
+}
+
+#[derive(Clone, Debug)]
+pub struct DevFallbackContext {
+    pub root: PathBuf,
+    pub system_python: PathBuf,
+    pub venv_python: PathBuf,
+    pub uv: UvBinary,
+}
+
+#[derive(Clone, Debug)]
+pub struct DevFallbackPrerequisites {
+    pub python: Option<PathBuf>,
+    pub uv: Option<UvBinary>,
+}
+
+impl InstallRuntime {
+    pub fn venv_dir(&self) -> PathBuf {
+        match self {
+            Self::Managed(runtime) => runtime.venv_dir(),
+            Self::DevFallback(runtime) => runtime.root.clone(),
+        }
+    }
+
+    pub fn venv_python(&self) -> PathBuf {
+        match self {
+            Self::Managed(runtime) => runtime.venv_python(),
+            Self::DevFallback(runtime) => runtime.venv_python.clone(),
+        }
+    }
+
+    pub fn wheelhouse_dir(&self) -> Option<PathBuf> {
+        match self {
+            Self::Managed(runtime) => Some(runtime.wheelhouse_dir()),
+            Self::DevFallback(_) => None,
+        }
+    }
+}
+
+pub fn dev_fallback_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("runtime-dev").join("system-python")
+}
+
+pub fn dev_fallback_python_path(root: &Path) -> PathBuf {
+    if cfg!(windows) {
+        root.join("Scripts").join("python.exe")
+    } else {
+        root.join("bin").join("python")
+    }
+}
+
+pub fn dev_fallback_allowed() -> bool {
+    cfg!(all(debug_assertions, target_os = "linux"))
+}
+
+pub fn dev_fallback_platform_hint() -> &'static str {
+    if dev_fallback_allowed() {
+        "En Linux debug, EntropIA puede crear un venv local usando Python 3.11+ y uv del sistema para continuar sin payloads reales."
+    } else if cfg!(debug_assertions) {
+        if cfg!(target_os = "windows") {
+            "En Windows dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        } else if cfg!(target_os = "macos") {
+            "En macOS dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        } else {
+            "En esta plataforma dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        }
+    } else {
+        "En release no hay fallback de desarrollo: necesitás un runtime-pack hidratado/compatible o una fuente bootstrap confiable."
+    }
+}
+
+fn install_runtime_unavailable_message(state: RuntimeState) -> String {
+    format!(
+        "El runtime de release no está listo ({state:?}) y no hay fallback de desarrollo utilizable. {}",
+        dev_fallback_platform_hint()
+    )
+}
+
+fn allow_online_installs() -> bool {
+    dev_fallback_allowed()
+}
+
+pub fn load_install_runtime(
+    app_handle: &tauri::AppHandle,
+    app_data_dir: &Path,
+) -> Result<InstallRuntime, String> {
+    let runtime_manager = app_handle.state::<RuntimeManager>();
+    let status = runtime_manager.ensure_ready_or_bootstrap(app_handle)?;
+
+    if status.state == RuntimeState::Healthy {
+        if let Some(runtime) = load_managed_runtime_context(app_handle)? {
+            return Ok(InstallRuntime::Managed(runtime));
+        }
+    }
+
+    if let Some(runtime) = load_managed_runtime_context(app_handle)? {
+        if runtime.status.state == RuntimeState::Healthy {
+            return Ok(InstallRuntime::Managed(runtime));
+        }
+    }
+
+    if let Some(runtime) = load_dev_fallback_context(app_data_dir) {
+        return Ok(InstallRuntime::DevFallback(runtime));
+    }
+
+    Err(install_runtime_unavailable_message(status.state))
+}
+
+#[cfg(test)]
+fn load_install_runtime_for_tests<F>(
+    bundle_root: &Path,
+    app_data_dir: &Path,
+    on_progress: F,
+) -> Result<InstallRuntime, String>
+where
+    F: FnMut(crate::runtime::status::RuntimeOperation),
+{
+    let manager = RuntimeManager::new();
+    let status = manager.ensure_ready_or_bootstrap_for_tests(
+        bundle_root,
+        app_data_dir,
+        crate::runtime::bootstrap::BootstrapRemoteCatalog::SourceUnavailable {
+            source: None,
+            reason: "Trusted remote bootstrap source is not configured in tests".to_string(),
+        },
+        on_progress,
+    )?;
+
+    if status.state == RuntimeState::Healthy {
+        if let Some(runtime) = load_managed_runtime_context_for_tests(app_data_dir)? {
+            return Ok(InstallRuntime::Managed(runtime));
+        }
+    }
+
+    if let Some(runtime) = load_managed_runtime_context_for_tests(app_data_dir)? {
+        if runtime.status.state == RuntimeState::Healthy {
+            return Ok(InstallRuntime::Managed(runtime));
+        }
+    }
+
+    if let Some(runtime) = load_dev_fallback_context(app_data_dir) {
+        return Ok(InstallRuntime::DevFallback(runtime));
+    }
+
+    Err(format!(
+        "El runtime de release no está listo ({:?}) y no hay fuente confiable/fallback utilizable.",
+        status.state
+    ))
+}
+
+fn load_dev_fallback_context(app_data_dir: &Path) -> Option<DevFallbackContext> {
+    if !dev_fallback_allowed() {
+        return None;
+    }
+
+    let prerequisites = inspect_dev_fallback_prerequisites(app_data_dir);
+    let uv = prerequisites.uv.clone()?;
+    let root = dev_fallback_root(app_data_dir);
+    let venv_python = dev_fallback_python_path(&root);
+    let system_python = prerequisites.python.clone()?;
+
+    Some(DevFallbackContext {
+        root,
+        system_python,
+        venv_python,
+        uv,
+    })
+}
+
+pub fn inspect_dev_fallback_prerequisites(app_data_dir: &Path) -> DevFallbackPrerequisites {
+    let python = crate::python_discovery::discover_python_candidates()
+        .iter()
+        .find(|path| path.is_file() && python_supports_dev_fallback(path))
+        .cloned();
+
+    DevFallbackPrerequisites {
+        python,
+        uv: uv::UvBinary::detect_dev_fallback(app_data_dir),
+    }
+}
+
+fn python_supports_dev_fallback(path: &Path) -> bool {
+    crate::python_discovery::probe_python_module(
+        path,
+        "import sys; print('ok' if sys.version_info >= (3, 11) else 'no')",
+    )
+}
+
+pub fn load_managed_runtime_context(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<ManagedRuntimeContext>, String> {
+    let manager = app_handle.state::<RuntimeManager>();
+    let status = manager.status(app_handle)?;
+    let bundle_root = manager.hydrated_runtime_root(app_handle)?;
+
+    let Some(managed_root) = bundle_root else {
+        return Ok(None);
+    };
+
+    let manifest = RuntimeManifest::load_from_path(&managed_root.join("manifest.json"))?;
+    Ok(Some(ManagedRuntimeContext {
+        managed_root,
+        manifest,
+        status,
+    }))
+}
+
+#[cfg(test)]
+fn load_managed_runtime_context_for_tests(
+    app_data_dir: &Path,
+) -> Result<Option<ManagedRuntimeContext>, String> {
+    let manager = RuntimeManager::new();
+    let Some(managed_root) = manager.discover_hydrated_runtime_root_for_tests(app_data_dir) else {
+        return Ok(None);
+    };
+    let manifest = RuntimeManifest::load_from_path(&managed_root.join("manifest.json"))?;
+    let status = manager
+        .inspect_hydrated_runtime_for_tests(app_data_dir, &managed_root, &manifest)
+        .ok_or_else(|| "No se pudo inspeccionar el runtime hidratado".to_string())?;
+    Ok(Some(ManagedRuntimeContext {
+        managed_root,
+        manifest,
+        status,
+    }))
 }
 
 // ---------------------------------------------------------------------------
 // Venv creation
 // ---------------------------------------------------------------------------
 
-/// Create the managed venv using `uv venv <venv_path> --python 3.11`.
+/// Create the managed venv using the hydrated runtime's uv + Python payload.
 ///
 /// Returns the path to the venv's `python.exe`. If the venv already exists
 /// (the python interpreter file is present) this is a no-op.
-pub async fn create_venv(uv: &UvBinary, app_data_dir: &Path) -> Result<PathBuf, String> {
-    let python_path = venv_python_path(app_data_dir);
+pub async fn create_venv(
+    uv: &UvBinary,
+    runtime: &ManagedRuntimeContext,
+) -> Result<PathBuf, String> {
+    let python_path = runtime.venv_python();
 
     // Already exists — nothing to do.
     if python_path.is_file() {
         return Ok(python_path);
     }
 
-    let venv = venv_path(app_data_dir);
+    let venv = runtime.venv_dir();
     let venv_str = venv.to_string_lossy().into_owned();
+    let managed_python = runtime.managed_python();
+    let managed_python_str = managed_python.to_string_lossy().into_owned();
 
     let output = uv
         .command()
-        .args(["venv", &venv_str, "--python", "3.11", "--seed"])
+        .args([
+            "venv",
+            &venv_str,
+            "--python",
+            &managed_python_str,
+            "--offline",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -73,7 +598,47 @@ pub async fn create_venv(uv: &UvBinary, app_data_dir: &Path) -> Result<PathBuf, 
 
     if !python_path.is_file() {
         return Err(
-            "Error creando entorno virtual: python.exe no encontrado después de uv venv"
+            "Error creando entorno virtual: Python del venv no encontrado después de uv venv"
+                .to_string(),
+        );
+    }
+
+    Ok(python_path)
+}
+
+pub async fn create_dev_fallback_venv(runtime: &DevFallbackContext) -> Result<PathBuf, String> {
+    let python_path = runtime.venv_python.clone();
+
+    if python_path.is_file() {
+        return Ok(python_path);
+    }
+
+    tokio::fs::create_dir_all(&runtime.root)
+        .await
+        .map_err(|e| format!("Error creando directorio del fallback de desarrollo: {e}"))?;
+
+    let root_str = runtime.root.to_string_lossy().into_owned();
+    let system_python = runtime.system_python.to_string_lossy().into_owned();
+    let output = runtime
+        .uv
+        .command()
+        .args(["venv", &root_str, "--python", &system_python, "--seed"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Error creando entorno virtual de desarrollo: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Error creando entorno virtual de desarrollo: {stderr}"
+        ));
+    }
+
+    if !python_path.is_file() {
+        return Err(
+            "Error creando entorno virtual de desarrollo: Python del venv no encontrado después de `uv venv`"
                 .to_string(),
         );
     }
@@ -87,10 +652,7 @@ pub async fn create_venv(uv: &UvBinary, app_data_dir: &Path) -> Result<PathBuf, 
 
 /// Write all Python-path settings into `app_settings` so that every subsystem
 /// (embeddings, OCR, transcription, NER) can find the managed interpreter.
-pub fn persist_venv_paths(
-    conn: &rusqlite::Connection,
-    python_path: &Path,
-) -> Result<(), String> {
+pub fn persist_venv_paths(conn: &rusqlite::Connection, python_path: &Path) -> Result<(), String> {
     let path_str = python_path.to_string_lossy();
 
     let keys = [
@@ -125,6 +687,7 @@ pub async fn install_package(
     uv: &UvBinary,
     dep: &DependencySpec,
     venv_python: &Path,
+    wheelhouse_dir: Option<&Path>,
     on_output: impl Fn(&str) + Send + 'static,
 ) -> Result<(), String> {
     if dep.id == DependencyId::Python {
@@ -132,34 +695,83 @@ pub async fn install_package(
         return Ok(());
     }
 
-    let spec = managed_install_spec(dep)
-        .ok_or_else(|| format!("Sin spec de instalación para {}", dep.display_name))?;
+    let (spec, extra_index_url) = if dep.id == DependencyId::PaddlePaddle {
+        resolve_paddlepaddle_install_target(wheelhouse_dir)
+    } else {
+        let spec = managed_install_spec(dep, wheelhouse_dir)
+            .ok_or_else(|| format!("Sin spec de instalación para {}", dep.display_name))?;
+        (spec, None)
+    };
 
     let python_str = venv_python.to_string_lossy().into_owned();
     let mut cmd = uv.command();
-    cmd.args(["pip", "install", spec, "--python", &python_str])
-        .stdout(std::process::Stdio::piped())
+    cmd.args(["pip", "install", &spec, "--python", &python_str]);
+
+    if let Some(index_url) = extra_index_url {
+        // PaddlePaddle GPU packages are hosted on their own index (not PyPI).
+        // Use --extra-index-url so PyPI remains available for transitive deps.
+        cmd.args(["--extra-index-url", &index_url]);
+    } else if let Some(wheelhouse_dir) = wheelhouse_dir {
+        let wheelhouse_str = wheelhouse_dir.to_string_lossy().into_owned();
+        cmd.args(["--no-index", "--find-links", &wheelhouse_str]);
+    } else if !allow_online_installs() {
+        return Err(format!(
+            "{} requiere wheelhouse administrado; el fallback online no está habilitado para este entorno. {}",
+            dep.display_name,
+            dev_fallback_platform_hint()
+        ));
+    }
+
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     run_and_stream(&mut cmd, dep.display_name, on_output).await
 }
 
-fn managed_install_spec(dep: &DependencySpec) -> Option<&'static str> {
+fn managed_install_spec(dep: &DependencySpec, wheelhouse_dir: Option<&Path>) -> Option<String> {
     match dep.id {
         DependencyId::Python => None,
-        // Install the exact wheel version compatible with our managed spaCy 3.8 flow.
-        DependencyId::SpacyModelEs => Some(SPACY_MODEL_ES_WHEEL_URL),
-        _ => dep.pip_spec,
+        DependencyId::SpacyModelEs => resolve_spacy_model_install_spec(wheelhouse_dir),
+        DependencyId::PaddlePaddle => {
+            // Dynamic resolution is handled inside install_package; for probes
+            // and status checks we still return the static CPU spec.
+            dep.pip_spec.map(str::to_owned)
+        }
+        _ => dep.pip_spec.map(str::to_owned),
     }
+}
+
+fn resolve_spacy_model_install_spec(wheelhouse_dir: Option<&Path>) -> Option<String> {
+    if let Some(dir) = wheelhouse_dir {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                if file_name.starts_with("es_core_news_sm-") && file_name.ends_with(".whl") {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+
+    Some(SPACY_MODEL_ES_WHEEL_SPEC.to_string())
 }
 
 async fn ensure_managed_prerequisites_installed(
     uv: &UvBinary,
     dep: &DependencySpec,
     venv_python: &Path,
+    wheelhouse_dir: Option<&Path>,
 ) -> Result<(), String> {
     for prerequisite_id in dep.managed_prerequisites {
-        let prerequisite = find_dep(prerequisite_id)
-            .ok_or_else(|| format!("Prerequisito desconocido para {}: {prerequisite_id:?}", dep.display_name))?;
+        let prerequisite = find_dep(prerequisite_id).ok_or_else(|| {
+            format!(
+                "Prerequisito desconocido para {}: {prerequisite_id:?}",
+                dep.display_name
+            )
+        })?;
 
         let prerequisite_status = probe_one(prerequisite, venv_python).await;
         if matches!(prerequisite_status, DependencyStatus::Installed { .. }) {
@@ -167,7 +779,7 @@ async fn ensure_managed_prerequisites_installed(
         }
 
         let display_name = prerequisite.display_name;
-        install_package(uv, prerequisite, venv_python, move |line| {
+        install_package(uv, prerequisite, venv_python, wheelhouse_dir, move |line| {
             eprintln!("[deps/install] [{display_name}] {line}");
         })
         .await?;
@@ -261,11 +873,7 @@ async fn run_and_stream(
         .map_err(|e| format!("Error esperando proceso de {display_name}: {e}"))?;
 
     if !status.success() {
-        let tail = last_lines
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let tail = last_lines.iter().cloned().collect::<Vec<_>>().join("\n");
         return Err(format!("Error instalando {display_name}: {tail}"));
     }
 
@@ -319,9 +927,10 @@ pub async fn install_all(
     app_data_dir: &Path,
 ) -> Result<(), String> {
     super::invalidate_probe_cache(state).await;
+    let runtime = load_install_runtime(app, app_data_dir)?;
 
     // ── 1. Ensure uv ────────────────────────────────────────────────────────
-    let uv = ensure_uv(app, app_data_dir).await?;
+    let uv = ensure_uv(app, app_data_dir, &runtime).await?;
 
     // ── 2. Create venv & update Python status ───────────────────────────────
     {
@@ -339,9 +948,11 @@ pub async fn install_all(
         },
     );
 
-    let venv_python = match create_venv(&uv, app_data_dir).await {
+    let venv_python = match ensure_install_runtime_venv(&runtime).await {
         Ok(p) => {
-            let status = DependencyStatus::Installed { version: Some("3.11".to_string()) };
+            let status = DependencyStatus::Installed {
+                version: Some("3.11".to_string()),
+            };
             {
                 let mut map = state.0.lock().await;
                 map.statuses.insert(DependencyId::Python, status.clone());
@@ -386,7 +997,9 @@ pub async fn install_all(
     // Add Python result.
     results.push(DepCheckResult {
         id: DependencyId::Python,
-        status: DependencyStatus::Installed { version: Some("3.11".to_string()) },
+        status: DependencyStatus::Installed {
+            version: Some("3.11".to_string()),
+        },
         version: Some("3.11".to_string()),
     });
 
@@ -415,6 +1028,7 @@ pub async fn install_all(
             &uv,
             dep,
             &venv_python,
+            runtime.wheelhouse_dir().as_deref(),
             move |line| {
                 eprintln!("[deps/install] [{display_name}] {line}");
             },
@@ -491,6 +1105,7 @@ pub async fn install_one(
     app_data_dir: &Path,
 ) -> Result<DepCheckResult, String> {
     super::invalidate_probe_cache(state).await;
+    let runtime = load_install_runtime(app, app_data_dir)?;
 
     if *id == DependencyId::Python {
         return Err(
@@ -499,13 +1114,10 @@ pub async fn install_one(
     }
 
     // Pre-flight: uv must already be present.
-    let uv = uv::UvBinary::detect(Some(app), app_data_dir).ok_or_else(|| {
-        "uv no está disponible. Verificá los recursos bundled o ejecutá la instalación completa primero."
-            .to_string()
-    })?;
+    let uv = ensure_uv(app, app_data_dir, &runtime).await?;
 
     // Ensure the managed venv exists before installing a single dependency.
-    let existing_venv_python = venv_python_path(app_data_dir);
+    let existing_venv_python = runtime.venv_python();
     let venv_python = if existing_venv_python.is_file() {
         existing_venv_python
     } else {
@@ -522,7 +1134,7 @@ pub async fn install_one(
             },
         );
 
-        let created = create_venv(&uv, app_data_dir).await?;
+        let created = ensure_install_runtime_venv(&runtime).await?;
 
         {
             let conn = rusqlite::Connection::open(db_path)
@@ -549,8 +1161,7 @@ pub async fn install_one(
         created
     };
 
-    let dep = find_dep(id)
-        .ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
+    let dep = find_dep(id).ok_or_else(|| format!("Dependencia desconocida: {id:?}"))?;
 
     let install_plan = managed_install_plan(dep);
 
@@ -559,7 +1170,13 @@ pub async fn install_one(
     update_dependency_status(app, state, id, installing).await;
 
     for planned_dep in &install_plan[..install_plan.len().saturating_sub(1)] {
-        ensure_managed_prerequisites_installed(&uv, planned_dep, &venv_python).await?;
+        ensure_managed_prerequisites_installed(
+            &uv,
+            planned_dep,
+            &venv_python,
+            runtime.wheelhouse_dir().as_deref(),
+        )
+        .await?;
 
         let prerequisite_status = probe_one(planned_dep, &venv_python).await;
         if matches!(prerequisite_status, DependencyStatus::Installed { .. }) {
@@ -576,9 +1193,15 @@ pub async fn install_one(
         .await;
 
         let display_name = planned_dep.display_name;
-        install_package(&uv, planned_dep, &venv_python, move |line| {
-            eprintln!("[deps/install] [{display_name}] {line}");
-        })
+        install_package(
+            &uv,
+            planned_dep,
+            &venv_python,
+            runtime.wheelhouse_dir().as_deref(),
+            move |line| {
+                eprintln!("[deps/install] [{display_name}] {line}");
+            },
+        )
         .await?;
 
         let verified = probe_one(planned_dep, &venv_python).await;
@@ -603,9 +1226,15 @@ pub async fn install_one(
     }
 
     let display_name = dep.display_name;
-    let install_result = install_package(&uv, dep, &venv_python, move |line| {
-        eprintln!("[deps/install] [{display_name}] {line}");
-    })
+    let install_result = install_package(
+        &uv,
+        dep,
+        &venv_python,
+        runtime.wheelhouse_dir().as_deref(),
+        move |line| {
+            eprintln!("[deps/install] [{display_name}] {line}");
+        },
+    )
     .await;
 
     if let Err(ref msg) = install_result {
@@ -621,12 +1250,13 @@ pub async fn install_one(
         .ok()
         .map(|conn| crate::deps::checks::load_probe_python_settings(&conn))
         .unwrap_or_default();
-    let probe_python = crate::deps::checks::resolve_probe_python_async(
+    let probe_python = crate::deps::checks::resolve_probe_python_with_runtime(
         probe_settings,
         ProbePythonMode::DependencyManager,
+        Some(runtime.venv_python().as_path()),
+        runtime_status_for_probe(&runtime),
     )
-        .await?
-        .unwrap_or(venv_python);
+    .unwrap_or(venv_python);
 
     let probed_status = probe_one(dep, &probe_python).await;
 
@@ -653,9 +1283,25 @@ pub async fn install_one(
 
 /// Ensure a valid uv binary is available: detect it, or download it.
 /// Emits `deps://uv_progress` events during download.
-async fn ensure_uv(app: &tauri::AppHandle, app_data_dir: &Path) -> Result<UvBinary, String> {
-    if let Some(uv) = uv::UvBinary::detect(Some(app), app_data_dir) {
-        return Ok(uv);
+async fn ensure_uv(
+    app: &tauri::AppHandle,
+    app_data_dir: &Path,
+    runtime: &InstallRuntime,
+) -> Result<UvBinary, String> {
+    match runtime {
+        InstallRuntime::Managed(runtime) => {
+            if let Some(uv) = uv::UvBinary::detect_with_runtime(
+                Some(app),
+                app_data_dir,
+                Some(runtime.managed_uv().as_path()),
+                Some(&runtime.status),
+            ) {
+                return Ok(uv);
+            }
+        }
+        InstallRuntime::DevFallback(runtime) => {
+            return Ok(runtime.uv.clone());
+        }
     }
 
     let app_clone = app.clone();
@@ -671,6 +1317,29 @@ async fn ensure_uv(app: &tauri::AppHandle, app_data_dir: &Path) -> Result<UvBina
     .await
 }
 
+async fn ensure_install_runtime_venv(runtime: &InstallRuntime) -> Result<PathBuf, String> {
+    match runtime {
+        InstallRuntime::Managed(runtime) => {
+            let uv = UvBinary::detect_with_runtime(
+                None,
+                &runtime.managed_root,
+                Some(runtime.managed_uv().as_path()),
+                Some(&runtime.status),
+            )
+            .ok_or_else(|| "uv no está disponible para el runtime administrado".to_string())?;
+            create_venv(&uv, runtime).await
+        }
+        InstallRuntime::DevFallback(runtime) => create_dev_fallback_venv(runtime).await,
+    }
+}
+
+fn runtime_status_for_probe(runtime: &InstallRuntime) -> Option<&RuntimeStatus> {
+    match runtime {
+        InstallRuntime::Managed(runtime) => Some(&runtime.status),
+        InstallRuntime::DevFallback(_) => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -679,29 +1348,55 @@ async fn ensure_uv(app: &tauri::AppHandle, app_data_dir: &Path) -> Result<UvBina
 mod tests {
     use super::*;
     use crate::deps::registry::find_dep;
+    use crate::runtime::manifest::{ManifestEntry, RuntimeManifest};
+    use crate::runtime::status::RuntimeState;
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn write_file(root: &Path, relpath: &str, bytes: &[u8]) -> String {
+        let path = root.join(relpath);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, bytes).expect("write file");
+        format!("{:x}", Sha256::digest(bytes))
+    }
 
     #[test]
-    fn test_venv_path_structure() {
-        let base = Path::new("/some/app/data");
-        let venv = venv_path(base);
+    fn test_venv_path_lives_under_managed_runtime_root() {
+        let managed_runtime_root = Path::new("/some/app/data/runtime/2026.05.0");
+        let venv = venv_path(managed_runtime_root);
         assert!(
             venv.to_string_lossy().contains("entropia-env"),
             "venv path should contain 'entropia-env'"
         );
+        assert!(
+            venv.starts_with(managed_runtime_root),
+            "venv path should live inside the managed runtime root"
+        );
     }
 
     #[test]
-    fn test_venv_python_path_ends_with_exe() {
-        let base = Path::new("/some/app/data");
-        let python = venv_python_path(base);
-        assert!(
-            python.to_string_lossy().ends_with("python.exe"),
-            "venv python path should end with 'python.exe'"
-        );
-        assert!(
-            python.to_string_lossy().contains("Scripts"),
-            "venv python path should go through Scripts/"
-        );
+    fn test_venv_python_path_matches_platform_layout() {
+        let managed_runtime_root = PathBuf::from("/some/app/data/runtime/2026.05.0");
+        let python = venv_python_path(&managed_runtime_root);
+
+        if cfg!(windows) {
+            assert!(
+                python.to_string_lossy().ends_with("python.exe"),
+                "venv python path should end with 'python.exe'"
+            );
+            assert!(
+                python.to_string_lossy().contains("Scripts"),
+                "venv python path should go through Scripts/"
+            );
+        } else {
+            assert!(
+                python.to_string_lossy().ends_with("bin/python"),
+                "venv python path should end with 'bin/python' on unix"
+            );
+        }
     }
 
     #[test]
@@ -750,23 +1445,427 @@ mod tests {
     }
 
     #[test]
-    fn test_managed_install_spec_uses_exact_spacy_model_wheel() {
+    fn test_managed_install_plan_keeps_paddlepaddle_before_paddleocr() {
+        let paddleocr = find_dep(&DependencyId::PaddleOcr).expect("PaddleOcr present");
+        let plan = managed_install_plan(paddleocr)
+            .into_iter()
+            .map(|dep| dep.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            plan,
+            vec![DependencyId::PaddlePaddle, DependencyId::PaddleOcr]
+        );
+    }
+
+    #[test]
+    fn test_managed_install_spec_uses_offline_spacy_model_requirement() {
         let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
 
-        assert_eq!(managed_install_spec(spacy_model), Some(SPACY_MODEL_ES_WHEEL_URL));
-        assert!(SPACY_MODEL_ES_WHEEL_URL.contains("es_core_news_sm-3.8.0"));
-        assert!(SPACY_MODEL_ES_WHEEL_URL.ends_with("-py3-none-any.whl"));
+        assert_eq!(
+            managed_install_spec(spacy_model, None),
+            Some(SPACY_MODEL_ES_WHEEL_SPEC.to_string())
+        );
+        assert!(SPACY_MODEL_ES_WHEEL_SPEC
+            .starts_with("https://github.com/explosion/spacy-models/releases/download/"));
     }
 
     #[test]
     fn test_managed_install_spec_preserves_regular_pip_specs() {
         let spacy = find_dep(&DependencyId::Spacy).expect("spacy dep present");
 
-        assert_eq!(managed_install_spec(spacy), spacy.pip_spec);
+        assert_eq!(
+            managed_install_spec(spacy, None),
+            spacy.pip_spec.map(str::to_owned)
+        );
     }
 
     #[test]
     fn test_spacy_model_version_constant_matches_wheel_url() {
-        assert!(SPACY_MODEL_ES_WHEEL_URL.contains(SPACY_MODEL_ES_VERSION));
+        assert!(SPACY_MODEL_ES_WHEEL_SPEC.contains(SPACY_MODEL_ES_VERSION));
+    }
+
+    #[test]
+    fn test_spacy_model_prefers_local_wheelhouse_copy_when_available() {
+        let wheelhouse = tempdir().expect("wheelhouse dir");
+        let local_wheel = wheelhouse
+            .path()
+            .join("es_core_news_sm-3.8.0-py3-none-any.whl");
+        std::fs::write(&local_wheel, b"wheel").expect("write wheel");
+
+        let resolved = resolve_spacy_model_install_spec(Some(wheelhouse.path()));
+
+        assert_eq!(resolved, Some(local_wheel.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn test_load_managed_runtime_context_reads_hydrated_runtime_from_app_data() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let venv_python_relpath = if cfg!(windows) {
+            "venv/entropia-env/Scripts/python.exe"
+        } else {
+            "venv/entropia-env/bin/python"
+        };
+        let python_sha = write_file(&managed_root, python_relpath, b"python");
+        let uv_sha = write_file(&managed_root, uv_relpath, b"uv");
+        write_file(&managed_root, venv_python_relpath, b"venv-python");
+        std::fs::write(
+            managed_root.join("manifest.json"),
+            serde_json::to_vec_pretty(&RuntimeManifest {
+                pack_version: "2026.05.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: crate::runtime::paths::current_runtime_platform(),
+                payload_profile: "release".to_string(),
+                release_injection_required: false,
+                external_artifacts_required: vec![],
+                python_relpath: python_relpath.to_string(),
+                uv_relpath: uv_relpath.to_string(),
+                python_files: vec![ManifestEntry {
+                    path: python_relpath.to_string(),
+                    sha256: python_sha,
+                    size: 6,
+                    executable: !cfg!(windows),
+                }],
+                uv_files: vec![ManifestEntry {
+                    path: uv_relpath.to_string(),
+                    sha256: uv_sha,
+                    size: 2,
+                    executable: true,
+                }],
+                script_files: vec![],
+                wheelhouse: vec![],
+                caches: vec![],
+                native_assets: vec![],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let context = load_managed_runtime_context_for_tests(app_data_dir.path())
+            .expect("context resolution should succeed")
+            .expect("runtime context should exist");
+
+        assert_eq!(context.status.state, RuntimeState::Healthy);
+        assert_eq!(context.managed_root, managed_root);
+        assert_eq!(
+            context.venv_python(),
+            crate::runtime::managed_venv_python_path(&managed_root)
+        );
+    }
+
+    #[test]
+    fn test_dev_fallback_paths_live_under_runtime_dev_root() {
+        let app_data = Path::new("/tmp/entropia");
+        let root = dev_fallback_root(app_data);
+        let python = dev_fallback_python_path(&root);
+
+        assert!(root.ends_with("runtime-dev/system-python"));
+        if cfg!(windows) {
+            assert!(python.ends_with("Scripts/python.exe"));
+        } else {
+            assert!(python.ends_with("bin/python"));
+        }
+    }
+
+    #[test]
+    fn test_install_runtime_dev_fallback_reports_no_wheelhouse() {
+        let runtime = InstallRuntime::DevFallback(DevFallbackContext {
+            root: PathBuf::from("/tmp/runtime-dev/system-python"),
+            system_python: PathBuf::from("/usr/bin/python3"),
+            venv_python: PathBuf::from("/tmp/runtime-dev/system-python/bin/python"),
+            uv: UvBinary {
+                path: PathBuf::from("/usr/bin/uv"),
+                version: "0.10.3".to_string(),
+            },
+        });
+
+        assert_eq!(runtime.wheelhouse_dir(), None);
+        assert_eq!(
+            runtime.venv_python(),
+            PathBuf::from("/tmp/runtime-dev/system-python/bin/python")
+        );
+    }
+
+    #[test]
+    fn test_python_supports_dev_fallback_rejects_current_test_binary() {
+        let current_exe = std::env::current_exe().expect("current exe");
+        assert!(!python_supports_dev_fallback(&current_exe));
+    }
+
+    #[test]
+    fn test_load_install_runtime_for_tests_bootstraps_release_bundle_before_installing() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        std::fs::write(
+            bundle_dir.path().join("manifest.json"),
+            serde_json::to_vec_pretty(&RuntimeManifest {
+                pack_version: "2026.05.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: crate::runtime::paths::current_runtime_platform(),
+                payload_profile: "release".to_string(),
+                release_injection_required: false,
+                external_artifacts_required: vec![],
+                python_relpath: python_relpath.to_string(),
+                uv_relpath: uv_relpath.to_string(),
+                python_files: vec![ManifestEntry {
+                    path: python_relpath.to_string(),
+                    sha256: python_sha,
+                    size: 6,
+                    executable: !cfg!(windows),
+                }],
+                uv_files: vec![ManifestEntry {
+                    path: uv_relpath.to_string(),
+                    sha256: uv_sha,
+                    size: 2,
+                    executable: true,
+                }],
+                script_files: vec![],
+                wheelhouse: vec![],
+                caches: vec![],
+                native_assets: vec![],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let runtime =
+            load_install_runtime_for_tests(bundle_dir.path(), app_data_dir.path(), |_| {})
+                .expect("bootstrap should make managed runtime available");
+
+        assert!(matches!(runtime, InstallRuntime::Managed(_)));
+    }
+
+    #[test]
+    fn test_load_install_runtime_for_tests_reports_honest_bootstrap_blocker() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        std::fs::write(
+            bundle_dir.path().join("manifest.json"),
+            serde_json::to_vec_pretty(&RuntimeManifest {
+                pack_version: "2026.05.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: crate::runtime::paths::current_runtime_platform(),
+                payload_profile: "fixture".to_string(),
+                release_injection_required: true,
+                external_artifacts_required: vec!["relocatable-python".to_string()],
+                python_relpath: python_relpath.to_string(),
+                uv_relpath: uv_relpath.to_string(),
+                python_files: vec![ManifestEntry {
+                    path: python_relpath.to_string(),
+                    sha256: python_sha,
+                    size: 6,
+                    executable: !cfg!(windows),
+                }],
+                uv_files: vec![ManifestEntry {
+                    path: uv_relpath.to_string(),
+                    sha256: uv_sha,
+                    size: 2,
+                    executable: true,
+                }],
+                script_files: vec![],
+                wheelhouse: vec![],
+                caches: vec![],
+                native_assets: vec![],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let result = load_install_runtime_for_tests(bundle_dir.path(), app_data_dir.path(), |_| {});
+
+        if dev_fallback_allowed() {
+            assert!(
+                matches!(result, Ok(InstallRuntime::DevFallback(_)) | Err(_)),
+                "fixture runtime in Linux dev should either use the honest dev fallback or report the blocker"
+            );
+        } else {
+            let error =
+                result.expect_err("fixture runtime without source should block installs honestly");
+            assert!(error.contains("fuente confiable") || error.contains("source"));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PaddlePaddle GPU automatic selection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_paddlepaddle_cuda_index_maps_cuda_11_to_cu118() {
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("11.8")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu118/"
+        );
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("11.2")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu118/"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_cuda_index_maps_cuda_12_to_cu126() {
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("12.0")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        );
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("12.6")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        );
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("12.8")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_cuda_index_maps_cuda_129_to_cu129() {
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("12.9")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+        );
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("12.12")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_cuda_index_maps_cuda_13_to_cu130() {
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("13.0")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu130/"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_cuda_index_defaults_to_cu126_when_unknown() {
+        assert_eq!(
+            paddlepaddle_cuda_index(None),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        );
+        assert_eq!(
+            paddlepaddle_cuda_index(Some("garbage")),
+            "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+        );
+    }
+
+    #[test]
+    fn test_find_wheel_in_dir_matches_prefix_and_extension() {
+        let dir = tempdir().expect("temp dir");
+        let wheel = dir
+            .path()
+            .join("paddlepaddle_gpu-3.2.1-cp311-cp311-linux_x86_64.whl");
+        std::fs::write(&wheel, b"fake wheel").expect("write wheel");
+
+        let found = find_wheel_in_dir(dir.path(), "paddlepaddle_gpu");
+        assert_eq!(found, Some(wheel));
+
+        let not_found = find_wheel_in_dir(dir.path(), "paddlepaddle");
+        // Should NOT match paddlepaddle_gpu because prefix is different
+        assert_eq!(not_found, None);
+    }
+
+    #[test]
+    fn test_find_wheel_in_dir_returns_none_for_empty_dir() {
+        let dir = tempdir().expect("temp dir");
+        assert_eq!(find_wheel_in_dir(dir.path(), "paddlepaddle_gpu"), None);
+    }
+
+    #[test]
+    fn test_paddlepaddle_install_target_prefers_gpu_wheel_in_wheelhouse() {
+        let wheelhouse = tempdir().expect("wheelhouse");
+        let gpu_wheel = wheelhouse
+            .path()
+            .join("paddlepaddle_gpu-3.2.1-cp311-cp311-manylinux1_x86_64.whl");
+        std::fs::write(&gpu_wheel, b"gpu wheel").expect("write gpu wheel");
+
+        let (spec, index) = resolve_paddlepaddle_install_target(Some(wheelhouse.path()));
+
+        assert_eq!(spec, gpu_wheel.to_string_lossy());
+        assert_eq!(index, None, "wheelhouse install should not use extra index");
+    }
+
+    #[test]
+    fn test_paddlepaddle_install_target_falls_back_to_cpu_wheel_in_wheelhouse() {
+        let wheelhouse = tempdir().expect("wheelhouse");
+        let cpu_wheel = wheelhouse
+            .path()
+            .join("paddlepaddle-3.2.1-cp311-cp311-manylinux1_x86_64.whl");
+        std::fs::write(&cpu_wheel, b"cpu wheel").expect("write cpu wheel");
+
+        let (spec, index) = resolve_paddlepaddle_install_target(Some(wheelhouse.path()));
+
+        assert_eq!(spec, cpu_wheel.to_string_lossy());
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn test_paddlepaddle_install_target_without_wheelhouse_returns_pip_spec() {
+        // This test does NOT assert GPU vs CPU because it depends on whether
+        // nvidia-smi is present in the test environment. We only assert that
+        // the returned spec follows the expected patterns.
+        let (spec, index) = resolve_paddlepaddle_install_target(None);
+
+        assert!(
+            spec.starts_with("paddlepaddle") || spec.starts_with("paddlepaddle-gpu"),
+            "spec should reference a paddlepaddle package, got: {spec}"
+        );
+        assert!(
+            spec.contains(">=3.2.1"),
+            "spec should require >=3.2.1, got: {spec}"
+        );
+        assert!(
+            spec.contains("<3.3.0"),
+            "spec should cap at <3.3.0, got: {spec}"
+        );
+
+        // If GPU is detected in this environment, an index URL must be present.
+        // If no GPU, index should be None.
+        if spec.starts_with("paddlepaddle-gpu") {
+            assert!(
+                index.is_some(),
+                "GPU spec must come with an extra index URL"
+            );
+            let idx = index.unwrap();
+            assert!(
+                idx.starts_with("https://www.paddlepaddle.org.cn/packages/stable/cu"),
+                "index should point to PaddlePaddle CUDA index, got: {idx}"
+            );
+        }
     }
 }

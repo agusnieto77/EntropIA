@@ -160,6 +160,9 @@ DROP TABLE IF EXISTS __entropia_migration_0009_noop
   `.trim(),
 
   '0010_entities_type_expansion': `
+
+DROP TABLE IF EXISTS entities_v2;
+
 CREATE TABLE entities_v2 (
   id TEXT PRIMARY KEY NOT NULL,
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -179,7 +182,7 @@ INSERT INTO entities_v2 (
 )
 SELECT
   id, item_id, entity_type, value, start_offset, end_offset,
-  confidence, source, model_name, created_at
+  confidence, NULL, NULL, created_at
 FROM entities;
 
 DROP TABLE entities;
@@ -452,7 +455,16 @@ export async function runMigrations(client: DbClient): Promise<void> {
         const statements = splitStatements(sql)
 
         for (const stmt of statements) {
-          await client.execute(stmt)
+          try {
+            await client.execute(stmt)
+          } catch (stmtErr) {
+            const msg = stmtErr instanceof Error ? stmtErr.message : String(stmtErr)
+            if (/duplicate column name/i.test(msg)) {
+              console.warn(`[runner] Skipping statement in "${name}" (column already exists)`)
+              continue
+            }
+            throw stmtErr
+          }
         }
       }
 

@@ -49,7 +49,7 @@
 
     return Array.from({ length: count }, (_, index) => {
       const usesAnchor = Math.random() > 0.18
-      const anchor = anchors[index % anchors.length]
+      const anchor = anchors[index % anchors.length] ?? { x: nextWidth / 2, y: nextHeight / 2 }
       const x = usesAnchor
         ? clamp(anchor.x + randomBetween(-nextWidth * 0.13, nextWidth * 0.13), 0, nextWidth)
         : Math.random() * nextWidth
@@ -199,7 +199,7 @@
     position: fixed;
     left: 0;
     top: 0;
-    z-index: -1;
+    z-index: 0;
     pointer-events: none;
     transform-origin: center;
     background:

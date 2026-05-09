@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShellHost from './__fixtures__/AppShellHost.svelte'
@@ -65,6 +67,22 @@ describe('AppShell', () => {
         return Promise.resolve([])
       }
 
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'healthy',
+          packVersion: null,
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'Runtime listo',
+          blockedCapabilities: [],
+          details: [],
+          guidance: [],
+          bootstrapEligible: false,
+          bootstrapRequired: false,
+          activeOperation: null,
+        })
+      }
+
       return Promise.resolve(undefined)
     })
     listenMock.mockClear().mockImplementation(() => Promise.resolve(vi.fn()))
@@ -84,6 +102,14 @@ describe('AppShell', () => {
     expect(screen.getByText('EntropIA β')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'GitHub' })).toBeInTheDocument()
     expect(screen.getByText('Desarrollado por')).toBeInTheDocument()
+  })
+
+  it('keeps the entropic constellation visible behind workspace surfaces', () => {
+    const source = readFileSync(resolve(import.meta.dirname, 'AppShell.svelte'), 'utf-8')
+
+    expect(source).toContain('<EntropicConstellation />')
+    expect(source).toContain('color-mix(in srgb, var(--color-bg) 34%, transparent)')
+    expect(source).toContain('color-mix(in srgb, var(--color-bg) 24%, transparent)')
   })
 
   it('opens external links through the desktop bridge', async () => {
@@ -138,8 +164,159 @@ describe('AppShell', () => {
       },
     })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByText(/Algunas funciones de IA/)).toHaveTextContent(
       '⚠ Algunas funciones de IA no están disponibles.',
     )
   })
+
+  it('shows runtime health alerts when the managed runtime is damaged', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'damaged',
+          packVersion: '2026.05.0',
+          repairNeeded: true,
+          repairAvailable: true,
+          summary: 'Runtime dañado',
+          blockedCapabilities: ['ocr', 'transcription'],
+          details: ['Checksum inválido'],
+          guidance: ['Ejecutá la reparación del runtime desde Ajustes > Dependencias.'],
+          bootstrapEligible: true,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime dañado')
+    expect(screen.getByRole('button', { name: 'Reparar runtime →' })).toBeInTheDocument()
+    expect(screen.getByText(/ocr, transcription/i)).toBeInTheDocument()
+  })
+
+  it('shows fixture runtime alerts without repair action', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([
+          { id: 'Python', status: { type: 'missing' } },
+          { id: 'Fastembed', status: { type: 'missing' } },
+          { id: 'PaddlePaddle', status: { type: 'missing' } },
+          { id: 'PaddleOcr', status: { type: 'missing' } },
+        ])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'fixture',
+          packVersion: '2026.05.0',
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+          blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+          details: ['La app 0.0.10 arrancó correctamente, pero este runtime-pack todavía está en modo fixture/dev (app_version declarada: 0.0.10).'],
+          guidance: ['Esto no indica una caída: la UI puede abrir, pero OCR/NLP/transcripción quedan bloqueados hasta inyectar los payloads de release.'],
+          bootstrapEligible: false,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    expect(
+      await screen.findByText(
+        'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/app no se cay/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reparar runtime →' })).not.toBeInTheDocument()
+  })
+
+  it('does not show a global runtime alert when deps are installed and only fixture release packaging is pending', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([
+          { id: 'Python', status: { type: 'installed' } },
+          { id: 'Fastembed', status: { type: 'installed' } },
+          { id: 'PaddlePaddle', status: { type: 'installed' } },
+          { id: 'PaddleOcr', status: { type: 'installed' } },
+        ])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'fixture',
+          packVersion: '2026.05.0',
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+          blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+          details: ['payloads offline pendientes'],
+          guidance: ['Inyectar payloads externos antes de distribuir offline'],
+          bootstrapEligible: false,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('deps_get_cached_statuses')
+      expect(invokeMock).toHaveBeenCalledWith('runtime_get_status')
+    })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows a global runtime alert when release source wiring is blocked', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([
+          { id: 'Python', status: { type: 'installed' } },
+          { id: 'Fastembed', status: { type: 'installed' } },
+          { id: 'PaddlePaddle', status: { type: 'installed' } },
+          { id: 'PaddleOcr', status: { type: 'installed' } },
+        ])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'blocked_source_unavailable',
+          packVersion: '2026.05.0',
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'No hay una fuente confiable disponible para bootstrap',
+          blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+          details: ['source pendiente'],
+          guidance: ['Reintentá cuando exista una fuente confiable'],
+          bootstrapEligible: false,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'No hay una fuente confiable disponible para bootstrap',
+    )
+    expect(screen.getByText(/ocr, transcription, nlp/i)).toBeInTheDocument()
+  })
+
 })

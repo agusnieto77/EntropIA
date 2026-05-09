@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::runtime::status::RuntimeState;
+use crate::runtime::RuntimeManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
@@ -29,6 +31,7 @@ pub use checks::resolve_probe_python;
 pub enum DependencyId {
     Python,
     Fastembed,
+    PaddlePaddle,
     PaddleOcr,
     FasterWhisper,
     Spacy,
@@ -44,15 +47,11 @@ pub enum DependencyStatus {
     /// A probe is currently running.
     Checking,
     /// Dependency is present and (optionally) at a known version.
-    Installed {
-        version: Option<String>,
-    },
+    Installed { version: Option<String> },
     /// Dependency was probed and was not found.
     Missing,
     /// An installation is in progress.
-    Installing {
-        percent: u8,
-    },
+    Installing { percent: u8 },
     /// The last install attempt failed with this message.
     Failed(String),
 }
@@ -77,7 +76,15 @@ fn default_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
     use DependencyId::*;
 
     let mut map = HashMap::new();
-    for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
+    for id in [
+        Python,
+        Fastembed,
+        PaddlePaddle,
+        PaddleOcr,
+        FasterWhisper,
+        Spacy,
+        SpacyModelEs,
+    ] {
         map.insert(id, DependencyStatus::Unknown);
     }
     map
@@ -114,15 +121,13 @@ fn dep_results_from_map(
 impl DepsState {
     /// Create a new state map with all dependencies initialised to `Unknown`.
     pub fn new() -> Self {
-        Self(
-            Arc::new(Mutex::new(DepsStateData {
-                statuses: default_dependency_statuses(),
-                cached_probe_python: None,
-                cached_probe_results: None,
-                probe_in_flight: false,
-                probe_generation: 0,
-            })),
-        )
+        Self(Arc::new(Mutex::new(DepsStateData {
+            statuses: default_dependency_statuses(),
+            cached_probe_python: None,
+            cached_probe_results: None,
+            probe_in_flight: false,
+            probe_generation: 0,
+        })))
     }
 }
 
@@ -146,14 +151,22 @@ pub struct UvStatusResult {
     pub uv_ready: bool,
     pub uv_path: Option<String>,
     pub uv_version: Option<String>,
+    pub uv_source: Option<String>,
+    pub uv_compatible_for_dev: bool,
     pub venv_exists: bool,
     pub venv_path: Option<String>,
+    pub uv_warning: Option<String>,
+    pub release_runtime_ready: bool,
+    pub release_runtime_state: Option<String>,
+    pub dev_fallback_available: bool,
+    pub dev_fallback_reason: Option<String>,
 }
 
 pub fn should_invalidate_cache_for_setting(key: &str) -> bool {
     matches!(
         key,
         "deps_venv_python_path"
+            | "python.runtime_selection"
             | "python.fastembed.path"
             | "python.paddle_vl.path"
             | "python.faster_whisper.path"
@@ -198,6 +211,37 @@ async fn finish_probe_attempt(
     }
 }
 
+fn managed_runtime_probe_context(
+    app_data_dir: &std::path::Path,
+) -> (
+    Option<PathBuf>,
+    Option<crate::runtime::status::RuntimeStatus>,
+) {
+    let manager = crate::runtime::RuntimeManager::new();
+    let Some(managed_root) = manager.discover_hydrated_runtime_root_for_tests(app_data_dir) else {
+        return (None, None);
+    };
+    let Ok(manifest) = crate::runtime::manifest::RuntimeManifest::load_from_path(
+        &managed_root.join("manifest.json"),
+    ) else {
+        return (None, None);
+    };
+    let Some(status) =
+        manager.inspect_hydrated_runtime_for_tests(app_data_dir, &managed_root, &manifest)
+    else {
+        return (None, None);
+    };
+
+    if status.state != RuntimeState::Healthy {
+        return (None, Some(status));
+    }
+
+    (
+        Some(crate::runtime::managed_venv_python_path(&managed_root)),
+        Some(status),
+    )
+}
+
 pub async fn probe_all_once(
     state: &DepsState,
     db: &crate::db::state::AppDbState,
@@ -236,26 +280,34 @@ pub async fn probe_all_once(
                 settings
             } else {
                 finish_probe_attempt(state, probe_generation, None, None).await;
-                return Err(
-                    probe_settings
-                        .err()
-                        .unwrap_or_else(|| "DB lock error".to_string()),
-                );
+                return Err(probe_settings
+                    .err()
+                    .unwrap_or_else(|| "DB lock error".to_string()));
             };
 
-            let python_path = checks::resolve_probe_python_async(
+            let (managed_runtime_python, managed_runtime_status) = managed_runtime_probe_context(
+                db.db_path.parent().unwrap_or(std::path::Path::new(".")),
+            );
+
+            let python_path = checks::resolve_probe_python_with_runtime(
                 probe_settings,
                 checks::ProbePythonMode::DependencyManager,
-            )
-            .await?;
+                managed_runtime_python.as_deref(),
+                managed_runtime_status.as_ref(),
+            );
 
             let results_map = match python_path.clone() {
                 Some(python) => checks::probe_all(&python).await,
                 None => missing_dependency_statuses(),
             };
 
-            finish_probe_attempt(state, probe_generation, python_path, Some(results_map.clone()))
-                .await;
+            finish_probe_attempt(
+                state,
+                probe_generation,
+                python_path,
+                Some(results_map.clone()),
+            )
+            .await;
 
             return Ok(results_map);
         }
@@ -369,15 +421,105 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
 
-    let uv_binary = uv::UvBinary::detect(Some(&app), &app_data_dir);
-    let uv_ready = uv_binary.is_some();
-    let uv_path = uv_binary.as_ref().map(|b| b.path.to_string_lossy().into_owned());
-    let uv_version = uv_binary.map(|b| b.version);
+    let runtime_status = RuntimeManager::new().status(&app).ok();
+    let runtime_status = if let Some(status) = runtime_status {
+        if status.state == RuntimeState::Healthy {
+            Some(status)
+        } else {
+            RuntimeManager::new().ensure_ready_or_bootstrap(&app).ok()
+        }
+    } else {
+        RuntimeManager::new().ensure_ready_or_bootstrap(&app).ok()
+    };
+    let managed_runtime = install::load_managed_runtime_context(&app).ok().flatten();
 
-    let venv_python = install::venv_python_path(&app_data_dir);
+    let uv_inspection = uv::UvBinary::inspect_with_runtime(
+        Some(&app),
+        &app_data_dir,
+        managed_runtime
+            .as_ref()
+            .map(|runtime| runtime.managed_uv())
+            .as_deref(),
+        managed_runtime.as_ref().map(|runtime| &runtime.status),
+    );
+    let uv_ready = uv_inspection.ready.is_some();
+    let uv_compatible_for_dev =
+        uv_ready || uv::dev_system_uv_relaxed_allowed() && uv_inspection.detected_path.is_some();
+    let uv_path = uv_inspection
+        .ready
+        .as_ref()
+        .map(|b| b.path.to_string_lossy().into_owned())
+        .or_else(|| {
+            uv_inspection
+                .detected_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+    let uv_version = uv_inspection
+        .ready
+        .as_ref()
+        .map(|b| b.version.clone())
+        .or_else(|| uv_inspection.detected_version.clone());
+    let release_runtime_ready = runtime_status
+        .as_ref()
+        .map(|status| status.state == RuntimeState::Healthy)
+        .unwrap_or(false);
+    let release_runtime_state = runtime_status
+        .as_ref()
+        .map(|status| format!("{:?}", status.state).to_ascii_lowercase());
+    let dev_prerequisites = install::inspect_dev_fallback_prerequisites(&app_data_dir);
+    let dev_fallback_available = install::dev_fallback_allowed()
+        && uv_compatible_for_dev
+        && dev_prerequisites.python.is_some();
+    let dev_fallback_reason = if dev_fallback_available {
+        Some(
+            "Linux debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release."
+                .to_string(),
+        )
+    } else if install::dev_fallback_allowed() {
+        match (dev_prerequisites.python.is_some(), uv_compatible_for_dev) {
+            (false, false) => Some(
+                "Fallback de desarrollo no disponible: falta Python 3.11+ y también falta un uv del sistema utilizable."
+                    .to_string(),
+            ),
+            (false, true) => Some(
+                "Fallback de desarrollo no disponible: detectamos uv, pero falta Python 3.11+ en el sistema."
+                    .to_string(),
+            ),
+            (true, false) => Some(
+                "Fallback de desarrollo no disponible: detectamos Python 3.11+, pero falta un uv del sistema utilizable."
+                    .to_string(),
+            ),
+            (true, true) => None,
+        }
+    } else if !release_runtime_ready {
+        Some(install::dev_fallback_platform_hint().to_string())
+    } else {
+        None
+    };
+    let uv_source = match (release_runtime_ready, uv_ready, uv_path.as_ref()) {
+        (true, true, Some(_)) => Some("managed-runtime".to_string()),
+        (_, true, Some(_)) => Some("strict-compatible".to_string()),
+        (_, false, Some(_)) if dev_fallback_available => Some("system-dev-fallback".to_string()),
+        _ => None,
+    };
+
+    let venv_python = managed_runtime
+        .as_ref()
+        .map(|runtime| runtime.venv_python())
+        .unwrap_or_else(|| {
+            install::dev_fallback_python_path(&install::dev_fallback_root(&app_data_dir))
+        });
     let venv_exists = venv_python.is_file();
     let venv_path = if venv_exists {
-        Some(install::venv_path(&app_data_dir).to_string_lossy().into_owned())
+        Some(
+            venv_python
+                .parent()
+                .and_then(|parent| parent.parent())
+                .unwrap_or_else(|| std::path::Path::new(""))
+                .to_string_lossy()
+                .into_owned(),
+        )
     } else {
         None
     };
@@ -386,8 +528,15 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         uv_ready,
         uv_path,
         uv_version,
+        uv_source,
+        uv_compatible_for_dev,
         venv_exists,
         venv_path,
+        uv_warning: uv_inspection.warning,
+        release_runtime_ready,
+        release_runtime_state,
+        dev_fallback_available,
+        dev_fallback_reason,
     })
 }
 
@@ -422,6 +571,7 @@ pub async fn deps_reset(
             .map_err(|e| format!("DB lock error: {e}"))?;
         let keys = [
             "deps_venv_python_path",
+            "python.runtime_selection",
             "python.fastembed.path",
             "python.paddle_vl.path",
             "python.faster_whisper.path",
@@ -441,7 +591,15 @@ pub async fn deps_reset(
     {
         use DependencyId::*;
         let mut map = state.0.lock().await;
-        for id in [Python, Fastembed, PaddleOcr, FasterWhisper, Spacy, SpacyModelEs] {
+        for id in [
+            Python,
+            Fastembed,
+            PaddlePaddle,
+            PaddleOcr,
+            FasterWhisper,
+            Spacy,
+            SpacyModelEs,
+        ] {
             map.statuses.insert(id, DependencyStatus::Missing);
         }
     }
@@ -449,4 +607,136 @@ pub async fn deps_reset(
 
     eprintln!("[deps] Reset complete — all deps marked Missing");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use tempfile::tempdir;
+
+    fn write_file(root: &std::path::Path, relpath: &str, bytes: &[u8]) -> String {
+        let path = root.join(relpath);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, bytes).expect("write file");
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn managed_runtime_probe_context_prefers_hydrated_runtime_python() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let venv_python_relpath = if cfg!(windows) {
+            "venv/entropia-env/Scripts/python.exe"
+        } else {
+            "venv/entropia-env/bin/python"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(&managed_root, python_relpath, b"python");
+        let uv_sha = write_file(&managed_root, uv_relpath, b"uv");
+        write_file(&managed_root, venv_python_relpath, b"venv-python");
+        std::fs::write(
+            managed_root.join("manifest.json"),
+            serde_json::to_vec_pretty(&crate::runtime::manifest::RuntimeManifest {
+                pack_version: "2026.05.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: crate::runtime::paths::current_runtime_platform(),
+                payload_profile: "release".to_string(),
+                release_injection_required: false,
+                external_artifacts_required: vec![],
+                python_relpath: python_relpath.to_string(),
+                uv_relpath: uv_relpath.to_string(),
+                python_files: vec![crate::runtime::manifest::ManifestEntry {
+                    path: python_relpath.to_string(),
+                    sha256: python_sha,
+                    size: 6,
+                    executable: !cfg!(windows),
+                }],
+                uv_files: vec![crate::runtime::manifest::ManifestEntry {
+                    path: uv_relpath.to_string(),
+                    sha256: uv_sha,
+                    size: 2,
+                    executable: true,
+                }],
+                script_files: vec![],
+                wheelhouse: vec![],
+                caches: vec![],
+                native_assets: vec![],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let (python, status) = managed_runtime_probe_context(app_data_dir.path());
+
+        assert_eq!(
+            status.map(|status| status.state),
+            Some(RuntimeState::Healthy)
+        );
+        assert_eq!(
+            python,
+            Some(crate::runtime::managed_venv_python_path(&managed_root))
+        );
+    }
+
+    #[test]
+    fn default_dependency_statuses_includes_paddlepaddle() {
+        let statuses = default_dependency_statuses();
+        assert!(
+            statuses.contains_key(&DependencyId::PaddlePaddle),
+            "default statuses must include PaddlePaddle"
+        );
+        assert_eq!(
+            statuses[&DependencyId::PaddlePaddle],
+            DependencyStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn should_invalidate_cache_for_runtime_selection_escape_hatch() {
+        assert!(should_invalidate_cache_for_setting(
+            "python.runtime_selection"
+        ));
+    }
+
+    #[test]
+    fn uv_status_result_serializes_new_dev_fallback_fields() {
+        let status = UvStatusResult {
+            uv_ready: false,
+            uv_path: Some("/usr/bin/uv".to_string()),
+            uv_version: Some("0.10.3".to_string()),
+            uv_source: Some("system-dev-fallback".to_string()),
+            uv_compatible_for_dev: true,
+            venv_exists: false,
+            venv_path: None,
+            uv_warning: Some("warning".to_string()),
+            release_runtime_ready: false,
+            release_runtime_state: Some("fixture".to_string()),
+            dev_fallback_available: true,
+            dev_fallback_reason: Some("reason".to_string()),
+        };
+
+        let json = serde_json::to_value(&status).expect("serialize uv status");
+
+        assert_eq!(
+            json.get("uv_source").and_then(|value| value.as_str()),
+            Some("system-dev-fallback")
+        );
+        assert_eq!(
+            json.get("dev_fallback_available")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
 }

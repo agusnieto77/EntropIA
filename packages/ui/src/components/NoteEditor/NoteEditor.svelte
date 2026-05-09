@@ -413,7 +413,11 @@
     if (!ondictate || audioBlob.size === 0) {
       dictationState = 'idle'
       if (audioBlob.size === 0) {
-        setDictationMessage(labels.dictationNoAudio, 'error')
+        const isLinux = typeof navigator !== 'undefined' && navigator.platform?.toLowerCase().includes('linux')
+        const hint = isLinux
+          ? ' En Linux, esto suele deberse a una incompatibilidad entre WebKitGTK y GStreamer (se requiere GStreamer ≥ 1.22).'
+          : ''
+        setDictationMessage(labels.dictationNoAudio + hint, 'error')
       }
       return
     }
@@ -455,6 +459,7 @@
     if (!recorder || recorder.state !== 'recording') return
 
     dictationAutoStopped = options?.autoStop ?? false
+    recorder.requestData()
     const processing = new Promise<void>((resolve) => {
       recorder.onstop = () => {
         void finalizeDictation().finally(resolve)
@@ -491,7 +496,20 @@
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       mediaStream = stream
 
-      const recorder = new MediaRecorder(stream)
+      const preferredTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+      ]
+      const mimeType =
+        typeof MediaRecorder.isTypeSupported === 'function'
+          ? preferredTypes.find((t) => MediaRecorder.isTypeSupported(t))
+          : undefined
+
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           dictationChunks = [...dictationChunks, event.data]
@@ -500,7 +518,7 @@
       mediaRecorder = recorder
       dictationState = 'recording'
       dictationSeconds = 0
-      recorder.start()
+      recorder.start(1000)
 
       dictationTimer = setInterval(() => {
         dictationSeconds += 1

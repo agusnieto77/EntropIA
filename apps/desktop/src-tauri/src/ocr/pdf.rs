@@ -27,18 +27,18 @@
 //! handler) to cache the resolved path. If never called, falls back to current
 //! directory + system library (original pdfium-render behavior).
 
+use crate::runtime::{managed_resource_path, RuntimeManager};
 use pdfium_render::prelude::*;
 use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::OnceLock;
-use tauri::Manager;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Cached resolved path to the Pdfium native library.
 ///
 /// - `Some(Some(path))` = initialized with a resolved DLL path
 /// - `Some(None)` = initialized, but DLL not found in bundled paths (use system library)
 /// - `None` = not yet initialized (fall back to CWD + system library)
-static PDFIUM_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+static PDFIUM_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 /// Resolve the Pdfium native library path using 3-tier resolution.
 ///
@@ -51,55 +51,115 @@ static PDFIUM_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 /// 2. CARGO_MANIFEST_DIR fallback: `<manifest>/resources/lib/`
 /// 3. No bundled path found → falls back to system library at runtime
 pub fn init_pdfium_path(app_handle: &tauri::AppHandle) {
-    PDFIUM_PATH.get_or_init(|| {
-        let resolved = resolve_pdfium_dll_path(app_handle);
-        match &resolved {
-            Some(path) => eprintln!(
-                "[pdf] ✅ Pdfium native library resolved: {}",
-                path.display()
-            ),
-            None => {
-                eprintln!("[pdf] ⚠️ Pdfium not found in bundled paths — will try system library")
-            }
-        }
-        resolved
-    });
-}
+    let runtime_root = managed_runtime_root_for_pdfium(app_handle).ok().flatten();
+    let resolved = resolve_pdfium_dll_path_from_roots(
+        runtime_root.as_deref(),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
 
-fn resolve_pdfium_dll_path(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
-    let dll_name = Pdfium::pdfium_platform_library_name();
+    let cache = PDFIUM_PATH.get_or_init(|| Mutex::new(None));
+    let mut cached = cache.lock().expect("pdfium path cache poisoned");
+    let should_update = match (&*cached, &resolved) {
+        (None, Some(_)) => true,
+        (Some(existing), Some(new_path)) => existing != new_path,
+        _ => false,
+    };
 
-    // Tier 1: Tauri resource path (production — bundled app)
-    if let Ok(path) = app_handle
-        .path()
-        .resolve("resources/lib", tauri::path::BaseDirectory::Resource)
-    {
-        let clean = strip_windows_prefix(path);
-        let dll_path = clean.join(&dll_name);
-        if dll_path.exists() {
-            eprintln!(
-                "[pdf] Found pdfium at resource path: {}",
-                dll_path.display()
-            );
-            return Some(dll_path);
-        }
-        eprintln!(
-            "[pdf] Resource dir exists but no pdfium at: {}",
-            dll_path.display()
-        );
+    if should_update {
+        *cached = resolved.clone();
     }
 
-    // Tier 2: CARGO_MANIFEST_DIR dev fallback
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("lib")
-        .join(&dll_name);
-    if dev_path.exists() {
-        eprintln!("[pdf] Found pdfium at dev path: {}", dev_path.display());
-        return Some(dev_path);
+    match cached.as_ref() {
+        Some(path) => eprintln!(
+            "[pdf] ✅ Pdfium native library resolved: {}",
+            path.display()
+        ),
+        None => {
+            eprintln!(
+                "[pdf] ℹ️ Pdfium no se resolvió desde runtime/resources dev; se intentará la librería del sistema ({})",
+                dll_name_display()
+            )
+        }
+    }
+}
+
+fn managed_runtime_root_for_pdfium(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<PathBuf>, String> {
+    managed_runtime_root_for_pdfium_with(
+        || RuntimeManager::new().ensure_ready_or_bootstrap(app_handle),
+        || RuntimeManager::new().hydrated_runtime_root(app_handle),
+    )
+}
+
+fn managed_runtime_root_for_pdfium_with<E, H>(
+    ensure_ready_or_bootstrap: E,
+    hydrated_runtime_root: H,
+) -> Result<Option<PathBuf>, String>
+where
+    E: FnOnce() -> Result<crate::runtime::status::RuntimeStatus, String>,
+    H: FnOnce() -> Result<Option<PathBuf>, String>,
+{
+    let status = ensure_ready_or_bootstrap()?;
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        return Ok(None);
+    }
+
+    hydrated_runtime_root()
+}
+
+fn resolve_pdfium_dll_path_from_roots(
+    managed_root: Option<&std::path::Path>,
+    manifest_dir: &std::path::Path,
+) -> Option<PathBuf> {
+    let dll_name = Pdfium::pdfium_platform_library_name();
+
+    if let Some(root) = managed_root {
+        let managed = managed_resource_path(root, "lib").join(&dll_name);
+        if managed.exists() {
+            return Some(managed);
+        }
+    }
+
+    for dev_path in dev_pdfium_candidate_paths(manifest_dir, dll_name.to_string_lossy().as_ref()) {
+        if dev_path.exists() {
+            return Some(strip_windows_prefix(dev_path));
+        }
     }
 
     None
+}
+
+fn dev_pdfium_candidate_paths(manifest_dir: &Path, dll_name: &str) -> Vec<PathBuf> {
+    let base_candidate = manifest_dir.join("resources").join("lib").join(dll_name);
+
+    #[cfg(target_os = "linux")]
+    {
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let mut candidates = vec![base_candidate];
+        candidates.push(
+            manifest_dir
+                .join("resources")
+                .join("lib")
+                .join(&platform)
+                .join(dll_name),
+        );
+        candidates.push(
+            manifest_dir
+                .join("resources")
+                .join("runtime-pack")
+                .join(platform)
+                .join("resources")
+                .join("lib")
+                .join(dll_name),
+        );
+        candidates
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        vec![base_candidate]
+    }
 }
 
 /// Strip the Windows `\\?\` UNC prefix from a path if present.
@@ -125,11 +185,14 @@ fn strip_windows_prefix(path: PathBuf) -> PathBuf {
 /// Returns `Err` with a human-readable message if the Pdfium native
 /// library cannot be loaded (missing DLL/so/dylib, wrong architecture, etc.).
 fn get_pdfium() -> Result<Pdfium, String> {
-    let attempted_resolved_path = PDFIUM_PATH.get().and_then(|path| path.as_ref().cloned());
+    let cached_path = PDFIUM_PATH
+        .get()
+        .and_then(|cache| cache.lock().ok().and_then(|path| path.clone()));
+    let attempted_resolved_path = cached_path.clone();
 
-    let bindings = match PDFIUM_PATH.get() {
+    let bindings = match cached_path.as_ref() {
         // Initialized with a resolved DLL path — try that first, then system library
-        Some(Some(path)) => Pdfium::bind_to_library(path).or_else(|path_err| {
+        Some(path) => Pdfium::bind_to_library(path).or_else(|path_err| {
             eprintln!(
                 "[pdf] Failed to load pdfium from resolved path ({}): {path_err} — trying system library",
                 path.display()
@@ -137,7 +200,7 @@ fn get_pdfium() -> Result<Pdfium, String> {
             Pdfium::bind_to_system_library()
         }),
         // Initialized but no bundled DLL found — system library only
-        Some(None) => Pdfium::bind_to_system_library(),
+        None if PDFIUM_PATH.get().is_some() => Pdfium::bind_to_system_library(),
         // Not initialized — fall back to CWD + system library (original pdfium-render behavior)
         None => Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
             .or_else(|_| Pdfium::bind_to_system_library()),
@@ -155,10 +218,14 @@ fn get_pdfium() -> Result<Pdfium, String> {
              {}\
              - Bundled resource: resources/lib/{}\n\
              - Development: CARGO_MANIFEST_DIR/resources/lib/{}\n\
+             - Linux dev fallback: CARGO_MANIFEST_DIR/resources/lib/linux-x86_64/{}\n\
+             - Runtime-pack dev fallback: CARGO_MANIFEST_DIR/resources/runtime-pack/<platform>/resources/lib/{}\n\
              - System library paths (PATH, /usr/lib, etc.)\n\n\
              Make sure the Pdfium shared library is installed and accessible.\n\
              On Windows, place pdfium.dll in resources/lib/ or install it globally.",
             resolved_path_note,
+            dll_name_display(),
+            dll_name_display(),
             dll_name_display(),
             dll_name_display(),
         )
@@ -318,6 +385,69 @@ pub fn render_pdf_thumbnail(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::status::{RuntimeCapability, RuntimeState, RuntimeStatus};
+    use std::cell::RefCell;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_pdfium_prefers_managed_runtime_lib_dir() {
+        let runtime_dir = tempdir().expect("runtime dir");
+        let manifest_dir = tempdir().expect("manifest dir");
+        let managed_dll = runtime_dir
+            .path()
+            .join("resources")
+            .join("lib")
+            .join(Pdfium::pdfium_platform_library_name());
+        std::fs::create_dir_all(managed_dll.parent().expect("lib parent")).expect("create lib dir");
+        std::fs::write(&managed_dll, b"pdfium").expect("write dll");
+
+        let resolved =
+            resolve_pdfium_dll_path_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+
+        assert_eq!(resolved, Some(managed_dll));
+    }
+
+    #[test]
+    fn resolve_pdfium_finds_linux_arch_specific_dev_resource() {
+        let manifest_dir = tempdir().expect("manifest dir");
+        let arch_specific = manifest_dir
+            .path()
+            .join("resources")
+            .join("lib")
+            .join("linux-x86_64")
+            .join(Pdfium::pdfium_platform_library_name());
+        std::fs::create_dir_all(arch_specific.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&arch_specific, b"pdfium").expect("write");
+
+        let resolved = resolve_pdfium_dll_path_from_roots(None, manifest_dir.path());
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(resolved, Some(arch_specific));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolve_pdfium_finds_runtime_pack_dev_resource_on_linux() {
+        let manifest_dir = tempdir().expect("manifest dir");
+        let runtime_pack = manifest_dir
+            .path()
+            .join("resources")
+            .join("runtime-pack")
+            .join("linux-x86_64")
+            .join("resources")
+            .join("lib")
+            .join(Pdfium::pdfium_platform_library_name());
+        std::fs::create_dir_all(runtime_pack.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&runtime_pack, b"pdfium").expect("write");
+
+        let resolved = resolve_pdfium_dll_path_from_roots(None, manifest_dir.path());
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(resolved, Some(runtime_pack));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(resolved, None);
+    }
 
     #[test]
     fn empty_text_is_not_quality() {
@@ -412,5 +542,70 @@ mod tests {
             name.contains("pdfium") || name.contains("Pdfium"),
             "dll_name_display should contain 'pdfium', got: {name}"
         );
+    }
+
+    #[test]
+    fn pdfium_runtime_resolution_bootstraps_before_managed_lib_lookup() {
+        let calls = RefCell::new(Vec::new());
+        let expected = PathBuf::from("/tmp/runtime-ready");
+
+        let resolved = managed_runtime_root_for_pdfium_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::Healthy,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: true,
+                    summary: "Runtime listo".to_string(),
+                    blocked_capabilities: vec![],
+                    details: vec![],
+                    guidance: vec![],
+                    bootstrap_eligible: false,
+                    bootstrap_required: false,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(expected.clone()))
+            },
+        )
+        .expect("runtime resolution should succeed");
+
+        assert_eq!(resolved, Some(expected));
+        assert_eq!(calls.into_inner(), vec!["ensure_ready", "hydrated_root"]);
+    }
+
+    #[test]
+    fn pdfium_runtime_resolution_respects_blocked_bootstrap_status() {
+        let calls = RefCell::new(Vec::new());
+
+        let resolved = managed_runtime_root_for_pdfium_with(
+            || {
+                calls.borrow_mut().push("ensure_ready");
+                Ok(RuntimeStatus {
+                    state: RuntimeState::BlockedOffline,
+                    pack_version: Some("2026.05.0".to_string()),
+                    repair_needed: false,
+                    repair_available: false,
+                    summary: "Bootstrap offline".to_string(),
+                    blocked_capabilities: vec![RuntimeCapability::Ocr],
+                    details: vec!["offline".to_string()],
+                    guidance: vec!["Reintentá".to_string()],
+                    bootstrap_eligible: true,
+                    bootstrap_required: true,
+                    active_operation: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("hydrated_root");
+                Ok(Some(PathBuf::from("/tmp/stale-runtime")))
+            },
+        )
+        .expect("blocked bootstrap should degrade gracefully");
+
+        assert_eq!(resolved, None);
+        assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
     }
 }

@@ -23,10 +23,10 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Apply the Windows `CREATE_NO_WINDOW` flag to prevent console popups.
-pub fn apply_windows_no_window(cmd: &mut Command) {
+pub fn apply_windows_no_window(_cmd: &mut Command) {
     #[cfg(windows)]
     {
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        _cmd.creation_flags(CREATE_NO_WINDOW);
     }
 }
 
@@ -69,30 +69,17 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
 
         // 2. Discover Python executables on PATH via `where` (Windows) / `which` (Unix)
         let finder_cmd = if cfg!(windows) { "where" } else { "which" };
-        let mut find_cmd = Command::new(finder_cmd);
-        apply_windows_no_window(&mut find_cmd);
-        if let Ok(output) = find_cmd
-            .arg("python")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-        {
-            if output.status.success() {
-                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                    let path = PathBuf::from(line.trim());
-                    if path.is_file() && !candidates.contains(&path) {
-                        candidates.push(path);
-                    }
-                }
-            }
-        }
+        let candidate_names: &[&str] = if cfg!(windows) {
+            &["python"]
+        } else {
+            &["python", "python3", "python3.12", "python3.11"]
+        };
 
-        // 3. Also try python3 explicitly (common on Linux/macOS)
-        if cfg!(unix) {
-            let mut find_cmd3 = Command::new(finder_cmd);
-            apply_windows_no_window(&mut find_cmd3);
-            if let Ok(output) = find_cmd3
-                .arg("python3")
+        for candidate_name in candidate_names {
+            let mut find_cmd = Command::new(finder_cmd);
+            apply_windows_no_window(&mut find_cmd);
+            if let Ok(output) = find_cmd
+                .arg(candidate_name)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()
@@ -172,11 +159,75 @@ fn python_setting_key(cache_key: &str) -> String {
     format!("python.{cache_key}.path")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PythonRuntimeSelection {
+    Managed,
+    System,
+}
+
+const PYTHON_RUNTIME_SELECTION_KEY: &str = "python.runtime_selection";
+
+fn load_python_runtime_selection(conn: &Connection) -> PythonRuntimeSelection {
+    match crate::settings::get_setting(conn, PYTHON_RUNTIME_SELECTION_KEY)
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("system") => PythonRuntimeSelection::System,
+        _ => PythonRuntimeSelection::Managed,
+    }
+}
+
+fn resolve_managed_python_candidate(
+    selection: PythonRuntimeSelection,
+    hydrated_runtime_python: Option<&Path>,
+    persisted_managed_python: Option<&Path>,
+) -> Option<PathBuf> {
+    if selection == PythonRuntimeSelection::System {
+        return None;
+    }
+
+    hydrated_runtime_python
+        .filter(|path| path.is_file())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            persisted_managed_python
+                .filter(|path| path.is_file())
+                .map(Path::to_path_buf)
+        })
+}
+
+fn hydrated_runtime_python_path(settings_db_path: Option<&Path>) -> Option<PathBuf> {
+    let db_path = settings_db_path?;
+    let app_data_dir = db_path.parent()?;
+    let manager = crate::runtime::RuntimeManager::new();
+    let managed_root = manager.discover_hydrated_runtime_root_for_tests(app_data_dir)?;
+    let manifest = crate::runtime::manifest::RuntimeManifest::load_from_path(
+        &managed_root.join("manifest.json"),
+    )
+    .ok()?;
+    let status =
+        manager.inspect_hydrated_runtime_for_tests(app_data_dir, &managed_root, &manifest)?;
+
+    if status.state != crate::runtime::status::RuntimeState::Healthy {
+        return None;
+    }
+
+    Some(crate::runtime::managed_venv_python_path(&managed_root))
+}
+
 fn load_managed_venv_python(probe_code: &str, settings_db_path: Option<&Path>) -> Option<PathBuf> {
     let db_path = settings_db_path?;
     let conn = Connection::open(db_path).ok()?;
-    let managed = crate::settings::get_setting(&conn, "deps_venv_python_path")?;
-    let path = PathBuf::from(&managed);
+    let selection = load_python_runtime_selection(&conn);
+    let persisted_managed =
+        crate::settings::get_setting(&conn, "deps_venv_python_path").map(PathBuf::from);
+    let path = resolve_managed_python_candidate(
+        selection,
+        hydrated_runtime_python_path(settings_db_path).as_deref(),
+        persisted_managed.as_deref(),
+    )?;
 
     if path.is_file() && probe_python_module(&path, probe_code) {
         return Some(path);
@@ -192,6 +243,9 @@ fn load_persisted_python(
 ) -> Option<PathBuf> {
     let db_path = settings_db_path?;
     let conn = Connection::open(db_path).ok()?;
+    if load_python_runtime_selection(&conn) != PythonRuntimeSelection::System {
+        return None;
+    }
     let setting_key = python_setting_key(cache_key);
     let persisted = crate::settings::get_setting(&conn, &setting_key)?;
     let path = PathBuf::from(&persisted);
@@ -385,6 +439,19 @@ pub fn invalidate_probe_cache() {
     if let Ok(mut cache) = get_probe_cache().lock() {
         cache.clear();
         eprintln!("[python_discovery] Probe cache invalidated");
+    }
+}
+
+/// Clear a single module probe cache entry so the next call for that key re-probes.
+///
+/// Used by NLP worker retry logic: when a previously-failed init (e.g. fastembed
+/// or spacy not yet installed) is retried after dependencies are installed, we
+/// must drop the cached `None` miss so the probe actually runs again.
+pub fn invalidate_probe_cache_entry(cache_key: &str) {
+    if let Ok(mut cache) = get_probe_cache().lock() {
+        if cache.remove(cache_key).is_some() {
+            eprintln!("[python_discovery] Probe cache entry '{cache_key}' invalidated");
+        }
     }
 }
 
@@ -584,6 +651,122 @@ pub fn which_python_for_module_scored(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
+    use tempfile::tempdir;
+
+    fn write_setting_db(path: &Path, entries: &[(&str, &str)]) {
+        let conn = rusqlite::Connection::open(path).expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .expect("create app_settings");
+        for (key, value) in entries {
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, value],
+            )
+            .expect("insert setting");
+        }
+    }
+
+    #[test]
+    fn managed_runtime_selection_prefers_hydrated_runtime_path() {
+        let dir = tempdir().expect("temp dir");
+        let hydrated = dir.path().join("runtime-python");
+        let persisted = dir.path().join("persisted-python");
+        std::fs::write(&hydrated, b"runtime").expect("write hydrated python");
+        std::fs::write(&persisted, b"persisted").expect("write persisted python");
+
+        let resolved = resolve_managed_python_candidate(
+            PythonRuntimeSelection::Managed,
+            Some(&hydrated),
+            Some(&persisted),
+        );
+
+        assert_eq!(resolved, Some(hydrated));
+    }
+
+    #[test]
+    fn system_runtime_selection_disables_managed_python_preference() {
+        let dir = tempdir().expect("temp dir");
+        let hydrated = dir.path().join("runtime-python");
+        std::fs::write(&hydrated, b"runtime").expect("write hydrated python");
+
+        let resolved =
+            resolve_managed_python_candidate(PythonRuntimeSelection::System, Some(&hydrated), None);
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn hydrated_runtime_python_path_discovers_managed_venv_from_app_data() {
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("entropia.sqlite");
+        write_setting_db(&db_path, &[]);
+        let managed_root = dir.path().join("runtime").join("2026.05.0");
+        let venv_python = crate::runtime::managed_venv_python_path(&managed_root);
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_path = managed_root.join(python_relpath);
+        let uv_path = managed_root.join(uv_relpath);
+        if let Some(parent) = python_path.parent() {
+            std::fs::create_dir_all(parent).expect("create python parent");
+        }
+        if let Some(parent) = uv_path.parent() {
+            std::fs::create_dir_all(parent).expect("create uv parent");
+        }
+        if let Some(parent) = venv_python.parent() {
+            std::fs::create_dir_all(parent).expect("create venv parent");
+        }
+        std::fs::write(&python_path, b"python").expect("write python");
+        std::fs::write(&uv_path, b"uv").expect("write uv");
+        std::fs::write(&venv_python, b"venv-python").expect("write venv python");
+        let python_sha = format!("{:x}", sha2::Sha256::digest(b"python"));
+        let uv_sha = format!("{:x}", sha2::Sha256::digest(b"uv"));
+        std::fs::write(
+            managed_root.join("manifest.json"),
+            serde_json::to_vec_pretty(&crate::runtime::manifest::RuntimeManifest {
+                pack_version: "2026.05.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                platform: crate::runtime::paths::current_runtime_platform(),
+                payload_profile: "release".to_string(),
+                release_injection_required: false,
+                external_artifacts_required: vec![],
+                python_relpath: python_relpath.to_string(),
+                uv_relpath: uv_relpath.to_string(),
+                python_files: vec![crate::runtime::manifest::ManifestEntry {
+                    path: python_relpath.to_string(),
+                    sha256: python_sha,
+                    size: 6,
+                    executable: !cfg!(windows),
+                }],
+                uv_files: vec![crate::runtime::manifest::ManifestEntry {
+                    path: uv_relpath.to_string(),
+                    sha256: uv_sha,
+                    size: 2,
+                    executable: true,
+                }],
+                script_files: vec![],
+                wheelhouse: vec![],
+                caches: vec![],
+                native_assets: vec![],
+            })
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let discovered = hydrated_runtime_python_path(Some(&db_path));
+
+        assert_eq!(discovered, Some(venv_python));
+    }
 
     #[test]
     fn discover_candidates_returns_non_empty_on_any_system() {
@@ -607,5 +790,34 @@ mod tests {
             assert!(!result, "Nonsense module should not be importable");
         }
         // If no candidates, the test is a no-op
+    }
+
+    #[test]
+    fn invalidate_probe_cache_entry_clears_specific_key() {
+        let key = "test_invalidate_entry";
+        // Prime cache with a miss
+        {
+            let mut cache = get_probe_cache().lock().unwrap();
+            cache.insert(key.to_string(), None);
+            assert!(cache.contains_key(key));
+        }
+
+        invalidate_probe_cache_entry(key);
+
+        {
+            let cache = get_probe_cache().lock().unwrap();
+            assert!(!cache.contains_key(key));
+        }
+    }
+
+    #[test]
+    fn unix_candidate_names_include_versioned_python_binaries() {
+        if cfg!(windows) {
+            return;
+        }
+
+        let candidate_names = ["python", "python3", "python3.12", "python3.11"];
+        assert!(candidate_names.contains(&"python3.11"));
+        assert!(candidate_names.contains(&"python3.12"));
     }
 }

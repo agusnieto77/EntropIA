@@ -31,6 +31,7 @@ pub struct DependencySpec {
 
 const NO_PREREQUISITES: &[DependencyId] = &[];
 const SPACY_MODEL_PREREQUISITES: &[DependencyId] = &[DependencyId::Spacy];
+const PADDLEOCR_PREREQUISITES: &[DependencyId] = &[DependencyId::PaddlePaddle];
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -56,13 +57,27 @@ static ALL_DEPS: &[DependencySpec] = &[
         install_order: 1,
     },
     DependencySpec {
-        id: DependencyId::PaddleOcr,
-        display_name: "PaddleOCR",
-        pip_spec: Some("paddleocr[doc-parser]>=2.9.0"),
-        probe_code: "import paddleocr; print('ok')",
+        id: DependencyId::PaddlePaddle,
+        display_name: "PaddlePaddle",
+        // PaddlePaddle 2.6.2 is incompatible with paddleocr[doc-parser]>=3.x
+        // (missing AnalysisConfig.set_optimization_level).
+        // PaddlePaddle 3.3.1 has a confirmed upstream PIR/oneDNN bug that
+        // crashes with ConvertPirAttribute2RuntimeAttribute (Paddle#77340).
+        // The verified working range is >=3.2.1,<3.3.0 (3.2.2 is the sweet spot).
+        pip_spec: Some("paddlepaddle>=3.2.1,<3.3.0"),
+        probe_code: "import paddle; print('ok')",
         critical: true,
         managed_prerequisites: NO_PREREQUISITES,
         install_order: 2,
+    },
+    DependencySpec {
+        id: DependencyId::PaddleOcr,
+        display_name: "PaddleOCR",
+        pip_spec: Some("paddleocr[doc-parser]>=2.9.0"),
+        probe_code: "from paddleocr import PaddleOCRVL; print('ok')",
+        critical: true,
+        managed_prerequisites: PADDLEOCR_PREREQUISITES,
+        install_order: 3,
     },
     DependencySpec {
         id: DependencyId::FasterWhisper,
@@ -71,7 +86,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "import faster_whisper; print('ok')",
         critical: false,
         managed_prerequisites: NO_PREREQUISITES,
-        install_order: 3,
+        install_order: 4,
     },
     DependencySpec {
         id: DependencyId::Spacy,
@@ -80,7 +95,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "import spacy; print('ok')",
         critical: false,
         managed_prerequisites: NO_PREREQUISITES,
-        install_order: 4,
+        install_order: 5,
     },
     DependencySpec {
         id: DependencyId::SpacyModelEs,
@@ -89,7 +104,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "import spacy; spacy.load('es_core_news_sm'); print('ok')",
         critical: false,
         managed_prerequisites: SPACY_MODEL_PREREQUISITES,
-        install_order: 5,
+        install_order: 6,
     },
 ];
 
@@ -120,7 +135,11 @@ mod tests {
 
     #[test]
     fn test_registry_length() {
-        assert_eq!(all_deps().len(), 6, "Registry should have exactly 6 entries");
+        assert_eq!(
+            all_deps().len(),
+            7,
+            "Registry should have exactly 7 entries"
+        );
     }
 
     #[test]
@@ -146,11 +165,88 @@ mod tests {
 
         let spacy_model = find_dep(&DependencyId::SpacyModelEs);
         assert!(spacy_model.is_some());
-        assert!(spacy_model.unwrap().pip_spec.is_none(), "SpacyModelEs has no pip_spec");
+        assert!(
+            spacy_model.unwrap().pip_spec.is_none(),
+            "SpacyModelEs has no pip_spec"
+        );
 
         assert!(
             find_dep(&DependencyId::Fastembed).is_some(),
             "Fastembed must be in registry"
+        );
+
+        let paddlepaddle = find_dep(&DependencyId::PaddlePaddle);
+        assert!(paddlepaddle.is_some(), "PaddlePaddle must be in registry");
+        let paddlepaddle = paddlepaddle.unwrap();
+        assert_eq!(paddlepaddle.display_name, "PaddlePaddle");
+        assert!(
+            paddlepaddle.pip_spec.is_some(),
+            "PaddlePaddle must have a pip_spec"
+        );
+        let spec = paddlepaddle.pip_spec.unwrap();
+        assert!(spec.contains("paddlepaddle"));
+        assert!(
+            spec.contains("<3.3.0"),
+            "PaddlePaddle pip_spec must cap at <3.3.0 to avoid PIR executor bugs, got: {spec}"
+        );
+        assert_eq!(paddlepaddle.probe_code, "import paddle; print('ok')");
+    }
+
+    #[test]
+    fn test_paddleocr_declares_paddlepaddle_prerequisite() {
+        let paddleocr = find_dep(&DependencyId::PaddleOcr).expect("PaddleOcr present");
+        assert_eq!(
+            paddleocr.managed_prerequisites,
+            &[DependencyId::PaddlePaddle],
+            "PaddleOcr must depend on PaddlePaddle"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_pip_spec_in_3_2_range() {
+        let paddlepaddle = find_dep(&DependencyId::PaddlePaddle).expect("PaddlePaddle present");
+        let spec = paddlepaddle
+            .pip_spec
+            .expect("PaddlePaddle must have pip_spec");
+        assert!(
+            spec.starts_with("paddlepaddle"),
+            "spec should start with paddlepaddle: {spec}"
+        );
+        assert!(
+            spec.contains(">=3.2.1"),
+            "spec should require at least 3.2.1 for PaddleOCR-VL compatibility: {spec}"
+        );
+        assert!(
+            spec.contains("<3.3.0"),
+            "spec must exclude 3.3.x PIR/oneDNN bug (Paddle#77340): {spec}"
+        );
+    }
+
+    #[test]
+    fn test_paddlepaddle_comes_before_paddleocr_in_install_order() {
+        let deps = all_deps_in_install_order();
+        let paddlepaddle_idx = deps.iter().position(|d| d.id == DependencyId::PaddlePaddle);
+        let paddleocr_idx = deps.iter().position(|d| d.id == DependencyId::PaddleOcr);
+        assert!(
+            paddlepaddle_idx.is_some(),
+            "PaddlePaddle must be in install order"
+        );
+        assert!(
+            paddleocr_idx.is_some(),
+            "PaddleOcr must be in install order"
+        );
+        assert!(
+            paddlepaddle_idx.unwrap() < paddleocr_idx.unwrap(),
+            "PaddlePaddle must be installed before PaddleOcr"
+        );
+    }
+
+    #[test]
+    fn test_paddleocr_probe_verifies_paddleocrvl() {
+        let paddleocr = find_dep(&DependencyId::PaddleOcr).expect("PaddleOcr present");
+        assert_eq!(
+            paddleocr.probe_code, "from paddleocr import PaddleOCRVL; print('ok')",
+            "PaddleOcr probe must verify PaddleOCRVL is importable"
         );
     }
 
