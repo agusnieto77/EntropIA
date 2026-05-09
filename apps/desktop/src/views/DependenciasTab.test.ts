@@ -86,6 +86,7 @@ describe('DependenciasTab', () => {
     depsMocks.onRuntimeStatus.mockResolvedValue(vi.fn())
     depsMocks.onRuntimeProgress.mockResolvedValue(vi.fn())
     depsMocks.runtimeCanBootstrapAutomatically.mockReturnValue(false)
+    depsMocks.resetDeps.mockResolvedValue(undefined)
     depsMocks.getRuntimeStatus.mockResolvedValue({
       state: 'healthy',
       packVersion: '2026.05.0',
@@ -281,6 +282,55 @@ describe('DependenciasTab', () => {
     expect(screen.getByText(/runtime-pack release pendiente/i)).toBeInTheDocument()
     expect(screen.queryByText(/antes de habilitar OCR/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/^Capacidades afectadas:/i)).not.toBeInTheDocument()
+  })
+
+  it('labels healthy embedded runtime without a managed venv honestly', async () => {
+    depsMocks.getUvStatus.mockResolvedValueOnce({
+      uv_ready: true,
+      uv_path: 'C:\\Users\\agusn\\AppData\\Roaming\\com.entropia.desktop\\runtime\\2026.05.0\\uv\\uv.exe',
+      uv_version: '0.6.14 (a4cec56dc 2025-04-09)',
+      uv_source: 'managed-runtime',
+      uv_compatible_for_dev: true,
+      venv_exists: false,
+      venv_path: null,
+      uv_warning: null,
+      release_runtime_ready: true,
+      release_runtime_state: 'healthy',
+      dev_fallback_available: false,
+      dev_fallback_reason: null,
+    })
+
+    render(DependenciasTab)
+
+    expect(await screen.findByText(/runtime embebido · sin venv administrado/i)).toBeInTheDocument()
+    expect(screen.queryByText(/sin entorno virtual$/i)).not.toBeInTheDocument()
+  })
+
+  it('requires typed confirmation before resetting the environment', async () => {
+    render(DependenciasTab)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Resetear entorno' }))
+
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument()
+    expect(screen.getByText('Confirmar reseteo del entorno')).toBeInTheDocument()
+    const confirmButton = screen.getByRole('button', { name: 'Confirmar reseteo' })
+    expect(confirmButton).toBeDisabled()
+
+    await fireEvent.input(screen.getByLabelText('Confirmación requerida'), {
+      target: { value: 'resetear' },
+    })
+    expect(confirmButton).toBeDisabled()
+    expect(depsMocks.resetDeps).not.toHaveBeenCalled()
+
+    await fireEvent.input(screen.getByLabelText('Confirmación requerida'), {
+      target: { value: 'resetear entorno' },
+    })
+    expect(confirmButton).not.toBeDisabled()
+    await fireEvent.click(confirmButton)
+
+    await waitFor(() => {
+      expect(depsMocks.resetDeps).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('shows a non-crash uv warning when a different system uv version is detected', async () => {

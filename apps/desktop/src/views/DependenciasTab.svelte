@@ -41,6 +41,11 @@
   let expandedErrors = $state<Set<DependencyId>>(new Set())
   let runtimeStatus = $state<RuntimeStatus | null>(null)
   let runtimeOperation = $state<RuntimeOperation | null>(null)
+  let resetConfirmationOpen = $state(false)
+  let resetConfirmationText = $state('')
+  let resetting = $state(false)
+
+  const RESET_CONFIRMATION_PHRASE = 'resetear entorno'
 
   // ---------------------------------------------------------------------------
   // Derived
@@ -148,21 +153,37 @@
     }
   }
 
+  function openResetConfirmation() {
+    resetConfirmationOpen = true
+    resetConfirmationText = ''
+    errorBanner = null
+  }
+
+  function cancelResetConfirmation() {
+    resetConfirmationOpen = false
+    resetConfirmationText = ''
+  }
+
   async function handleReset() {
-    if (
-      !confirm(
-        '¿Estás seguro? Esto eliminará el entorno virtual y todas las dependencias instaladas.',
-      )
-    )
-      return
+    if (resetConfirmationText !== RESET_CONFIRMATION_PHRASE || resetting) return
+    resetting = true
     errorBanner = null
     try {
       await resetDeps()
-      const [checkResults, uv] = await Promise.all([checkAllDeps(), getUvStatus()])
+      const [checkResults, uv, runtime] = await Promise.all([
+        checkAllDeps(),
+        getUvStatus(),
+        getRuntimeStatus(),
+      ])
       deps = checkResults
       uvStatus = uv
+      runtimeStatus = runtime
+      resetConfirmationOpen = false
+      resetConfirmationText = ''
     } catch (e) {
       errorBanner = String(e)
+    } finally {
+      resetting = false
     }
   }
 
@@ -354,6 +375,8 @@
           uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
           {#if uvStatus.venv_exists}
             · entorno virtual en {uvStatus.venv_path ?? ''}
+          {:else if uvStatus.uv_source === 'managed-runtime'}
+            · runtime embebido · sin venv administrado
           {:else}
             · sin entorno virtual
           {/if}
@@ -547,13 +570,50 @@
 
   <!-- Reset button -->
   <div class="deps-danger-zone">
-    <Button variant="danger" onclick={handleReset} disabled={installing}>
+    <Button variant="danger" onclick={openResetConfirmation} disabled={installing || resetting}>
       Resetear entorno
     </Button>
     <p class="deps-danger-zone__hint">
-      Elimina el entorno virtual y todas las dependencias instaladas. Requiere reinstalación.
+      Elimina el entorno administrado y limpia la configuración de dependencias. Requiere reinstalación o rehidratación.
     </p>
   </div>
+
+  {#if resetConfirmationOpen}
+    <div class="deps-reset-confirmation" role="alertdialog" aria-labelledby="deps-reset-title">
+      <div class="deps-reset-confirmation__copy">
+        <strong id="deps-reset-title">Confirmar reseteo del entorno</strong>
+        <p>
+          Esta acción elimina el entorno administrado de IA y limpia las rutas Python usadas por OCR, transcripción y NLP.
+          Para confirmar, escribí <code>{RESET_CONFIRMATION_PHRASE}</code>.
+        </p>
+      </div>
+      <label class="deps-reset-confirmation__label" for="deps-reset-confirmation-input">
+        Confirmación requerida
+      </label>
+      <input
+        id="deps-reset-confirmation-input"
+        class="deps-reset-confirmation__input"
+        type="text"
+        bind:value={resetConfirmationText}
+        placeholder={RESET_CONFIRMATION_PHRASE}
+        disabled={resetting}
+        autocomplete="off"
+      />
+      <div class="deps-reset-confirmation__actions">
+        <Button variant="ghost" onclick={cancelResetConfirmation} disabled={resetting}>
+          Cancelar
+        </Button>
+        <Button
+          variant="danger"
+          onclick={handleReset}
+          disabled={resetConfirmationText !== RESET_CONFIRMATION_PHRASE || resetting}
+          loading={resetting}
+        >
+          Confirmar reseteo
+        </Button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -879,5 +939,68 @@
     color: var(--color-text-muted, #6b7280);
     margin: 0;
     flex: 1;
+  }
+
+  .deps-reset-confirmation {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(127, 29, 29, 0.12);
+  }
+
+  .deps-reset-confirmation__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .deps-reset-confirmation__copy strong {
+    color: var(--color-text-primary);
+  }
+
+  .deps-reset-confirmation__copy p {
+    margin: 0;
+    color: var(--color-text-secondary, #6b7280);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-reset-confirmation__copy code {
+    padding: 2px 6px;
+    border-radius: var(--radius-sm, 4px);
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--color-danger);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .deps-reset-confirmation__label {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium, 500);
+    color: var(--color-text-primary);
+  }
+
+  .deps-reset-confirmation__input {
+    min-height: var(--control-height-md);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--color-border-subtle, #e5e7eb);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono, monospace);
+  }
+
+  .deps-reset-confirmation__input:focus {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-color: var(--color-danger);
+  }
+
+  .deps-reset-confirmation__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
   }
 </style>
