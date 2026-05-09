@@ -6,6 +6,7 @@ import {
   onRuntimeStatus,
   onRuntimeProgress,
   runtimeCanBootstrapAutomatically,
+  runtimeBlocksCurrentUse,
   runtimeNeedsAttention,
   shouldShowRuntimeRepairAction,
   type RuntimeStatus,
@@ -112,6 +113,14 @@ describe('runtime client', () => {
     expect(runtimeNeedsAttention({ state: 'incompatible' } as RuntimeStatus)).toBe(true)
     expect(runtimeNeedsAttention({ state: 'blocked_offline' } as RuntimeStatus)).toBe(true)
     expect(runtimeNeedsAttention({ state: 'healthy' } as RuntimeStatus)).toBe(false)
+  })
+
+  it('runtimeBlocksCurrentUse treats fixture as packaging-only only when local deps are ready', () => {
+    expect(runtimeBlocksCurrentUse({ state: 'fixture' } as RuntimeStatus, true)).toBe(false)
+    expect(runtimeBlocksCurrentUse({ state: 'fixture' } as RuntimeStatus, false)).toBe(true)
+    expect(runtimeBlocksCurrentUse({ state: 'blocked_source_unavailable' } as RuntimeStatus, true)).toBe(true)
+    expect(runtimeBlocksCurrentUse({ state: 'damaged' } as RuntimeStatus, true)).toBe(true)
+    expect(runtimeBlocksCurrentUse({ state: 'healthy' } as RuntimeStatus, true)).toBe(false)
   })
 
   it('shouldShowRuntimeRepairAction hides repair for fixture and incompatible runtime states', () => {

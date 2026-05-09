@@ -14,7 +14,7 @@
     getRuntimeStatus,
     onRuntimeStatus,
     repairRuntime,
-    runtimeNeedsAttention,
+    runtimeBlocksCurrentUse,
     shouldShowRuntimeRepairAction,
     type RuntimeStatus,
   } from '$lib/runtime'
@@ -102,13 +102,8 @@
       depsResults.some((dep) => dep.id === id && dep.status.type === 'installed'),
     ),
   )
-  const runtimeReleaseOnlyIssue = $derived(
-    runtimeStatus != null &&
-      ['fixture', 'blocked_source_unavailable', 'blocked_offline'].includes(runtimeStatus.state),
-  )
   const runtimeBlocksActiveCapabilities = $derived(
-    runtimeNeedsAttention(runtimeStatus) &&
-      !(runtimeReleaseOnlyIssue && (!criticalDepsStatusKnown || allCriticalDepsInstalled)),
+    runtimeBlocksCurrentUse(runtimeStatus, !criticalDepsStatusKnown || allCriticalDepsInstalled),
   )
   const blockedRuntimeCapabilities = $derived(
     runtimeBlocksActiveCapabilities ? (runtimeStatus?.blockedCapabilities ?? []).join(', ') : '',

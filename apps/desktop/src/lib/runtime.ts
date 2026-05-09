@@ -114,6 +114,14 @@ export function runtimeNeedsAttention(status: RuntimeStatus | null | undefined):
   )
 }
 
+export function runtimeBlocksCurrentUse(
+  status: RuntimeStatus | null | undefined,
+  localDepsReady: boolean,
+): boolean {
+  if (status?.state === 'fixture' && localDepsReady) return false
+  return runtimeNeedsAttention(status)
+}
+
 export function shouldShowRuntimeRepairAction(status: RuntimeStatus | null | undefined): boolean {
   return (
     status?.repairAvailable === true &&

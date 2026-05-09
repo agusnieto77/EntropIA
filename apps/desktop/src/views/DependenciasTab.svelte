@@ -23,6 +23,7 @@
     onRuntimeProgress,
     onRuntimeStatus,
     repairRuntime,
+    runtimeBlocksCurrentUse,
     runtimeCanBootstrapAutomatically,
     runtimeNeedsAttention,
     shouldShowRuntimeRepairAction,
@@ -57,17 +58,12 @@
 
   let allInstalled = $derived(deps.length > 0 && deps.every((d) => d.status.type === 'installed'))
   let runtimeBlocked = $derived(runtimeNeedsAttention(runtimeStatus))
-  let runtimeReleaseOnlyIssue = $derived(
-    runtimeStatus != null &&
-      ['fixture', 'blocked_source_unavailable', 'blocked_offline'].includes(runtimeStatus.state),
-  )
+  let runtimeReleaseOnlyIssue = $derived(runtimeStatus?.state === 'fixture')
   let depsReadyButReleaseRuntimePending = $derived(
     allInstalled && runtimeBlocked && runtimeReleaseOnlyIssue,
   )
-  let runtimeBlocksInstalledCapabilities = $derived(
-    runtimeBlocked && !depsReadyButReleaseRuntimePending,
-  )
-  let canClaimAllReady = $derived(allInstalled && !runtimeBlocked)
+  let runtimeBlocksInstalledCapabilities = $derived(runtimeBlocksCurrentUse(runtimeStatus, allInstalled))
+  let canClaimAllReady = $derived(allInstalled && !runtimeBlocksInstalledCapabilities)
   let depsInstalledButRuntimeBlocked = $derived(allInstalled && runtimeBlocksInstalledCapabilities)
 
   let overallProgress = $derived(() => {
@@ -296,10 +292,9 @@
 </script>
 
 <div class="deps-tab">
-  {#if runtimeNeedsAttention(runtimeStatus)}
+  {#if runtimeBlocksInstalledCapabilities}
     <div
       class="deps-runtime-panel"
-      class:deps-runtime-panel--release-pending={depsReadyButReleaseRuntimePending}
       role="status"
     >
       <div class="deps-runtime-panel__copy">
@@ -307,9 +302,7 @@
         {#if isRuntimeFixture(runtimeStatus)}
           <span>
             El runtime-pack de release SIGUE sin estar listo. Eso no cambia.
-            {#if depsReadyButReleaseRuntimePending}
-              Las dependencias Python actuales están instaladas: los motores locales pueden funcionar en esta sesión dev, pero el autoinstalado/runtime-pack de release sigue pendiente.
-            {:else if shouldExplainDevFallback()}
+            {#if shouldExplainDevFallback()}
               {uvStatus?.dev_fallback_reason ?? 'Hay un fallback de desarrollo disponible para instalar dependencias localmente sin validar el runtime de release.'}
             {:else}
               Sin payloads reales ni fallback local usable, las capacidades bloqueadas no van a funcionar.
@@ -317,13 +310,7 @@
           </span>
         {/if}
         {#if runtimeStatus?.blockedCapabilities?.length}
-          <span>
-            {#if depsReadyButReleaseRuntimePending}
-              Impacto: runtime-pack de release/autoinstalado pendiente.
-            {:else}
-              Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}
-            {/if}
-          </span>
+          <span>Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}</span>
         {/if}
         {#if runtimeStatus?.details?.length}
           <ul>
@@ -381,10 +368,6 @@
             · sin entorno virtual
           {/if}
         </span>
-      {:else if depsReadyButReleaseRuntimePending}
-        <span class="deps-uv-status__text deps-uv-status__text--info">
-          Dependencias Python instaladas para esta sesión dev · runtime-pack release pendiente.
-        </span>
       {:else if uvStatus.dev_fallback_available}
         <span class="deps-uv-status__text deps-uv-status__text--info">
           Fallback dev disponible · uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
@@ -407,19 +390,15 @@
           Dependencias Python detectadas; uv administrado no requiere acciones.
         </span>
       {/if}
-      {#if !uvStatus.release_runtime_ready && depsReadyButReleaseRuntimePending}
-        <p class="deps-uv-warning">
-          Runtime de release no listo ({runtimeStatus?.summary}). Esto afecta el empaquetado/autoinstalado, no necesariamente los motores ya resueltos por el venv actual.
-        </p>
-      {:else if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture'}
+      {#if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture' && !depsReadyButReleaseRuntimePending}
         <p class="deps-uv-warning">
           Runtime de release no listo ({runtimeStatus.summary}). La gestión local en dev NO hidrata ni valida payloads de release.
         </p>
       {/if}
-      {#if uvStatus.dev_fallback_reason}
+      {#if uvStatus.dev_fallback_reason && !depsReadyButReleaseRuntimePending}
         <p class="deps-uv-warning">{uvStatus.dev_fallback_reason}</p>
       {/if}
-      {#if uvStatus.uv_warning}
+      {#if uvStatus.uv_warning && !depsReadyButReleaseRuntimePending}
         <p class="deps-uv-warning">{uvStatus.uv_warning}</p>
       {/if}
       {#if !uvStatus.uv_ready && uvStatus.uv_version && uvStatus.uv_path}
@@ -460,13 +439,7 @@
   {/if}
 
   <!-- All installed banner -->
-  {#if depsReadyButReleaseRuntimePending && !installing}
-    <div class="deps-banner deps-banner--warning">
-      <span class="deps-banner__message">
-        Las dependencias Python están instaladas y los motores locales pueden operar en dev; queda pendiente el runtime-pack de release/autoinstalado.
-      </span>
-    </div>
-  {:else if canClaimAllReady && !installing}
+  {#if canClaimAllReady && !installing}
     <div class="deps-banner deps-banner--success">
       <span class="deps-banner__message">
         Todas las dependencias están instaladas y listas para usar.
@@ -632,17 +605,6 @@
     border-radius: var(--radius-md);
     background: rgba(245, 158, 11, 0.08);
     color: #92400e;
-  }
-
-  .deps-runtime-panel--release-pending {
-    border-color: rgba(59, 130, 246, 0.35);
-    background: rgba(59, 130, 246, 0.08);
-    color: #93c5fd;
-  }
-
-  .deps-runtime-panel--release-pending .deps-runtime-panel__guidance,
-  .deps-runtime-panel--release-pending .deps-runtime-panel__progress {
-    color: #bfdbfe;
   }
 
   .deps-runtime-panel__copy {

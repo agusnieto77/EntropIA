@@ -55,6 +55,9 @@ vi.mock('$lib/runtime', () => ({
   onRuntimeProgress: depsMocks.onRuntimeProgress,
   runtimeNeedsAttention: (status: { state?: string } | null | undefined) =>
     status != null && ['repairing', 'damaged', 'fixture', 'incompatible', 'blocked_source_unavailable', 'blocked_offline', 'checking', 'hydrating', 'verifying', 'downloading'].includes(status.state ?? ''),
+  runtimeBlocksCurrentUse: (status: { state?: string } | null | undefined, localDepsReady: boolean) =>
+    !(status?.state === 'fixture' && localDepsReady) &&
+    status != null && ['repairing', 'damaged', 'fixture', 'incompatible', 'blocked_source_unavailable', 'blocked_offline', 'checking', 'hydrating', 'verifying', 'downloading'].includes(status.state ?? ''),
   shouldShowRuntimeRepairAction: (status: { state?: string; repairAvailable?: boolean } | null | undefined) =>
     status?.repairAvailable === true && !['repairing', 'fixture', 'incompatible', 'blocked_source_unavailable', 'blocked_offline'].includes(status?.state ?? ''),
   runtimeCanBootstrapAutomatically: depsMocks.runtimeCanBootstrapAutomatically,
@@ -163,6 +166,10 @@ describe('DependenciasTab', () => {
   })
 
   it('shows fixture runtime messaging without exposing repair CTA', async () => {
+    depsMocks.checkAllDeps.mockResolvedValueOnce([
+      { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
+      { id: 'PaddleOcr', status: { type: 'missing' }, version: null },
+    ])
     depsMocks.getRuntimeStatus.mockResolvedValueOnce({
       state: 'fixture',
       packVersion: '2026.05.0',
@@ -234,7 +241,59 @@ describe('DependenciasTab', () => {
     expect(screen.getByText(/Gestión automática pausada/i)).toBeInTheDocument()
   })
 
-  it('treats release bootstrap blockers as packaging-only when local deps are installed', async () => {
+  it('does not surface fixture runtime messaging when local deps are installed', async () => {
+    depsMocks.checkAllDeps.mockResolvedValueOnce([
+      { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
+      { id: 'Fastembed', status: { type: 'installed', version: '0.7.0' }, version: '0.7.0' },
+      {
+        id: 'PaddlePaddle',
+        status: { type: 'installed', version: '3.2.2' },
+        version: '3.2.2',
+      },
+      { id: 'PaddleOcr', status: { type: 'installed', version: '3.5.0' }, version: '3.5.0' },
+      { id: 'FasterWhisper', status: { type: 'installed', version: '1.2.1' }, version: '1.2.1' },
+      { id: 'Spacy', status: { type: 'installed', version: '3.8.7' }, version: '3.8.7' },
+      { id: 'SpacyModelEs', status: { type: 'installed', version: '3.8.0' }, version: '3.8.0' },
+    ])
+    depsMocks.getRuntimeStatus.mockResolvedValueOnce({
+      state: 'fixture',
+      packVersion: '2026.05.0',
+      repairNeeded: false,
+      repairAvailable: false,
+      summary: 'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+      blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+      details: ['La app funciona localmente, pero el runtime-pack offline sigue pendiente.'],
+      guidance: ['Inyectar payloads externos antes de distribuir offline.'],
+      bootstrapEligible: false,
+      bootstrapRequired: true,
+      activeOperation: null,
+    })
+    depsMocks.getUvStatus.mockResolvedValueOnce({
+      uv_ready: false,
+      uv_path: null,
+      uv_version: null,
+      uv_source: null,
+      uv_compatible_for_dev: false,
+      venv_exists: true,
+      venv_path: '/runtime/venv',
+      uv_warning: null,
+      release_runtime_ready: false,
+      release_runtime_state: 'fixture',
+      dev_fallback_available: false,
+      dev_fallback_reason: null,
+    })
+
+    render(DependenciasTab)
+
+    expect(await screen.findByText('Todas las dependencias están instaladas y listas para usar.')).toBeInTheDocument()
+    expect(screen.queryByText(/Runtime de desarrollo detectado/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/payloads externos/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/runtime-pack release pendiente/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Capacidades afectadas:/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/antes de habilitar OCR/i)).not.toBeInTheDocument()
+  })
+
+  it('shows release bootstrap blockers when the runtime wiring actually fails', async () => {
     depsMocks.checkAllDeps.mockResolvedValueOnce([
       { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
       { id: 'Fastembed', status: { type: 'installed', version: '0.7.0' }, version: '0.7.0' },
@@ -278,10 +337,14 @@ describe('DependenciasTab', () => {
 
     render(DependenciasTab)
 
-    expect(await screen.findByText(/motores locales pueden operar en dev/i)).toBeInTheDocument()
-    expect(screen.getByText(/runtime-pack release pendiente/i)).toBeInTheDocument()
-    expect(screen.queryByText(/antes de habilitar OCR/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/^Capacidades afectadas:/i)).not.toBeInTheDocument()
+    expect(
+      await screen.findByText('No hay una fuente confiable disponible para bootstrap'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Trusted remote bootstrap source wiring/i)).toBeInTheDocument()
+    expect(screen.getByText(/Reintentá cuando exista una fuente confiable/i)).toBeInTheDocument()
+    expect(screen.getByText(/En Windows dev el fallback online no está habilitado/i)).toBeInTheDocument()
+    expect(screen.getByText(/antes de habilitar OCR/i)).toBeInTheDocument()
+    expect(screen.getByText(/^Capacidades afectadas:/i)).toBeInTheDocument()
   })
 
   it('labels healthy embedded runtime without a managed venv honestly', async () => {
@@ -401,6 +464,10 @@ describe('DependenciasTab', () => {
   })
 
   it('shows blocked bootstrap reason and active operation progress honestly', async () => {
+    depsMocks.checkAllDeps.mockResolvedValueOnce([
+      { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
+      { id: 'FasterWhisper', status: { type: 'missing' }, version: null },
+    ])
     depsMocks.getRuntimeStatus.mockResolvedValueOnce({
       state: 'blocked_source_unavailable',
       packVersion: '2026.05.0',
