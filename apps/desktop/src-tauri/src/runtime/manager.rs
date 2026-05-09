@@ -1931,9 +1931,15 @@ mod tests {
         };
         let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
         let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let wrong_platform =
+            if crate::runtime::paths::current_runtime_platform() == "windows-x86_64" {
+                "linux-x86_64"
+            } else {
+                "windows-x86_64"
+            };
         write_manifest(
             bundle_dir.path(),
-            &sample_manifest("windows-x86_64", &python_sha, &uv_sha),
+            &sample_manifest(wrong_platform, &python_sha, &uv_sha),
         );
 
         let manager = RuntimeManager::new();
@@ -2101,7 +2107,7 @@ mod tests {
             .expect("status should inspect app-version compatibility");
 
         assert_eq!(status.state, RuntimeState::Incompatible);
-        assert!(status.summary.contains("0.0.10"));
+        assert!(status.summary.contains(running_app_version()));
         assert!(status.details.iter().any(|detail| detail.contains("9.9.9")));
     }
 
