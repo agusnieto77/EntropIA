@@ -34,12 +34,18 @@ const LLM_TARGET_COLLECTION: &str = "collection";
 pub const LOCAL_MODEL_FILENAME_KEY: &str = "local_model_filename";
 /// Settings key for the local model download source URL.
 pub const LOCAL_MODEL_SOURCE_URL_KEY: &str = "local_model_source_url";
-/// Default public source for the local model (bartowski/google_gemma-3-4b-it-GGUF).
-pub const DEFAULT_MODEL_SOURCE_URL: &str = "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf";
+/// Default public source for the local model (unsloth/gemma-4-E2B-it-GGUF).
+pub const DEFAULT_MODEL_SOURCE_URL: &str = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true";
 /// Expected filename for the local Gemma GGUF model.
-pub const MODEL_FILENAME: &str = "google_gemma-3-4b-it-Q4_K_M.gguf";
-const LEGACY_MODEL_FILENAME: &str = "gemma-3-4b-it-Q4_K_M.gguf";
-const LEGACY_MODEL_SOURCE_URL: &str = "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf";
+pub const MODEL_FILENAME: &str = "gemma-4-E2B-it-Q4_K_M.gguf";
+const LEGACY_MODEL_FILENAMES: &[&str] = &[
+    "google_gemma-3-4b-it-Q4_K_M.gguf",
+    "gemma-3-4b-it-Q4_K_M.gguf",
+];
+const LEGACY_MODEL_SOURCE_URLS: &[&str] = &[
+    "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf",
+    "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+];
 
 pub fn resolve_local_model_filename(conn: Option<&rusqlite::Connection>) -> String {
     let configured = conn
@@ -47,8 +53,9 @@ pub fn resolve_local_model_filename(conn: Option<&rusqlite::Connection>) -> Stri
         .filter(|value| !value.trim().is_empty());
 
     match configured.as_deref() {
-        Some(LEGACY_MODEL_FILENAME) | None => MODEL_FILENAME.to_string(),
+        Some(value) if LEGACY_MODEL_FILENAMES.contains(&value) => MODEL_FILENAME.to_string(),
         Some(other) => other.to_string(),
+        None => MODEL_FILENAME.to_string(),
     }
 }
 
@@ -58,8 +65,11 @@ pub fn resolve_local_model_source_url(conn: Option<&rusqlite::Connection>) -> St
         .filter(|value| !value.trim().is_empty());
 
     match configured.as_deref() {
-        Some(LEGACY_MODEL_SOURCE_URL) | None => DEFAULT_MODEL_SOURCE_URL.to_string(),
+        Some(value) if LEGACY_MODEL_SOURCE_URLS.contains(&value) => {
+            DEFAULT_MODEL_SOURCE_URL.to_string()
+        }
         Some(other) => other.to_string(),
+        None => DEFAULT_MODEL_SOURCE_URL.to_string(),
     }
 }
 
@@ -70,6 +80,7 @@ pub struct LocalModelInfo {
     pub path: String,
     pub size_bytes: Option<u64>,
     pub filename: String,
+    pub source_url: String,
 }
 
 /// Resolve the expected model path and report whether the file is present.
@@ -88,13 +99,20 @@ pub fn resolve_model_path(db_path: &std::path::Path) -> std::path::PathBuf {
         MODEL_FILENAME.to_string()
     };
 
-    let search_paths = [
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    let mut search_paths = vec![
         app_models_dir.join(&filename),
-        std::env::current_dir().unwrap_or_default().join(&filename),
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(format!("google_{filename}")),
+        current_dir.join(&filename),
+        current_dir.join(format!("google_{filename}")),
     ];
+
+    if filename == MODEL_FILENAME {
+        search_paths.extend(
+            LEGACY_MODEL_FILENAMES
+                .iter()
+                .flat_map(|legacy| [app_models_dir.join(legacy), current_dir.join(legacy)]),
+        );
+    }
 
     search_paths
         .iter()
@@ -114,11 +132,17 @@ pub fn get_local_model_info(db_path: &std::path::Path) -> LocalModelInfo {
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| MODEL_FILENAME.to_string());
+    let source_url = if let Ok(conn) = rusqlite::Connection::open(db_path) {
+        resolve_local_model_source_url(Some(&conn))
+    } else {
+        DEFAULT_MODEL_SOURCE_URL.to_string()
+    };
     LocalModelInfo {
         exists,
         path: path.to_string_lossy().to_string(),
         size_bytes,
         filename,
+        source_url,
     }
 }
 
@@ -1815,7 +1839,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("app.db");
         let resolved = resolve_model_path(&db_path);
-        // Should point to {tmp}/models/google_gemma-3-4b-it-Q4_K_M.gguf
+        // Should point to {tmp}/models/gemma-4-E2B-it-Q4_K_M.gguf
         assert_eq!(resolved, tmp.path().join("models").join(MODEL_FILENAME));
         assert!(!resolved.exists());
     }
@@ -1843,6 +1867,7 @@ mod tests {
         assert!(info.size_bytes.is_none());
         assert_eq!(info.filename, MODEL_FILENAME);
         assert!(info.path.ends_with(MODEL_FILENAME));
+        assert_eq!(info.source_url, DEFAULT_MODEL_SOURCE_URL);
     }
 
     #[test]
@@ -1860,6 +1885,21 @@ mod tests {
         assert_eq!(info.size_bytes, Some(content.len() as u64));
         assert_eq!(info.filename, MODEL_FILENAME);
         assert_eq!(info.path, model_file.to_string_lossy().to_string());
+        assert_eq!(info.source_url, DEFAULT_MODEL_SOURCE_URL);
+    }
+
+    #[test]
+    fn resolve_model_path_finds_installed_legacy_default_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("app.db");
+        let models_dir = tmp.path().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let legacy_file = models_dir.join("google_gemma-3-4b-it-Q4_K_M.gguf");
+        std::fs::write(&legacy_file, b"legacy gguf").unwrap();
+
+        let resolved = resolve_model_path(&db_path);
+        assert_eq!(resolved, legacy_file);
+        assert!(resolved.exists());
     }
 
     #[test]
@@ -1903,27 +1943,35 @@ mod tests {
     }
 
     #[test]
-    fn resolve_local_model_filename_migrates_legacy_default_name() {
+    fn resolve_local_model_filename_migrates_previous_default_name() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .unwrap();
-        crate::settings::set_setting(&conn, LOCAL_MODEL_FILENAME_KEY, LEGACY_MODEL_FILENAME)
-            .unwrap();
+        crate::settings::set_setting(
+            &conn,
+            LOCAL_MODEL_FILENAME_KEY,
+            "google_gemma-3-4b-it-Q4_K_M.gguf",
+        )
+        .unwrap();
 
         assert_eq!(resolve_local_model_filename(Some(&conn)), MODEL_FILENAME);
     }
 
     #[test]
-    fn resolve_local_model_source_url_migrates_legacy_default_url() {
+    fn resolve_local_model_source_url_migrates_previous_default_url() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .unwrap();
-        crate::settings::set_setting(&conn, LOCAL_MODEL_SOURCE_URL_KEY, LEGACY_MODEL_SOURCE_URL)
-            .unwrap();
+        crate::settings::set_setting(
+            &conn,
+            LOCAL_MODEL_SOURCE_URL_KEY,
+            "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf",
+        )
+        .unwrap();
 
         assert_eq!(
             resolve_local_model_source_url(Some(&conn)),

@@ -246,6 +246,7 @@ export interface LocalModelInfo {
   path: string
   size_bytes: number | null
   filename: string
+  source_url: string
 }
 
 /** Query whether the local model file exists, its resolved path, and size. */

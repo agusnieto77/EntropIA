@@ -134,8 +134,6 @@
       storedLanguage,
       isAvail,
       modelInfo,
-      storedSourceUrl,
-      storedFilename,
     ] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
@@ -147,8 +145,6 @@
       settingsGet(LANGUAGE_KEY),
       llmIsAvailable(),
       llmLocalModelInfo().catch(() => null),
-      settingsGet(SETTINGS_KEYS.LOCAL_MODEL_SOURCE_URL),
-      settingsGet(SETTINGS_KEYS.LOCAL_MODEL_FILENAME),
     ])
 
     if (storedKey) {
@@ -172,8 +168,8 @@
     }
     localAvailable = isAvail
     localModel = modelInfo
-    localModelSourceUrl = storedSourceUrl ?? ''
-    localModelFilename = storedFilename ?? ''
+    localModelSourceUrl = modelInfo?.source_url ?? ''
+    localModelFilename = modelInfo?.filename ?? ''
 
     // Listen to model download events
     downloadUnlisteners.push(
@@ -334,10 +330,20 @@
 
   async function handleDownloadModel() {
     if (downloading) return
+    const sourceUrl = localModelSourceUrl.trim() || localModel?.source_url || ''
+    const filename = localModelFilename.trim() || localModel?.filename || ''
+    if (!sourceUrl) {
+      downloadError = t('settings.localModel.sourceUrlRequired')
+      return
+    }
     downloading = true
     downloadPct = 0
     downloadError = null
     try {
+      await Promise.all([
+        settingsSet(SETTINGS_KEYS.LOCAL_MODEL_SOURCE_URL, sourceUrl),
+        settingsSet(SETTINGS_KEYS.LOCAL_MODEL_FILENAME, filename),
+      ])
       await llmDownloadModel()
     } catch (e) {
       downloading = false
