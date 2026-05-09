@@ -312,6 +312,10 @@ fn version_from_output(output: &std::process::Output) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn is_compatible_uv_version(version: &str) -> bool {
+    version.split_whitespace().next() == Some(UV_VERSION)
+}
+
 fn probe_uv_command(mut cmd: std::process::Command, path: PathBuf) -> ProbedUv {
     #[cfg(windows)]
     {
@@ -333,7 +337,7 @@ fn probe_uv_command(mut cmd: std::process::Command, path: PathBuf) -> ProbedUv {
         return ProbedUv::NotUsable;
     };
 
-    if version == UV_VERSION {
+    if is_compatible_uv_version(&version) {
         ProbedUv::Ready(UvBinary { path, version })
     } else {
         ProbedUv::VersionMismatch { path, version }
@@ -839,6 +843,12 @@ mod tests {
         };
 
         assert_eq!(version_from_output(&output).as_deref(), Some("0.10.3"));
+    }
+
+    #[test]
+    fn test_uv_version_accepts_build_metadata_suffix() {
+        assert!(is_compatible_uv_version("0.6.14 (a4cec56dc 2025-04-09)"));
+        assert!(!is_compatible_uv_version("0.6.15 (different build)"));
     }
 
     #[cfg(not(windows))]

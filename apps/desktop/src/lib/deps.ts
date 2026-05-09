@@ -13,6 +13,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 export type DependencyId =
   | 'Python'
   | 'Fastembed'
+  | 'PaddlePaddle'
   | 'PaddleOcr'
   | 'FasterWhisper'
   | 'Spacy'
@@ -103,17 +104,19 @@ export function resetDeps(): Promise<void> {
 export const DEP_DISPLAY_NAMES: Record<DependencyId, string> = {
   Python: 'Python 3.11',
   Fastembed: 'Fastembed (embeddings)',
+  PaddlePaddle: 'PaddlePaddle (runtime OCR)',
   PaddleOcr: 'PaddleOCR (OCR principal)',
   FasterWhisper: 'Faster Whisper (transcripción)',
   Spacy: 'spaCy (NER)',
   SpacyModelEs: 'Modelo spaCy español',
 }
 
-export const CRITICAL_DEPS: DependencyId[] = ['Python', 'Fastembed', 'PaddleOcr']
+export const CRITICAL_DEPS: DependencyId[] = ['Python', 'Fastembed', 'PaddlePaddle', 'PaddleOcr']
 
 export const DEP_DESCRIPTIONS: Record<DependencyId, string> = {
   Python: 'Intérprete Python requerido para todas las funciones de IA',
   Fastembed: 'Motor de embeddings para búsqueda semántica',
+  PaddlePaddle: 'Base de ejecución requerida por PaddleOCR-VL',
   PaddleOcr: 'Motor principal de reconocimiento óptico de caracteres',
   FasterWhisper: 'Transcripción de audio a texto',
   Spacy: 'Reconocimiento de entidades nombradas',

@@ -93,7 +93,26 @@
         (d.status.type === 'missing' || d.status.type === 'failed'),
     ),
   )
-  const blockedRuntimeCapabilities = $derived((runtimeStatus?.blockedCapabilities ?? []).join(', '))
+  const criticalDepsStatusKnown = $derived(
+    CRITICAL_DEPS.every((id) => depsResults.some((dep) => dep.id === id)),
+  )
+  const allCriticalDepsInstalled = $derived(
+    criticalDepsStatusKnown &&
+    CRITICAL_DEPS.every((id) =>
+      depsResults.some((dep) => dep.id === id && dep.status.type === 'installed'),
+    ),
+  )
+  const runtimeReleaseOnlyIssue = $derived(
+    runtimeStatus != null &&
+      ['fixture', 'blocked_source_unavailable', 'blocked_offline'].includes(runtimeStatus.state),
+  )
+  const runtimeBlocksActiveCapabilities = $derived(
+    runtimeNeedsAttention(runtimeStatus) &&
+      !(runtimeReleaseOnlyIssue && (!criticalDepsStatusKnown || allCriticalDepsInstalled)),
+  )
+  const blockedRuntimeCapabilities = $derived(
+    runtimeBlocksActiveCapabilities ? (runtimeStatus?.blockedCapabilities ?? []).join(', ') : '',
+  )
 
   // Sync shared state so TopBar can show the dot
   $effect(() => {
@@ -260,7 +279,7 @@
     </aside>
 
     <main class="content">
-      {#if runtimeNeedsAttention(runtimeStatus)}
+      {#if runtimeBlocksActiveCapabilities}
         <div class="deps-banner" role="alert">
           <div class="deps-banner__copy">
             <strong>{runtimeStatus?.summary}</strong>

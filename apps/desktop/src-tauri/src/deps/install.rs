@@ -381,6 +381,29 @@ pub fn dev_fallback_allowed() -> bool {
     cfg!(all(debug_assertions, target_os = "linux"))
 }
 
+pub fn dev_fallback_platform_hint() -> &'static str {
+    if dev_fallback_allowed() {
+        "En Linux debug, EntropIA puede crear un venv local usando Python 3.11+ y uv del sistema para continuar sin payloads reales."
+    } else if cfg!(debug_assertions) {
+        if cfg!(target_os = "windows") {
+            "En Windows dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        } else if cfg!(target_os = "macos") {
+            "En macOS dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        } else {
+            "En esta plataforma dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+        }
+    } else {
+        "En release no hay fallback de desarrollo: necesitás un runtime-pack hidratado/compatible o una fuente bootstrap confiable."
+    }
+}
+
+fn install_runtime_unavailable_message(state: RuntimeState) -> String {
+    format!(
+        "El runtime de release no está listo ({state:?}) y no hay fallback de desarrollo utilizable. {}",
+        dev_fallback_platform_hint()
+    )
+}
+
 fn allow_online_installs() -> bool {
     dev_fallback_allowed()
 }
@@ -408,12 +431,7 @@ pub fn load_install_runtime(
         return Ok(InstallRuntime::DevFallback(runtime));
     }
 
-    Err(
-        format!(
-            "El runtime de release no está listo ({:?}) y no hay fallback de desarrollo utilizable. En Linux dev necesitás Python 3.11+ y uv instalados en el sistema para continuar sin payloads reales.",
-            status.state
-        ),
-    )
+    Err(install_runtime_unavailable_message(status.state))
 }
 
 #[cfg(test)]
@@ -565,7 +583,6 @@ pub async fn create_venv(
             &venv_str,
             "--python",
             &managed_python_str,
-            "--seed",
             "--offline",
         ])
         .stdout(std::process::Stdio::piped())
@@ -699,8 +716,9 @@ pub async fn install_package(
         cmd.args(["--no-index", "--find-links", &wheelhouse_str]);
     } else if !allow_online_installs() {
         return Err(format!(
-            "{} requiere wheelhouse administrado; el fallback online sólo está habilitado en Linux dev",
-            dep.display_name
+            "{} requiere wheelhouse administrado; el fallback online no está habilitado para este entorno. {}",
+            dep.display_name,
+            dev_fallback_platform_hint()
         ));
     }
 

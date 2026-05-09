@@ -51,6 +51,19 @@
   )
 
   let allInstalled = $derived(deps.length > 0 && deps.every((d) => d.status.type === 'installed'))
+  let runtimeBlocked = $derived(runtimeNeedsAttention(runtimeStatus))
+  let runtimeReleaseOnlyIssue = $derived(
+    runtimeStatus != null &&
+      ['fixture', 'blocked_source_unavailable', 'blocked_offline'].includes(runtimeStatus.state),
+  )
+  let depsReadyButReleaseRuntimePending = $derived(
+    allInstalled && runtimeBlocked && runtimeReleaseOnlyIssue,
+  )
+  let runtimeBlocksInstalledCapabilities = $derived(
+    runtimeBlocked && !depsReadyButReleaseRuntimePending,
+  )
+  let canClaimAllReady = $derived(allInstalled && !runtimeBlocked)
+  let depsInstalledButRuntimeBlocked = $derived(allInstalled && runtimeBlocksInstalledCapabilities)
 
   let overallProgress = $derived(() => {
     if (!installing || deps.length === 0) return 0
@@ -220,6 +233,17 @@
     return ''
   }
 
+  function getDepDisplayName(dep: DepCheckResult): string {
+    return (DEP_DISPLAY_NAMES as Partial<Record<string, string>>)[dep.id] ?? dep.id
+  }
+
+  function getDepDescription(dep: DepCheckResult): string {
+    return (
+      (DEP_DESCRIPTIONS as Partial<Record<string, string>>)[dep.id] ??
+      'Dependencia administrada por EntropIA.'
+    )
+  }
+
   function supportsInstallOne(id: DependencyId): boolean {
     return id !== 'Python'
   }
@@ -234,6 +258,7 @@
 
   function canInstallInCurrentDevState(): boolean {
     if (runtimeStatus?.state === 'healthy') return true
+    if (depsReadyButReleaseRuntimePending) return false
     return Boolean(uvStatus?.dev_fallback_available)
   }
 
@@ -251,14 +276,20 @@
 
 <div class="deps-tab">
   {#if runtimeNeedsAttention(runtimeStatus)}
-    <div class="deps-runtime-panel" role="status">
+    <div
+      class="deps-runtime-panel"
+      class:deps-runtime-panel--release-pending={depsReadyButReleaseRuntimePending}
+      role="status"
+    >
       <div class="deps-runtime-panel__copy">
         <strong>{runtimeStatus?.summary}</strong>
         {#if isRuntimeFixture(runtimeStatus)}
           <span>
             El runtime-pack de release SIGUE sin estar listo. Eso no cambia.
-            {#if shouldExplainDevFallback()}
-              Pero en Linux dev podés usar un fallback honesto con Python/uv del sistema para instalar las dependencias localmente.
+            {#if depsReadyButReleaseRuntimePending}
+              Las dependencias Python actuales están instaladas: los motores locales pueden funcionar en esta sesión dev, pero el autoinstalado/runtime-pack de release sigue pendiente.
+            {:else if shouldExplainDevFallback()}
+              {uvStatus?.dev_fallback_reason ?? 'Hay un fallback de desarrollo disponible para instalar dependencias localmente sin validar el runtime de release.'}
             {:else}
               Sin payloads reales ni fallback local usable, las capacidades bloqueadas no van a funcionar.
             {/if}
@@ -266,7 +297,11 @@
         {/if}
         {#if runtimeStatus?.blockedCapabilities?.length}
           <span>
-            Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}
+            {#if depsReadyButReleaseRuntimePending}
+              Impacto: runtime-pack de release/autoinstalado pendiente.
+            {:else}
+              Capacidades afectadas: {(runtimeStatus?.blockedCapabilities ?? []).join(', ')}
+            {/if}
           </span>
         {/if}
         {#if runtimeStatus?.details?.length}
@@ -323,6 +358,10 @@
             · sin entorno virtual
           {/if}
         </span>
+      {:else if depsReadyButReleaseRuntimePending}
+        <span class="deps-uv-status__text deps-uv-status__text--info">
+          Dependencias Python instaladas para esta sesión dev · runtime-pack release pendiente.
+        </span>
       {:else if uvStatus.dev_fallback_available}
         <span class="deps-uv-status__text deps-uv-status__text--info">
           Fallback dev disponible · uv {uvStatus.uv_version ?? ''} · {uvStatus.uv_path ?? ''}
@@ -332,12 +371,24 @@
             · sin entorno virtual local
           {/if}
         </span>
-      {:else}
+      {:else if hasMissingOrFailed}
         <span class="deps-uv-status__text deps-uv-status__text--warn">
           No hay fallback usable: faltan prerequisitos locales para gestionar dependencias automáticamente
         </span>
+      {:else if runtimeBlocked}
+        <span class="deps-uv-status__text deps-uv-status__text--warn">
+          Gestión automática pausada hasta resolver el runtime de EntropIA.
+        </span>
+      {:else}
+        <span class="deps-uv-status__text deps-uv-status__text--info">
+          Dependencias Python detectadas; uv administrado no requiere acciones.
+        </span>
       {/if}
-      {#if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture'}
+      {#if !uvStatus.release_runtime_ready && depsReadyButReleaseRuntimePending}
+        <p class="deps-uv-warning">
+          Runtime de release no listo ({runtimeStatus?.summary}). Esto afecta el empaquetado/autoinstalado, no necesariamente los motores ya resueltos por el venv actual.
+        </p>
+      {:else if !uvStatus.release_runtime_ready && runtimeStatus?.state === 'fixture'}
         <p class="deps-uv-warning">
           Runtime de release no listo ({runtimeStatus.summary}). La gestión local en dev NO hidrata ni valida payloads de release.
         </p>
@@ -366,7 +417,7 @@
       </Button>
       {#if !canInstallInCurrentDevState()}
         <p class="deps-actions__hint">
-          Necesitás runtime release hidratado o, en Linux dev, tener Python + uv del sistema disponibles.
+          Necesitas runtime release hidratado/compatible o un fallback de desarrollo disponible para esta plataforma.
         </p>
       {/if}
     </div>
@@ -386,10 +437,22 @@
   {/if}
 
   <!-- All installed banner -->
-  {#if allInstalled && !installing}
+  {#if depsReadyButReleaseRuntimePending && !installing}
+    <div class="deps-banner deps-banner--warning">
+      <span class="deps-banner__message">
+        Las dependencias Python están instaladas y los motores locales pueden operar en dev; queda pendiente el runtime-pack de release/autoinstalado.
+      </span>
+    </div>
+  {:else if canClaimAllReady && !installing}
     <div class="deps-banner deps-banner--success">
       <span class="deps-banner__message">
         Todas las dependencias están instaladas y listas para usar.
+      </span>
+    </div>
+  {:else if depsInstalledButRuntimeBlocked && !installing}
+    <div class="deps-banner deps-banner--warning">
+      <span class="deps-banner__message">
+        Las dependencias Python están instaladas, pero el runtime de EntropIA necesita atención antes de habilitar OCR, transcripción y NLP.
       </span>
     </div>
   {/if}
@@ -406,7 +469,7 @@
         <!-- Name + description -->
         <div class="deps-row__info">
           <div class="deps-row__name-line">
-            <strong class="deps-row__name">{DEP_DISPLAY_NAMES[dep.id]}</strong>
+            <strong class="deps-row__name">{getDepDisplayName(dep)}</strong>
             {#if isCritical(dep.id)}
               <span class="deps-badge deps-badge--required">Requerido</span>
             {/if}
@@ -417,7 +480,7 @@
               {/if}
             {/if}
           </div>
-          <p class="deps-row__desc">{DEP_DESCRIPTIONS[dep.id]}</p>
+          <p class="deps-row__desc">{getDepDescription(dep)}</p>
 
           <!-- Installing progress per-item -->
           {#if dep.status.type === 'installing'}
@@ -511,6 +574,17 @@
     color: #92400e;
   }
 
+  .deps-runtime-panel--release-pending {
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.08);
+    color: #93c5fd;
+  }
+
+  .deps-runtime-panel--release-pending .deps-runtime-panel__guidance,
+  .deps-runtime-panel--release-pending .deps-runtime-panel__progress {
+    color: #bfdbfe;
+  }
+
   .deps-runtime-panel__copy {
     display: flex;
     flex-direction: column;
@@ -556,6 +630,12 @@
     background: rgba(34, 197, 94, 0.1);
     border: 1px solid rgba(34, 197, 94, 0.3);
     color: #15803d;
+  }
+
+  .deps-banner--warning {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: #92400e;
   }
 
   .deps-banner__message {

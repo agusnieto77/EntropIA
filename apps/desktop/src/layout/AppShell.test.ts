@@ -204,7 +204,12 @@ describe('AppShell', () => {
   it('shows fixture runtime alerts without repair action', async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'deps_get_cached_statuses') {
-        return Promise.resolve([])
+        return Promise.resolve([
+          { id: 'Python', status: { type: 'missing' } },
+          { id: 'Fastembed', status: { type: 'missing' } },
+          { id: 'PaddlePaddle', status: { type: 'missing' } },
+          { id: 'PaddleOcr', status: { type: 'missing' } },
+        ])
       }
 
       if (command === 'runtime_get_status') {
@@ -228,8 +233,52 @@ describe('AppShell', () => {
 
     render(AppShellHost)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Runtime de desarrollo detectado')
-    expect(screen.getByRole('alert')).toHaveTextContent(/app no se cayó/i)
+    expect(
+      await screen.findByText(
+        'Runtime de desarrollo detectado para linux-x86_64: faltan payloads externos de release',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/app no se cay/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reparar runtime →' })).not.toBeInTheDocument()
   })
+
+  it('does not show a global runtime alert when deps are installed and only release bootstrap is pending', async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'deps_get_cached_statuses') {
+        return Promise.resolve([
+          { id: 'Python', status: { type: 'installed' } },
+          { id: 'Fastembed', status: { type: 'installed' } },
+          { id: 'PaddlePaddle', status: { type: 'installed' } },
+          { id: 'PaddleOcr', status: { type: 'installed' } },
+        ])
+      }
+
+      if (command === 'runtime_get_status') {
+        return Promise.resolve({
+          state: 'blocked_source_unavailable',
+          packVersion: '2026.05.0',
+          repairNeeded: false,
+          repairAvailable: false,
+          summary: 'No hay una fuente confiable disponible para bootstrap',
+          blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+          details: ['source pendiente'],
+          guidance: ['Reintent? cuando exista una fuente confiable'],
+          bootstrapEligible: false,
+          bootstrapRequired: true,
+          activeOperation: null,
+        })
+      }
+
+      return Promise.resolve(undefined)
+    })
+
+    render(AppShellHost)
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('deps_get_cached_statuses')
+      expect(invokeMock).toHaveBeenCalledWith('runtime_get_status')
+    })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
 })

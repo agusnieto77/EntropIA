@@ -492,6 +492,8 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
             ),
             (true, true) => None,
         }
+    } else if !release_runtime_ready {
+        Some(install::dev_fallback_platform_hint().to_string())
     } else {
         None
     };

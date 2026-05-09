@@ -30,6 +30,7 @@ vi.mock('$lib/deps', () => ({
   DEP_DISPLAY_NAMES: {
     Python: 'Python 3.11',
     Fastembed: 'Fastembed (embeddings)',
+    PaddlePaddle: 'PaddlePaddle (runtime OCR)',
     PaddleOcr: 'PaddleOCR (OCR principal)',
     FasterWhisper: 'Faster Whisper (transcripción)',
     Spacy: 'spaCy (NER)',
@@ -38,12 +39,13 @@ vi.mock('$lib/deps', () => ({
   DEP_DESCRIPTIONS: {
     Python: 'Intérprete Python requerido para todas las funciones de IA',
     Fastembed: 'Motor de embeddings para búsqueda semántica',
+    PaddlePaddle: 'Base de ejecución requerida por PaddleOCR-VL',
     PaddleOcr: 'Motor principal de reconocimiento óptico de caracteres',
     FasterWhisper: 'Transcripción de audio a texto',
     Spacy: 'Reconocimiento de entidades nombradas',
     SpacyModelEs: 'Modelo de lenguaje español para spaCy',
   },
-  CRITICAL_DEPS: ['Python', 'Fastembed', 'PaddleOcr'],
+  CRITICAL_DEPS: ['Python', 'Fastembed', 'PaddlePaddle', 'PaddleOcr'],
 }))
 
 vi.mock('$lib/runtime', () => ({
@@ -181,6 +183,106 @@ describe('DependenciasTab', () => {
     expect(screen.queryByRole('button', { name: 'Reparar runtime' })).not.toBeInTheDocument()
   })
 
+  it('renders PaddlePaddle metadata and avoids ready success when runtime is blocked', async () => {
+    depsMocks.checkAllDeps.mockResolvedValueOnce([
+      { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
+      { id: 'Fastembed', status: { type: 'installed', version: '0.7.0' }, version: '0.7.0' },
+      {
+        id: 'PaddlePaddle',
+        status: { type: 'installed', version: '3.2.2' },
+        version: '3.2.2',
+      },
+      { id: 'PaddleOcr', status: { type: 'installed', version: '3.3.0' }, version: '3.3.0' },
+    ])
+    depsMocks.getRuntimeStatus.mockResolvedValueOnce({
+      state: 'incompatible',
+      packVersion: '2026.05.0',
+      repairNeeded: false,
+      repairAvailable: false,
+      summary: 'Runtime incompatible con EntropIA 0.0.11',
+      blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+      details: ['El runtime-pack declara app_version 0.0.10 pero la app usa 0.0.11'],
+      guidance: ['Regenerá o seleccioná un runtime-pack compatible.'],
+      bootstrapEligible: false,
+      bootstrapRequired: true,
+      activeOperation: null,
+    })
+    depsMocks.getUvStatus.mockResolvedValueOnce({
+      uv_ready: true,
+      uv_path: '/runtime/uv',
+      uv_version: '0.6.14 (a4cec56dc 2025-04-09)',
+      uv_source: 'strict-compatible',
+      uv_compatible_for_dev: true,
+      venv_exists: true,
+      venv_path: '/runtime/venv',
+      uv_warning: null,
+      release_runtime_ready: false,
+      release_runtime_state: 'incompatible',
+      dev_fallback_available: false,
+      dev_fallback_reason: null,
+    })
+
+    render(DependenciasTab)
+
+    expect(await screen.findByText('PaddlePaddle (runtime OCR)')).toBeInTheDocument()
+    expect(screen.getByText('Base de ejecución requerida por PaddleOCR-VL')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Todas las dependencias están instaladas y listas para usar.')
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/runtime de EntropIA necesita atención/i)).toBeInTheDocument()
+    expect(screen.getByText(/Gestión automática pausada/i)).toBeInTheDocument()
+  })
+
+  it('treats release bootstrap blockers as packaging-only when local deps are installed', async () => {
+    depsMocks.checkAllDeps.mockResolvedValueOnce([
+      { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },
+      { id: 'Fastembed', status: { type: 'installed', version: '0.7.0' }, version: '0.7.0' },
+      {
+        id: 'PaddlePaddle',
+        status: { type: 'installed', version: '3.2.2' },
+        version: '3.2.2',
+      },
+      { id: 'PaddleOcr', status: { type: 'installed', version: '3.5.0' }, version: '3.5.0' },
+      { id: 'FasterWhisper', status: { type: 'installed', version: '1.2.1' }, version: '1.2.1' },
+      { id: 'Spacy', status: { type: 'installed', version: '3.8.7' }, version: '3.8.7' },
+      { id: 'SpacyModelEs', status: { type: 'installed', version: '3.8.0' }, version: '3.8.0' },
+    ])
+    depsMocks.getRuntimeStatus.mockResolvedValueOnce({
+      state: 'blocked_source_unavailable',
+      packVersion: '2026.05.0',
+      repairNeeded: false,
+      repairAvailable: false,
+      summary: 'No hay una fuente confiable disponible para bootstrap',
+      blockedCapabilities: ['ocr', 'transcription', 'nlp'],
+      details: ['Trusted remote bootstrap source wiring is not implemented yet'],
+      guidance: ['Reintentá cuando exista una fuente confiable'],
+      bootstrapEligible: false,
+      bootstrapRequired: true,
+      activeOperation: null,
+    })
+    depsMocks.getUvStatus.mockResolvedValueOnce({
+      uv_ready: false,
+      uv_path: null,
+      uv_version: null,
+      uv_source: null,
+      uv_compatible_for_dev: false,
+      venv_exists: true,
+      venv_path: '/runtime/venv',
+      uv_warning: null,
+      release_runtime_ready: false,
+      release_runtime_state: 'blocked_source_unavailable',
+      dev_fallback_available: false,
+      dev_fallback_reason: 'En Windows dev el fallback online no está habilitado.',
+    })
+
+    render(DependenciasTab)
+
+    expect(await screen.findByText(/motores locales pueden operar en dev/i)).toBeInTheDocument()
+    expect(screen.getByText(/runtime-pack release pendiente/i)).toBeInTheDocument()
+    expect(screen.queryByText(/antes de habilitar OCR/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Capacidades afectadas:/i)).not.toBeInTheDocument()
+  })
+
   it('shows a non-crash uv warning when a different system uv version is detected', async () => {
     depsMocks.getUvStatus.mockResolvedValueOnce({
       uv_ready: false,
@@ -244,7 +346,7 @@ describe('DependenciasTab', () => {
     const button = await screen.findByRole('button', { name: 'Instalar todo' })
     expect(button).toBeDisabled()
     expect(
-      screen.getByText(/Necesitás runtime release hidratado o, en Linux dev, tener Python \+ uv del sistema disponibles/i),
+      screen.getByText(/Necesit.s runtime release hidratado\/compatible o un fallback de desarrollo disponible para esta plataforma/i),
     ).toBeInTheDocument()
   })
 
