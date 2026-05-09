@@ -25,6 +25,7 @@ use tauri::Manager;
 use transcription::TranscriptionQueue;
 
 const LEGACY_APP_IDENTIFIER: &str = "com.entropia.app";
+const LEGACY_MIGRATION_MARKER: &str = ".legacy-app-dir-merged";
 const SQLITE_BASENAME: &str = "entropia.sqlite";
 
 #[tauri::command]
@@ -434,6 +435,15 @@ fn migrate_legacy_app_dir(app_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    let migration_marker = legacy_migration_marker_path(app_dir);
+    if migration_marker.exists() {
+        eprintln!(
+            "[setup] legacy app dir merge already completed — skipping recursive scan: {}",
+            legacy_dir.display()
+        );
+        return Ok(());
+    }
+
     if !app_dir.exists() {
         fs::rename(&legacy_dir, app_dir).map_err(|error| {
             format!(
@@ -447,17 +457,62 @@ fn migrate_legacy_app_dir(app_dir: &Path) -> Result<(), String> {
             legacy_dir.display(),
             app_dir.display()
         );
+        write_legacy_migration_marker(app_dir)?;
         return Ok(());
     }
 
     prefer_richer_legacy_database(&legacy_dir, app_dir)?;
+
+    if legacy_merge_already_satisfied(&legacy_dir, app_dir) {
+        write_legacy_migration_marker(app_dir)?;
+        eprintln!(
+            "[setup] legacy app dir already represented in current app dir — skipping recursive scan: {} -> {}",
+            legacy_dir.display(),
+            app_dir.display()
+        );
+        return Ok(());
+    }
+
     copy_missing_recursive(&legacy_dir, app_dir)?;
+    write_legacy_migration_marker(app_dir)?;
     eprintln!(
         "[setup] merged legacy app dir into current app dir: {} -> {}",
         legacy_dir.display(),
         app_dir.display()
     );
     Ok(())
+}
+
+fn legacy_migration_marker_path(app_dir: &Path) -> std::path::PathBuf {
+    app_dir.join(LEGACY_MIGRATION_MARKER)
+}
+
+fn write_legacy_migration_marker(app_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(app_dir)
+        .map_err(|error| format!("Failed to create directory {}: {error}", app_dir.display()))?;
+    fs::write(legacy_migration_marker_path(app_dir), "merged\n").map_err(|error| {
+        format!(
+            "Failed to write legacy migration marker in {}: {error}",
+            app_dir.display()
+        )
+    })
+}
+
+fn legacy_merge_already_satisfied(legacy_dir: &Path, app_dir: &Path) -> bool {
+    let legacy_db = legacy_dir.join(SQLITE_BASENAME);
+    let current_db = app_dir.join(SQLITE_BASENAME);
+
+    if !legacy_db.exists() {
+        return current_db.exists();
+    }
+
+    if !current_db.exists() {
+        return false;
+    }
+
+    let legacy_score = sqlite_richness_score(&legacy_db).unwrap_or(0);
+    let current_score = sqlite_richness_score(&current_db).unwrap_or(0);
+    current_score >= legacy_score
 }
 
 fn prefer_richer_legacy_database(legacy_dir: &Path, app_dir: &Path) -> Result<(), String> {

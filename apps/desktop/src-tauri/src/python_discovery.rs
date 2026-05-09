@@ -654,22 +654,6 @@ mod tests {
     use sha2::Digest;
     use tempfile::tempdir;
 
-    fn runtime_status_healthy() -> crate::runtime::status::RuntimeStatus {
-        crate::runtime::status::RuntimeStatus {
-            state: crate::runtime::status::RuntimeState::Healthy,
-            pack_version: Some("2026.05.0".to_string()),
-            repair_needed: false,
-            repair_available: true,
-            summary: "Runtime listo".to_string(),
-            blocked_capabilities: vec![],
-            details: vec![],
-            guidance: vec![],
-            bootstrap_eligible: false,
-            bootstrap_required: false,
-            active_operation: None,
-        }
-    }
-
     fn write_setting_db(path: &Path, entries: &[(&str, &str)]) {
         let conn = rusqlite::Connection::open(path).expect("open db");
         conn.execute_batch(

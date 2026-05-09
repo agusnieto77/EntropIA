@@ -87,7 +87,9 @@ pub fn ensure_executable_bit(_path: &Path, _executable: bool) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     #[test]

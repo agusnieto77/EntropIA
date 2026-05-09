@@ -131,11 +131,12 @@ fn resolve_pdfium_dll_path_from_roots(
 }
 
 fn dev_pdfium_candidate_paths(manifest_dir: &Path, dll_name: &str) -> Vec<PathBuf> {
-    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let mut candidates = vec![manifest_dir.join("resources").join("lib").join(dll_name)];
+    let base_candidate = manifest_dir.join("resources").join("lib").join(dll_name);
 
     #[cfg(target_os = "linux")]
     {
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let mut candidates = vec![base_candidate];
         candidates.push(
             manifest_dir
                 .join("resources")
@@ -152,9 +153,13 @@ fn dev_pdfium_candidate_paths(manifest_dir: &Path, dll_name: &str) -> Vec<PathBu
                 .join("lib")
                 .join(dll_name),
         );
+        candidates
     }
 
-    candidates
+    #[cfg(not(target_os = "linux"))]
+    {
+        vec![base_candidate]
+    }
 }
 
 /// Strip the Windows `\\?\` UNC prefix from a path if present.

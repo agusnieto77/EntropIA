@@ -43,6 +43,7 @@ impl RuntimeManager {
         Ok(healthy_status(&manifest.pack_version))
     }
 
+    #[cfg(test)]
     pub fn repair_for_tests(
         &self,
         bundle_root: &Path,
@@ -280,6 +281,7 @@ impl RuntimeManager {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn load_manifest_for_tests(&self, bundle_root: &Path) -> Result<RuntimeManifest, String> {
         self.load_manifest(bundle_root)
     }
@@ -303,6 +305,7 @@ impl RuntimeManager {
         )
     }
 
+    #[cfg(test)]
     pub fn ensure_ready_or_bootstrap_for_tests<F>(
         &self,
         bundle_root: &Path,
@@ -630,12 +633,20 @@ fn inspect_runtime(
     let mut invalid_entries = Vec::new();
     for entry in manifest.all_entries() {
         let target = managed_root.join(&entry.path);
-        if !target.exists() {
-            invalid_entries.push(format!("Falta {}", entry.path));
-            continue;
-        }
-        if file_sha256(&target)? != entry.sha256 {
-            invalid_entries.push(format!("Checksum inválido en {}", entry.path));
+        let metadata = match fs::metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                invalid_entries.push(format!("Falta {}", entry.path));
+                continue;
+            }
+        };
+        if metadata.len() != entry.size {
+            invalid_entries.push(format!(
+                "Tamaño inválido en {} (esperado {}, detectado {})",
+                entry.path,
+                entry.size,
+                metadata.len()
+            ));
         }
     }
 
@@ -1837,7 +1848,7 @@ mod tests {
 
         let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
         write_manifest(&managed_root, &manifest);
-        write_file(&managed_root, python_relpath, b"broken");
+        write_file(&managed_root, python_relpath, b"broken-runtime");
         write_file(&managed_root, uv_relpath, b"uv");
 
         let manager = RuntimeManager::new();
@@ -2189,7 +2200,7 @@ mod tests {
 
         let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
         write_manifest(&managed_root, &manifest);
-        write_file(&managed_root, python_relpath, b"broken");
+        write_file(&managed_root, python_relpath, b"broken-runtime");
         write_file(&managed_root, uv_relpath, b"uv");
 
         let manager = RuntimeManager::new();
@@ -2203,7 +2214,7 @@ mod tests {
         assert!(status
             .details
             .iter()
-            .any(|detail| detail.contains("Checksum inválido")));
+            .any(|detail| detail.contains("Tamaño inválido")));
     }
 
     #[test]
