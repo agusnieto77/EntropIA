@@ -84,6 +84,13 @@ impl RuntimeManager {
             }
         };
         if let Some(status) = compatibility_status(&manifest) {
+            if status.state == RuntimeState::Fixture {
+                if let Some(existing_status) =
+                    self.discover_hydrated_runtime_status_for_tests(app_data_dir)
+                {
+                    return Ok(existing_status);
+                }
+            }
             return Ok(status);
         }
         inspect_runtime(bundle_root, app_data_dir, &manifest)
@@ -199,6 +206,9 @@ impl RuntimeManager {
             .path()
             .app_data_dir()
             .map_err(|error| format!("Failed to get app data dir: {error}"))?;
+        if let Some(root) = self.discover_hydrated_runtime_root_for_tests(&app_data_dir) {
+            return Ok(Some(root));
+        }
         Ok(self.hydrated_runtime_root_for_tests(&bundle_root, &app_data_dir, &manifest))
     }
 
@@ -206,6 +216,22 @@ impl RuntimeManager {
         &self,
         app_data_dir: &Path,
     ) -> Option<std::path::PathBuf> {
+        self.discover_hydrated_runtime_for_tests(app_data_dir)
+            .map(|(path, _status)| path)
+    }
+
+    fn discover_hydrated_runtime_status_for_tests(
+        &self,
+        app_data_dir: &Path,
+    ) -> Option<RuntimeStatus> {
+        self.discover_hydrated_runtime_for_tests(app_data_dir)
+            .map(|(_path, status)| status)
+    }
+
+    fn discover_hydrated_runtime_for_tests(
+        &self,
+        app_data_dir: &Path,
+    ) -> Option<(std::path::PathBuf, RuntimeStatus)> {
         let runtime_dir = runtime_root(app_data_dir);
         let entries = fs::read_dir(&runtime_dir).ok()?;
 
@@ -218,9 +244,13 @@ impl RuntimeManager {
             if manifest.platform != current_runtime_platform() {
                 continue;
             }
-            let status = self.inspect_hydrated_runtime_for_tests(app_data_dir, &path, &manifest)?;
+            let Some(status) =
+                self.inspect_hydrated_runtime_for_tests(app_data_dir, &path, &manifest)
+            else {
+                continue;
+            };
             if status.state == RuntimeState::Healthy {
-                return Some(path);
+                return Some((path, status));
             }
         }
 
@@ -378,6 +408,13 @@ impl RuntimeManager {
         if current_status.state == RuntimeState::Healthy {
             return Ok(current_status);
         }
+        if current_status.state == RuntimeState::Fixture {
+            if let Some(existing_status) =
+                self.discover_hydrated_runtime_status_for_tests(app_data_dir)
+            {
+                return Ok(existing_status);
+            }
+        }
 
         let plan = BootstrapController::new().plan(
             &current_status,
@@ -510,6 +547,10 @@ fn resolve_bundle_root(app_handle: &AppHandle) -> Result<std::path::PathBuf, Str
         return Ok(override_root);
     }
 
+    if let Some(generated_dev_root) = resolve_generated_dev_bundle_root(&platform) {
+        return Ok(generated_dev_root);
+    }
+
     if let Ok(resource_root) = app_handle.path().resolve(
         format!("runtime-pack/{platform}"),
         tauri::path::BaseDirectory::Resource,
@@ -531,6 +572,26 @@ fn resolve_bundle_root(app_handle: &AppHandle) -> Result<std::path::PathBuf, Str
         "Bundled runtime-pack not found for platform {platform}. Tried Tauri resources and {}/resources/runtime-pack/{platform}",
         env!("CARGO_MANIFEST_DIR")
     ))
+}
+
+fn resolve_generated_dev_bundle_root(platform: &str) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("runtime-pack")
+            .join(platform);
+        if root.join("manifest.json").is_file() {
+            return Some(root);
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = platform;
+    }
+
+    None
 }
 
 fn resolve_env_bundle_root(platform: &str) -> Result<Option<PathBuf>, String> {
@@ -2000,6 +2061,52 @@ mod tests {
             .guidance
             .iter()
             .any(|item| item.contains("no indica una caída")));
+    }
+
+    #[test]
+    fn status_prefers_existing_hydrated_release_over_fixture_bundle() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+
+        let fixture_python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let fixture_uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let mut fixture_manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &fixture_python_sha,
+            &fixture_uv_sha,
+        );
+        fixture_manifest.payload_profile = "fixture".to_string();
+        fixture_manifest.release_injection_required = true;
+        fixture_manifest.external_artifacts_required = vec!["relocatable-python".to_string()];
+        write_manifest(bundle_dir.path(), &fixture_manifest);
+
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let release_python_sha = write_file(&managed_root, python_relpath, b"python");
+        let release_uv_sha = write_file(&managed_root, uv_relpath, b"uv");
+        let release_manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &release_python_sha,
+            &release_uv_sha,
+        );
+        write_manifest(&managed_root, &release_manifest);
+
+        let manager = RuntimeManager::new();
+        let status = manager
+            .status_for_tests(bundle_dir.path(), app_data_dir.path())
+            .expect("status should prefer existing hydrated release runtime");
+
+        assert_eq!(status.state, RuntimeState::Healthy);
+        assert!(status.blocked_capabilities.is_empty());
     }
 
     #[test]
