@@ -25,6 +25,7 @@ import argparse
 import io
 import tempfile
 import time
+import traceback
 
 # Suppress warnings that could corrupt JSON output on stdout
 warnings.filterwarnings("ignore")
@@ -123,6 +124,41 @@ def _check_paddle_version():
     return True, ""
 
 
+def _tail_lines(text: str, max_lines: int = 12) -> str:
+    lines = text.splitlines()
+    return "\n".join(lines[-max_lines:])
+
+
+def _describe_exception(exc: Exception, tb: str) -> str:
+    """Keep the real root cause visible while adding actionable context."""
+    raw = str(exc)
+    combined = f"{raw}\n{tb}".lower()
+    exc_name = type(exc).__name__
+
+    if "permission denied" in combined and (
+        ".paddlex" in combined
+        or "official_models" in combined
+        or "paddle_pdx_cache_home" in combined
+    ):
+        detail = f"{exc_name}: {raw}" if raw else exc_name
+        return (
+            "PaddleOCR-VL cannot read/write the PaddleX model cache "
+            f"({detail}). Check the folder configured by PADDLE_PDX_CACHE_HOME "
+            "or clear the corrupted PaddleX cache."
+        )
+
+    if "vlm" in combined and "worker" in combined:
+        root = f"{exc_name}: {raw}" if raw else _tail_lines(tb, 6)
+        return (
+            "PaddleOCR-VL VLM inference failed in a worker. "
+            f"Root cause: {root}"
+        )
+
+    if raw:
+        return f"{exc_name}: {raw}"
+    return f"{exc_name}: {_tail_lines(tb, 8)}"
+
+
 def _init_pipeline(requested_device: str):
     """Initialize PaddleOCRVL pipeline with the requested device.
 
@@ -130,12 +166,21 @@ def _init_pipeline(requested_device: str):
     falls back to CPU and returns the actual device used.
     """
     from paddleocr import PaddleOCRVL
+    import inspect
 
     kwargs = {
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
         "use_layout_detection": True,
     }
+    supported_params = inspect.signature(PaddleOCRVL).parameters
+    if "use_queues" in supported_params:
+        # Queue workers hide child exceptions on Windows/CPU and collapse them
+        # into opaque "parallel worker" failures. EntropIA already isolates each
+        # OCRH run in its own subprocess, so single-process inference is safer.
+        kwargs["use_queues"] = False
+    if "vl_rec_max_concurrency" in supported_params:
+        kwargs["vl_rec_max_concurrency"] = 1
 
     # Try requested device first
     try:
@@ -194,7 +239,11 @@ def main():
         )
 
         sys.stderr.write(f"[paddle_vl] Processing: {image_path}\n")
-        output = pipeline.predict(image_path)
+        import inspect
+        if "use_queues" in inspect.signature(pipeline.predict).parameters:
+            output = pipeline.predict(image_path, use_queues=False)
+        else:
+            output = pipeline.predict(image_path)
         t_predict = time.time()
         sys.stderr.write(
             f"[paddle_vl] Predict done (took {t_predict - t_pipeline:.1f}s, total {t_predict - t_start:.1f}s)\n"
@@ -301,29 +350,14 @@ def main():
         sys.stdout.flush()
         sys.exit(1)
     except Exception as e:
-        error_msg = str(e)
-        if "vlm" in error_msg.lower() and "worker" in error_msg.lower():
-            error_msg = (
-                "PaddleOCR-VL VLM inference failed (parallel worker error). "
-                "This usually happens on CPU when the VLM worker times out or crashes silently. "
-                "If you have a GPU, ensure paddlepaddle-gpu is installed. "
-                "Otherwise, CPU inference of the 0.9B VLM model "
-                "is extremely slow and may require several minutes per image."
-            )
-        elif not error_msg:
-            import traceback
-            tb = traceback.format_exc()
-            if "vlm" in tb.lower() or "worker" in tb.lower():
-                error_msg = (
-                    "PaddleOCR-VL VLM inference failed. "
-                    "This usually happens on CPU when the parallel VLM worker times out or crashes silently. "
-                    "If you have a GPU, ensure paddlepaddle-gpu is installed. "
-                    "Otherwise, CPU inference may take several minutes per image."
-                )
-            else:
-                error_msg = "Unknown error (empty exception message). Check stderr for details."
-        sys.stderr.write(f"Error: {error_msg}\n")
-        error_json = json.dumps({"error": error_msg})
+        tb = traceback.format_exc()
+        error_msg = _describe_exception(e, tb)
+        sys.stderr.write(f"Error: {error_msg}\nTraceback:\n{tb}\n")
+        error_json = json.dumps({
+            "error": error_msg,
+            "exception_type": type(e).__name__,
+            "traceback_tail": _tail_lines(tb, 12),
+        }, ensure_ascii=False)
         sys.stdout.write(f"{SENTINEL_BEGIN}\n{error_json}\n{SENTINEL_END}\n")
         sys.stdout.flush()
         sys.exit(1)

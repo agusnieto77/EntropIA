@@ -13,6 +13,7 @@ use crate::runtime::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -72,10 +73,16 @@ pub struct PaddleVlConfig {
     pub python_path: PathBuf,
     /// Path to the paddle_vl.py script.
     pub script_path: PathBuf,
-    /// Managed HuggingFace cache directory, if available.
+    /// HuggingFace cache directory, if available.
     pub hf_cache_dir: Option<PathBuf>,
-    /// Managed PaddleX cache directory, if available.
+    /// PaddleX cache directory, if available.
     pub paddlex_cache_dir: Option<PathBuf>,
+    /// Whether the subprocess must run without network access.
+    ///
+    /// A configured cache directory does not necessarily mean the cache is
+    /// hydrated. Dev/fallback app-owned caches stay online so PaddleX can
+    /// download missing official models into EntropIA-owned storage.
+    pub offline_mode: bool,
     /// Preferred compute device: "gpu" or "cpu".
     /// The Python subprocess will validate GPU support and fall back to CPU
     /// if the paddlepaddle-gpu stack is not installed or GPU init fails.
@@ -184,9 +191,14 @@ impl PaddleVlEngine {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let offline_mode =
-            self.config.hf_cache_dir.is_some() || self.config.paddlex_cache_dir.is_some();
-        let offline_value = if offline_mode { "1" } else { "0" };
+        if let Some(ref cache_dir) = self.config.hf_cache_dir {
+            ensure_cache_dir("HuggingFace", cache_dir)?;
+        }
+        if let Some(ref cache_dir) = self.config.paddlex_cache_dir {
+            ensure_cache_dir("PaddleX", cache_dir)?;
+        }
+
+        let offline_value = if self.config.offline_mode { "1" } else { "0" };
         cmd.env("HF_HUB_OFFLINE", offline_value)
             .env("TRANSFORMERS_OFFLINE", offline_value);
 
@@ -195,7 +207,9 @@ impl PaddleVlEngine {
         }
 
         if let Some(ref cache_dir) = self.config.paddlex_cache_dir {
-            cmd.env("PADDLEX_HOME", cache_dir);
+            cmd.env("PADDLE_PDX_CACHE_HOME", cache_dir)
+                // Legacy/no-op for current PaddleX, but harmless for older builds.
+                .env("PADDLEX_HOME", cache_dir);
         }
 
         eprintln!(
@@ -425,7 +439,24 @@ fn classify_paddlevl_failure(stderr: &str, stdout: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    if is_paddlex_cache_permission_error(stderr) || is_paddlex_cache_permission_error(stdout) {
+        return Some(
+            "PaddleOCR-VL cannot read/write its PaddleX model cache. \
+             EntropIA points PaddleX at an app-owned cache via PADDLE_PDX_CACHE_HOME; \
+             if this persists, clear the affected PaddleX cache directory or check folder permissions."
+                .to_string(),
+        );
+    }
     None
+}
+
+fn is_paddlex_cache_permission_error(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("permission denied")
+        && (lower.contains(".paddlex")
+            || lower.contains("official_models")
+            || lower.contains("paddle_pdx_cache_home")
+            || lower.contains("paddlex"))
 }
 
 /// Score a Python candidate by how likely it is to be a dedicated PaddleOCR-VL env.
@@ -605,7 +636,14 @@ pub fn create_paddle_vl_engine(
         runtime_root.as_deref(),
         Path::new(env!("CARGO_MANIFEST_DIR")),
     );
-    let (hf_cache_dir, paddlex_cache_dir) = resolve_paddle_vl_cache_dirs(runtime_root.as_deref());
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .or_else(|| settings_db_path.parent().map(Path::to_path_buf));
+    let (hf_cache_dir, paddlex_cache_dir) =
+        resolve_paddle_vl_cache_dirs(runtime_root.as_deref(), app_data_dir.as_deref());
+    let offline_mode = runtime_root.is_some();
 
     // Find Python interpreter with paddleocr
     let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
@@ -633,6 +671,7 @@ pub fn create_paddle_vl_engine(
         script_path,
         hf_cache_dir,
         paddlex_cache_dir,
+        offline_mode,
         device,
     }) {
         Ok(engine) => Some(engine),
@@ -660,6 +699,15 @@ fn resolve_paddle_vl_script_path_from_roots(
     }
 
     normalize_windows_path(manifest_dir.join("scripts/paddle_vl.py"))
+}
+
+fn ensure_cache_dir(label: &str, cache_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(cache_dir).map_err(|error| {
+        format!(
+            "Failed to create {label} cache directory {}: {error}",
+            cache_dir.display()
+        )
+    })
 }
 
 fn managed_runtime_root_for_paddle_vl(
@@ -741,6 +789,15 @@ mod tests {
     }
 
     #[test]
+    fn test_detects_paddlex_cache_permission_error() {
+        let stderr =
+            "PermissionError: [Errno 13] Permission denied: 'C:\\Users\\agusn\\.paddlex\\official_models\\PP-DocLayoutV3\\inference.yml'";
+        let classification = classify_paddlevl_failure(stderr, "");
+        assert!(classification.is_some());
+        assert!(classification.unwrap().contains("PaddleX model cache"));
+    }
+
+    #[test]
     fn resolves_managed_paddle_vl_script_before_dev_fallbacks() {
         let runtime_dir = tempdir().expect("runtime dir");
         let manifest_dir = tempdir().expect("manifest dir");
@@ -759,12 +816,28 @@ mod tests {
     fn derives_managed_paddle_vl_cache_dirs_from_runtime_root() {
         let runtime_dir = tempdir().expect("runtime dir");
 
-        let (hf_cache, paddlex_cache) = resolve_paddle_vl_cache_dirs(Some(runtime_dir.path()));
+        let app_data_dir = tempdir().expect("app data dir");
+        let (hf_cache, paddlex_cache) =
+            resolve_paddle_vl_cache_dirs(Some(runtime_dir.path()), Some(app_data_dir.path()));
 
         assert_eq!(hf_cache, Some(runtime_dir.path().join("caches").join("hf")));
         assert_eq!(
             paddlex_cache,
             Some(runtime_dir.path().join("caches").join("paddlex"))
+        );
+    }
+
+    #[test]
+    fn derives_app_owned_paddle_vl_cache_dirs_without_runtime_root() {
+        let app_data_dir = tempdir().expect("app data dir");
+
+        let (hf_cache, paddlex_cache) =
+            resolve_paddle_vl_cache_dirs(None, Some(app_data_dir.path()));
+
+        assert_eq!(hf_cache, Some(app_data_dir.path().join("hf_cache")));
+        assert_eq!(
+            paddlex_cache,
+            Some(app_data_dir.path().join("paddlex_cache"))
         );
     }
 
@@ -878,15 +951,30 @@ mod tests {
             script_path: PathBuf::from("/tmp/paddle_vl.py"),
             hf_cache_dir: None,
             paddlex_cache_dir: None,
+            offline_mode: false,
             device: "gpu".to_string(),
         };
         assert_eq!(config.device, "gpu");
     }
 }
 
-fn resolve_paddle_vl_cache_dirs(managed_root: Option<&Path>) -> (Option<PathBuf>, Option<PathBuf>) {
-    (
-        managed_root.map(managed_hf_cache_dir),
-        managed_root.map(managed_paddlex_cache_dir),
-    )
+fn resolve_paddle_vl_cache_dirs(
+    managed_root: Option<&Path>,
+    app_data_dir: Option<&Path>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    if let Some(root) = managed_root {
+        return (
+            Some(managed_hf_cache_dir(root)),
+            Some(managed_paddlex_cache_dir(root)),
+        );
+    }
+
+    if let Some(app_data) = app_data_dir {
+        return (
+            Some(app_data.join("hf_cache")),
+            Some(app_data.join("paddlex_cache")),
+        );
+    }
+
+    (None, None)
 }
