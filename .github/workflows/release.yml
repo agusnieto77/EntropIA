@@ -12,6 +12,8 @@ on:
 
 env:
   PNPM_VERSION: 9.15.4
+  MACOSX_DEPLOYMENT_TARGET: '10.15'
+  CMAKE_OSX_DEPLOYMENT_TARGET: '10.15'
 
 jobs:
   build:
@@ -26,14 +28,17 @@ jobs:
             platform: windows-latest
             build_args: ''
             rust_target: ''
+            runtime_pack_platform: windows-x86_64
           - name: macos-14 (arm64)
             platform: macos-14
             build_args: '--target aarch64-apple-darwin'
             rust_target: 'aarch64-apple-darwin'
+            runtime_pack_platform: ''
           - name: ubuntu-22.04
             platform: ubuntu-22.04
             build_args: '-- --no-default-features'
             rust_target: ''
+            runtime_pack_platform: linux-x86_64
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -43,14 +48,10 @@ jobs:
         id: runtime_pack
         shell: bash
         run: |
-          case "${{ matrix.platform }}" in
-            windows-*) echo "platform=windows-x86_64" >> "$GITHUB_OUTPUT" ;;
-            ubuntu-*) echo "platform=linux-x86_64" >> "$GITHUB_OUTPUT" ;;
-            *) echo "platform=" >> "$GITHUB_OUTPUT" ;;
-          esac
+          echo "platform=${{ matrix.runtime_pack_platform }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-22.04' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -63,14 +64,14 @@ jobs:
             patchelf
 
       - name: Install macOS OCR dependencies
-        if: startsWith(matrix.platform, 'macos-')
+        if: startsWith(matrix.platform, 'macos-') && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
         run: |
           brew update
           brew install leptonica tesseract pkg-config
           echo "PKG_CONFIG_PATH=$(brew --prefix leptonica)/lib/pkgconfig:$(brew --prefix tesseract)/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
 
       - name: Install Windows OCR dependencies (vcpkg)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-latest' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:USERPROFILE\vcpkg"
@@ -79,29 +80,34 @@ jobs:
           "VCPKG_ROOT=$env:USERPROFILE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup pnpm
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Install Rust toolchain
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
 
       - name: Install Rust target (macOS cross-compilation)
-        if: matrix.rust_target != ''
+        if: matrix.rust_target != '' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
         run: |
           rustup target add ${{ matrix.rust_target }}
 
       - name: Restore canonical lockfile
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         run: git checkout -- pnpm-lock.yaml
 
       - name: Install frontend dependencies
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         shell: pwsh
         run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
 
@@ -113,7 +119,7 @@ jobs:
           path: ${{ runner.temp }}/runtime-payloads
 
       - name: Assemble runtime-pack payload (release required)
-        if: steps.runtime_pack.outputs.platform != ''
+        if: steps.runtime_pack.outputs.platform != '' && github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''
         shell: bash
         run: |
           RUNTIME_PAYLOAD_ROOT="${RUNNER_TEMP}/runtime-payloads"
@@ -121,12 +127,12 @@ jobs:
           python3 apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform ${{ steps.runtime_pack.outputs.platform }} --payload-root "$RUNTIME_PAYLOAD_ROOT" --output-dir "$ASSEMBLED_RUNTIME_PACK_ROOT" --require-release-payload
 
       - name: runtime-pack-smoke
-        if: steps.runtime_pack.outputs.platform != ''
+        if: steps.runtime_pack.outputs.platform != '' && github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''
         shell: bash
         run: python3 apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform ${{ steps.runtime_pack.outputs.platform }} --root apps/desktop/src-tauri/target/runtime-pack --release --install-probe
 
       - name: Inject assembled runtime-pack into bundle resources
-        if: steps.runtime_pack.outputs.platform != ''
+        if: steps.runtime_pack.outputs.platform != '' && github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''
         shell: bash
         run: |
           PLATFORM="${{ steps.runtime_pack.outputs.platform }}"
@@ -134,6 +140,7 @@ jobs:
           cp -R "apps/desktop/src-tauri/target/runtime-pack/$PLATFORM" "apps/desktop/src-tauri/resources/runtime-pack/$PLATFORM"
 
       - name: Build Tauri application
+        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
