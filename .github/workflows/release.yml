@@ -62,7 +62,7 @@ jobs:
           echo "platform=${{ matrix.runtime_pack_platform }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -75,14 +75,14 @@ jobs:
             patchelf
 
       - name: Install macOS OCR dependencies
-        if: startsWith(matrix.platform, 'macos-') && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
+        if: startsWith(matrix.platform, 'macos-')
         run: |
           brew update
           brew install leptonica tesseract pkg-config
           echo "PKG_CONFIG_PATH=$(brew --prefix leptonica)/lib/pkgconfig:$(brew --prefix tesseract)/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
 
       - name: Install Windows OCR dependencies (vcpkg)
-        if: matrix.platform == 'windows-latest' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:USERPROFILE\vcpkg"
@@ -91,34 +91,29 @@ jobs:
           "VCPKG_ROOT=$env:USERPROFILE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup pnpm
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Install Rust toolchain
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.88.0
 
       - name: Install Rust target (macOS cross-compilation)
-        if: matrix.rust_target != '' && (matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != ''))
+        if: matrix.rust_target != ''
         run: |
           rustup target add ${{ matrix.rust_target }}
 
       - name: Restore canonical lockfile
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         run: git checkout -- pnpm-lock.yaml
 
       - name: Install frontend dependencies
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         shell: pwsh
         run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
 
@@ -151,7 +146,6 @@ jobs:
           cp -R "apps/desktop/src-tauri/target/runtime-pack/$PLATFORM" "apps/desktop/src-tauri/resources/runtime-pack/$PLATFORM"
 
       - name: Build Tauri application
-        if: matrix.runtime_pack_platform == '' || (github.event_name == 'workflow_dispatch' && inputs.runtime_payload_artifact != '')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
