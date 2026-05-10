@@ -98,7 +98,7 @@
       await onDepsComplete((event) => {
         deps = event.results
         installing = false
-        void refreshAllState()
+        void refreshRuntimeState()
       }),
       await onDepsError((event) => {
         errorBanner = event.error
@@ -166,6 +166,13 @@
       getRuntimeStatus(),
     ])
     deps = checkResults
+    uvStatus = uv
+    runtimeStatus = runtime
+    runtimeOperation = runtime.activeOperation
+  }
+
+  async function refreshRuntimeState() {
+    const [uv, runtime] = await Promise.all([getUvStatus(), getRuntimeStatus()])
     uvStatus = uv
     runtimeStatus = runtime
     runtimeOperation = runtime.activeOperation

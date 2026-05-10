@@ -6,13 +6,26 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::runtime::status::RuntimeState;
 use crate::runtime::RuntimeManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
+
+const UV_STATUS_CACHE_TTL: Duration = Duration::from_secs(30);
+static UV_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, UvStatusResult)>>> = OnceLock::new();
+
+fn uv_status_cache() -> &'static Mutex<Option<(Instant, UvStatusResult)>> {
+    UV_STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+async fn invalidate_uv_status_cache() {
+    let mut cached = uv_status_cache().lock().await;
+    *cached = None;
+}
 
 pub mod checks;
 pub mod install;
@@ -410,7 +423,10 @@ pub async fn deps_install_all(
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
-    install::install_all(&app, &state, &db_path, &app_data_dir).await
+    invalidate_uv_status_cache().await;
+    let result = install::install_all(&app, &state, &db_path, &app_data_dir).await;
+    invalidate_uv_status_cache().await;
+    result
 }
 
 /// Install a single dependency by id string.
@@ -435,12 +451,22 @@ pub async fn deps_install_one(
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
-    install::install_one(&dep_id, &app, &state, &db_path, &app_data_dir).await
+    invalidate_uv_status_cache().await;
+    let result = install::install_one(&dep_id, &app, &state, &db_path, &app_data_dir).await;
+    invalidate_uv_status_cache().await;
+    result
 }
 
 /// Return the current status of the managed uv binary and venv.
 #[tauri::command]
 pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult, String> {
+    let mut cached = uv_status_cache().lock().await;
+    if let Some((cached_at, result)) = cached.as_ref() {
+        if cached_at.elapsed() < UV_STATUS_CACHE_TTL {
+            return Ok(result.clone());
+        }
+    }
+
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -537,7 +563,7 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         None
     };
 
-    Ok(UvStatusResult {
+    let result = UvStatusResult {
         uv_ready,
         uv_path,
         uv_version,
@@ -550,7 +576,10 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         release_runtime_state,
         dev_fallback_available,
         dev_fallback_reason,
-    })
+    };
+
+    *cached = Some((Instant::now(), result.clone()));
+    Ok(result)
 }
 
 /// Reset the dependency manager: delete the venv, clear settings, invalidate caches.
@@ -601,6 +630,7 @@ pub async fn deps_reset(
 
     // ── 3. Invalidate the Python discovery probe cache ────────────────────────
     crate::python_discovery::invalidate_probe_cache();
+    invalidate_uv_status_cache().await;
     invalidate_probe_cache(state.inner()).await;
 
     // ── 4. Reset DepsState without caching synthetic Missing ─────────────────

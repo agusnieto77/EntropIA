@@ -22,9 +22,7 @@ use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::runtime::{managed_resource_path, RuntimeManager};
 use base64::Engine;
 use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
-use paddle_vl::{
-    create_paddle_vl_engine, create_paddle_vl_engine_result, PaddleVlEngine, PaddleVlOutput,
-};
+use paddle_vl::{create_paddle_vl_engine_result, PaddleVlEngine, PaddleVlOutput};
 use pdf::{extract_pdf_text, init_pdfium_path, is_quality_text, pdf_page_count};
 use provider::{LayoutCategory, OcrProvider};
 use serde::Serialize;
@@ -681,8 +679,7 @@ impl OcrQueue {
     /// The worker:
     /// 1. Opens its own SQLite connection for persisting extractions.
     /// 2. Loads the OCR provider (PaddleOCR → Tesseract fallback).
-    /// 3. Lazily initializes PaddleVL engine and layout engine in the background
-    ///    (not on the startup critical path).
+    /// 3. Keeps PaddleVL lazy; OCRH/high OCR resolves it only when requested.
     /// 4. Drains jobs serially from the receiver.
     /// 5. Saves extracted text to DB, then emits events per job.
     pub fn start_worker(
@@ -750,12 +747,8 @@ impl OcrQueue {
 
                 eprintln!("[OCR] Provider ready: {}", provider.name());
 
-                let mut paddle_vl_engine = create_paddle_vl_engine(&app_handle, &db_path);
-                if paddle_vl_engine.is_some() {
-                    eprintln!("[OCR] High OCR mode available via PaddleOCR-VL");
-                } else {
-                    eprintln!("[OCR] High OCR mode unavailable — falling back to plain OCR");
-                }
+                let mut paddle_vl_engine: Option<PaddleVlEngine> = None;
+                eprintln!("[OCR] High OCR mode is lazy; PaddleOCR-VL will initialize on OCRH jobs");
 
                 // Dedicated DB connection for this worker (avoids open/close per job).
                 let conn = match rusqlite::Connection::open(&db_path) {

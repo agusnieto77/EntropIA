@@ -13,7 +13,6 @@
   import {
     getAssetUrl,
     deleteAssetFile,
-    generatePdfThumbnail,
     deletePdfThumbnail,
   } from '$lib/file-import'
   import { appDataDir, join } from '@tauri-apps/api/path'
@@ -101,7 +100,7 @@
       try {
         const assets: Asset[] = await store.assets.findByItem(itemId)
         const imageAsset = assets.find((a) => a.type === 'image')
-        // For PDFs, generate a thumbnail from the first page
+        // For PDFs, keep exploration lightweight: ItemCard shows the PDF icon.
         const pdfAsset = assets.find((a) => a.type === 'pdf')
 
         let thumbnailUrl: string | null = null
@@ -111,13 +110,7 @@
           thumbnailUrl = getAssetUrl(imageAsset.path)
           primaryAssetType = imageAsset.type
         } else if (pdfAsset) {
-          // Try to generate a PDF thumbnail; fall back to null (ItemCard shows PDF icon)
-          try {
-            thumbnailUrl = await generatePdfThumbnail(pdfAsset.path, pdfAsset.id)
-          } catch (e) {
-            console.warn('[CollectionView] Failed to generate PDF thumbnail for', pdfAsset.id, e)
-            thumbnailUrl = null
-          }
+          thumbnailUrl = null
           primaryAssetType = pdfAsset.type
         } else {
           const thumbAsset = assets[0]

@@ -146,9 +146,8 @@
 
     unlistenDepsComplete = await onDepsComplete((event) => {
       depsResults = event.results ?? []
-      void Promise.all([checkAllDeps(), getRuntimeStatus(), getUvStatus()])
-        .then(([results, status, uv]) => {
-          depsResults = results
+      void Promise.all([getRuntimeStatus(), getUvStatus()])
+        .then(([status, uv]) => {
           runtimeStatus = status
           uvStatus = uv
         })

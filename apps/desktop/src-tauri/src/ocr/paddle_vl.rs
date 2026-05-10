@@ -666,25 +666,6 @@ fn command_output_with_timeout(
     }
 }
 
-/// Create a PaddleVlEngine for use by the OCR worker.
-///
-/// Resolves the script path and Python interpreter, initializes the engine.
-/// Automatically prefers GPU when an NVIDIA GPU is detected, falling back to
-/// CPU if the Python paddlepaddle-gpu stack is unavailable.
-/// Returns None if PaddleVL is unavailable (no Python with paddleocr, or missing script).
-pub fn create_paddle_vl_engine(
-    app_handle: &tauri::AppHandle,
-    settings_db_path: &std::path::Path,
-) -> Option<PaddleVlEngine> {
-    match create_paddle_vl_engine_result(app_handle, settings_db_path) {
-        Ok(engine) => Some(engine),
-        Err(error) => {
-            eprintln!("[paddle_vl] {error}");
-            None
-        }
-    }
-}
-
 pub fn create_paddle_vl_engine_result(
     app_handle: &tauri::AppHandle,
     settings_db_path: &std::path::Path,

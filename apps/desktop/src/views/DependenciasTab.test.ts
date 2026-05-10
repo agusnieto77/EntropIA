@@ -463,6 +463,35 @@ describe('DependenciasTab', () => {
     ).toBeInTheDocument()
   })
 
+  it('updates from deps complete events without re-running dependency probes', async () => {
+    let completeHandler:
+      | ((event: { results: Array<{ id: string; status: { type: string }; version: string | null }> }) => void)
+      | undefined
+    depsMocks.onDepsComplete.mockImplementation(async (handler) => {
+      completeHandler = handler
+      return vi.fn()
+    })
+
+    render(DependenciasTab)
+
+    await waitFor(() => {
+      expect(depsMocks.checkAllDeps).toHaveBeenCalledTimes(1)
+      expect(completeHandler).toBeDefined()
+    })
+
+    completeHandler?.({
+      results: [
+        { id: 'Python', status: { type: 'installed' }, version: '3.11.9' },
+        { id: 'Fastembed', status: { type: 'missing' }, version: null },
+      ],
+    })
+
+    await waitFor(() => {
+      expect(depsMocks.getRuntimeStatus).toHaveBeenCalledTimes(2)
+    })
+    expect(depsMocks.checkAllDeps).toHaveBeenCalledTimes(1)
+  })
+
   it('shows blocked bootstrap reason and active operation progress honestly', async () => {
     depsMocks.checkAllDeps.mockResolvedValueOnce([
       { id: 'Python', status: { type: 'installed', version: '3.11.9' }, version: '3.11.9' },

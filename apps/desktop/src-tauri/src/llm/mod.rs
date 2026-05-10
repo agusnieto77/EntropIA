@@ -16,7 +16,6 @@ use rusqlite::params;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 
 use crate::nlp::text_provider;
 use crate::settings;
@@ -966,8 +965,22 @@ impl LlmQueue {
         if self.available.load(Ordering::Relaxed) {
             return true;
         }
+        if self.local_model_can_initialize() {
+            return true;
+        }
         // Check if OpenRouter is configured
         self.is_openrouter_configured()
+    }
+
+    /// Report local availability without loading Gemma. Existing models are
+    /// usable, and the default model can still auto-download on first local job.
+    fn local_model_can_initialize(&self) -> bool {
+        let conn = match rusqlite::Connection::open(&self.db_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let model_path = resolve_model_path(&self.db_path);
+        model_path.exists() || should_auto_download_default_model(&conn, &model_path)
     }
 
     /// Check if OpenRouter is configured with an API key and mode is not `local`.
@@ -1019,71 +1032,11 @@ impl LlmQueue {
                 eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create app_settings table: {e}");
             }
 
-            let app_handle_for_download = app_handle.clone();
-            let db_path_for_download = db_path.clone();
-            if let Err(error) = tokio::task::spawn_blocking(move || {
-                ensure_default_model_downloaded_if_missing(
-                    &conn,
-                    &db_path_for_download,
-                    &app_handle_for_download,
-                )
-            })
-            .await
-            .unwrap_or_else(|e| Err(format!("Default model auto-download task panicked: {e}")))
-            {
-                eprintln!("{LLM_LOCAL_PREFIX} Default model auto-download unavailable: {error}");
-            }
-
-            let conn = match rusqlite::Connection::open(&db_path) {
-                Ok(c) => {
-                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
-                    c
-                }
-                Err(e) => {
-                    eprintln!("{LLM_LOCAL_PREFIX} Failed to reopen worker DB connection after model bootstrap: {e}");
-                    return;
-                }
-            };
-
-            let model_path = resolve_model_path(&db_path);
-            eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
-
-            let config = LlmConfig {
-                model_path: model_path.clone(),
-                n_ctx: 4096,
-                n_threads: None,
-                seed: 1234,
-            };
             eprintln!(
-                "{LLM_LOCAL_PREFIX} Scheduling background warmup: {}",
-                model_path.display()
+                "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
             );
-
-            let warmup_model_path = model_path.clone();
-            let warmup_available = available.clone();
-            let (init_tx, init_rx) = oneshot::channel::<Result<LlmEngine, String>>();
-            tauri::async_runtime::spawn(async move {
-                let result = match tokio::task::spawn_blocking(move || LlmEngine::init(config)).await {
-                    Ok(Ok(engine)) => {
-                        eprintln!("{LLM_LOCAL_PREFIX} Engine ready (background warmup): {}", warmup_model_path.display());
-                        warmup_available.store(true, Ordering::Relaxed);
-                        Ok(engine)
-                    }
-                    Ok(Err(e)) => {
-                        Err(format!(
-                            "Engine unavailable: {e} — LLM jobs will degrade gracefully. Place a GGUF model at: {}",
-                            warmup_model_path.display()
-                        ))
-                    }
-                    Err(e) => Err(format!("Engine init panicked: {e}")),
-                };
-
-                let _ = init_tx.send(result);
-            });
-
             let mut engine: Option<LlmEngine> = None;
             let mut init_error: Option<String> = None;
-            let mut init_rx = Some(init_rx);
 
             // Ensure llm_results table exists and legacy rows are normalized.
             if let Err(e) = ensure_llm_results_schema(&conn) {
@@ -1142,82 +1095,42 @@ impl LlmQueue {
                 } else {
                     // Local engine path
                     if engine.is_none() && init_error.is_none() {
-                        match init_rx.take() {
-                            Some(rx) => {
-                                match rx.await {
-                                    Ok(Ok(resolved_engine)) => {
-                                        engine = Some(resolved_engine);
-                                    }
-                                    Ok(Err(error)) => {
-                                        eprintln!("{LLM_LOCAL_PREFIX} {error}");
-                                        init_error = Some(error);
-                                    }
-                                    Err(_) => {
-                                        let fallback_model_path = model_path.clone();
-                                        eprintln!("{LLM_LOCAL_PREFIX} Warmup channel closed before completion; falling back to lazy init");
-                                        match tokio::task::spawn_blocking(move || {
-                                            LlmEngine::init(LlmConfig {
-                                                model_path: fallback_model_path,
-                                                n_ctx: 4096,
-                                                n_threads: None,
-                                                seed: 1234,
-                                            })
-                                        })
-                                        .await
-                                        {
-                                            Ok(Ok(resolved_engine)) => {
-                                                eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)");
-                                                available.store(true, Ordering::Relaxed);
-                                                engine = Some(resolved_engine);
-                                            }
-                                            Ok(Err(error)) => {
-                                                eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
-                                                init_error = Some(format!(
-                                                "Engine unavailable after lazy fallback: {error}"
-                                            ));
-                                            }
-                                            Err(error) => {
-                                                eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
-                                                init_error = Some(format!(
-                                                    "Engine lazy fallback panicked: {error}"
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
+                        let init_db_path = db_path.clone();
+                        let init_app_handle = app_handle.clone();
+                        eprintln!("{LLM_LOCAL_PREFIX} Initializing local Gemma engine on demand for job '{job_name}'");
+                        match tokio::task::spawn_blocking(move || {
+                            let init_conn = rusqlite::Connection::open(&init_db_path)
+                                .map_err(|e| format!("Failed to open DB for lazy local LLM init: {e}"))?;
+                            ensure_default_model_downloaded_if_missing(
+                                &init_conn,
+                                &init_db_path,
+                                &init_app_handle,
+                            )?;
+                            let model_path = resolve_model_path(&init_db_path);
+                            eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
+                            LlmEngine::init(LlmConfig {
+                                model_path,
+                                n_ctx: 4096,
+                                n_threads: None,
+                                seed: 1234,
+                            })
+                        })
+                        .await
+                        {
+                            Ok(Ok(resolved_engine)) => {
+                                eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy local init)");
+                                available.store(true, Ordering::Relaxed);
+                                engine = Some(resolved_engine);
                             }
-                            None => {
-                                let fallback_model_path = model_path.clone();
-                                eprintln!("{LLM_LOCAL_PREFIX} Warmup result unavailable; falling back to lazy init");
-                                match tokio::task::spawn_blocking(move || {
-                                    LlmEngine::init(LlmConfig {
-                                        model_path: fallback_model_path,
-                                        n_ctx: 4096,
-                                        n_threads: None,
-                                        seed: 1234,
-                                    })
-                                })
-                                .await
-                                {
-                                    Ok(Ok(resolved_engine)) => {
-                                        eprintln!(
-                                            "{LLM_LOCAL_PREFIX} Engine ready (lazy fallback)"
-                                        );
-                                        available.store(true, Ordering::Relaxed);
-                                        engine = Some(resolved_engine);
-                                    }
-                                    Ok(Err(error)) => {
-                                        eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy fallback: {error}");
-                                        init_error = Some(format!(
-                                            "Engine unavailable after lazy fallback: {error}"
-                                        ));
-                                    }
-                                    Err(error) => {
-                                        eprintln!("{LLM_LOCAL_PREFIX} Engine lazy fallback panicked: {error}");
-                                        init_error =
-                                            Some(format!("Engine lazy fallback panicked: {error}"));
-                                    }
-                                }
+                            Ok(Err(error)) => {
+                                eprintln!("{LLM_LOCAL_PREFIX} Engine unavailable after lazy local init: {error}");
+                                init_error = Some(format!(
+                                    "Engine unavailable after lazy local init: {error}"
+                                ));
+                            }
+                            Err(error) => {
+                                eprintln!("{LLM_LOCAL_PREFIX} Engine lazy local init panicked: {error}");
+                                init_error = Some(format!("Engine lazy local init panicked: {error}"));
                             }
                         }
                     }
