@@ -18,6 +18,39 @@
   const MAX_DEVICE_PIXEL_RATIO = 1.35
   const CANVAS_OVERSCAN = 140
 
+  interface ThemePalette {
+    bg: [string, string, string]
+    haze: [string, string, string]
+    node: string
+    link: string
+  }
+
+  const PALETTES: Record<string, ThemePalette> = {
+    dark: {
+      bg: ['#080a10', '#0c0f17', '#10131b'],
+      haze: ['rgba(75, 83, 106, 0.08)', 'rgba(38, 44, 62, 0.045)', 'rgba(8, 10, 16, 0)'],
+      node: 'rgba(190, 197, 214, {a})',
+      link: 'rgba(146, 154, 178, {a})',
+    },
+    dim: {
+      bg: ['#15130f', '#1a1813', '#1d1a15'],
+      haze: ['rgba(106, 90, 60, 0.08)', 'rgba(62, 52, 38, 0.045)', 'rgba(21, 19, 15, 0)'],
+      node: 'rgba(200, 185, 160, {a})',
+      link: 'rgba(170, 155, 130, {a})',
+    },
+    light: {
+      bg: ['#f8f9fc', '#f0f1f6', '#eaecf3'],
+      haze: ['rgba(140, 150, 180, 0.06)', 'rgba(100, 110, 140, 0.03)', 'rgba(248, 249, 252, 0)'],
+      node: 'rgba(80, 90, 120, {a})',
+      link: 'rgba(100, 110, 140, {a})',
+    },
+  }
+
+  function getCurrentPalette(): ThemePalette {
+    const theme = document.documentElement.dataset.theme ?? 'dark'
+    return PALETTES[theme] ?? PALETTES.dark
+  }
+
   let canvas: HTMLCanvasElement
   let ctx: CanvasRenderingContext2D | null = null
   let nodes: EntropicNode[] = []
@@ -26,6 +59,7 @@
   let deviceScale = 1
   let reducedMotion = false
   let resizeTimer: ReturnType<typeof setTimeout> | null = null
+  let themeObserver: MutationObserver | null = null
 
   function clamp(value: number, min: number, max: number) {
     return Math.min(max, Math.max(min, value))
@@ -94,18 +128,18 @@
     resizeTimer = setTimeout(resizeCanvas, 120)
   }
 
-  function drawBackground(context: CanvasRenderingContext2D) {
+  function drawBackground(context: CanvasRenderingContext2D, palette: ThemePalette) {
     const gradient = context.createLinearGradient(0, 0, width, height)
-    gradient.addColorStop(0, '#080a10')
-    gradient.addColorStop(0.46, '#0c0f17')
-    gradient.addColorStop(1, '#10131b')
+    gradient.addColorStop(0, palette.bg[0])
+    gradient.addColorStop(0.46, palette.bg[1])
+    gradient.addColorStop(1, palette.bg[2])
     context.fillStyle = gradient
     context.fillRect(0, 0, width, height)
 
     const haze = context.createRadialGradient(width * 0.5, height * 0.52, 0, width * 0.5, height * 0.52, width * 0.72)
-    haze.addColorStop(0, 'rgba(75, 83, 106, 0.08)')
-    haze.addColorStop(0.48, 'rgba(38, 44, 62, 0.045)')
-    haze.addColorStop(1, 'rgba(8, 10, 16, 0)')
+    haze.addColorStop(0, palette.haze[0])
+    haze.addColorStop(0.48, palette.haze[1])
+    haze.addColorStop(1, palette.haze[2])
     context.fillStyle = haze
     context.fillRect(0, 0, width, height)
   }
@@ -123,7 +157,7 @@
     return grid
   }
 
-  function drawLinks(context: CanvasRenderingContext2D, grid: Map<string, EntropicNode[]>) {
+  function drawLinks(context: CanvasRenderingContext2D, grid: Map<string, EntropicNode[]>, palette: ThemePalette) {
     context.lineWidth = 0.45
 
     for (const [key, bucket] of grid) {
@@ -148,7 +182,7 @@
               context.beginPath()
               context.moveTo(a.x, a.y)
               context.lineTo(b.x, b.y)
-              context.strokeStyle = `rgba(146, 154, 178, ${alpha})`
+              context.strokeStyle = palette.link.replace('{a}', String(alpha))
               context.stroke()
             }
           }
@@ -157,11 +191,11 @@
     }
   }
 
-  function drawNodes(context: CanvasRenderingContext2D) {
+  function drawNodes(context: CanvasRenderingContext2D, palette: ThemePalette) {
     for (const node of nodes) {
       context.beginPath()
       context.arc(node.x, node.y, node.size, 0, Math.PI * 2)
-      context.fillStyle = `rgba(190, 197, 214, ${node.alpha})`
+      context.fillStyle = palette.node.replace('{a}', String(node.alpha))
       context.fill()
     }
   }
@@ -169,10 +203,11 @@
   function renderConstellation() {
     if (!ctx || !canvas) return
 
-    drawBackground(ctx)
+    const palette = getCurrentPalette()
+    drawBackground(ctx, palette)
     const grid = buildSpatialGrid()
-    drawLinks(ctx, grid)
-    drawNodes(ctx)
+    drawLinks(ctx, grid, palette)
+    drawNodes(ctx, palette)
   }
 
   onMount(() => {
@@ -180,9 +215,16 @@
     resizeCanvas()
     window.addEventListener('resize', scheduleResize)
 
+    themeObserver = new MutationObserver(() => renderConstellation())
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    })
+
     return () => {
       if (resizeTimer) clearTimeout(resizeTimer)
       window.removeEventListener('resize', scheduleResize)
+      themeObserver?.disconnect()
     }
   })
 </script>
@@ -202,9 +244,6 @@
     z-index: 0;
     pointer-events: none;
     transform-origin: center;
-    background:
-      radial-gradient(circle at 50% 50%, rgba(46, 52, 70, 0.28), transparent 58%),
-      linear-gradient(135deg, #080a10 0%, #0c0f17 48%, #10131b 100%);
     will-change: transform, opacity;
   }
 

@@ -18,7 +18,7 @@
   } from '$lib/file-import'
   import { appDataDir, join } from '@tauri-apps/api/path'
   import { exportCollectionById } from '$lib/export'
-  import { ItemCard, SearchBar, Button } from '@entropia/ui'
+  import { ItemCard, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -573,6 +573,15 @@
     deleting = false
   }
 
+  let prevCollectionId = collectionId
+  $effect(() => {
+    if (collectionId !== prevCollectionId) {
+      prevCollectionId = collectionId
+      searchQuery = ''
+      loadItems()
+    }
+  })
+
   onMount(() => {
     loadItems()
 
@@ -630,20 +639,12 @@
 </script>
 
 <div class="collection-view page-shell" class:drag-active={dragActive}>
-  <section class="page-header collection-view__header">
-    <div class="page-header__content">
-      <span class="page-header__eyebrow">{$currentLocale && t('collection.active')}</span>
-      <h1>{collectionTitle}</h1>
-      <p>{$currentLocale && t('collection.subtitle')}</p>
-      <span class="page-header__meta">{visibleCountLabel}</span>
+  <header class="collection-header">
+    <div class="collection-header__left">
+      <h1 class="collection-header__title">{collectionTitle}</h1>
+      <span class="collection-header__count">{visibleCountLabel}</span>
     </div>
-
-    <div class="page-toolbar collection-toolbar">
-      <SearchBar
-        placeholder={$currentLocale && t('collection.searchPlaceholder')}
-        onsearch={handleSearch}
-        onclear={handleClearSearch}
-      />
+    <div class="collection-header__actions">
       <Button variant="primary" onclick={handleImport} disabled={importing}>
         {importing
           ? $currentLocale && t('collection.importing')
@@ -655,7 +656,7 @@
           : $currentLocale && t('collection.export')}
       </Button>
     </div>
-  </section>
+  </header>
 
   {#if error}
     <p class="surface-message surface-message--error">{error}</p>
@@ -772,20 +773,35 @@
     min-height: 100%;
   }
 
-  .collection-view__header {
-    align-items: center;
-  }
-
-  .collection-toolbar {
+  .collection-header {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    flex: 1;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
 
-  .collection-toolbar :global(.search-bar) {
-    min-width: min(100%, 340px);
-    flex: 1 1 280px;
+  .collection-header__left {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  .collection-header__title {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+    margin: 0;
+  }
+
+  .collection-header__count {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .collection-header__actions {
+    display: flex;
+    gap: var(--space-2);
   }
 
   .grid {
@@ -906,13 +922,7 @@
   }
 
   @media (max-width: 720px) {
-    .collection-toolbar {
-      width: 100%;
-      justify-content: stretch;
-    }
-
-    .collection-toolbar :global(.search-bar),
-    .collection-toolbar :global(.btn),
+    .collection-header__actions :global(.btn),
     .modal-actions :global(.btn) {
       width: 100%;
     }

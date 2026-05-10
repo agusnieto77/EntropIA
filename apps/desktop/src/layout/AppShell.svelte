@@ -81,6 +81,7 @@
   }
 
   // ── Deps banner ──
+  const isDev = import.meta.env.DEV
   let depsResults = $state<DepCheckResult[]>([])
   let runtimeStatus = $state<RuntimeStatus | null>(null)
   let showToast = $state(false)
@@ -114,9 +115,9 @@
     setCriticalMissing(hasCriticalMissing)
   })
 
-  // Show toast once when critical deps are missing
+  // Show toast once when critical deps are missing (suppress in dev)
   $effect(() => {
-    if (hasCriticalMissing && !toastDismissed) {
+    if (hasCriticalMissing && !toastDismissed && !isDev) {
       showToast = true
       const timer = setTimeout(() => { showToast = false }, 8000)
       return () => clearTimeout(timer)
@@ -274,16 +275,10 @@
     </aside>
 
     <main class="content">
-      {#if runtimeBlocksActiveCapabilities}
+      {#if runtimeBlocksActiveCapabilities && !isDev}
         <div class="deps-banner" role="alert">
           <div class="deps-banner__copy">
             <strong>{runtimeStatus?.summary}</strong>
-            {#if runtimeStatus?.state === 'fixture'}
-              <span>
-                La app no se cayó: estás viendo un runtime-pack de desarrollo que todavía requiere
-                payloads externos para habilitar OCR, NLP y transcripción.
-              </span>
-            {/if}
             {#if blockedRuntimeCapabilities}
               <span>Capacidades afectadas: {blockedRuntimeCapabilities}</span>
             {/if}
@@ -299,7 +294,7 @@
         </div>
       {/if}
 
-      {#if hasCriticalMissing}
+      {#if hasCriticalMissing && !isDev}
         <div class="deps-banner" role="alert">
           <span>⚠ Algunas funciones de IA no están disponibles.</span>
           <button class="deps-banner__btn" type="button" onclick={goToDepSettings}
@@ -475,9 +470,6 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-5);
-    background:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.012), transparent 18%),
-      color-mix(in srgb, var(--color-bg) 24%, transparent);
   }
 
   .deps-banner {
