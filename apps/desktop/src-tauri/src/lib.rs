@@ -299,6 +299,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             // Clone the dedup handle before moving nlp_queue into managed state
             let ner_pending = nlp_queue.ner_pending_handle();
             let fts_pending = nlp_queue.fts_pending_handle();
+            let asset_ner_pending = nlp_queue.asset_ner_pending_handle();
+            let embedding_pending = nlp_queue.embedding_pending_handle();
             app.manage(nlp_queue);
             NlpQueue::start_worker(
                 db_path.clone(),
@@ -306,6 +308,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 app.handle().clone(),
                 ner_pending,
                 fts_pending,
+                asset_ner_pending,
+                embedding_pending,
                 nlp_llm_queue,
             );
 
