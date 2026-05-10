@@ -608,6 +608,7 @@ fn resolve_generated_dev_bundle_root(platform: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(debug_assertions, test))]
 fn runtime_root_matches_current_app(root: &Path, platform: &str) -> bool {
     let Ok(manifest) = RuntimeManifest::load_from_path(&root.join("manifest.json")) else {
         return false;
