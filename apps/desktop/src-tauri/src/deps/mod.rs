@@ -372,6 +372,23 @@ pub fn emit_probe_complete(
     app: &tauri::AppHandle,
     results: &HashMap<DependencyId, DependencyStatus>,
 ) {
+    let failed = results
+        .values()
+        .filter(|status| matches!(status, DependencyStatus::Failed { .. }))
+        .count();
+    let missing = results
+        .values()
+        .filter(|status| matches!(status, DependencyStatus::Missing))
+        .count();
+    crate::app_logs::info(
+        app,
+        "deps",
+        format!(
+            "Verificación completada: {} dependencias, {missing} faltantes, {failed} fallidas",
+            results.len()
+        ),
+    );
+
     let payload = install::DepsCompletePayload {
         results: dep_results_from_map(results.clone()),
         all_critical_installed: all_critical_installed(results),
@@ -393,6 +410,7 @@ pub async fn deps_check_all(
     state: tauri::State<'_, DepsState>,
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<Vec<DepCheckResult>, String> {
+    crate::app_logs::info(&app, "deps", "Verificando dependencias de IA");
     let results_map = probe_all_once(state.inner(), db.inner()).await?;
     emit_probe_complete(&app, &results_map);
     Ok(dep_results_from_map(results_map))
@@ -424,9 +442,26 @@ pub async fn deps_install_all(
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
+    crate::app_logs::info(
+        &app,
+        "deps",
+        "Inicio de instalación completa de dependencias",
+    );
     invalidate_uv_status_cache().await;
     let result = install::install_all(&app, &state, &db_path, &app_data_dir).await;
     invalidate_uv_status_cache().await;
+    match &result {
+        Ok(()) => crate::app_logs::info(
+            &app,
+            "deps",
+            "Instalación completa de dependencias finalizada",
+        ),
+        Err(error) => crate::app_logs::error(
+            &app,
+            "deps",
+            format!("Instalación completa de dependencias falló: {error}"),
+        ),
+    }
     result
 }
 
@@ -452,9 +487,26 @@ pub async fn deps_install_one(
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
+    crate::app_logs::info(
+        &app,
+        "deps",
+        format!("Inicio de instalación individual: {dep_id:?}"),
+    );
     invalidate_uv_status_cache().await;
     let result = install::install_one(&dep_id, &app, &state, &db_path, &app_data_dir).await;
     invalidate_uv_status_cache().await;
+    match &result {
+        Ok(_) => crate::app_logs::info(
+            &app,
+            "deps",
+            format!("Instalación individual finalizada: {dep_id:?}"),
+        ),
+        Err(error) => crate::app_logs::error(
+            &app,
+            "deps",
+            format!("Instalación individual falló ({dep_id:?}): {error}"),
+        ),
+    }
     result
 }
 
@@ -607,6 +659,11 @@ pub async fn deps_reset(
             .await
             .map_err(|e| format!("Error eliminando {}: {e}", path.display()))?;
         eprintln!("[deps] Reset deleted: {}", path.display());
+        crate::app_logs::warn(
+            &app,
+            "deps",
+            format!("Reset eliminó entorno/caché: {}", path.display()),
+        );
     }
 
     // ── 2. Delete Python-path settings from app_settings ─────────────────────
@@ -645,6 +702,7 @@ pub async fn deps_reset(
     }
 
     eprintln!("[deps] Reset complete — dependency state invalidated");
+    crate::app_logs::warn(&app, "deps", "Reset de dependencias completado");
     Ok(())
 }
 

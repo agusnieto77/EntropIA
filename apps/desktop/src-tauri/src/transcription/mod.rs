@@ -106,6 +106,11 @@ impl TranscriptionQueue {
                     }
                     Err(e) => {
                         eprintln!("[transcription] Failed to open DB connection: {e}");
+                        crate::app_logs::error(
+                            &app_handle,
+                            "transcription",
+                            format!("No se pudo abrir conexión DB del worker de transcripción: {e}"),
+                        );
                         while let Some(job) = receiver.blocking_recv() {
                             let _ = app_handle.emit(
                                 "transcription:error",
@@ -128,10 +133,20 @@ impl TranscriptionQueue {
                         match create_whisper_engine(&app_handle, Some(&db_path)) {
                             Ok(resolved_engine) => {
                                 eprintln!("[transcription] Engine ready (lazy init)");
+                                crate::app_logs::info(
+                                    &app_handle,
+                                    "transcription",
+                                    "Motor local de transcripción listo",
+                                );
                                 engine = Some(resolved_engine);
                             }
                             Err(error) => {
                                 eprintln!("[transcription] Failed to initialize transcription engine: {error}");
+                                crate::app_logs::warn(
+                                    &app_handle,
+                                    "transcription",
+                                    format!("Motor local de transcripción no disponible: {error}"),
+                                );
                                 init_error = Some(format!("Transcription engine initialization failed: {error}"));
                             }
                         }
@@ -156,6 +171,11 @@ impl TranscriptionQueue {
 
                     match result {
                         Ok(transcription) => {
+                            crate::app_logs::info(
+                                &app_handle,
+                                "transcription",
+                                format!("Transcripción completada: asset_id={asset_id}, segmentos={}", transcription.segments.len()),
+                            );
                             let _ = app_handle.emit(
                                 "transcription:complete",
                                 TranscriptionCompletePayload {
@@ -169,6 +189,11 @@ impl TranscriptionQueue {
                         }
                         Err(err) => {
                             eprintln!("[transcription] Error for {asset_id}: {err}");
+                            crate::app_logs::error(
+                                &app_handle,
+                                "transcription",
+                                format!("Transcripción falló: asset_id={asset_id}, error={err}"),
+                            );
                             let _ = app_handle.emit(
                                 "transcription:error",
                                 TranscriptionErrorPayload {
@@ -738,6 +763,13 @@ fn process_job(
 
 /// Emit a `transcription:progress` event to the frontend.
 fn emit_progress(app_handle: &AppHandle, asset_id: &str, pct: u8, stage: &str) {
+    if pct == 0 || pct == 10 || pct == 100 {
+        crate::app_logs::info(
+            app_handle,
+            "transcription",
+            format!("Transcripción asset_id={asset_id} etapa={stage} progreso={pct}%"),
+        );
+    }
     let _ = app_handle.emit(
         "transcription:progress",
         TranscriptionProgressPayload {

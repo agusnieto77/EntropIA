@@ -300,6 +300,11 @@ impl RuntimeManager {
         app_handle: &AppHandle,
         status: &RuntimeStatus,
     ) -> Result<(), String> {
+        crate::app_logs::info(
+            app_handle,
+            "runtime",
+            format!("Estado runtime: {:?} · {}", status.state, status.summary),
+        );
         app_handle
             .emit("runtime://status", status)
             .map_err(|error| format!("Failed to emit runtime status event: {error}"))
@@ -311,6 +316,20 @@ impl RuntimeManager {
         app_handle: &AppHandle,
         operation: &RuntimeOperation,
     ) -> Result<(), String> {
+        crate::app_logs::info(
+            app_handle,
+            "runtime",
+            format!(
+                "Operación {:?}/{:?}: {}{}",
+                operation.kind,
+                operation.stage,
+                operation.summary,
+                operation
+                    .progress_percent
+                    .map(|pct| format!(" ({pct}%)"))
+                    .unwrap_or_default()
+            ),
+        );
         app_handle
             .emit("runtime://progress", operation)
             .map_err(|error| format!("Failed to emit runtime progress event: {error}"))

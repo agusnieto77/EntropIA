@@ -38,6 +38,12 @@ pub async fn transcribe_audio(
         super::ensure_selected_cloud_key(&conn)?;
     }
 
+    crate::app_logs::info(
+        &app_handle,
+        "transcription",
+        format!("Trabajo de transcripción encolado: asset_id={asset_id}"),
+    );
+
     let job = TranscriptionJob {
         asset_id,
         asset_path,
@@ -96,6 +102,11 @@ pub async fn transcribe_dictation(
     db: State<'_, AppDbState>,
 ) -> Result<String, String> {
     super::ensure_transcription_runtime_ready(&app_handle)?;
+    crate::app_logs::info(
+        &app_handle,
+        "transcription",
+        "Transcripción de dictado iniciada",
+    );
     let db_path = db.db_path.clone();
     {
         let conn = db
@@ -106,12 +117,13 @@ pub async fn transcribe_dictation(
     }
 
     let audio_path_for_worker = audio_path.clone();
+    let app_handle_for_worker = app_handle.clone();
     let transcription_result = tauri::async_runtime::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| format!("Failed to open settings DB for dictation: {e}"))?;
 
         super::transcribe_with_selected_provider(
-            &app_handle,
+            &app_handle_for_worker,
             Some(db_path.as_path()),
             &conn,
             None,
@@ -128,11 +140,32 @@ pub async fn transcribe_dictation(
         (Ok(result), Ok(())) => Ok(result.text.trim().to_string()),
         (Ok(result), Err(cleanup_error)) => {
             eprintln!("[transcription] Dictation cleanup warning: {cleanup_error}");
+            crate::app_logs::warn(
+                &app_handle,
+                "transcription",
+                format!("Dictado transcripto, pero falló limpieza temporal: {cleanup_error}"),
+            );
             Ok(result.text.trim().to_string())
         }
-        (Err(error), Ok(())) => Err(error),
-        (Err(error), Err(cleanup_error)) => Err(format!(
-            "{error}\nTemporary file cleanup failed: {cleanup_error}"
-        )),
+        (Err(error), Ok(())) => {
+            crate::app_logs::error(
+                &app_handle,
+                "transcription",
+                format!("Dictado falló: {error}"),
+            );
+            Err(error)
+        }
+        (Err(error), Err(cleanup_error)) => {
+            crate::app_logs::error(
+                &app_handle,
+                "transcription",
+                format!(
+                    "Dictado falló y también falló limpieza temporal: {error}; {cleanup_error}"
+                ),
+            );
+            Err(format!(
+                "{error}\nTemporary file cleanup failed: {cleanup_error}"
+            ))
+        }
     }
 }

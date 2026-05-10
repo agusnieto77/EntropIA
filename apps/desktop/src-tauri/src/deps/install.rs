@@ -1562,6 +1562,11 @@ async fn ensure_uv(
 
     let app_clone = app.clone();
     uv::download(app_data_dir, move |percent, message| {
+        crate::app_logs::info(
+            &app_clone,
+            "deps/uv",
+            format!("Descarga uv {percent}% · {message}"),
+        );
         let _ = app_clone.emit(
             "deps://uv_progress",
             DepsUvProgressPayload {

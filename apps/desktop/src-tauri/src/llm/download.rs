@@ -71,6 +71,11 @@ pub fn download_model_file(url: &str, dest: &Path, app_handle: &AppHandle) -> Re
                         total_bytes,
                     },
                 );
+                crate::app_logs::info(
+                    app_handle,
+                    "llm/download",
+                    format!("Descarga de modelo local {p}%"),
+                );
             }
         }
     }
@@ -90,6 +95,11 @@ pub fn download_model_file(url: &str, dest: &Path, app_handle: &AppHandle) -> Re
         LlmDownloadCompletePayload {
             path: dest.to_string_lossy().to_string(),
         },
+    );
+    crate::app_logs::info(
+        app_handle,
+        "llm/download",
+        format!("Descarga de modelo local completada: {}", dest.display()),
     );
 
     Ok(())

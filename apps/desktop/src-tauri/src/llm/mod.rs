@@ -373,6 +373,9 @@ pub struct LlmDownloadErrorPayload {
 }
 
 fn emit_progress(app_handle: &AppHandle, id: &str, job: &str, pct: u8) {
+    if pct == 0 || pct == 10 || pct == 100 {
+        crate::app_logs::info(app_handle, "llm", format!("{job} id={id} progreso={pct}%"));
+    }
     let _ = app_handle.emit(
         "llm:progress",
         LlmProgressPayload {
@@ -384,6 +387,11 @@ fn emit_progress(app_handle: &AppHandle, id: &str, job: &str, pct: u8) {
 }
 
 fn emit_complete(app_handle: &AppHandle, id: &str, job: &str, result: &str) {
+    crate::app_logs::info(
+        app_handle,
+        "llm",
+        format!("{job} completado para id={id}, caracteres={}", result.len()),
+    );
     let _ = app_handle.emit(
         "llm:complete",
         LlmCompletePayload {
@@ -395,6 +403,11 @@ fn emit_complete(app_handle: &AppHandle, id: &str, job: &str, result: &str) {
 }
 
 fn emit_error(app_handle: &AppHandle, id: &str, job: &str, error: &str) {
+    crate::app_logs::error(
+        app_handle,
+        "llm",
+        format!("{job} falló para id={id}: {error}"),
+    );
     let _ = app_handle.emit(
         "llm:error",
         LlmErrorPayload {

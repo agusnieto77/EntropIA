@@ -710,6 +710,11 @@ impl OcrQueue {
                                 eprintln!(
                                     "[OCR] ❌ PaddleOCR unavailable ({e}), trying Tesseract fallback"
                                 );
+                                crate::app_logs::warn(
+                                    &app_handle,
+                                    "ocr",
+                                    format!("PaddleOCR no disponible; probando Tesseract: {e}"),
+                                );
                             }
                         }
                     }
@@ -723,6 +728,11 @@ impl OcrQueue {
                             }
                             Err(e) => {
                                 eprintln!("[OCR] ❌ Tesseract also unavailable ({e})");
+                                crate::app_logs::error(
+                                    &app_handle,
+                                    "ocr",
+                                    format!("Tesseract tampoco está disponible: {e}"),
+                                );
                             }
                         }
                     }
@@ -731,6 +741,11 @@ impl OcrQueue {
                         Some(p) => p,
                         None => {
                             eprintln!("[OCR] 🚨 No OCR provider available — draining queue with errors");
+                            crate::app_logs::error(
+                                &app_handle,
+                                "ocr",
+                                "No hay motor OCR disponible; se rechazarán trabajos en cola",
+                            );
                             while let Some(job) = receiver.blocking_recv() {
                                 let _ = app_handle.emit(
                                     "ocr:error",
@@ -746,6 +761,11 @@ impl OcrQueue {
                 };
 
                 eprintln!("[OCR] Provider ready: {}", provider.name());
+                crate::app_logs::info(
+                    &app_handle,
+                    "ocr",
+                    format!("Motor OCR listo: {}", provider.name()),
+                );
 
                 let mut paddle_vl_engine: Option<PaddleVlEngine> = None;
                 eprintln!("[OCR] High OCR mode is lazy; PaddleOCR-VL will initialize on OCRH jobs");
@@ -762,6 +782,11 @@ impl OcrQueue {
                     }
                     Err(e) => {
                         eprintln!("[OCR] Failed to open worker DB connection: {e}");
+                        crate::app_logs::error(
+                            &app_handle,
+                            "ocr",
+                            format!("No se pudo abrir conexión DB del worker OCR: {e}"),
+                        );
                         while let Some(job) = receiver.blocking_recv() {
                             let _ = app_handle.emit(
                                 "ocr:error",
@@ -779,14 +804,29 @@ impl OcrQueue {
                     let asset_id = job.asset_id.clone();
                     if job.mode == OcrMode::High && paddle_vl_engine.is_none() {
                         eprintln!("[OCRH] Re-probing PaddleOCR-VL before high OCR job {asset_id}");
+                        crate::app_logs::info(
+                            &app_handle,
+                            "ocrh",
+                            format!("Re-probando PaddleOCR-VL para asset {asset_id}"),
+                        );
                         crate::python_discovery::invalidate_probe_cache_entry("paddle_vl");
                         match create_paddle_vl_engine_result(&app_handle, &db_path) {
                             Ok(engine) => {
                                 eprintln!("[OCRH] PaddleOCR-VL became available after re-probe");
+                                crate::app_logs::info(
+                                    &app_handle,
+                                    "ocrh",
+                                    "PaddleOCR-VL quedó disponible después de re-probar",
+                                );
                                 paddle_vl_engine = Some(engine);
                             }
                             Err(error) => {
                                 eprintln!("[OCRH] Local PaddleOCR-VL still unavailable after re-probe: {error}");
+                                crate::app_logs::warn(
+                                    &app_handle,
+                                    "ocrh",
+                                    format!("PaddleOCR-VL local sigue no disponible: {error}"),
+                                );
                             }
                         }
                     }
@@ -811,6 +851,11 @@ impl OcrQueue {
 
                             if let Err(e) = &save_result {
                                 eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
+                                crate::app_logs::error(
+                                    &app_handle,
+                                    "ocr",
+                                    format!("No se pudo guardar extracción de {asset_id}: {e}"),
+                                );
                             } else if let Ok(Some(item_id)) = &save_result {
                                 let nlp_queue = app_handle.state::<NlpQueue>();
                                 if let Err(e) = nlp_queue.submit(NlpJob::ExtractEntitiesForAsset {
@@ -859,14 +904,24 @@ impl OcrQueue {
                             let _ = app_handle.emit(
                                 "ocr:complete",
                                 OcrCompletePayload {
-                                    asset_id,
-                                    method,
+                                    asset_id: asset_id.clone(),
+                                    method: method.clone(),
                                     text_length: text_content.len(),
                                     text_content,
                                 },
                             );
+                            crate::app_logs::info(
+                                &app_handle,
+                                "ocr",
+                                format!("OCR completado: asset_id={asset_id}, método={method}"),
+                            );
                         }
                         Err(err) => {
+                            crate::app_logs::error(
+                                &app_handle,
+                                "ocr",
+                                format!("OCR falló: asset_id={asset_id}, error={err}"),
+                            );
                             let _ = app_handle.emit(
                                 "ocr:error",
                                 OcrErrorPayload {

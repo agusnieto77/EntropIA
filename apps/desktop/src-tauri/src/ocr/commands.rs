@@ -4,7 +4,7 @@ use crate::db::state::AppDbState;
 use crate::nlp::NlpQueue;
 use crate::path_utils::normalize_windows_path_string;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// A single rendered PDF page returned by `render_pdf_pages_cmd`.
 #[derive(Clone, Serialize)]
@@ -30,6 +30,7 @@ pub async fn extract_text(
     asset_path: String,
     asset_type: String,
     mode: Option<String>,
+    app_handle: AppHandle,
     ocr_queue: State<'_, OcrQueue>,
     db: State<'_, AppDbState>,
 ) -> Result<String, String> {
@@ -45,6 +46,15 @@ pub async fn extract_text(
             .map_err(|e| format!("DB lock poisoned: {e}"))?;
         super::ensure_selected_cloud_key(&conn)?;
     }
+
+    crate::app_logs::info(
+        &app_handle,
+        "ocr",
+        format!(
+            "Trabajo OCR encolado: asset_id={}, tipo={}, modo={:?}",
+            asset_id, asset_type, ocr_mode
+        ),
+    );
 
     let job = super::OcrJob {
         asset_id,

@@ -85,6 +85,12 @@ pub async fn llm_download_model(
         return Err("Model file already exists at the destination".to_string());
     }
 
+    crate::app_logs::info(
+        &app_handle,
+        "llm/download",
+        format!("Inicio descarga de modelo local: {filename}"),
+    );
+
     let app_handle_clone = app_handle.clone();
     let tmp_path = dest.with_extension("download.tmp");
     tauri::async_runtime::spawn(async move {
@@ -96,10 +102,20 @@ pub async fn llm_download_model(
         match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
+                crate::app_logs::error(
+                    &app_handle,
+                    "llm/download",
+                    format!("Descarga de modelo local falló: {e}"),
+                );
                 let _ = app_handle.emit("llm:download_error", LlmDownloadErrorPayload { error: e });
                 let _ = std::fs::remove_file(&tmp_path);
             }
             Err(e) => {
+                crate::app_logs::error(
+                    &app_handle,
+                    "llm/download",
+                    format!("Tarea de descarga de modelo local paniqueó: {e}"),
+                );
                 let _ = app_handle.emit(
                     "llm:download_error",
                     LlmDownloadErrorPayload {
