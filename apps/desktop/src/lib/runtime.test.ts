@@ -119,6 +119,8 @@ describe('runtime client', () => {
     expect(runtimeBlocksCurrentUse({ state: 'fixture' } as RuntimeStatus, true)).toBe(false)
     expect(runtimeBlocksCurrentUse({ state: 'fixture' } as RuntimeStatus, false)).toBe(true)
     expect(runtimeBlocksCurrentUse({ state: 'blocked_source_unavailable' } as RuntimeStatus, true)).toBe(true)
+    expect(runtimeBlocksCurrentUse({ state: 'blocked_source_unavailable' } as RuntimeStatus, true, true)).toBe(false)
+    expect(runtimeBlocksCurrentUse({ state: 'blocked_offline' } as RuntimeStatus, true, true)).toBe(false)
     expect(runtimeBlocksCurrentUse({ state: 'damaged' } as RuntimeStatus, true)).toBe(true)
     expect(runtimeBlocksCurrentUse({ state: 'healthy' } as RuntimeStatus, true)).toBe(false)
   })

@@ -62,7 +62,9 @@
   let depsReadyButReleaseRuntimePending = $derived(
     allInstalled && runtimeBlocked && runtimeReleaseOnlyIssue,
   )
-  let runtimeBlocksInstalledCapabilities = $derived(runtimeBlocksCurrentUse(runtimeStatus, allInstalled))
+  let runtimeBlocksInstalledCapabilities = $derived(
+    runtimeBlocksCurrentUse(runtimeStatus, allInstalled, uvStatus?.dev_fallback_available === true),
+  )
   let canClaimAllReady = $derived(allInstalled && !runtimeBlocksInstalledCapabilities)
   let depsInstalledButRuntimeBlocked = $derived(allInstalled && runtimeBlocksInstalledCapabilities)
 
@@ -81,15 +83,10 @@
   let unlisteners: Array<() => void> = []
 
   onMount(async () => {
+    errorBanner = null
+    runtimeOperation = null
     try {
-      const [checkResults, uv, runtime] = await Promise.all([
-        checkAllDeps(),
-        getUvStatus(),
-        getRuntimeStatus(),
-      ])
-      deps = checkResults
-      uvStatus = uv
-      runtimeStatus = runtime
+      await refreshAllState()
     } catch (e) {
       errorBanner = `Error al verificar dependencias: ${String(e)}`
     }
@@ -101,6 +98,7 @@
       await onDepsComplete((event) => {
         deps = event.results
         installing = false
+        void refreshAllState()
       }),
       await onDepsError((event) => {
         errorBanner = event.error
@@ -108,7 +106,7 @@
       }),
       await onRuntimeStatus((status) => {
         runtimeStatus = status
-        runtimeOperation = status.activeOperation ?? runtimeOperation
+        runtimeOperation = status.activeOperation
       }),
       await onRuntimeProgress((operation) => {
         runtimeOperation = operation
@@ -127,26 +125,50 @@
   async function handleInstallAll() {
     installing = true
     errorBanner = null
+    runtimeOperation = null
+    deps = deps.map((dep) =>
+      dep.status.type === 'installed'
+        ? dep
+        : { ...dep, status: { type: 'installing', percent: 0 } },
+    )
     try {
       await installAllDeps()
+      await refreshAllState()
     } catch (e) {
       errorBanner = String(e)
       installing = false
+      await refreshAllState().catch(() => undefined)
     }
   }
 
   async function handleInstallOne(id: DependencyId) {
+    errorBanner = null
+    runtimeOperation = null
     deps = deps.map((d) =>
       d.id === id ? { ...d, status: { type: 'installing', percent: 0 } } : d,
     )
     try {
       const result = await installOneDep(id)
       deps = deps.map((d) => (d.id === id ? result : d))
+      await refreshAllState()
     } catch (e) {
       deps = deps.map((d) =>
         d.id === id ? { ...d, status: { type: 'failed', message: String(e) } } : d,
       )
+      await refreshAllState().catch(() => undefined)
     }
+  }
+
+  async function refreshAllState() {
+    const [checkResults, uv, runtime] = await Promise.all([
+      checkAllDeps(),
+      getUvStatus(),
+      getRuntimeStatus(),
+    ])
+    deps = checkResults
+    uvStatus = uv
+    runtimeStatus = runtime
+    runtimeOperation = runtime.activeOperation
   }
 
   function openResetConfirmation() {
@@ -164,16 +186,10 @@
     if (resetConfirmationText !== RESET_CONFIRMATION_PHRASE || resetting) return
     resetting = true
     errorBanner = null
+    runtimeOperation = null
     try {
       await resetDeps()
-      const [checkResults, uv, runtime] = await Promise.all([
-        checkAllDeps(),
-        getUvStatus(),
-        getRuntimeStatus(),
-      ])
-      deps = checkResults
-      uvStatus = uv
-      runtimeStatus = runtime
+      await refreshAllState()
       resetConfirmationOpen = false
       resetConfirmationText = ''
     } catch (e) {
@@ -185,9 +201,15 @@
 
   async function handleRuntimeRepair() {
     try {
-      runtimeStatus = await repairRuntime()
+      errorBanner = null
+      runtimeOperation = null
+      const status = await repairRuntime()
+      runtimeStatus = status
+      runtimeOperation = status.activeOperation
+      await refreshAllState()
     } catch (e) {
       errorBanner = String(e)
+      await refreshAllState().catch(() => undefined)
     }
   }
 

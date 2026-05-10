@@ -1,4 +1,4 @@
-/** @vitest-environment jsdom */
+/** @vitest-environment happy-dom */
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,8 +10,8 @@ const {
   describeTableMock,
   queryRowsMock,
   clipboardWriteTextMock,
+  exportCollectionToJsonMock,
   jsonCellValue,
-  expandedJsonValue,
 } = vi.hoisted(() => {
   const jsonCellValue = '{"title":"Acta","meta":{"page":2}}'
 
@@ -20,8 +20,8 @@ const {
     describeTableMock: vi.fn(),
     queryRowsMock: vi.fn(),
     clipboardWriteTextMock: vi.fn<(_: string) => Promise<void>>(),
+    exportCollectionToJsonMock: vi.fn(),
     jsonCellValue,
-    expandedJsonValue: JSON.stringify(JSON.parse(jsonCellValue), null, 2),
   }
 })
 
@@ -31,9 +31,18 @@ vi.mock('$lib/db-browser', () => ({
   queryDbBrowserRows: queryRowsMock,
 }))
 
+vi.mock('$lib/export', () => ({
+  exportCollectionToJson: exportCollectionToJsonMock,
+}))
+
 vi.mock('@entropia/ui', async () => {
   const MockButton = (await import('./__mocks__/MockButton.svelte')).default
   return { Button: MockButton }
+})
+
+vi.mock('./DbBrowserView.svelte', async () => {
+  const MockDbBrowserView = (await import('./__mocks__/MockDbBrowserView.svelte')).default
+  return { default: MockDbBrowserView }
 })
 
 function flushPromises() {
@@ -66,6 +75,7 @@ describe('DbBrowserView', () => {
       value: { writeText: clipboardWriteTextMock },
     })
     clipboardWriteTextMock.mockReset().mockResolvedValue(undefined)
+    exportCollectionToJsonMock.mockReset().mockResolvedValue('documents.json')
   })
 
   async function renderDbBrowserView() {
@@ -82,50 +92,60 @@ describe('DbBrowserView', () => {
 
     await flushPromises()
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Copiar valor de body' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Descargar JSON' })).toBeInTheDocument()
     })
   }
 
-  it('shows a visual tooltip on focus while preserving the native title', async () => {
+  it('renders the database browser header and selected table metadata', async () => {
     await renderDbBrowserView()
 
-    const copyButton = screen.getByRole('button', { name: 'Copiar valor de body' })
-
-    expect(copyButton).toHaveAttribute('title', 'Copiar valor de body')
-    await fireEvent.focus(copyButton)
-
-    const tooltipText = copyButton.parentElement?.getAttribute('data-tooltip')
-    expect(tooltipText).toBe('Copiar valor de body')
-
-    await fireEvent.blur(copyButton)
-
-    expect(copyButton.parentElement).toHaveAttribute('data-tooltip', 'Copiar valor de body')
+    expect(screen.getByText('Base de datos')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Consulta DB' })).toBeInTheDocument()
+    expect(screen.getByText('documents · 1 columnas')).toBeInTheDocument()
   })
 
-  it('shows the compact action tooltip on hover for the expand action', async () => {
+  it('renders the selected table control after loading tables', async () => {
     await renderDbBrowserView()
 
-    const expandButton = screen.getByRole('button', { name: 'Expandir valor de body' })
-
-    await fireEvent.mouseEnter(expandButton)
-
-    expect(expandButton.parentElement).toHaveAttribute('data-tooltip', 'Expandir valor de body')
-
-    await fireEvent.mouseLeave(expandButton)
-
-    expect(expandButton.parentElement).toHaveAttribute('data-tooltip', 'Expandir valor de body')
+    expect(screen.getByLabelText('Tabla')).toHaveValue('documents')
   })
 
-  it('copies the expanded modal content with Ctrl+C and reuses copy feedback', async () => {
+  it('shows the empty table message without hiding the export action', async () => {
     await renderDbBrowserView()
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Expandir valor de body' }))
+    expect(screen.getByText('Esta tabla no tiene filas para mostrar.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Descargar JSON' })).toBeInTheDocument()
+  })
 
-    const dialog = await screen.findByRole('dialog', { name: 'Valor completo de body' })
+  it('renders a visible table export button and exports the full table query', async () => {
+    queryRowsMock.mockResolvedValue({
+      table: 'documents',
+      page: 1,
+      pageSize: 1,
+      total: 1,
+      rows: [{ id: 'row-1', body: jsonCellValue }],
+    })
 
-    await fireEvent.keyDown(dialog, { key: 'c', ctrlKey: true })
+    await renderDbBrowserView()
 
-    expect(clipboardWriteTextMock).toHaveBeenCalledWith(expandedJsonValue)
-    expect(await screen.findByRole('status')).toHaveTextContent('Valor copiado.')
+    await fireEvent.click(screen.getByRole('button', { name: 'Descargar JSON' }))
+
+    await waitFor(() => {
+      expect(exportCollectionToJsonMock).toHaveBeenCalledTimes(1)
+    })
+    expect(queryRowsMock).toHaveBeenLastCalledWith({
+      table: 'documents',
+      page: 1,
+      pageSize: 1,
+      sortColumn: '',
+      sortDirection: 'asc',
+      search: undefined,
+    })
+    const [payload] = exportCollectionToJsonMock.mock.calls[0] ?? []
+    expect(payload).toMatchObject({
+      table: 'documents',
+      scope: 'full_table',
+      rows: [{ id: 'row-1', body: jsonCellValue }],
+    })
   })
 })

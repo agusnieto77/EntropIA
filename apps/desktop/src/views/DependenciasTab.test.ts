@@ -411,7 +411,7 @@ describe('DependenciasTab', () => {
       release_runtime_state: 'fixture',
       dev_fallback_available: true,
       dev_fallback_reason:
-        'Linux debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release.',
+        'Windows debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release.',
     })
 
     render(DependenciasTab)

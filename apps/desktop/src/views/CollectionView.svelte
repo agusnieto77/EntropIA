@@ -17,6 +17,7 @@
     deletePdfThumbnail,
   } from '$lib/file-import'
   import { appDataDir, join } from '@tauri-apps/api/path'
+  import { stat } from '@tauri-apps/plugin-fs'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, SearchBar, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -207,6 +208,25 @@
     })
   }
 
+  const IMPORTED_FILE_METADATA_KEY = '__entropia_file_metadata'
+
+  function buildImportedItemMetadata(imported: ImportedFile): string {
+    return JSON.stringify({
+      [IMPORTED_FILE_METADATA_KEY]: imported.originalMetadata,
+    })
+  }
+
+  async function readAssetSize(path: string): Promise<number | null> {
+    try {
+      const metadata = await stat(path)
+      const size = Number(metadata.size ?? 0)
+      return Number.isFinite(size) ? size : null
+    } catch (e) {
+      console.warn('[CollectionView] Failed to read rendered page size:', e)
+      return null
+    }
+  }
+
   /**
    * Convert a scanned PDF to per-page PNG image assets.
    * Returns the list of created asset IDs, or empty array on failure.
@@ -233,7 +253,7 @@
           path: page.png_path,
           type: 'image',
           sortIndex: page.page_number - 1, // 0-indexed
-          size: null,
+          size: await readAssetSize(page.png_path),
         })
         assetIds.push(asset.id)
       }
@@ -306,6 +326,7 @@
 
       try {
         const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await store.items.update(itemId, { metadata: buildImportedItemMetadata(imported) })
         await finalizeImportedItem(itemId, imported)
         createdItemIds.push(itemId)
       } catch (e) {
@@ -396,6 +417,7 @@
 
       try {
         const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await store.items.update(itemId, { metadata: buildImportedItemMetadata(imported) })
         await finalizeImportedItem(itemId, imported)
         createdItemIds.push(itemId)
       } catch (e) {

@@ -22,7 +22,9 @@ use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 use crate::runtime::{managed_resource_path, RuntimeManager};
 use base64::Engine;
 use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
-use paddle_vl::{create_paddle_vl_engine, PaddleVlEngine, PaddleVlOutput};
+use paddle_vl::{
+    create_paddle_vl_engine, create_paddle_vl_engine_result, PaddleVlEngine, PaddleVlOutput,
+};
 use pdf::{extract_pdf_text, init_pdfium_path, is_quality_text, pdf_page_count};
 use provider::{LayoutCategory, OcrProvider};
 use serde::Serialize;
@@ -748,7 +750,7 @@ impl OcrQueue {
 
                 eprintln!("[OCR] Provider ready: {}", provider.name());
 
-                let paddle_vl_engine = create_paddle_vl_engine(&app_handle, &db_path);
+                let mut paddle_vl_engine = create_paddle_vl_engine(&app_handle, &db_path);
                 if paddle_vl_engine.is_some() {
                     eprintln!("[OCR] High OCR mode available via PaddleOCR-VL");
                 } else {
@@ -782,6 +784,19 @@ impl OcrQueue {
 
                 while let Some(job) = receiver.blocking_recv() {
                     let asset_id = job.asset_id.clone();
+                    if job.mode == OcrMode::High && paddle_vl_engine.is_none() {
+                        eprintln!("[OCRH] Re-probing PaddleOCR-VL before high OCR job {asset_id}");
+                        crate::python_discovery::invalidate_probe_cache_entry("paddle_vl");
+                        match create_paddle_vl_engine_result(&app_handle, &db_path) {
+                            Ok(engine) => {
+                                eprintln!("[OCRH] PaddleOCR-VL became available after re-probe");
+                                paddle_vl_engine = Some(engine);
+                            }
+                            Err(error) => {
+                                eprintln!("[OCRH] Local PaddleOCR-VL still unavailable after re-probe: {error}");
+                            }
+                        }
+                    }
                     let result = tauri::async_runtime::block_on(process_job(
                         &provider,
                         &conn,
@@ -1498,20 +1513,10 @@ async fn process_pdf(
                                             Some(vl_result),
                                         ))
                                     }
-                                    Err(e) => {
-                                        eprintln!("[OCRH] PaddleVL failed for PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
-                                        provider_clone
-                                            .recognize(&page_image)
-                                            .map(|output| (output, None))
-                                            .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
-                                    }
+                                    Err(e) => Err(format!("OCRH local falló en la página {} con PaddleOCR-VL: {e}", page_idx + 1)),
                                 }
                             } else {
-                                // No PaddleVL — plain OCR
-                                provider_clone
-                                    .recognize(&page_image)
-                                    .map(|output| (output, None))
-                                    .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                                Err("OCRH local no está disponible: PaddleOCR-VL no pudo inicializarse después de instalar dependencias. Revisá los logs [paddle_vl]/[OCRH] para el error de importación real.".to_string())
                             }
                         }
                     }
@@ -1789,20 +1794,7 @@ async fn process_image_high(
         return Ok(output);
     }
 
-    // No PaddleVL — plain OCR
-    let provider_clone = Arc::clone(provider);
-    let bytes_owned = bytes.to_vec();
-
-    let output = tokio::task::spawn_blocking(move || provider_clone.recognize(&bytes_owned))
-        .await
-        .map_err(|e| format!("OCR task panicked: {e}"))?
-        .map_err(|e| format!("OCR inference failed: {e}"))?;
-
-    emit_progress(app_handle, asset_id, 100, "done");
-    Ok(ProcessedOcrOutput {
-        ocr: output,
-        layout: None,
-    })
+    Err("OCRH local no está disponible: PaddleOCR-VL no pudo inicializarse después de instalar dependencias. Revisá los logs [paddle_vl]/[OCRH] para el error de importación real.".to_string())
 }
 
 /// Emit an `ocr:progress` event to the frontend.

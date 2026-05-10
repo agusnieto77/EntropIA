@@ -1,5 +1,5 @@
 import { open } from '@tauri-apps/plugin-dialog'
-import { copyFile, mkdir, remove } from '@tauri-apps/plugin-fs'
+import { copyFile, mkdir, remove, stat } from '@tauri-apps/plugin-fs'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { invoke } from '@tauri-apps/api/core'
@@ -10,9 +10,24 @@ export const SUPPORTED_FORMATS = [...SUPPORTED_IMAGES, 'pdf', ...SUPPORTED_AUDIO
 
 export interface ImportedFile {
   originalName: string
+  originalPath: string
   destPath: string
   type: 'image' | 'pdf' | 'audio'
   size: number
+  originalMetadata: ImportedFileMetadata
+}
+
+export interface ImportedFileMetadata {
+  originalName: string
+  originalPath: string
+  importedAt: string
+  sizeBytes: number
+  readonly?: boolean
+  isFile?: boolean
+  isDirectory?: boolean
+  createdAt?: number | null
+  modifiedAt?: number | null
+  accessedAt?: number | null
 }
 
 export interface ImportFromPathsResult {
@@ -113,6 +128,34 @@ async function copyFileToItem(
   return destPath
 }
 
+function timestampFromFsDate(value: unknown): number | null {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+async function readOriginalFileMetadata(sourcePath: string, originalName: string): Promise<ImportedFileMetadata> {
+  const metadata = await stat(sourcePath)
+  const sizeBytes = Number(metadata.size ?? 0)
+
+  return {
+    originalName,
+    originalPath: sourcePath,
+    importedAt: new Date().toISOString(),
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+    readonly: metadata.readonly,
+    isFile: metadata.isFile,
+    isDirectory: metadata.isDirectory,
+    createdAt: timestampFromFsDate(metadata.birthtime),
+    modifiedAt: timestampFromFsDate(metadata.mtime),
+    accessedAt: timestampFromFsDate(metadata.atime),
+  }
+}
+
 /**
  * Classify and validate a batch of file paths.
  * Returns classified files ready to be imported and rejected filenames.
@@ -156,12 +199,15 @@ export async function importFilesFromPaths(
   const imported: ImportedFile[] = []
 
   for (const file of classified) {
+    const originalMetadata = await readOriginalFileMetadata(file.sourcePath, file.name)
     const destPath = await copyFileToItem(file.sourcePath, collectionId, itemId)
     imported.push({
       originalName: file.name,
+      originalPath: file.sourcePath,
       destPath,
       type: file.type,
-      size: 0,
+      size: originalMetadata.sizeBytes,
+      originalMetadata,
     })
   }
 
@@ -188,11 +234,14 @@ export async function importSingleFile(
   }
 
   const destPath = await copyFileToItem(sourcePath, collectionId, itemId)
+  const originalMetadata = await readOriginalFileMetadata(sourcePath, name)
   return {
     originalName: name,
+    originalPath: sourcePath,
     destPath,
     type,
-    size: 0,
+    size: originalMetadata.sizeBytes,
+    originalMetadata,
   }
 }
 

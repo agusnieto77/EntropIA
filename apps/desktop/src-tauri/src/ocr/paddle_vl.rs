@@ -12,7 +12,8 @@ use crate::runtime::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 use tauri::Manager;
 
 #[cfg(windows)]
@@ -20,6 +21,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Parsed result from the paddle_vl.py script.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -537,7 +540,9 @@ pub fn which_python_for_paddle_vl(settings_db_path: Option<&std::path::Path>) ->
 /// Returns `false` if no hardware signal reports an NVIDIA GPU.
 fn detect_nvidia_gpu() -> bool {
     // Fast path: nvidia-smi -L lists GPUs in ~50-100ms.
-    match Command::new("nvidia-smi").arg("-L").output() {
+    let mut cmd = Command::new("nvidia-smi");
+    cmd.arg("-L");
+    match command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi -L") {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let has_gpu = !stdout.trim().is_empty() && stdout.contains("GPU");
@@ -599,7 +604,10 @@ fn detect_nvidia_gpu_from_system_inventory() -> bool {
         if !smi.exists() {
             continue;
         }
-        if let Ok(output) = Command::new(&smi).arg("-L").output() {
+        let mut cmd = Command::new(&smi);
+        cmd.arg("-L");
+        if let Ok(output) = command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi.exe -L")
+        {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.success() && stdout.contains("GPU") {
                 eprintln!(
@@ -619,6 +627,45 @@ fn detect_nvidia_gpu_from_system_inventory() -> bool {
     false
 }
 
+fn command_output_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<Output, String> {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("{label} failed to collect output: {error}"));
+            }
+            Ok(None) if started_at.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} failed while waiting: {error}"));
+            }
+        }
+    }
+}
+
 /// Create a PaddleVlEngine for use by the OCR worker.
 ///
 /// Resolves the script path and Python interpreter, initializes the engine.
@@ -629,6 +676,19 @@ pub fn create_paddle_vl_engine(
     app_handle: &tauri::AppHandle,
     settings_db_path: &std::path::Path,
 ) -> Option<PaddleVlEngine> {
+    match create_paddle_vl_engine_result(app_handle, settings_db_path) {
+        Ok(engine) => Some(engine),
+        Err(error) => {
+            eprintln!("[paddle_vl] {error}");
+            None
+        }
+    }
+}
+
+pub fn create_paddle_vl_engine_result(
+    app_handle: &tauri::AppHandle,
+    settings_db_path: &std::path::Path,
+) -> Result<PaddleVlEngine, String> {
     let runtime_root = managed_runtime_root_for_paddle_vl(app_handle)
         .ok()
         .flatten();
@@ -649,10 +709,10 @@ pub fn create_paddle_vl_engine(
     let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
         Some(p) => p,
         None => {
-            eprintln!(
-                "[paddle_vl] No Python with paddleocr found — PaddleVL OCR will be unavailable."
+            return Err(
+                "No Python with PaddleOCRVL found — OCRH local is unavailable. Reinstall PaddleOCR or check the managed venv compatibility."
+                    .to_string(),
             );
-            return None;
         }
     };
 
@@ -674,11 +734,8 @@ pub fn create_paddle_vl_engine(
         offline_mode,
         device,
     }) {
-        Ok(engine) => Some(engine),
-        Err(e) => {
-            eprintln!("[paddle_vl] ❌ Failed to create PaddleVLEngine: {e}");
-            None
-        }
+        Ok(engine) => Ok(engine),
+        Err(e) => Err(format!("❌ Failed to create PaddleVLEngine: {e}")),
     }
 }
 

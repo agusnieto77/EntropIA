@@ -6,6 +6,7 @@
 //! copy under app-data, and finally the system `PATH`.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use tauri::Manager;
 use tokio::process::Command;
@@ -22,6 +23,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The pinned uv version used by the dependency manager.
 pub const UV_VERSION: &str = "0.6.14";
+const UV_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const UV_PATH_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(unix)]
 const UV_EXECUTABLE_NAME: &str = "uv";
@@ -62,7 +65,10 @@ pub struct UvInspection {
 }
 
 pub fn dev_system_uv_relaxed_allowed() -> bool {
-    cfg!(all(debug_assertions, target_os = "linux"))
+    cfg!(all(
+        debug_assertions,
+        any(target_os = "linux", target_os = "windows")
+    ))
 }
 
 fn dev_fallback_binary_from_inspection(inspection: UvInspection) -> Option<UvBinary> {
@@ -251,12 +257,11 @@ fn resolve_system_uv_path() -> Option<PathBuf> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = cmd
-        .arg("uv")
+    cmd.arg("uv")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let output =
+        command_output_with_timeout(cmd, UV_PATH_RESOLUTION_TIMEOUT, "where.exe uv").ok()?;
 
     if !output.status.success() {
         return None;
@@ -272,12 +277,11 @@ fn resolve_system_uv_path() -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn resolve_system_uv_path() -> Option<PathBuf> {
-    let output = std::process::Command::new("which")
-        .arg("uv")
+    let mut cmd = std::process::Command::new("which");
+    cmd.arg("uv")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let output = command_output_with_timeout(cmd, UV_PATH_RESOLUTION_TIMEOUT, "which uv").ok()?;
 
     if !output.status.success() {
         return None;
@@ -316,6 +320,38 @@ fn is_compatible_uv_version(version: &str) -> bool {
     version.split_whitespace().next() == Some(UV_VERSION)
 }
 
+fn command_output_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("{label} failed to collect output: {error}"));
+            }
+            Ok(None) if started_at.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} failed while waiting: {error}"));
+            }
+        }
+    }
+}
+
 fn probe_uv_command(mut cmd: std::process::Command, path: PathBuf) -> ProbedUv {
     #[cfg(windows)]
     {
@@ -323,11 +359,11 @@ fn probe_uv_command(mut cmd: std::process::Command, path: PathBuf) -> ProbedUv {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = cmd
-        .arg("--version")
+    cmd.arg("--version")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+        .stderr(std::process::Stdio::piped());
+
+    let output = command_output_with_timeout(cmd, UV_PROBE_TIMEOUT, "uv --version");
 
     let Ok(output) = output else {
         return ProbedUv::NotUsable;
@@ -849,6 +885,31 @@ mod tests {
     fn test_uv_version_accepts_build_metadata_suffix() {
         assert!(is_compatible_uv_version("0.6.14 (a4cec56dc 2025-04-09)"));
         assert!(!is_compatible_uv_version("0.6.15 (different build)"));
+    }
+
+    #[test]
+    fn test_command_output_with_timeout_kills_slow_probe() {
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.args(["/C", "ping -n 3 127.0.0.1 > nul"]);
+            cmd
+        } else {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", "sleep 2"]);
+            cmd
+        };
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let started_at = Instant::now();
+        let error = command_output_with_timeout(cmd, Duration::from_millis(100), "slow uv probe")
+            .expect_err("slow probe should time out");
+
+        assert!(error.contains("timed out"));
+        assert!(
+            started_at.elapsed() < Duration::from_secs(1),
+            "timeout helper should not wait for the child to finish naturally"
+        );
     }
 
     #[cfg(not(windows))]

@@ -65,12 +65,65 @@ pub fn resolve_local_model_source_url(conn: Option<&rusqlite::Connection>) -> St
         .filter(|value| !value.trim().is_empty());
 
     match configured.as_deref() {
-        Some(value) if LEGACY_MODEL_SOURCE_URLS.contains(&value) => {
+        Some(value) if is_legacy_default_model_source(value) => {
             DEFAULT_MODEL_SOURCE_URL.to_string()
         }
         Some(other) => other.to_string(),
         None => DEFAULT_MODEL_SOURCE_URL.to_string(),
     }
+}
+
+fn is_legacy_default_model_source(value: &str) -> bool {
+    let trimmed = value.trim();
+    LEGACY_MODEL_SOURCE_URLS.contains(&trimmed)
+        || trimmed.contains("bartowski/google_gemma-3-4b-it-GGUF")
+        || trimmed.contains("gemma-3-4b-it-Q4_K_M.gguf")
+        || trimmed.contains("google_gemma-3-4b-it-Q4_K_M.gguf")
+}
+
+fn persist_default_model_setting_migrations(conn: &rusqlite::Connection) -> Result<(), String> {
+    if let Some(filename) = settings::get_setting(conn, LOCAL_MODEL_FILENAME_KEY) {
+        if LEGACY_MODEL_FILENAMES.contains(&filename.as_str()) {
+            settings::set_setting(conn, LOCAL_MODEL_FILENAME_KEY, MODEL_FILENAME)
+                .map_err(|e| format!("Failed to migrate local model filename setting: {e}"))?;
+        }
+    }
+    if let Some(source_url) = settings::get_setting(conn, LOCAL_MODEL_SOURCE_URL_KEY) {
+        if is_legacy_default_model_source(&source_url) {
+            settings::set_setting(conn, LOCAL_MODEL_SOURCE_URL_KEY, DEFAULT_MODEL_SOURCE_URL)
+                .map_err(|e| format!("Failed to migrate local model source URL setting: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn should_auto_download_default_model(
+    conn: &rusqlite::Connection,
+    model_path: &std::path::Path,
+) -> bool {
+    !model_path.exists()
+        && resolve_local_model_filename(Some(conn)) == MODEL_FILENAME
+        && resolve_local_model_source_url(Some(conn)) == DEFAULT_MODEL_SOURCE_URL
+}
+
+fn ensure_default_model_downloaded_if_missing(
+    conn: &rusqlite::Connection,
+    db_path: &std::path::Path,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    persist_default_model_setting_migrations(conn)?;
+    let model_path = resolve_model_path(db_path);
+    if !should_auto_download_default_model(conn, &model_path) {
+        return Ok(());
+    }
+    if let Some(parent) = model_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create model directory {}: {e}", parent.display()))?;
+    }
+    eprintln!(
+        "{LLM_LOCAL_PREFIX} Default Gemma model missing; starting controlled auto-download from default source"
+    );
+    self::download::download_model_file(DEFAULT_MODEL_SOURCE_URL, &model_path, app_handle)
 }
 
 /// Resolved status of the local LLM model on disk.
@@ -965,6 +1018,32 @@ impl LlmQueue {
             ) {
                 eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create app_settings table: {e}");
             }
+
+            let app_handle_for_download = app_handle.clone();
+            let db_path_for_download = db_path.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                ensure_default_model_downloaded_if_missing(
+                    &conn,
+                    &db_path_for_download,
+                    &app_handle_for_download,
+                )
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Default model auto-download task panicked: {e}")))
+            {
+                eprintln!("{LLM_LOCAL_PREFIX} Default model auto-download unavailable: {error}");
+            }
+
+            let conn = match rusqlite::Connection::open(&db_path) {
+                Ok(c) => {
+                    let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                    c
+                }
+                Err(e) => {
+                    eprintln!("{LLM_LOCAL_PREFIX} Failed to reopen worker DB connection after model bootstrap: {e}");
+                    return;
+                }
+            };
 
             let model_path = resolve_model_path(&db_path);
             eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
@@ -1976,6 +2055,34 @@ mod tests {
         assert_eq!(
             resolve_local_model_source_url(Some(&conn)),
             DEFAULT_MODEL_SOURCE_URL
+        );
+    }
+
+    #[test]
+    fn persist_default_model_setting_migrations_updates_legacy_defaults_only() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        crate::settings::set_setting(&conn, LOCAL_MODEL_FILENAME_KEY, "gemma-3-4b-it-Q4_K_M.gguf")
+            .unwrap();
+        crate::settings::set_setting(
+            &conn,
+            LOCAL_MODEL_SOURCE_URL_KEY,
+            "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf?download=true",
+        )
+        .unwrap();
+
+        persist_default_model_setting_migrations(&conn).unwrap();
+
+        assert_eq!(
+            crate::settings::get_setting(&conn, LOCAL_MODEL_FILENAME_KEY).as_deref(),
+            Some(MODEL_FILENAME)
+        );
+        assert_eq!(
+            crate::settings::get_setting(&conn, LOCAL_MODEL_SOURCE_URL_KEY).as_deref(),
+            Some(DEFAULT_MODEL_SOURCE_URL)
         );
     }
 }

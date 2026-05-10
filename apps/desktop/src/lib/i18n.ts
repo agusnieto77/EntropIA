@@ -147,6 +147,9 @@ const es = {
   'dbBrowser.previousPage': 'Anterior',
   'dbBrowser.nextPage': 'Siguiente',
   'dbBrowser.refresh': 'Recargar',
+  'dbBrowser.exportTable': 'Descargar JSON',
+  'dbBrowser.exportSuccess': 'Tabla exportada.',
+  'dbBrowser.exportError': 'No se pudo exportar la tabla.',
   'dbBrowser.pageSizeLabel': 'Filas por página',
   'dbBrowser.copyCell': 'Copiar',
   'dbBrowser.copyCellAria': 'Copiar valor de {column}',
@@ -561,6 +564,9 @@ type ExtraI18nKey =
   | 'dbBrowser.previousPage'
   | 'dbBrowser.nextPage'
   | 'dbBrowser.refresh'
+  | 'dbBrowser.exportTable'
+  | 'dbBrowser.exportSuccess'
+  | 'dbBrowser.exportError'
   | 'dbBrowser.pageSizeLabel'
   | 'dbBrowser.copyCell'
   | 'dbBrowser.copyCellAria'
@@ -737,6 +743,9 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
   'dbBrowser.previousPage': 'Previous',
   'dbBrowser.nextPage': 'Next',
   'dbBrowser.refresh': 'Refresh',
+  'dbBrowser.exportTable': 'Download JSON',
+  'dbBrowser.exportSuccess': 'Table exported.',
+  'dbBrowser.exportError': 'Could not export the table.',
   'dbBrowser.pageSizeLabel': 'Rows per page',
   'dbBrowser.copyCell': 'Copy',
   'dbBrowser.copyCellAria': 'Copy value from {column}',
