@@ -259,9 +259,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 let deps_state = app_handle_deps.state::<deps::DepsState>();
                 match deps::probe_all_once(deps_state.inner(), db_state.inner()).await {
                     Ok(results) => {
-                        if let Err(err) = deps::emit_probe_complete(&app_handle_deps, &results) {
-                            eprintln!("[deps] Startup event emit failed: {err}");
-                        }
+                        deps::emit_probe_complete(&app_handle_deps, &results);
                         eprintln!("[deps] Startup check: {} deps checked", results.len());
                     }
                     Err(err) => {

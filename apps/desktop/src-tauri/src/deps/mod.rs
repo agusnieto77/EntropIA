@@ -66,7 +66,7 @@ pub enum DependencyStatus {
     /// An installation is in progress.
     Installing { percent: u8 },
     /// The last install attempt failed with this message.
-    Failed(String),
+    Failed { message: String },
 }
 
 /// Shared, async-safe map of dependency statuses.
@@ -371,14 +371,15 @@ fn all_critical_installed(results: &HashMap<DependencyId, DependencyStatus>) -> 
 pub fn emit_probe_complete(
     app: &tauri::AppHandle,
     results: &HashMap<DependencyId, DependencyStatus>,
-) -> Result<(), String> {
+) {
     let payload = install::DepsCompletePayload {
         results: dep_results_from_map(results.clone()),
         all_critical_installed: all_critical_installed(results),
     };
 
-    app.emit("deps://complete", payload)
-        .map_err(|error| format!("Failed to emit dependency completion event: {error}"))
+    if let Err(error) = app.emit("deps://complete", payload) {
+        eprintln!("[deps] Failed to emit dependency completion event: {error}");
+    }
 }
 
 /// Probe all registered dependencies and update the shared DepsState.
@@ -393,7 +394,7 @@ pub async fn deps_check_all(
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<Vec<DepCheckResult>, String> {
     let results_map = probe_all_once(state.inner(), db.inner()).await?;
-    emit_probe_complete(&app, &results_map)?;
+    emit_probe_complete(&app, &results_map);
     Ok(dep_results_from_map(results_map))
 }
 
@@ -793,5 +794,47 @@ mod tests {
                 .and_then(|value| value.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn dependency_failed_status_serializes_as_stable_tagged_object() {
+        let status = DependencyStatus::Failed {
+            message: "probe failed".to_string(),
+        };
+
+        let json = serde_json::to_value(&status).expect("serialize failed status");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "failed",
+                "message": "probe failed"
+            })
+        );
+    }
+
+    #[test]
+    fn deps_complete_payload_serializes_failed_status_without_error() {
+        let payload = install::DepsCompletePayload {
+            results: vec![DepCheckResult {
+                id: DependencyId::PaddleOcr,
+                status: DependencyStatus::Failed {
+                    message: "blocked because PaddlePaddle failed".to_string(),
+                },
+                version: None,
+            }],
+            all_critical_installed: false,
+        };
+
+        let json = serde_json::to_value(&payload).expect("serialize complete payload");
+
+        assert_eq!(
+            json["results"][0]["status"],
+            serde_json::json!({
+                "type": "failed",
+                "message": "blocked because PaddlePaddle failed"
+            })
+        );
+        assert_eq!(json["all_critical_installed"], serde_json::json!(false));
     }
 }
