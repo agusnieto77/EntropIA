@@ -2,6 +2,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopBar from './TopBar.svelte'
 import { locale } from '$lib/i18n'
+import type { View } from '$lib/navigation'
+
+type NavigationSnapshot = {
+  history: View[]
+  current: View
+  canGoBack: boolean
+  breadcrumb: string[]
+}
 
 const {
   navigationStore,
@@ -12,17 +20,17 @@ const {
   backMock,
   storeRef,
 } = vi.hoisted(() => {
-  let current: any = {
+  let current: NavigationSnapshot = {
     history: [{ name: 'collections' as const }],
     current: { name: 'collections' as const },
     canGoBack: false,
     breadcrumb: ['Collections'],
   }
-  const subscribers = new Set<(value: any) => void>()
+  const subscribers = new Set<(value: NavigationSnapshot) => void>()
 
   return {
     navigationStore: {
-      subscribe(run: (value: any) => void) {
+      subscribe(run: (value: NavigationSnapshot) => void) {
         subscribers.add(run)
         run(current)
         return () => subscribers.delete(run)

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
@@ -22,11 +23,46 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+const PYTHON_FINDER_TIMEOUT: Duration = Duration::from_secs(2);
+const PYTHON_MODULE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Apply the Windows `CREATE_NO_WINDOW` flag to prevent console popups.
 pub fn apply_windows_no_window(_cmd: &mut Command) {
     #[cfg(windows)]
     {
         _cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn command_output_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("{label} failed to collect output: {error}"));
+            }
+            Ok(None) if started_at.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} failed while waiting: {error}"));
+            }
+        }
     }
 }
 
@@ -78,12 +114,15 @@ pub fn discover_python_candidates() -> &'static Vec<PathBuf> {
         for candidate_name in candidate_names {
             let mut find_cmd = Command::new(finder_cmd);
             apply_windows_no_window(&mut find_cmd);
-            if let Ok(output) = find_cmd
+            find_cmd
                 .arg(candidate_name)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-            {
+                .stderr(std::process::Stdio::piped());
+            if let Ok(output) = command_output_with_timeout(
+                find_cmd,
+                PYTHON_FINDER_TIMEOUT,
+                &format!("{finder_cmd} {candidate_name}"),
+            ) {
                 if output.status.success() {
                     for line in String::from_utf8_lossy(&output.stdout).lines() {
                         let path = PathBuf::from(line.trim());
@@ -280,12 +319,14 @@ fn persist_python_hit(cache_key: &str, path: &Path, settings_db_path: Option<&Pa
 pub fn probe_python_module(python_path: &Path, probe_code: &str) -> bool {
     let mut cmd = Command::new(python_path);
     apply_windows_no_window(&mut cmd);
-    match cmd
-        .args(["-c", probe_code])
+    cmd.args(["-c", probe_code])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-    {
+        .stderr(std::process::Stdio::piped());
+    match command_output_with_timeout(
+        cmd,
+        PYTHON_MODULE_PROBE_TIMEOUT,
+        &format!("{} -c <probe>", python_path.display()),
+    ) {
         Ok(output) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim() == "ok"
         }

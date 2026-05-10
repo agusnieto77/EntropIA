@@ -411,7 +411,7 @@ describe('DependenciasTab', () => {
       release_runtime_state: 'fixture',
       dev_fallback_available: true,
       dev_fallback_reason:
-        'Linux debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release.',
+        'Windows debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release.',
     })
 
     render(DependenciasTab)
@@ -461,6 +461,35 @@ describe('DependenciasTab', () => {
     expect(
       screen.getByText(/Necesit.s runtime release hidratado\/compatible o un fallback de desarrollo disponible para esta plataforma/i),
     ).toBeInTheDocument()
+  })
+
+  it('updates from deps complete events without re-running dependency probes', async () => {
+    let completeHandler:
+      | ((event: { results: Array<{ id: string; status: { type: string }; version: string | null }> }) => void)
+      | undefined
+    depsMocks.onDepsComplete.mockImplementation(async (handler) => {
+      completeHandler = handler
+      return vi.fn()
+    })
+
+    render(DependenciasTab)
+
+    await waitFor(() => {
+      expect(depsMocks.checkAllDeps).toHaveBeenCalledTimes(1)
+      expect(completeHandler).toBeDefined()
+    })
+
+    completeHandler?.({
+      results: [
+        { id: 'Python', status: { type: 'installed' }, version: '3.11.9' },
+        { id: 'Fastembed', status: { type: 'missing' }, version: null },
+      ],
+    })
+
+    await waitFor(() => {
+      expect(depsMocks.getRuntimeStatus).toHaveBeenCalledTimes(2)
+    })
+    expect(depsMocks.checkAllDeps).toHaveBeenCalledTimes(1)
   })
 
   it('shows blocked bootstrap reason and active operation progress honestly', async () => {

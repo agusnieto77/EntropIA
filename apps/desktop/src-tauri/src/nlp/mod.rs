@@ -112,6 +112,10 @@ pub struct NlpQueue {
     /// `true` means another enqueue arrived while the current one was busy,
     /// so one extra rerun should happen after the current pass completes.
     fts_pending: Arc<Mutex<HashMap<String, bool>>>,
+    /// Tracks queued/in-progress asset-level NER jobs per asset.
+    asset_ner_pending: Arc<Mutex<HashSet<String>>>,
+    /// Tracks queued/in-progress asset-level embedding jobs per asset.
+    embedding_pending: Arc<Mutex<HashSet<String>>>,
 }
 
 impl NlpQueue {
@@ -123,6 +127,8 @@ impl NlpQueue {
                 sender,
                 ner_pending: Arc::new(Mutex::new(HashSet::new())),
                 fts_pending: Arc::new(Mutex::new(HashMap::new())),
+                asset_ner_pending: Arc::new(Mutex::new(HashSet::new())),
+                embedding_pending: Arc::new(Mutex::new(HashSet::new())),
             },
             receiver,
         )
@@ -130,7 +136,11 @@ impl NlpQueue {
 
     /// Submit a job to the queue. Returns immediately.
     pub fn submit(&self, job: NlpJob) -> Result<(), String> {
-        let tracked_fts_item = match &job {
+        let mut tracked_fts_item = None;
+        let mut tracked_asset_ner = None;
+        let mut tracked_embedding = None;
+
+        match &job {
             NlpJob::IndexFts { item_id } => {
                 if let Ok(mut pending) = self.fts_pending.lock() {
                     if let Some(needs_rerun) = pending.get_mut(item_id) {
@@ -142,15 +152,47 @@ impl NlpQueue {
                     }
                     pending.insert(item_id.clone(), false);
                 }
-                Some(item_id.clone())
+                tracked_fts_item = Some(item_id.clone());
             }
-            _ => None,
-        };
+            NlpJob::ExtractEntitiesForAsset { asset_id, .. } => {
+                if let Ok(mut pending) = self.asset_ner_pending.lock() {
+                    if !pending.insert(asset_id.clone()) {
+                        eprintln!(
+                            "[nlp/ner] Coalescing duplicate ExtractEntitiesForAsset enqueue for asset_id={asset_id}"
+                        );
+                        return Ok(());
+                    }
+                }
+                tracked_asset_ner = Some(asset_id.clone());
+            }
+            NlpJob::ComputeAssetEmbedding { asset_id, .. } => {
+                if let Ok(mut pending) = self.embedding_pending.lock() {
+                    if !pending.insert(asset_id.clone()) {
+                        eprintln!(
+                            "[nlp/embeddings] Coalescing duplicate ComputeAssetEmbedding enqueue for asset_id={asset_id}"
+                        );
+                        return Ok(());
+                    }
+                }
+                tracked_embedding = Some(asset_id.clone());
+            }
+            _ => {}
+        }
 
         self.sender.try_send(job).map_err(|e| {
             if let Some(item_id) = tracked_fts_item {
                 if let Ok(mut pending) = self.fts_pending.lock() {
                     pending.remove(&item_id);
+                }
+            }
+            if let Some(asset_id) = tracked_asset_ner {
+                if let Ok(mut pending) = self.asset_ner_pending.lock() {
+                    pending.remove(&asset_id);
+                }
+            }
+            if let Some(asset_id) = tracked_embedding {
+                if let Ok(mut pending) = self.embedding_pending.lock() {
+                    pending.remove(&asset_id);
                 }
             }
             format!("Failed to enqueue NLP job: {e}")
@@ -167,6 +209,14 @@ impl NlpQueue {
         Arc::clone(&self.fts_pending)
     }
 
+    pub fn asset_ner_pending_handle(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.asset_ner_pending)
+    }
+
+    pub fn embedding_pending_handle(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.embedding_pending)
+    }
+
     /// Spawn the background worker loop on the Tokio runtime.
     ///
     /// The worker drains jobs serially and emits `nlp:progress`, `nlp:complete`,
@@ -177,6 +227,8 @@ impl NlpQueue {
         app_handle: AppHandle,
         ner_pending: Arc<Mutex<HashSet<String>>>,
         fts_pending: Arc<Mutex<HashMap<String, bool>>>,
+        asset_ner_pending: Arc<Mutex<HashSet<String>>>,
+        embedding_pending: Arc<Mutex<HashSet<String>>>,
         _llm_queue: LlmQueue,
     ) {
         tauri::async_runtime::spawn(async move {
@@ -406,6 +458,9 @@ impl NlpQueue {
                             let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
                                 Ok(root) => root,
                                 Err(error) => {
+                                    if let Ok(mut pending) = embedding_pending.lock() {
+                                        pending.remove(&asset_id);
+                                    }
                                     emit_error(&app_handle, &item_id, "embed", &error);
                                     continue;
                                 }
@@ -428,6 +483,9 @@ impl NlpQueue {
                                 engine_ref, &conn, &item_id, &asset_id,
                             )
                         });
+                        if let Ok(mut pending) = embedding_pending.lock() {
+                            pending.remove(&asset_id);
+                        }
                         match result {
                             Ok(_) => match asset_embedding_exists(&conn, &asset_id) {
                                 Ok(true) => {
@@ -460,8 +518,8 @@ impl NlpQueue {
                             let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
                                 Ok(root) => root,
                                 Err(error) => {
-                                    if let Ok(mut pending) = ner_pending.lock() {
-                                        pending.remove(&item_id);
+                                    if let Ok(mut pending) = asset_ner_pending.lock() {
+                                        pending.remove(&asset_id);
                                     }
                                     emit_error(&app_handle, &item_id, "ner", &error);
                                     continue;
@@ -488,9 +546,9 @@ impl NlpQueue {
                                 format_panic_payload("NER extraction for asset panicked", panic)
                             })?
                         });
-                        // Remove from dedup set if present
-                        if let Ok(mut pending) = ner_pending.lock() {
-                            pending.remove(&item_id);
+                        // Remove from asset-level dedup set so later OCR/transcription saves can refresh it.
+                        if let Ok(mut pending) = asset_ner_pending.lock() {
+                            pending.remove(&asset_id);
                         }
                         match result {
                             Ok(batch) => {
@@ -932,6 +990,80 @@ mod tests {
                 .copied(),
             Some(true),
             "duplicate enqueue should mark the item for one rerun"
+        );
+    }
+
+    #[test]
+    fn submit_coalesces_duplicate_asset_ner_jobs_while_pending() {
+        let (queue, mut receiver) = NlpQueue::new();
+
+        queue
+            .submit(NlpJob::ExtractEntitiesForAsset {
+                item_id: "item-1".to_string(),
+                asset_id: "asset-dup".to_string(),
+            })
+            .expect("first asset NER enqueue should succeed");
+        queue
+            .submit(NlpJob::ExtractEntitiesForAsset {
+                item_id: "item-1".to_string(),
+                asset_id: "asset-dup".to_string(),
+            })
+            .expect("duplicate asset NER enqueue should coalesce");
+
+        let first = receiver
+            .try_recv()
+            .expect("one asset NER job should be queued");
+        assert!(
+            matches!(first, NlpJob::ExtractEntitiesForAsset { ref asset_id, .. } if asset_id == "asset-dup")
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "duplicate should not queue a second asset NER job"
+        );
+        assert!(
+            queue
+                .asset_ner_pending
+                .lock()
+                .expect("asset ner pending lock")
+                .contains("asset-dup"),
+            "duplicate asset NER should keep one pending marker"
+        );
+    }
+
+    #[test]
+    fn submit_coalesces_duplicate_asset_embedding_jobs_while_pending() {
+        let (queue, mut receiver) = NlpQueue::new();
+
+        queue
+            .submit(NlpJob::ComputeAssetEmbedding {
+                item_id: "item-1".to_string(),
+                asset_id: "asset-dup".to_string(),
+            })
+            .expect("first embedding enqueue should succeed");
+        queue
+            .submit(NlpJob::ComputeAssetEmbedding {
+                item_id: "item-1".to_string(),
+                asset_id: "asset-dup".to_string(),
+            })
+            .expect("duplicate embedding enqueue should coalesce");
+
+        let first = receiver
+            .try_recv()
+            .expect("one embedding job should be queued");
+        assert!(
+            matches!(first, NlpJob::ComputeAssetEmbedding { ref asset_id, .. } if asset_id == "asset-dup")
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "duplicate should not queue a second embedding job"
+        );
+        assert!(
+            queue
+                .embedding_pending
+                .lock()
+                .expect("embedding pending lock")
+                .contains("asset-dup"),
+            "duplicate embedding should keep one pending marker"
         );
     }
 

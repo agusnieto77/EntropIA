@@ -6,13 +6,26 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::runtime::status::RuntimeState;
 use crate::runtime::RuntimeManager;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
+
+const UV_STATUS_CACHE_TTL: Duration = Duration::from_secs(30);
+static UV_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, UvStatusResult)>>> = OnceLock::new();
+
+fn uv_status_cache() -> &'static Mutex<Option<(Instant, UvStatusResult)>> {
+    UV_STATUS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+async fn invalidate_uv_status_cache() {
+    let mut cached = uv_status_cache().lock().await;
+    *cached = None;
+}
 
 pub mod checks;
 pub mod install;
@@ -116,6 +129,29 @@ fn dep_results_from_map(
             })
         })
         .collect()
+}
+
+fn reset_candidate_paths(app_data_dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut reset_paths: Vec<PathBuf> = Vec::new();
+    if let Some(managed_root) =
+        RuntimeManager::new().discover_hydrated_runtime_root_for_tests(app_data_dir)
+    {
+        reset_paths.push(install::venv_path(&managed_root));
+    }
+    let runtime_dir = app_data_dir.join("runtime");
+    if let Ok(entries) = std::fs::read_dir(&runtime_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                reset_paths.push(install::venv_path(&path));
+            }
+        }
+    }
+    reset_paths.push(install::dev_fallback_root(app_data_dir));
+    reset_paths.push(app_data_dir.join("cache"));
+    reset_paths.sort();
+    reset_paths.dedup();
+    reset_paths
 }
 
 impl DepsState {
@@ -381,12 +417,16 @@ pub async fn deps_install_all(
     state: tauri::State<'_, DepsState>,
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<(), String> {
+    let _guard = crate::runtime::ops_lock::acquire_with_timeout("deps_install_all").await?;
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
-    install::install_all(&app, &state, &db_path, &app_data_dir).await
+    invalidate_uv_status_cache().await;
+    let result = install::install_all(&app, &state, &db_path, &app_data_dir).await;
+    invalidate_uv_status_cache().await;
+    result
 }
 
 /// Install a single dependency by id string.
@@ -401,6 +441,7 @@ pub async fn deps_install_one(
     state: tauri::State<'_, DepsState>,
     db: tauri::State<'_, crate::db::state::AppDbState>,
 ) -> Result<DepCheckResult, String> {
+    let _guard = crate::runtime::ops_lock::acquire_with_timeout("deps_install_one").await?;
     // Parse the id string into a DependencyId using serde_json round-trip.
     let dep_id: DependencyId = serde_json::from_value(serde_json::Value::String(id.clone()))
         .map_err(|_| format!("ID de dependencia desconocido: '{id}'"))?;
@@ -410,27 +451,28 @@ pub async fn deps_install_one(
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
     let db_path = db.db_path.clone();
-    install::install_one(&dep_id, &app, &state, &db_path, &app_data_dir).await
+    invalidate_uv_status_cache().await;
+    let result = install::install_one(&dep_id, &app, &state, &db_path, &app_data_dir).await;
+    invalidate_uv_status_cache().await;
+    result
 }
 
 /// Return the current status of the managed uv binary and venv.
 #[tauri::command]
 pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult, String> {
+    let mut cached = uv_status_cache().lock().await;
+    if let Some((cached_at, result)) = cached.as_ref() {
+        if cached_at.elapsed() < UV_STATUS_CACHE_TTL {
+            return Ok(result.clone());
+        }
+    }
+
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
 
     let runtime_status = RuntimeManager::new().status(&app).ok();
-    let runtime_status = if let Some(status) = runtime_status {
-        if status.state == RuntimeState::Healthy {
-            Some(status)
-        } else {
-            RuntimeManager::new().ensure_ready_or_bootstrap(&app).ok()
-        }
-    } else {
-        RuntimeManager::new().ensure_ready_or_bootstrap(&app).ok()
-    };
     let managed_runtime = install::load_managed_runtime_context(&app).ok().flatten();
 
     let uv_inspection = uv::UvBinary::inspect_with_runtime(
@@ -472,10 +514,7 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         && uv_compatible_for_dev
         && dev_prerequisites.python.is_some();
     let dev_fallback_reason = if dev_fallback_available {
-        Some(
-            "Linux debug: si falta el runtime de release, EntropIA puede crear un venv local usando Python/uv del sistema. Esto NO valida ni reemplaza el contrato de runtime-pack de release."
-                .to_string(),
-        )
+        Some(install::dev_fallback_available_reason().to_string())
     } else if install::dev_fallback_allowed() {
         match (dev_prerequisites.python.is_some(), uv_compatible_for_dev) {
             (false, false) => Some(
@@ -524,7 +563,7 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         None
     };
 
-    Ok(UvStatusResult {
+    let result = UvStatusResult {
         uv_ready,
         uv_path,
         uv_version,
@@ -537,7 +576,10 @@ pub async fn deps_get_uv_status(app: tauri::AppHandle) -> Result<UvStatusResult,
         release_runtime_state,
         dev_fallback_available,
         dev_fallback_reason,
-    })
+    };
+
+    *cached = Some((Instant::now(), result.clone()));
+    Ok(result)
 }
 
 /// Reset the dependency manager: delete the venv, clear settings, invalidate caches.
@@ -549,18 +591,21 @@ pub async fn deps_reset(
     db: tauri::State<'_, crate::db::state::AppDbState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let _guard = crate::runtime::ops_lock::try_acquire("deps_reset")?;
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
 
-    // ── 1. Delete the venv directory ─────────────────────────────────────────
-    let venv_dir = install::venv_path(&app_data_dir);
-    if venv_dir.exists() {
-        tokio::fs::remove_dir_all(&venv_dir)
+    // ── 1. Delete actual managed/dev venvs and transient dependency caches ───
+    for path in reset_candidate_paths(&app_data_dir) {
+        if !path.exists() {
+            continue;
+        }
+        tokio::fs::remove_dir_all(&path)
             .await
-            .map_err(|e| format!("Error eliminando entorno virtual: {e}"))?;
-        eprintln!("[deps] Venv deleted: {}", venv_dir.display());
+            .map_err(|e| format!("Error eliminando {}: {e}", path.display()))?;
+        eprintln!("[deps] Reset deleted: {}", path.display());
     }
 
     // ── 2. Delete Python-path settings from app_settings ─────────────────────
@@ -585,27 +630,20 @@ pub async fn deps_reset(
 
     // ── 3. Invalidate the Python discovery probe cache ────────────────────────
     crate::python_discovery::invalidate_probe_cache();
+    invalidate_uv_status_cache().await;
     invalidate_probe_cache(state.inner()).await;
 
-    // ── 4. Reset DepsState to all Missing and refresh cache ──────────────────
+    // ── 4. Reset DepsState without caching synthetic Missing ─────────────────
     {
-        use DependencyId::*;
         let mut map = state.0.lock().await;
-        for id in [
-            Python,
-            Fastembed,
-            PaddlePaddle,
-            PaddleOcr,
-            FasterWhisper,
-            Spacy,
-            SpacyModelEs,
-        ] {
-            map.statuses.insert(id, DependencyStatus::Missing);
-        }
+        map.statuses = default_dependency_statuses();
+        map.cached_probe_python = None;
+        map.cached_probe_results = None;
+        map.probe_in_flight = false;
+        map.probe_generation = map.probe_generation.saturating_add(1);
     }
-    cache_current_statuses(state.inner(), None).await;
 
-    eprintln!("[deps] Reset complete — all deps marked Missing");
+    eprintln!("[deps] Reset complete — dependency state invalidated");
     Ok(())
 }
 
@@ -622,6 +660,23 @@ mod tests {
         }
         std::fs::write(&path, bytes).expect("write file");
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn reset_candidate_paths_include_real_managed_venv_and_dev_state() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        std::fs::create_dir_all(install::venv_path(&managed_root)).expect("create venv");
+        std::fs::create_dir_all(install::dev_fallback_root(app_data_dir.path()))
+            .expect("create dev fallback");
+        std::fs::create_dir_all(app_data_dir.path().join("cache")).expect("create cache");
+
+        let paths = reset_candidate_paths(app_data_dir.path());
+
+        assert!(paths.contains(&install::venv_path(&managed_root)));
+        assert!(paths.contains(&install::dev_fallback_root(app_data_dir.path())));
+        assert!(paths.contains(&app_data_dir.path().join("cache")));
+        assert!(!paths.contains(&install::venv_path(app_data_dir.path())));
     }
 
     #[test]

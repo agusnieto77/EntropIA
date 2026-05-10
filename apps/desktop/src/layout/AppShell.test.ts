@@ -159,14 +159,16 @@ describe('AppShell', () => {
         results: [
           { id: 'Python', status: { type: 'missing' } },
           { id: 'Fastembed', status: { type: 'installed' } },
+          { id: 'PaddlePaddle', status: { type: 'missing' } },
           { id: 'PaddleOcr', status: { type: 'installed' } },
         ],
       },
     })
 
-    expect(await screen.findByText(/Algunas funciones de IA/)).toHaveTextContent(
-      '⚠ Algunas funciones de IA no están disponibles.',
-    )
+    expect(await screen.findByText('Dependencias de IA pendientes')).toBeInTheDocument()
+    expect(
+      screen.getByText('Se necesitan Python y paquetes para OCR, embeddings y transcripción.'),
+    ).toBeInTheDocument()
   })
 
   it('shows runtime health alerts when the managed runtime is damaged', async () => {

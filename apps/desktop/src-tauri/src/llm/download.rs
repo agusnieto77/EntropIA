@@ -76,6 +76,7 @@ pub fn download_model_file(url: &str, dest: &Path, app_handle: &AppHandle) -> Re
     }
 
     drop(file);
+    validate_gguf_download(&tmp_path)?;
     std::fs::rename(&tmp_path, dest).map_err(|e| {
         format!(
             "Failed to finalize download from {} to {}: {e}",
@@ -91,5 +92,30 @@ pub fn download_model_file(url: &str, dest: &Path, app_handle: &AppHandle) -> Re
         },
     );
 
+    Ok(())
+}
+
+fn validate_gguf_download(path: &Path) -> Result<(), String> {
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        format!(
+            "Failed to validate downloaded model {}: {e}",
+            path.display()
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to inspect downloaded model {}: {e}", path.display()))?;
+    if metadata.len() < 8 {
+        return Err(format!(
+            "Downloaded model is too small to be a valid GGUF file ({} bytes)",
+            metadata.len()
+        ));
+    }
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .map_err(|e| format!("Failed to read GGUF header from {}: {e}", path.display()))?;
+    if &magic != b"GGUF" {
+        return Err("Downloaded model is not a GGUF file (missing GGUF header)".to_string());
+    }
     Ok(())
 }

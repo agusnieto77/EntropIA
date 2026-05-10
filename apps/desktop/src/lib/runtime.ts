@@ -117,8 +117,16 @@ export function runtimeNeedsAttention(status: RuntimeStatus | null | undefined):
 export function runtimeBlocksCurrentUse(
   status: RuntimeStatus | null | undefined,
   localDepsReady: boolean,
+  devFallbackAvailable = false,
 ): boolean {
   if (status?.state === 'fixture' && localDepsReady) return false
+  if (
+    localDepsReady &&
+    devFallbackAvailable &&
+    (status?.state === 'blocked_source_unavailable' || status?.state === 'blocked_offline')
+  ) {
+    return false
+  }
   return runtimeNeedsAttention(status)
 }
 

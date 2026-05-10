@@ -11,6 +11,7 @@
   } from '$lib/db-browser'
   import { getDbBrowserCellContent, type DbBrowserCellContent } from '$lib/db-browser-view'
   import { shouldCopyExpandedCellFromShortcut } from '$lib/db-browser-shortcuts'
+  import { exportCollectionToJson } from '$lib/export'
   import { locale, t } from '$lib/i18n'
   import { getFocusableElements, getNextFocusTrapTarget } from '$lib/modal-focus'
 
@@ -47,6 +48,7 @@
   let error = $state<string | null>(null)
   let copyFeedback = $state<CopyFeedback | null>(null)
   let expandedCell = $state<ExpandedCell | null>(null)
+  let exportingTable = $state(false)
 
   let copyFeedbackTimeout: ReturnType<typeof setTimeout> | null = null
   let expandedModalElement = $state<HTMLDivElement | null>(null)
@@ -59,7 +61,6 @@
   const fromRow = $derived(total === 0 ? 0 : (page - 1) * pageSize + 1)
   const toRow = $derived(total === 0 ? 0 : Math.min(total, page * pageSize))
   const activeSortLabel = $derived(sortDirection === 'asc' ? `${sortColumn} ▲` : `${sortColumn} ▼`)
-
   onMount(() => {
     loadTables()
   })
@@ -320,6 +321,46 @@
   function resolveCellContent(value: unknown): DbBrowserCellContent {
     return getDbBrowserCellContent(value, translate('dbBrowser.noValue'))
   }
+
+  async function handleExportCurrentTable() {
+    if (!selectedTable) return
+
+    exportingTable = true
+    error = null
+    try {
+      const exportResponse = await queryDbBrowserRows({
+        table: selectedTable,
+        page: 1,
+        pageSize: Math.max(total, rows.length, 1),
+        sortColumn,
+        sortDirection,
+        search: searchTerm || undefined,
+      })
+      const exportedPath = await exportCollectionToJson(
+        {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          table: selectedTable,
+          columns,
+          scope: 'full_table',
+          total: exportResponse.total,
+          sortColumn,
+          sortDirection,
+          search: searchTerm || null,
+          rows: exportResponse.rows,
+        },
+        `${selectedTable}.json`
+      )
+      if (exportedPath) {
+        setCopyFeedback('success', translate('dbBrowser.exportSuccess'))
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+      setCopyFeedback('error', translate('dbBrowser.exportError'))
+    } finally {
+      exportingTable = false
+    }
+  }
 </script>
 
 <div class="db-browser-view page-shell">
@@ -431,6 +472,32 @@
         {#if sortColumn}
           <span>{activeSortLabel}</span>
         {/if}
+        <button
+          class="db-browser-export-button"
+          type="button"
+          onclick={handleExportCurrentTable}
+          disabled={!selectedTable || loadingRows || exportingTable}
+          aria-label={translate('dbBrowser.exportTable')}
+          title={translate('dbBrowser.exportTable')}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+          <span>{$currentLocale && translate('dbBrowser.exportTable')}</span>
+        </button>
         <div class="db-browser-page-size">
           <label for="db-browser-page-size"
             >{$currentLocale && translate('dbBrowser.pageSizeLabel')}</label
@@ -751,6 +818,42 @@
     align-items: center;
     gap: var(--space-2);
     margin-left: auto;
+  }
+
+  .db-browser-export-button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--control-height-sm);
+    padding: 0 var(--space-3);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    cursor: pointer;
+    transition:
+      border-color var(--transition-smooth),
+      color var(--transition-smooth),
+      background-color var(--transition-smooth);
+  }
+
+  .db-browser-export-button svg {
+    flex-shrink: 0;
+  }
+
+  .db-browser-export-button:hover:not(:disabled),
+  .db-browser-export-button:focus-visible {
+    outline: none;
+    border-color: var(--color-accent);
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-raised));
+  }
+
+  .db-browser-export-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
   }
 
   .db-browser-page-size label {

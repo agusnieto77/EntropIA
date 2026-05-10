@@ -137,7 +137,7 @@ describe('buildCollectionExportData', () => {
       }
     )
 
-    expect(payload.version).toBe(2)
+    expect(payload.version).toBe(3)
     expect(Array.isArray(payload.items)).toBe(true)
     expect(payload.items).toHaveLength(1)
     expect(payload.items[0]?.assets[0]?.path).toBe('assets/c1/i1/file.pdf')
@@ -599,7 +599,7 @@ describe('exportCollectionById', () => {
     const writtenStr = new TextDecoder().decode(writtenBytes)
     const parsed = JSON.parse(writtenStr)
 
-    expect(parsed.version).toBe(2)
+    expect(parsed.version).toBe(3)
     expect(parsed.items[0].assets[0].text).toBe('Texto OCR')
     expect(parsed.items[0].assets[0].bboxes).toEqual([{ x: 0.1, y: 0.2, width: 0.3, height: 0.4 }])
   })

@@ -2,6 +2,7 @@ pub mod bootstrap;
 pub mod download;
 pub mod manager;
 pub mod manifest;
+pub(crate) mod ops_lock;
 pub mod paths;
 pub mod status;
 
@@ -25,5 +26,6 @@ pub fn runtime_get_bootstrap_plan(
 
 #[tauri::command]
 pub fn runtime_repair(app_handle: tauri::AppHandle) -> Result<status::RuntimeStatus, String> {
+    let _guard = ops_lock::try_acquire("runtime_repair")?;
     RuntimeManager::new().repair(&app_handle)
 }

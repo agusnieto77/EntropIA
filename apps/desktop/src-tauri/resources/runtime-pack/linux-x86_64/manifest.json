@@ -1,6 +1,6 @@
 {
   "pack_version": "2026.05.0",
-  "app_version": "0.0.13",
+  "app_version": "0.0.16",
   "platform": "linux-x86_64",
   "payload_profile": "fixture",
   "release_injection_required": true,
@@ -31,14 +31,14 @@
   "script_files": [
     {
       "path": "scripts/embed.py",
-      "sha256": "04a4c6c01e1cb26f145cdbb3a17c81cae94ef42c9a54ce5d4537a5e8764afef1",
-      "size": 11384,
+      "sha256": "6052ec5cab826d7748175c4113b912ecf39f3383bd65a1284314f6440f18ff3a",
+      "size": 11684,
       "executable": false
     },
     {
       "path": "scripts/paddle_vl.py",
-      "sha256": "bfb7b961972c00a12f1f9a33dbd874334e76879bb8420b1a2299b66b2211a91e",
-      "size": 14403,
+      "sha256": "daa15f2398bab94a6cbdfff82a55626d7f9a3533998d62f81f5a9f4137bee904",
+      "size": 14496,
       "executable": false
     },
     {
@@ -55,8 +55,8 @@
     },
     {
       "path": "scripts/transcribe.py",
-      "sha256": "371b1d7c92d014ea94656e5feab80bf2d2bce8618839b3ff477f5131f3004b54",
-      "size": 9432,
+      "sha256": "11ecb216b35a7a21b1345ec131c8efda68abc53f1b5468c01f5b7fb7ea03b1cb",
+      "size": 9682,
       "executable": false
     }
   ],

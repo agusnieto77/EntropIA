@@ -5,10 +5,13 @@
   import { navigation } from '$lib/navigation'
   import {
     getCachedDepsStatuses,
+    checkAllDeps,
+    getUvStatus,
     onDepsComplete,
     CRITICAL_DEPS,
     setCriticalMissing,
     type DepCheckResult,
+    type UvStatusResult,
   } from '$lib/deps'
   import {
     getRuntimeStatus,
@@ -84,6 +87,7 @@
   const isDev = import.meta.env.DEV
   let depsResults = $state<DepCheckResult[]>([])
   let runtimeStatus = $state<RuntimeStatus | null>(null)
+  let uvStatus = $state<UvStatusResult | null>(null)
   let showToast = $state(false)
   let toastDismissed = $state(false)
 
@@ -104,7 +108,13 @@
     ),
   )
   const runtimeBlocksActiveCapabilities = $derived(
-    runtimeBlocksCurrentUse(runtimeStatus, !criticalDepsStatusKnown || allCriticalDepsInstalled),
+    runtimeStatus?.state === 'fixture' && uvStatus?.dev_fallback_available
+      ? false
+      : runtimeBlocksCurrentUse(
+          runtimeStatus,
+          criticalDepsStatusKnown && allCriticalDepsInstalled,
+          uvStatus?.dev_fallback_available === true,
+        ),
   )
   const blockedRuntimeCapabilities = $derived(
     runtimeBlocksActiveCapabilities ? (runtimeStatus?.blockedCapabilities ?? []).join(', ') : '',
@@ -137,6 +147,14 @@
 
     unlistenDepsComplete = await onDepsComplete((event) => {
       depsResults = event.results ?? []
+      void Promise.all([getRuntimeStatus(), getUvStatus()])
+        .then(([status, uv]) => {
+          runtimeStatus = status
+          uvStatus = uv
+        })
+        .catch((e) => {
+          console.error('[AppShell] deps completion refresh failed', e)
+        })
     })
 
     void getCachedDepsStatuses()
@@ -151,9 +169,10 @@
       runtimeStatus = status
     })
 
-    void getRuntimeStatus()
-      .then((status) => {
+    void Promise.all([getRuntimeStatus(), getUvStatus()])
+      .then(([status, uv]) => {
         runtimeStatus = status
+        uvStatus = uv
       })
       .catch((e) => {
         console.error('[AppShell] runtime status fetch failed', e)
@@ -173,6 +192,10 @@
   async function handleRuntimeRepair() {
     try {
       runtimeStatus = await repairRuntime()
+      const [results, status, uv] = await Promise.all([checkAllDeps(), getRuntimeStatus(), getUvStatus()])
+      depsResults = results
+      runtimeStatus = status
+      uvStatus = uv
     } catch (error) {
       console.error('[AppShell] runtime repair failed', error)
     }
@@ -294,7 +317,7 @@
         </div>
       {/if}
 
-      {#if hasCriticalMissing && !isDev}
+      {#if criticalDepsStatusKnown && hasCriticalMissing && !isDev}
         <div class="deps-banner" role="alert">
           <span>⚠ Algunas funciones de IA no están disponibles.</span>
           <button class="deps-banner__btn" type="button" onclick={goToDepSettings}

@@ -120,6 +120,14 @@ impl RuntimeManager {
         &self,
         app_handle: &AppHandle,
     ) -> Result<RuntimeStatus, String> {
+        let _guard = crate::runtime::ops_lock::try_acquire("runtime_bootstrap")?;
+        self.ensure_ready_or_bootstrap_unlocked(app_handle)
+    }
+
+    pub(crate) fn ensure_ready_or_bootstrap_unlocked(
+        &self,
+        app_handle: &AppHandle,
+    ) -> Result<RuntimeStatus, String> {
         let bundle_root = resolve_bundle_root(app_handle)?;
         let app_data_dir = app_handle
             .path()
@@ -240,7 +248,9 @@ impl RuntimeManager {
             if !path.is_dir() {
                 continue;
             }
-            let manifest = RuntimeManifest::load_from_path(&path.join("manifest.json")).ok()?;
+            let Ok(manifest) = RuntimeManifest::load_from_path(&path.join("manifest.json")) else {
+                continue;
+            };
             if manifest.platform != current_runtime_platform() {
                 continue;
             }
@@ -394,6 +404,7 @@ impl RuntimeManager {
             "Evaluando readiness del runtime",
             None,
             None,
+            None,
             true,
         );
 
@@ -403,6 +414,9 @@ impl RuntimeManager {
                 return Ok(incompatible_missing_manifest_status(error));
             }
         };
+
+        invalidate_stale_managed_runtime(app_data_dir, &manifest)?;
+        invalidate_stale_managed_runtime_dirs(app_data_dir, &manifest)?;
 
         let current_status = inspect_runtime(bundle_root, app_data_dir, &manifest)?;
         if current_status.state == RuntimeState::Healthy {
@@ -581,7 +595,7 @@ fn resolve_generated_dev_bundle_root(platform: &str) -> Option<PathBuf> {
             .join("target")
             .join("runtime-pack")
             .join(platform);
-        if root.join("manifest.json").is_file() {
+        if runtime_root_matches_current_app(&root, platform) {
             return Some(root);
         }
     }
@@ -592,6 +606,15 @@ fn resolve_generated_dev_bundle_root(platform: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(any(debug_assertions, test))]
+fn runtime_root_matches_current_app(root: &Path, platform: &str) -> bool {
+    let Ok(manifest) = RuntimeManifest::load_from_path(&root.join("manifest.json")) else {
+        return false;
+    };
+
+    manifest.app_version == running_app_version() && manifest.platform == platform
 }
 
 fn resolve_env_bundle_root(platform: &str) -> Result<Option<PathBuf>, String> {
@@ -626,13 +649,16 @@ fn resolve_env_bundle_root_from_value(
 }
 
 fn configured_bootstrap_catalog(app_handle: &AppHandle) -> Result<BootstrapRemoteCatalog, String> {
-    let db = app_handle.state::<crate::db::state::AppDbState>();
-    let conn = db
-        .ui_conn
-        .lock()
-        .map_err(|error| format!("DB lock error while reading bootstrap source: {error}"))?;
+    let source = {
+        let db = app_handle.state::<crate::db::state::AppDbState>();
+        let conn = db
+            .ui_conn
+            .lock()
+            .map_err(|error| format!("DB lock error while reading bootstrap source: {error}"))?;
+        crate::settings::get_runtime_bootstrap_remote_source(&conn)?
+    };
 
-    let Some(source) = crate::settings::get_runtime_bootstrap_remote_source(&conn)? else {
+    let Some(source) = source else {
         return Ok(BootstrapRemoteCatalog::SourceUnavailable {
             source: None,
             reason: "Trusted remote bootstrap source is not configured in this environment"
@@ -740,6 +766,76 @@ fn inspect_runtime(
     })
 }
 
+fn invalidate_stale_managed_runtime(
+    app_data_dir: &Path,
+    manifest: &RuntimeManifest,
+) -> Result<(), String> {
+    let managed_root = managed_pack_dir(app_data_dir, &manifest.pack_version);
+    if !managed_root.exists() {
+        return Ok(());
+    }
+
+    let managed_manifest_path = managed_root.join("manifest.json");
+    let Ok(managed_manifest) = RuntimeManifest::load_from_path(&managed_manifest_path) else {
+        return Ok(());
+    };
+
+    if managed_manifest.app_version == manifest.app_version
+        && managed_manifest.platform == manifest.platform
+    {
+        return Ok(());
+    }
+
+    fs::remove_dir_all(&managed_root).map_err(|error| {
+        format!(
+            "Failed to invalidate stale runtime {}: {error}",
+            managed_root.display()
+        )
+    })
+}
+
+fn invalidate_stale_managed_runtime_dirs(
+    app_data_dir: &Path,
+    current_manifest: &RuntimeManifest,
+) -> Result<(), String> {
+    let runtime_dir = runtime_root(app_data_dir);
+    let Ok(entries) = fs::read_dir(&runtime_dir) else {
+        return Ok(());
+    };
+
+    let current_root = managed_pack_dir(app_data_dir, &current_manifest.pack_version);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == current_root {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || name == "downloads" {
+            continue;
+        }
+        let Ok(manifest) = RuntimeManifest::load_from_path(&path.join("manifest.json")) else {
+            continue;
+        };
+        if manifest.platform != current_manifest.platform {
+            continue;
+        }
+        if manifest.app_version == running_app_version() {
+            continue;
+        }
+
+        fs::remove_dir_all(&path).map_err(|error| {
+            format!(
+                "Failed to invalidate stale runtime {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 fn hydrate_runtime_with_progress<F>(
     bundle_root: &Path,
     app_data_dir: &Path,
@@ -755,14 +851,16 @@ where
         "Hidratando runtime desde el bundle local",
         Some(25),
         None,
+        None,
         true,
     );
-    hydrate_runtime(bundle_root, app_data_dir, manifest)?;
+    hydrate_runtime_progress(bundle_root, app_data_dir, manifest, Some(on_progress))?;
     emit_bootstrap_progress(
         on_progress,
         RuntimeOperationStage::Verifying,
         "Verificando integridad del runtime hidratado",
         Some(75),
+        None,
         None,
         true,
     );
@@ -781,17 +879,31 @@ where
         "Activando runtime hidratado",
         Some(100),
         None,
+        None,
         true,
     );
 
     Ok(())
 }
 
+#[cfg(test)]
 fn hydrate_runtime(
     bundle_root: &Path,
     app_data_dir: &Path,
     manifest: &RuntimeManifest,
 ) -> Result<(), String> {
+    hydrate_runtime_progress::<fn(RuntimeOperation)>(bundle_root, app_data_dir, manifest, None)
+}
+
+fn hydrate_runtime_progress<F>(
+    bundle_root: &Path,
+    app_data_dir: &Path,
+    manifest: &RuntimeManifest,
+    mut on_progress: Option<&mut F>,
+) -> Result<(), String>
+where
+    F: FnMut(RuntimeOperation),
+{
     fs::create_dir_all(runtime_root(app_data_dir)).map_err(|error| {
         format!(
             "Failed to create runtime root {}: {error}",
@@ -816,7 +928,11 @@ fn hydrate_runtime(
     })?;
 
     write_stage_marker(app_data_dir, &manifest.pack_version, "copying")?;
-    for entry in manifest.all_entries() {
+    let entries = manifest.all_entries();
+    let total_bytes = entries.iter().map(|entry| entry.size).sum::<u64>();
+    let mut copied_bytes = 0u64;
+    let mut last_progress = 25u8;
+    for (index, entry) in entries.iter().enumerate() {
         let source = bundle_root.join(&entry.path);
         if !source.exists() {
             return Err(format!(
@@ -848,6 +964,27 @@ fn hydrate_runtime(
             )
         })?;
         ensure_executable_bit(&target, entry.executable)?;
+
+        copied_bytes = copied_bytes.saturating_add(entry.size);
+        let progress = if total_bytes > 0 {
+            25u8.saturating_add(((copied_bytes.saturating_mul(45)) / total_bytes).min(45) as u8)
+        } else {
+            25u8.saturating_add((((index + 1) as u64 * 45) / entries.len().max(1) as u64) as u8)
+        };
+        if progress >= last_progress.saturating_add(5) || index + 1 == entries.len() {
+            last_progress = progress;
+            if let Some(callback) = on_progress.as_deref_mut() {
+                emit_bootstrap_progress(
+                    callback,
+                    RuntimeOperationStage::Hydrating,
+                    "Copiando archivos del runtime local",
+                    Some(progress.min(70)),
+                    Some(copied_bytes),
+                    Some(total_bytes),
+                    true,
+                );
+            }
+        }
     }
 
     fs::write(
@@ -863,6 +1000,17 @@ fn hydrate_runtime(
     })?;
 
     write_stage_marker(app_data_dir, &manifest.pack_version, "promoting")?;
+    if let Some(callback) = on_progress.as_deref_mut() {
+        emit_bootstrap_progress(
+            callback,
+            RuntimeOperationStage::Activating,
+            "Promoviendo runtime hidratado",
+            Some(72),
+            Some(copied_bytes),
+            Some(total_bytes),
+            true,
+        );
+    }
     let managed_root = managed_pack_dir(app_data_dir, &manifest.pack_version);
     if managed_root.exists() {
         fs::remove_dir_all(&managed_root).map_err(|error| {
@@ -913,6 +1061,7 @@ fn emit_bootstrap_progress<F>(
     stage: RuntimeOperationStage,
     summary: &str,
     progress_percent: Option<u8>,
+    downloaded_bytes: Option<u64>,
     total_bytes: Option<u64>,
     retryable: bool,
 ) where
@@ -923,7 +1072,7 @@ fn emit_bootstrap_progress<F>(
         stage,
         summary: summary.to_string(),
         progress_percent,
-        downloaded_bytes: None,
+        downloaded_bytes,
         total_bytes,
         retryable,
     });
@@ -978,6 +1127,7 @@ where
         on_progress,
         RuntimeOperationStage::Blocked,
         message,
+        None,
         None,
         plan.download.as_ref().map(|download| download.archive_size),
         true,
@@ -1128,7 +1278,7 @@ fn compatibility_status(manifest: &RuntimeManifest) -> Option<RuntimeStatus> {
         repair_needed: false,
         repair_available: false,
         summary: format!(
-            "Runtime de desarrollo detectado para {}: faltan payloads externos de release",
+            "Runtime de release pendiente para {} (modo desarrollo activo)",
             manifest.platform
         ),
         blocked_capabilities: blocked_capabilities(),
@@ -1201,12 +1351,12 @@ fn app_version_incompatible_status(app_version: &str, pack_version: &str) -> Run
 
 fn fixture_guidance(manifest: &RuntimeManifest) -> Vec<String> {
     let mut guidance = vec![
-        "Esto no indica una caída: el runtime-pack de release no aporta sus payloads todavía. En dev, OCR/NLP/transcripción pueden funcionar si hay dependencias locales ya instaladas.".to_string(),
+        "Esto no indica una caída: en dev podés seguir con dependencias locales/fallback mientras el runtime-pack de release queda pendiente.".to_string(),
     ];
 
     if manifest.release_injection_required {
         guidance.push(
-            "Próximo paso manual inevitable: inyectar los artefactos externos requeridos al runtime-pack de release para esta plataforma.".to_string(),
+            "Detalle técnico de release: el runtime-pack final todavía requiere artefactos externos antes de distribuirse.".to_string(),
         );
     }
 
@@ -1929,6 +2079,94 @@ mod tests {
             .expect("read repaired python"),
             b"python"
         );
+    }
+
+    #[test]
+    fn ensure_ready_invalidates_stale_managed_runtime_before_rehydrating() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let current_manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &python_sha,
+            &uv_sha,
+        );
+        write_manifest(bundle_dir.path(), &current_manifest);
+
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let mut stale_manifest = current_manifest.clone();
+        stale_manifest.app_version = "0.0.11".to_string();
+        write_manifest(&managed_root, &stale_manifest);
+        write_file(&managed_root, python_relpath, b"stale-python");
+        write_file(&managed_root, uv_relpath, b"uv");
+
+        let manager = RuntimeManager::new();
+        let status = manager
+            .ensure_ready_or_bootstrap_for_tests(
+                bundle_dir.path(),
+                app_data_dir.path(),
+                BootstrapRemoteCatalog::NotConfigured,
+                |_| {},
+            )
+            .expect("stale runtime should be invalidated and rehydrated");
+
+        assert_eq!(status.state, RuntimeState::Healthy);
+        let repaired_manifest =
+            RuntimeManifest::load_from_path(&managed_root.join("manifest.json"))
+                .expect("rehydrated manifest");
+        assert_eq!(repaired_manifest.app_version, running_app_version());
+        assert_eq!(
+            fs::read(managed_root.join(python_relpath)).expect("read rehydrated python"),
+            b"python"
+        );
+    }
+
+    #[test]
+    fn generated_dev_runtime_root_must_match_running_app_version() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let mut stale_manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &python_sha,
+            &uv_sha,
+        );
+        stale_manifest.app_version = "0.0.11".to_string();
+        write_manifest(bundle_dir.path(), &stale_manifest);
+
+        assert!(!runtime_root_matches_current_app(
+            bundle_dir.path(),
+            &crate::runtime::paths::current_runtime_platform()
+        ));
+
+        stale_manifest.app_version = running_app_version().to_string();
+        write_manifest(bundle_dir.path(), &stale_manifest);
+
+        assert!(runtime_root_matches_current_app(
+            bundle_dir.path(),
+            &crate::runtime::paths::current_runtime_platform()
+        ));
     }
 
     #[test]

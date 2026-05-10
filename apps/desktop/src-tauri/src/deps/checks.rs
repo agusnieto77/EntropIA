@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 use tokio::task;
@@ -22,6 +22,7 @@ use crate::runtime::status::{RuntimeState, RuntimeStatus};
 
 const PROBE_TIMEOUT_SECS: u64 = 45;
 const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
+const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const PROBE_PADDLEPADDLE_CUDA: &str = "import paddle; assert paddle.device.is_compiled_with_cuda(), 'PaddlePaddle CPU wheel installed on NVIDIA hardware'; print('ok')";
 const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
@@ -80,6 +81,7 @@ pub async fn probe_one(
     cmd.args(["-c", probe_code_for(dep)])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
 
     let probe_result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
 
@@ -140,6 +142,7 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
             cmd.args(["-c", probe_code])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            cmd.kill_on_drop(true);
 
             let result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
             let status = match result {
@@ -210,7 +213,9 @@ fn probe_code_for(dep: &crate::deps::registry::DependencySpec) -> &'static str {
 }
 
 fn detect_nvidia_gpu_hardware() -> bool {
-    match std::process::Command::new("nvidia-smi").arg("-L").output() {
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.arg("-L");
+    match std_command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi -L") {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if !stdout.trim().is_empty() && stdout.contains("GPU") {
@@ -221,6 +226,38 @@ fn detect_nvidia_gpu_hardware() -> bool {
     }
 
     detect_nvidia_gpu_from_system_inventory()
+}
+
+fn std_command_output_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("{label} failed to collect output: {error}"));
+            }
+            Ok(None) if started_at.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} failed while waiting: {error}"));
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -267,7 +304,11 @@ fn detect_nvidia_gpu_from_system_inventory() -> bool {
         if !smi.exists() {
             continue;
         }
-        if let Ok(output) = std::process::Command::new(&smi).arg("-L").output() {
+        let mut cmd = std::process::Command::new(&smi);
+        cmd.arg("-L");
+        if let Ok(output) =
+            std_command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi.exe -L")
+        {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.success() && stdout.contains("GPU") {
                 return true;

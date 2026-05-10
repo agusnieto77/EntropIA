@@ -13,10 +13,10 @@
   import {
     getAssetUrl,
     deleteAssetFile,
-    generatePdfThumbnail,
     deletePdfThumbnail,
   } from '$lib/file-import'
   import { appDataDir, join } from '@tauri-apps/api/path'
+  import { stat } from '@tauri-apps/plugin-fs'
   import { exportCollectionById } from '$lib/export'
   import { ItemCard, Button } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
@@ -100,7 +100,7 @@
       try {
         const assets: Asset[] = await store.assets.findByItem(itemId)
         const imageAsset = assets.find((a) => a.type === 'image')
-        // For PDFs, generate a thumbnail from the first page
+        // For PDFs, keep exploration lightweight: ItemCard shows the PDF icon.
         const pdfAsset = assets.find((a) => a.type === 'pdf')
 
         let thumbnailUrl: string | null = null
@@ -110,13 +110,7 @@
           thumbnailUrl = getAssetUrl(imageAsset.path)
           primaryAssetType = imageAsset.type
         } else if (pdfAsset) {
-          // Try to generate a PDF thumbnail; fall back to null (ItemCard shows PDF icon)
-          try {
-            thumbnailUrl = await generatePdfThumbnail(pdfAsset.path, pdfAsset.id)
-          } catch (e) {
-            console.warn('[CollectionView] Failed to generate PDF thumbnail for', pdfAsset.id, e)
-            thumbnailUrl = null
-          }
+          thumbnailUrl = null
           primaryAssetType = pdfAsset.type
         } else {
           const thumbAsset = assets[0]
@@ -207,6 +201,25 @@
     })
   }
 
+  const IMPORTED_FILE_METADATA_KEY = '__entropia_file_metadata'
+
+  function buildImportedItemMetadata(imported: ImportedFile): string {
+    return JSON.stringify({
+      [IMPORTED_FILE_METADATA_KEY]: imported.originalMetadata,
+    })
+  }
+
+  async function readAssetSize(path: string): Promise<number | null> {
+    try {
+      const metadata = await stat(path)
+      const size = Number(metadata.size ?? 0)
+      return Number.isFinite(size) ? size : null
+    } catch (e) {
+      console.warn('[CollectionView] Failed to read rendered page size:', e)
+      return null
+    }
+  }
+
   /**
    * Convert a scanned PDF to per-page PNG image assets.
    * Returns the list of created asset IDs, or empty array on failure.
@@ -233,7 +246,7 @@
           path: page.png_path,
           type: 'image',
           sortIndex: page.page_number - 1, // 0-indexed
-          size: null,
+          size: await readAssetSize(page.png_path),
         })
         assetIds.push(asset.id)
       }
@@ -306,6 +319,7 @@
 
       try {
         const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await store.items.update(itemId, { metadata: buildImportedItemMetadata(imported) })
         await finalizeImportedItem(itemId, imported)
         createdItemIds.push(itemId)
       } catch (e) {
@@ -396,6 +410,7 @@
 
       try {
         const imported = await importSingleFile(file.sourcePath, collectionId, itemId)
+        await store.items.update(itemId, { metadata: buildImportedItemMetadata(imported) })
         await finalizeImportedItem(itemId, imported)
         createdItemIds.push(itemId)
       } catch (e) {

@@ -4,12 +4,14 @@
 //! install each registered dependency into it.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri::Manager;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use super::{DepCheckResult, DependencyId, DependencyStatus, DepsState};
 use crate::deps::checks::{probe_one, ProbePythonMode};
@@ -29,6 +31,9 @@ const SPACY_MODEL_ES_VERSION: &str = "3.8.0";
 // GPU / CUDA detection for PaddlePaddle automatic GPU selection
 // ---------------------------------------------------------------------------
 
+const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const CUDA_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Detect whether an NVIDIA GPU is present on the system.
 ///
 /// Uses multiple hardware signals, not only `nvidia-smi`.
@@ -41,7 +46,9 @@ const SPACY_MODEL_ES_VERSION: &str = "3.8.0";
 /// This is intentionally duplicated from `ocr::paddle_vl` to keep the
 /// dependency manager decoupled from the OCR module.
 fn detect_nvidia_gpu() -> bool {
-    match std::process::Command::new("nvidia-smi").arg("-L").output() {
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.arg("-L");
+    match std_command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi -L") {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let has_gpu = !stdout.trim().is_empty() && stdout.contains("GPU");
@@ -104,7 +111,11 @@ fn detect_nvidia_gpu_from_system_inventory() -> bool {
         if !smi.exists() {
             continue;
         }
-        if let Ok(output) = std::process::Command::new(&smi).arg("-L").output() {
+        let mut cmd = std::process::Command::new(&smi);
+        cmd.arg("-L");
+        if let Ok(output) =
+            std_command_output_with_timeout(cmd, GPU_PROBE_TIMEOUT, "nvidia-smi.exe -L")
+        {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.success() && stdout.contains("GPU") {
                 eprintln!(
@@ -134,7 +145,9 @@ fn detect_nvidia_gpu_from_system_inventory() -> bool {
 /// Returns `None` if CUDA is not installed or the version cannot be parsed.
 fn detect_cuda_version() -> Option<String> {
     // 1. nvcc --version
-    if let Ok(output) = std::process::Command::new("nvcc").arg("--version").output() {
+    let mut cmd = std::process::Command::new("nvcc");
+    cmd.arg("--version");
+    if let Ok(output) = std_command_output_with_timeout(cmd, CUDA_PROBE_TIMEOUT, "nvcc --version") {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(re) = regex::Regex::new(r"release\s+(\d+\.\d+)") {
@@ -165,6 +178,40 @@ fn detect_cuda_version() -> Option<String> {
     }
 
     None
+}
+
+fn std_command_output_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{label} failed to start: {error}"))?;
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("{label} failed to collect output: {error}"));
+            }
+            Ok(None) if started_at.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out after {}s", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} failed while waiting: {error}"));
+            }
+        }
+    }
 }
 
 /// Map a detected CUDA version to the PaddlePaddle stable package index URL.
@@ -274,6 +321,18 @@ fn resolve_paddlepaddle_install_target(wheelhouse_dir: Option<&Path>) -> (String
 }
 const SPACY_MODEL_ES_WHEEL_SPEC: &str =
     "https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl";
+const UV_VENV_TIMEOUT: Duration = Duration::from_secs(180);
+const UV_PIP_INSTALL_TIMEOUT: Duration = Duration::from_secs(1800);
+const SUBPROCESS_TAIL_LINES: usize = 20;
+const BUILD_BACKEND_SPAM_REPORT_EVERY: usize = 100;
+
+const INSTALL_ENV_OVERRIDES: &[(&str, Option<&str>)] = &[
+    ("RUST_LOG", Some("warn")),
+    ("RUST_BACKTRACE", None),
+    ("RUST_LIB_BACKTRACE", None),
+    ("MATURIN_LOG", Some("warn")),
+    ("PYO3_LOG", Some("warn")),
+];
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -378,15 +437,18 @@ pub fn dev_fallback_python_path(root: &Path) -> PathBuf {
 }
 
 pub fn dev_fallback_allowed() -> bool {
-    cfg!(all(debug_assertions, target_os = "linux"))
+    cfg!(all(
+        debug_assertions,
+        any(target_os = "linux", target_os = "windows")
+    ))
 }
 
 pub fn dev_fallback_platform_hint() -> &'static str {
     if dev_fallback_allowed() {
-        "En Linux debug, EntropIA puede crear un venv local usando Python 3.11+ y uv del sistema para continuar sin payloads reales."
+        "En Linux/Windows debug, EntropIA puede crear un venv local usando Python 3.11+ y uv del sistema para continuar sin payloads reales."
     } else if cfg!(debug_assertions) {
         if cfg!(target_os = "windows") {
-            "En Windows dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
+            "En Windows dev el fallback online está habilitado cuando hay Python 3.11+ y uv disponible; si no aparece, instalá esos prerequisitos o hidratá un runtime-pack compatible."
         } else if cfg!(target_os = "macos") {
             "En macOS dev el fallback online no está habilitado: necesitás un runtime-pack release hidratado/compatible o una fuente bootstrap confiable."
         } else {
@@ -394,6 +456,16 @@ pub fn dev_fallback_platform_hint() -> &'static str {
         }
     } else {
         "En release no hay fallback de desarrollo: necesitás un runtime-pack hidratado/compatible o una fuente bootstrap confiable."
+    }
+}
+
+pub fn dev_fallback_available_reason() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Modo desarrollo Windows: podés instalar dependencias en un venv local con Python/uv del sistema mientras el runtime de release sigue pendiente."
+    } else if cfg!(target_os = "linux") {
+        "Modo desarrollo Linux: podés instalar dependencias en un venv local con Python/uv del sistema mientras el runtime de release sigue pendiente."
+    } else {
+        "Modo desarrollo: podés instalar dependencias en un venv local con Python/uv del sistema mientras el runtime de release sigue pendiente."
     }
 }
 
@@ -413,16 +485,23 @@ pub fn load_install_runtime(
     app_data_dir: &Path,
 ) -> Result<InstallRuntime, String> {
     let runtime_manager = app_handle.state::<RuntimeManager>();
-    let status = runtime_manager.ensure_ready_or_bootstrap(app_handle)?;
-
-    if status.state == RuntimeState::Healthy {
-        if let Some(runtime) = load_managed_runtime_context(app_handle)? {
+    if let Some(runtime) = load_managed_runtime_context(app_handle)? {
+        if runtime.status.state == RuntimeState::Healthy {
             return Ok(InstallRuntime::Managed(runtime));
         }
     }
 
-    if let Some(runtime) = load_managed_runtime_context(app_handle)? {
-        if runtime.status.state == RuntimeState::Healthy {
+    let current_status = runtime_manager.status(app_handle)?;
+    if current_status.state == RuntimeState::Fixture {
+        if let Some(runtime) = load_dev_fallback_context(app_data_dir) {
+            return Ok(InstallRuntime::DevFallback(runtime));
+        }
+    }
+
+    let status = runtime_manager.ensure_ready_or_bootstrap_unlocked(app_handle)?;
+
+    if status.state == RuntimeState::Healthy {
+        if let Some(runtime) = load_managed_runtime_context(app_handle)? {
             return Ok(InstallRuntime::Managed(runtime));
         }
     }
@@ -576,25 +655,24 @@ pub async fn create_venv(
     let managed_python = runtime.managed_python();
     let managed_python_str = managed_python.to_string_lossy().into_owned();
 
-    let output = uv
-        .command()
-        .args([
-            "venv",
-            &venv_str,
-            "--python",
-            &managed_python_str,
-            "--offline",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("Error creando entorno virtual: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Error creando entorno virtual: {stderr}"));
-    }
+    let mut cmd = uv.command();
+    sanitize_install_subprocess_env(&mut cmd);
+    cmd.args([
+        "venv",
+        &venv_str,
+        "--python",
+        &managed_python_str,
+        "--offline",
+    ]);
+    run_and_stream(
+        &mut cmd,
+        "Python venv",
+        |line| {
+            eprintln!("[deps/install] [Python venv] {line}");
+        },
+        UV_VENV_TIMEOUT,
+    )
+    .await?;
 
     if !python_path.is_file() {
         return Err(
@@ -619,22 +697,18 @@ pub async fn create_dev_fallback_venv(runtime: &DevFallbackContext) -> Result<Pa
 
     let root_str = runtime.root.to_string_lossy().into_owned();
     let system_python = runtime.system_python.to_string_lossy().into_owned();
-    let output = runtime
-        .uv
-        .command()
-        .args(["venv", &root_str, "--python", &system_python, "--seed"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("Error creando entorno virtual de desarrollo: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "Error creando entorno virtual de desarrollo: {stderr}"
-        ));
-    }
+    let mut cmd = runtime.uv.command();
+    sanitize_install_subprocess_env(&mut cmd);
+    cmd.args(["venv", &root_str, "--python", &system_python, "--seed"]);
+    run_and_stream(
+        &mut cmd,
+        "Python dev fallback venv",
+        |line| {
+            eprintln!("[deps/install] [Python dev fallback venv] {line}");
+        },
+        UV_VENV_TIMEOUT,
+    )
+    .await?;
 
     if !python_path.is_file() {
         return Err(
@@ -688,7 +762,7 @@ pub async fn install_package(
     dep: &DependencySpec,
     venv_python: &Path,
     wheelhouse_dir: Option<&Path>,
-    on_output: impl Fn(&str) + Send + 'static,
+    on_output: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<(), String> {
     if dep.id == DependencyId::Python {
         // Python itself is managed by `uv venv` — nothing to install.
@@ -705,7 +779,9 @@ pub async fn install_package(
 
     let python_str = venv_python.to_string_lossy().into_owned();
     let mut cmd = uv.command();
+    sanitize_install_subprocess_env(&mut cmd);
     cmd.args(["pip", "install", &spec, "--python", &python_str]);
+    let uses_online_indexes = extra_index_url.is_some() || wheelhouse_dir.is_none();
 
     if let Some(index_url) = extra_index_url {
         // PaddlePaddle GPU packages are hosted on their own index (not PyPI).
@@ -722,9 +798,51 @@ pub async fn install_package(
         ));
     }
 
+    if requires_binary_only(uses_online_indexes) {
+        cmd.args(["--only-binary", ":all:"]);
+        cmd.env("UV_ONLY_BINARY", ":all:");
+        on_output("stage: Resolviendo/descargando ruedas binarias (sin compilar desde fuente)");
+    } else {
+        on_output("stage: Instalando desde wheelhouse local/offline");
+    }
+
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    run_and_stream(&mut cmd, dep.display_name, on_output).await
+    let install_result = run_and_stream(
+        &mut cmd,
+        dep.display_name,
+        on_output,
+        UV_PIP_INSTALL_TIMEOUT,
+    )
+    .await;
+
+    if let Err(error) = install_result {
+        if requires_binary_only(uses_online_indexes) {
+            return Err(format!(
+                "{error}\nEntropIA instaló con --only-binary=:all: para evitar compilar paquetes Rust/PyO3 desde fuente. Si uv no encontró una rueda compatible, instalá una versión de Python/plataforma con wheels disponibles o usá el runtime/wheelhouse administrado."
+            ));
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn sanitize_install_subprocess_env(cmd: &mut Command) {
+    for (key, value) in INSTALL_ENV_OVERRIDES {
+        match value {
+            Some(value) => {
+                cmd.env(key, value);
+            }
+            None => {
+                cmd.env_remove(key);
+            }
+        }
+    }
+}
+
+fn requires_binary_only(uses_online_indexes: bool) -> bool {
+    uses_online_indexes
 }
 
 fn managed_install_spec(dep: &DependencySpec, wheelhouse_dir: Option<&Path>) -> Option<String> {
@@ -846,38 +964,143 @@ fn collect_managed_install_plan(
 async fn run_and_stream(
     cmd: &mut Command,
     display_name: &str,
-    on_output: impl Fn(&str) + Send + 'static,
+    on_output: impl Fn(&str) + Send + Sync + 'static,
+    max_duration: Duration,
 ) -> Result<(), String> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Error iniciando instalación de {display_name}: {e}"))?;
 
-    // Collect stderr lines for error reporting.
-    let mut last_lines: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    const TAIL: usize = 10;
+    let on_output = std::sync::Arc::new(on_output);
+    let stdout_tail = child.stdout.take().map(|stdout| {
+        let on_output = on_output.clone();
+        tokio::spawn(drain_lines(stdout, "stdout", on_output))
+    });
+    let stderr_tail = child.stderr.take().map(|stderr| {
+        let on_output = on_output.clone();
+        tokio::spawn(drain_lines(stderr, "stderr", on_output))
+    });
 
-    if let Some(stderr) = child.stderr.take() {
-        let mut reader = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            on_output(&line);
-            if last_lines.len() >= TAIL {
-                last_lines.pop_front();
-            }
-            last_lines.push_back(line);
+    let status = match timeout(max_duration, child.wait()).await {
+        Ok(wait_result) => {
+            wait_result.map_err(|e| format!("Error esperando proceso de {display_name}: {e}"))?
         }
-    }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let stdout = join_tail(stdout_tail).await;
+            let stderr = join_tail(stderr_tail).await;
+            let tail = format_subprocess_tail(&stdout, &stderr);
+            return Err(format!(
+                "Timeout instalando {display_name}: el proceso excedió {}s y fue cancelado.{}",
+                max_duration.as_secs(),
+                tail
+            ));
+        }
+    };
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("Error esperando proceso de {display_name}: {e}"))?;
+    let stdout = join_tail(stdout_tail).await;
+    let stderr = join_tail(stderr_tail).await;
 
     if !status.success() {
-        let tail = last_lines.iter().cloned().collect::<Vec<_>>().join("\n");
+        let tail = format_subprocess_tail(&stdout, &stderr);
         return Err(format!("Error instalando {display_name}: {tail}"));
     }
 
     Ok(())
+}
+
+async fn drain_lines<R>(
+    stream: R,
+    label: &'static str,
+    on_output: std::sync::Arc<impl Fn(&str) + Send + Sync + 'static>,
+) -> std::collections::VecDeque<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut tail = std::collections::VecDeque::new();
+    let mut reader = tokio::io::BufReader::new(stream).lines();
+    let mut compacted_build_debug_lines = 0usize;
+    while let Ok(Some(line)) = reader.next_line().await {
+        if is_build_backend_debug_spam(&line) {
+            compacted_build_debug_lines += 1;
+            if compacted_build_debug_lines % BUILD_BACKEND_SPAM_REPORT_EVERY == 0 {
+                let compacted = format!(
+                    "{label}: [compactado] {compacted_build_debug_lines} líneas DEBUG del backend de build suprimidas"
+                );
+                on_output(&compacted);
+                push_tail_line(&mut tail, compacted);
+            }
+            continue;
+        }
+
+        let line = format!("{label}: {line}");
+        on_output(&line);
+        push_tail_line(&mut tail, line);
+    }
+
+    if compacted_build_debug_lines > 0 {
+        push_tail_line(
+            &mut tail,
+            format!(
+                "{label}: [compactado] total: {compacted_build_debug_lines} líneas DEBUG del backend de build suprimidas"
+            ),
+        );
+    }
+
+    tail
+}
+
+fn push_tail_line(tail: &mut std::collections::VecDeque<String>, line: String) {
+    if tail.len() >= SUBPROCESS_TAIL_LINES {
+        tail.pop_front();
+    }
+    tail.push_back(line);
+}
+
+fn is_build_backend_debug_spam(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let is_debug = lower.contains(" debug ")
+        || lower.starts_with("debug ")
+        || lower.contains("=debug")
+        || lower.contains(" debug:");
+    if !is_debug {
+        return false;
+    }
+
+    lower.contains("pep517:build_wheels")
+        || lower.contains("build_pyo3_wheels")
+        || lower.contains("build_single_pyo3_wheel")
+        || lower.contains("goblin::pe")
+        || lower.contains("maturin")
+}
+
+async fn join_tail(
+    handle: Option<tokio::task::JoinHandle<std::collections::VecDeque<String>>>,
+) -> std::collections::VecDeque<String> {
+    match handle {
+        Some(handle) => handle.await.unwrap_or_default(),
+        None => std::collections::VecDeque::new(),
+    }
+}
+
+fn format_subprocess_tail(
+    stdout: &std::collections::VecDeque<String>,
+    stderr: &std::collections::VecDeque<String>,
+) -> String {
+    let lines = stdout
+        .iter()
+        .chain(stderr.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.is_empty() {
+        " (sin salida reciente de stdout/stderr)".to_string()
+    } else {
+        format!("\n{lines}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,6 +1285,9 @@ pub async fn install_all(
         });
     }
 
+    crate::python_discovery::invalidate_probe_cache();
+    super::cache_current_statuses(state, Some(venv_python)).await;
+
     // ── 5. Emit complete ─────────────────────────────────────────────────────
     let all_critical_installed = results.iter().all(|r| {
         let dep = find_dep(&r.id);
@@ -1080,9 +1306,6 @@ pub async fn install_all(
             all_critical_installed,
         },
     );
-
-    crate::python_discovery::invalidate_probe_cache();
-    super::cache_current_statuses(state, Some(venv_python)).await;
 
     Ok(())
 }
@@ -1361,6 +1584,113 @@ mod tests {
         }
         std::fs::write(&path, bytes).expect("write file");
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[tokio::test]
+    async fn run_and_stream_drains_stdout_without_hanging() {
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/C", "for /L %i in (1,1,2000) do @echo stdout-line-%i"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "for i in $(seq 1 2000); do echo stdout-line-$i; done"]);
+            cmd
+        };
+
+        run_and_stream(
+            &mut cmd,
+            "stdout-drain-test",
+            |_| {},
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("stdout-heavy subprocess should complete");
+    }
+
+    #[tokio::test]
+    async fn run_and_stream_times_out_and_kills_child() {
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/C", "ping -n 4 127.0.0.1 > nul"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 3"]);
+            cmd
+        };
+
+        let error = run_and_stream(&mut cmd, "timeout-test", |_| {}, Duration::from_millis(100))
+            .await
+            .expect_err("slow subprocess should time out");
+
+        assert!(error.contains("Timeout instalando timeout-test"));
+    }
+
+    #[test]
+    fn test_online_installs_require_binary_wheels_only() {
+        assert!(
+            requires_binary_only(true),
+            "online fallback installs must fail fast instead of compiling sdists"
+        );
+
+        assert!(
+            !requires_binary_only(false),
+            "offline wheelhouse installs should keep using local wheels without online binary flags"
+        );
+    }
+
+    #[test]
+    fn test_install_env_overrides_sanitize_rust_debug_flags() {
+        assert_eq!(
+            INSTALL_ENV_OVERRIDES
+                .iter()
+                .find(|(key, _)| *key == "RUST_LOG"),
+            Some(&("RUST_LOG", Some("warn"))),
+            "child uv/pip processes must not inherit RUST_LOG=debug from Tauri dev"
+        );
+        assert_eq!(
+            INSTALL_ENV_OVERRIDES
+                .iter()
+                .find(|(key, _)| *key == "RUST_BACKTRACE"),
+            Some(&("RUST_BACKTRACE", None)),
+            "build backends should not inherit EntropIA's backtrace debug setting"
+        );
+    }
+
+    #[test]
+    fn test_build_backend_debug_spam_is_filtered() {
+        let goblin_line = "pep517:build_wheels:build_pyo3_wheels:build_single_pyo3_wheel: goblin::pe DEBUG parsing import table";
+        let maturin_line = "DEBUG maturin::build_context preparing pyo3 wheel";
+        let useful_line = "Resolved 24 packages in 1.2s";
+
+        assert!(is_build_backend_debug_spam(goblin_line));
+        assert!(is_build_backend_debug_spam(maturin_line));
+        assert!(!is_build_backend_debug_spam(useful_line));
+    }
+
+    #[test]
+    fn std_command_output_with_timeout_kills_slow_probe() {
+        let cmd = if cfg!(windows) {
+            let mut cmd = std::process::Command::new("cmd.exe");
+            cmd.args(["/C", "ping -n 4 127.0.0.1 > nul"]);
+            cmd
+        } else {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", "sleep 3"]);
+            cmd
+        };
+
+        let started_at = Instant::now();
+        let error =
+            std_command_output_with_timeout(cmd, Duration::from_millis(100), "slow install probe")
+                .expect_err("slow probe should time out");
+
+        assert!(error.contains("slow install probe timed out"));
+        assert!(
+            started_at.elapsed() < Duration::from_secs(2),
+            "timeout helper should not wait for the child to finish naturally"
+        );
     }
 
     #[test]

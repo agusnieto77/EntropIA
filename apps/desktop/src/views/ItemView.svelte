@@ -83,6 +83,20 @@
   import { TranscriptionRepo } from '@entropia/store'
 
   const isDev = import.meta.env.DEV
+  const IMPORTED_FILE_METADATA_KEY = '__entropia_file_metadata'
+
+  type ImportedFileMetadata = {
+    originalName?: string
+    originalPath?: string
+    importedAt?: string
+    sizeBytes?: number
+    readonly?: boolean
+    isFile?: boolean
+    isDirectory?: boolean
+    createdAt?: number | null
+    modifiedAt?: number | null
+    accessedAt?: number | null
+  }
 
   // ── Sidebar resize ──
   const MIN_SIDEBAR_PCT = 20
@@ -631,6 +645,9 @@
   let metadataValue = $derived<Record<string, string>>(
     item?.metadata ? parseMetadataRecord(item.metadata) : {}
   )
+  let originalFileMetadata = $derived<ImportedFileMetadata | null>(
+    item?.metadata ? parseImportedFileMetadata(item.metadata) : null
+  )
   let customMetadataNormalizedKeys = $derived(
     new Set(Object.keys(metadataValue).map((key) => normalizeMetadataKey(key)))
   )
@@ -691,6 +708,7 @@
       item,
       selectedAsset,
       collection,
+      originalFileMetadata,
       customMetadataKeys: customMetadataNormalizedKeys,
     })
   )
@@ -1192,12 +1210,28 @@
       const obj = JSON.parse(json)
       const record: Record<string, string> = {}
       for (const [key, value] of Object.entries(obj)) {
+        if (key === IMPORTED_FILE_METADATA_KEY) continue
         record[key] = String(value)
       }
       return record
     } catch {
       return {}
     }
+  }
+
+  function parseImportedFileMetadata(json: string): ImportedFileMetadata | null {
+    try {
+      const obj = JSON.parse(json) as Record<string, unknown>
+      const metadata = obj[IMPORTED_FILE_METADATA_KEY]
+      return metadata && typeof metadata === 'object' ? (metadata as ImportedFileMetadata) : null
+    } catch {
+      return null
+    }
+  }
+
+  function mergeReservedMetadata(metadata: Record<string, string>): Record<string, unknown> {
+    const reserved = item?.metadata ? parseImportedFileMetadata(item.metadata) : null
+    return reserved ? { ...metadata, [IMPORTED_FILE_METADATA_KEY]: reserved } : metadata
   }
 
   let metadataSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -1370,6 +1404,18 @@
     return `${value.toFixed(digits)} ${units[unitIndex]}`
   }
 
+  function formatTimestamp(timestamp: number | string | null | undefined): string | null {
+    if (timestamp === null || timestamp === undefined) return null
+    const millis = typeof timestamp === 'string' ? Date.parse(timestamp) : timestamp
+    if (!Number.isFinite(millis)) return null
+    return new Date(millis).toLocaleString()
+  }
+
+  function formatBoolean(value: boolean | null | undefined): string | null {
+    if (value === null || value === undefined) return null
+    return value ? 'Sí' : 'No'
+  }
+
   function pushTechnicalMetadataEntry(
     entries: Array<{ label: string; value: string }>,
     customMetadataKeys: Set<string>,
@@ -1393,11 +1439,13 @@
     item,
     selectedAsset,
     collection,
+    originalFileMetadata,
     customMetadataKeys,
   }: {
     item: Item | null
     selectedAsset: Asset | null
     collection: Collection | null
+    originalFileMetadata: ImportedFileMetadata | null
     customMetadataKeys: Set<string>
   }) {
     const entries: Array<{ label: string; value: string }> = []
@@ -1450,6 +1498,56 @@
       'project',
       'proyecto',
     ])
+
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Nombre original',
+      originalFileMetadata?.originalName,
+      ['original name', 'nombre fuente']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Ruta original',
+      originalFileMetadata?.originalPath,
+      ['source path', 'ruta fuente']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Tamaño original',
+      formatBytes(originalFileMetadata?.sizeBytes),
+      ['original size', 'source size']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Importado el',
+      formatTimestamp(originalFileMetadata?.importedAt),
+      ['imported at', 'fecha importacion']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Creado en origen',
+      formatTimestamp(originalFileMetadata?.createdAt),
+      ['created at', 'fecha creacion origen']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Modificado en origen',
+      formatTimestamp(originalFileMetadata?.modifiedAt),
+      ['modified at', 'fecha modificacion origen']
+    )
+    pushTechnicalMetadataEntry(
+      entries,
+      customMetadataKeys,
+      'Solo lectura',
+      formatBoolean(originalFileMetadata?.readonly),
+      ['readonly', 'read only']
+    )
 
     return entries
   }
@@ -1891,7 +1989,7 @@
       try {
         savingMetadata = true
         const store = getStore()
-        await store.items.update(item.id, { metadata: JSON.stringify(metadata) })
+        await store.items.update(item.id, { metadata: JSON.stringify(mergeReservedMetadata(metadata)) })
       } catch (e) {
         error = e instanceof Error ? e.message : 'Failed to save metadata'
       } finally {

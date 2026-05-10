@@ -72,6 +72,14 @@ runtime-payloads/
 - `runtime-pack-smoke.py` acepta como `--root` tanto el directorio padre (`target/runtime-pack/`) como el directorio puntual de plataforma (`target/runtime-pack/<platform>`).
 - La validación útil para handoff real es: **armar con payload externo → revisar `assembly-summary.json` → correr smoke sobre ese output**.
 
+Diagnóstico rápido de readiness sin falsificar payloads:
+
+```bash
+python3 apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform windows-x86_64 --output-dir apps/desktop/src-tauri/target/runtime-pack --require-release-payload
+```
+
+Si no se pasó `--payload-root`, este comando debe fallar con `--require-release-payload requires --payload-root`. Ese fallo es correcto: confirma que el release real todavía necesita un artifact externo y evita publicar fixtures como runtime self-contained.
+
 Ejemplos de validación manual con payload real:
 
 ```bash
@@ -89,7 +97,7 @@ Cuando una máquina Windows ya tiene `managed_venv` funcionando, se puede materi
 ```powershell
 python apps/desktop/src-tauri/scripts/materialize_windows_runtime_payload.py `
   --pack-version 2026.05.0 `
-  --app-version 0.0.13 `
+  --app-version 0.0.16 `
   --output-dir apps/desktop/src-tauri/target/runtime-payloads
 
 python apps/desktop/src-tauri/scripts/build_runtime_pack.py `
