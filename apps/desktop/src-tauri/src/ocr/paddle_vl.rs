@@ -4,7 +4,7 @@
 //! both layout detection and OCR in a single pass. Returns structured
 //! results with text, blocks, and regions.
 //!
-//! Fallback chain: PaddleVL → Tesseract (if PaddleVL fails or unavailable)
+//! Fallback chain: PaddleVL → lightweight PaddleOCR (if PaddleVL fails or times out)
 
 use crate::path_utils::normalize_windows_path;
 use crate::runtime::{
@@ -13,6 +13,7 @@ use crate::runtime::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -191,6 +192,9 @@ impl PaddleVlEngine {
             // Silence HuggingFace progress bars (would pollute stderr/stdout)
             .env("HF_HUB_DISABLE_PROGRESS_BARS", "1")
             .env("HF_HUB_DISABLE_TELEMETRY", "1")
+            // PaddleX otherwise performs a slow connectivity preflight before
+            // trying the actual model source. The download itself can still run.
+            .env("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
@@ -210,9 +214,15 @@ impl PaddleVlEngine {
         }
 
         if let Some(ref cache_dir) = self.config.paddlex_cache_dir {
+            let modelscope_cache_dir = cache_dir.join("modelscope");
+            ensure_cache_dir("ModelScope", &modelscope_cache_dir)?;
             cmd.env("PADDLE_PDX_CACHE_HOME", cache_dir)
                 // Legacy/no-op for current PaddleX, but harmless for older builds.
-                .env("PADDLEX_HOME", cache_dir);
+                .env("PADDLEX_HOME", cache_dir)
+                // Keep ModelScope downloads/locks inside EntropIA's managed
+                // runtime instead of the user's global ~/.cache/modelscope.
+                .env("MODELSCOPE_CACHE", &modelscope_cache_dir)
+                .env("MODELSCOPE_HOME", &modelscope_cache_dir);
         }
 
         eprintln!(
@@ -220,12 +230,21 @@ impl PaddleVlEngine {
             self.config.device, offline_value
         );
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             format!(
                 "Failed to spawn PaddleVL process (python={}): {e}",
                 self.config.python_path.display()
             )
         })?;
+
+        let stdout_reader = child
+            .stdout
+            .take()
+            .map(|stdout| std::thread::spawn(move || drain_child_pipe(stdout)));
+        let stderr_reader = child
+            .stderr
+            .take()
+            .map(|stderr| std::thread::spawn(move || drain_child_pipe(stderr)));
 
         eprintln!(
             "[paddle_vl] Waiting for PaddleVL (timeout: {}s, progress logs every {}s)...",
@@ -240,31 +259,12 @@ impl PaddleVlEngine {
         let check_interval = std::time::Duration::from_millis(500);
         let mut last_progress_log = std::time::Instant::now();
 
-        let mut child = child;
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    // Process exited — read captured stdout/stderr from the pipes.
-                    // After try_wait returns Some, the process has exited but we still
-                    // need to read the output. Use wait() to reap and get output.
-                    // Actually, try_wait doesn't consume stdout/stderr pipes.
-                    // We need to manually read from the pipes before calling wait().
-                    // The simplest approach: use wait_with_output after try_wait already returned.
-                    // But wait_with_output doesn't exist. Instead, we read the pipes manually.
-
-                    // Since process has exited, all data should be available on the pipes.
-                    let mut stdout_buf = Vec::new();
-                    let mut stderr_buf = Vec::new();
-                    if let Some(mut out) = child.stdout.take() {
-                        use std::io::Read;
-                        let _ = out.read_to_end(&mut stdout_buf);
-                    }
-                    if let Some(mut err) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = err.read_to_end(&mut stderr_buf);
-                    }
-                    // Reap the process
                     let _ = child.wait();
+                    let stdout_buf = join_child_reader(stdout_reader);
+                    let stderr_buf = join_child_reader(stderr_reader);
 
                     let stdout = String::from_utf8_lossy(&stdout_buf);
                     let stderr = String::from_utf8_lossy(&stderr_buf);
@@ -348,9 +348,14 @@ impl PaddleVlEngine {
                         );
                         let _ = child.kill();
                         let _ = child.wait(); // reap the process
+                        let stdout_buf = join_child_reader(stdout_reader);
+                        let stderr_buf = join_child_reader(stderr_reader);
+                        let stdout = String::from_utf8_lossy(&stdout_buf);
+                        let stderr = String::from_utf8_lossy(&stderr_buf);
+                        let tail = format_child_output_tail(&stdout, &stderr);
                         return Err(format!(
-                            "PaddleVL timed out after {}s. The model may still be downloading or your CPU is heavily loaded — try again later.",
-                            start.elapsed().as_secs()
+                            "PaddleVL timed out after {}s. The model may still be downloading or your CPU is heavily loaded — try again later.{tail}",
+                            start.elapsed().as_secs(),
                         ));
                     }
 
@@ -666,6 +671,37 @@ fn command_output_with_timeout(
     }
 }
 
+fn drain_child_pipe(mut pipe: impl std::io::Read + Send + 'static) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let _ = pipe.read_to_end(&mut buffer);
+    buffer
+}
+
+fn join_child_reader(handle: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
+}
+
+fn format_child_output_tail(stdout: &str, stderr: &str) -> String {
+    let lines = stderr
+        .lines()
+        .chain(stdout.lines())
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if lines.trim().is_empty() {
+        "".to_string()
+    } else {
+        format!("\nÚltima salida PaddleVL:\n{lines}")
+    }
+}
+
 pub fn create_paddle_vl_engine_result(
     app_handle: &tauri::AppHandle,
     settings_db_path: &std::path::Path,
@@ -684,7 +720,15 @@ pub fn create_paddle_vl_engine_result(
         .or_else(|| settings_db_path.parent().map(Path::to_path_buf));
     let (hf_cache_dir, paddlex_cache_dir) =
         resolve_paddle_vl_cache_dirs(runtime_root.as_deref(), app_data_dir.as_deref());
-    let offline_mode = runtime_root.is_some();
+    let offline_mode =
+        runtime_root.is_some() && paddle_vl_caches_look_complete(paddlex_cache_dir.as_deref());
+    if runtime_root.is_some() && !offline_mode {
+        crate::app_logs::warn(
+            app_handle,
+            "ocrh",
+            "Cache PaddleOCR-VL incompleta; OCRH permitirá descarga online administrada",
+        );
+    }
 
     // Find Python interpreter with paddleocr
     let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
@@ -829,7 +873,7 @@ mod tests {
     #[test]
     fn test_detects_paddlex_cache_permission_error() {
         let stderr =
-            "PermissionError: [Errno 13] Permission denied: 'C:\\Users\\agusn\\.paddlex\\official_models\\PP-DocLayoutV3\\inference.yml'";
+            "PermissionError: [Errno 13] Permission denied: 'C:\\Users\\test\\.paddlex\\official_models\\PP-DocLayoutV3\\inference.yml'";
         let classification = classify_paddlevl_failure(stderr, "");
         assert!(classification.is_some());
         assert!(classification.unwrap().contains("PaddleX model cache"));
@@ -863,6 +907,40 @@ mod tests {
             paddlex_cache,
             Some(runtime_dir.path().join("caches").join("paddlex"))
         );
+    }
+
+    #[test]
+    fn paddle_vl_cache_completeness_requires_real_vl_weights() {
+        let cache_dir = tempdir().expect("cache dir");
+        let layout = cache_dir
+            .path()
+            .join("official_models")
+            .join("PP-DocLayoutV3");
+        let vl = cache_dir
+            .path()
+            .join("official_models")
+            .join("PaddleOCR-VL-1.5");
+        std::fs::create_dir_all(&layout).expect("layout dir");
+        std::fs::create_dir_all(&vl).expect("vl dir");
+        std::fs::write(layout.join("inference.yml"), "mode: paddle").expect("layout yml");
+        std::fs::write(layout.join("inference.json"), "{}").expect("layout json");
+        std::fs::write(layout.join("inference.pdiparams"), "weights").expect("layout params");
+        std::fs::create_dir_all(vl.join(".cache").join("huggingface").join("download"))
+            .expect("metadata dir");
+        std::fs::write(
+            vl.join(".cache")
+                .join("huggingface")
+                .join("download")
+                .join("model.safetensors.metadata"),
+            "metadata only",
+        )
+        .expect("metadata");
+
+        assert!(!paddle_vl_caches_look_complete(Some(cache_dir.path())));
+
+        std::fs::write(vl.join("model.safetensors"), "real weights").expect("vl weights");
+
+        assert!(paddle_vl_caches_look_complete(Some(cache_dir.path())));
     }
 
     #[test]
@@ -1015,4 +1093,25 @@ fn resolve_paddle_vl_cache_dirs(
     }
 
     (None, None)
+}
+
+fn paddle_vl_caches_look_complete(paddlex_cache_dir: Option<&Path>) -> bool {
+    let Some(cache_dir) = paddlex_cache_dir else {
+        return false;
+    };
+
+    let official_models = cache_dir.join("official_models");
+    let layout_model = official_models.join("PP-DocLayoutV3");
+    let vl_model = official_models.join("PaddleOCR-VL-1.5");
+
+    let layout_ready = layout_model.join("inference.yml").is_file()
+        && layout_model.join("inference.pdiparams").is_file()
+        && (layout_model.join("inference.json").is_file()
+            || layout_model.join("inference.pdmodel").is_file());
+
+    let vl_ready = vl_model.join("model.safetensors").is_file()
+        || vl_model.join("model_state.pdparams").is_file()
+        || vl_model.join("inference.pdparams").is_file();
+
+    layout_ready && vl_ready
 }

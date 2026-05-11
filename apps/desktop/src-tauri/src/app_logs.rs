@@ -38,6 +38,7 @@ struct AppLogsInner {
 #[derive(Debug)]
 pub struct AppLogsState {
     inner: Mutex<AppLogsInner>,
+    file_lock: Mutex<()>,
     log_dir: PathBuf,
     log_file: PathBuf,
 }
@@ -55,6 +56,7 @@ impl AppLogsState {
 
         Self {
             inner: Mutex::new(AppLogsInner { entries, next_id }),
+            file_lock: Mutex::new(()),
             log_dir,
             log_file,
         }
@@ -78,6 +80,10 @@ impl AppLogsState {
             inner.next_id = 0;
         }
 
+        let _file_guard = self
+            .file_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         fs::create_dir_all(&self.log_dir)
             .map_err(|error| format!("No se pudo crear el directorio de logs: {error}"))?;
         fs::write(&self.log_file, "")
@@ -116,6 +122,11 @@ impl AppLogsState {
     }
 
     fn append_to_file(&self, entry: &AppLogEntry) {
+        let _file_guard = self
+            .file_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
         if fs::create_dir_all(&self.log_dir).is_err() {
             return;
         }

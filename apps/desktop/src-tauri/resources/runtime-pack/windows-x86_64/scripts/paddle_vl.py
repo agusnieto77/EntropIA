@@ -33,6 +33,11 @@ warnings.filterwarnings("ignore")
 # Disable HuggingFace Hub symlink-based download and transfer.
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["HF_HUB_SYMLINK_STORAGE"] = "0"
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+if os.environ.get("PADDLE_PDX_CACHE_HOME") and not os.environ.get("MODELSCOPE_CACHE"):
+    _modelscope_cache = os.path.join(os.environ["PADDLE_PDX_CACHE_HOME"], "modelscope")
+    os.environ["MODELSCOPE_CACHE"] = _modelscope_cache
+    os.environ.setdefault("MODELSCOPE_HOME", _modelscope_cache)
 
 # CPU performance tuning — apply BEFORE importing paddle/numpy.
 # These envvars only take effect at library import time. Setting them after
