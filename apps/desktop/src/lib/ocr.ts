@@ -157,7 +157,7 @@ export type OcrMode = 'light' | 'high'
  * Calls the Rust `extract_text` command to kick off an OCR job.
  * Sets the asset state to 'pending' before the invocation resolves.
  *
- * @param mode - 'light' for plain PaddleOCR/Tesseract (fast), 'high' for PaddleVL (layout-aware)
+ * @param mode - 'light' for plain PaddleOCR (fast), 'high' for PaddleVL (layout-aware)
  */
 export async function extractText(
   assetId: string,

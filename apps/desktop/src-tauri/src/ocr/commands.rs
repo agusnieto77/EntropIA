@@ -22,7 +22,7 @@ pub struct RenderedPage {
 /// * `asset_id`   — unique ID of the asset in the database
 /// * `asset_path` — absolute filesystem path to the asset file
 /// * `asset_type` — `"pdf"` or `"image"`
-/// * `mode`       — `"light"` (plain PaddleOCR/Tesseract, default) or `"high"` (PaddleVL)
+/// * `mode`       — `"light"` (plain PaddleOCR, default) or `"high"` (PaddleVL → PaddleOCR)
 /// * `ocr_queue`  — managed state injected by Tauri
 #[tauri::command]
 pub async fn extract_text(

@@ -158,8 +158,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             }
 
             // Migrate extractions.method CHECK constraint: remove the legacy
-            // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
-            // like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+            // `CHECK(method IN ('native', 'ocr'))` which blocked modern OCR methods
+            // like 'paddle', 'paddle_vl', 'pdf_paddle', and 'pdf_paddle_vl'.
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
             llm::ensure_llm_results_schema(&ui_conn)
@@ -824,7 +824,7 @@ fn migration_applied(conn: &Connection, name: &str) -> Result<bool, String> {
 
 /// Migrate the `extractions` table to remove the legacy CHECK constraint
 /// on the `method` column that only allowed 'native' and 'ocr'.
-/// PaddleOCR uses methods like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+/// PaddleOCR uses methods like 'paddle', 'paddle_vl', 'pdf_paddle', and 'pdf_paddle_vl'.
 /// SQLite doesn't support ALTER TABLE DROP CONSTRAINT, so we recreate the table.
 fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
     // Check if the CHECK constraint exists by attempting an insert with a new method value.
