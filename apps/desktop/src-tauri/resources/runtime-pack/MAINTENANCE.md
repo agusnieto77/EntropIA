@@ -97,7 +97,7 @@ Cuando una máquina Windows ya tiene `managed_venv` funcionando, se puede materi
 ```powershell
 python apps/desktop/src-tauri/scripts/materialize_windows_runtime_payload.py `
   --pack-version 2026.05.0 `
-  --app-version 0.0.16 `
+  --app-version 0.0.18 `
   --output-dir apps/desktop/src-tauri/target/runtime-payloads
 
 python apps/desktop/src-tauri/scripts/build_runtime_pack.py `
@@ -132,7 +132,7 @@ En Windows sin GPU NVIDIA, PaddleOCR-VL puede usar CPU. El timeout de 900s es ac
 Para probarlo en dev sin copiar 3GB a `resources/`, arrancá Tauri con:
 
 ```powershell
-$env:ENTROPIA_RUNTIME_PACK_ROOT = "F:\POSITRON\EntropIA\apps\desktop\src-tauri\target\runtime-pack"
+$env:ENTROPIA_RUNTIME_PACK_ROOT = "<repo>\apps\desktop\src-tauri\target\runtime-pack"
 pnpm --filter @entropia/desktop tauri dev
 ```
 

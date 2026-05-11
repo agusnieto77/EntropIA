@@ -1,3 +1,4 @@
+mod app_logs;
 mod db;
 pub mod deps;
 mod geo;
@@ -102,6 +103,8 @@ pub fn run() {
                 .expect("Failed to get app data dir");
             migrate_legacy_app_dir(&app_dir).expect("Failed to migrate legacy app data dir");
             std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+            app.manage(app_logs::AppLogsState::new(app_dir.join("logs")));
+            app_logs::info(&app.handle().clone(), "setup", "Registro de diagnóstico inicializado");
             let db_path = app_dir.join("entropia.sqlite");
 
 migrate_legacy_asset_paths(&db_path, &app_dir)
@@ -155,8 +158,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             }
 
             // Migrate extractions.method CHECK constraint: remove the legacy
-            // `CHECK(method IN ('native', 'ocr'))` which blocked PaddleOCR methods
-            // like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+            // `CHECK(method IN ('native', 'ocr'))` which blocked modern OCR methods
+            // like 'paddle', 'paddle_vl', 'pdf_paddle', and 'pdf_paddle_vl'.
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
             llm::ensure_llm_results_schema(&ui_conn)
@@ -249,6 +252,11 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 .validate_startup(&app.handle().clone())
             {
                 eprintln!("[runtime] startup validation failed: {error}");
+                app_logs::error(
+                    &app.handle().clone(),
+                    "runtime",
+                    format!("Validación inicial falló: {error}"),
+                );
             }
 
             // Background dependency check — runs 2 s after startup so the window is visible first.
@@ -259,13 +267,21 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 let deps_state = app_handle_deps.state::<deps::DepsState>();
                 match deps::probe_all_once(deps_state.inner(), db_state.inner()).await {
                     Ok(results) => {
-                        if let Err(err) = deps::emit_probe_complete(&app_handle_deps, &results) {
-                            eprintln!("[deps] Startup event emit failed: {err}");
-                        }
+                        deps::emit_probe_complete(&app_handle_deps, &results);
                         eprintln!("[deps] Startup check: {} deps checked", results.len());
+                        app_logs::info(
+                            &app_handle_deps,
+                            "deps",
+                            format!("Verificación inicial completada: {} dependencias", results.len()),
+                        );
                     }
                     Err(err) => {
                         eprintln!("[deps] Startup check failed: {err}");
+                        app_logs::error(
+                            &app_handle_deps,
+                            "deps",
+                            format!("Verificación inicial falló: {err}"),
+                        );
                     }
                 }
             });
@@ -423,6 +439,9 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             runtime::runtime_get_status,
             runtime::runtime_get_bootstrap_plan,
             runtime::runtime_repair,
+            app_logs::logs_get,
+            app_logs::logs_clear,
+            app_logs::logs_open_dir,
             open_external_url,
         ])
         .run(tauri::generate_context!())
@@ -805,7 +824,7 @@ fn migration_applied(conn: &Connection, name: &str) -> Result<bool, String> {
 
 /// Migrate the `extractions` table to remove the legacy CHECK constraint
 /// on the `method` column that only allowed 'native' and 'ocr'.
-/// PaddleOCR uses methods like 'paddle', 'tesseract', 'pdf_paddle', 'pdf_tesseract'.
+/// PaddleOCR uses methods like 'paddle', 'paddle_vl', 'pdf_paddle', and 'pdf_paddle_vl'.
 /// SQLite doesn't support ALTER TABLE DROP CONSTRAINT, so we recreate the table.
 fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
     // Check if the CHECK constraint exists by attempting an insert with a new method value.

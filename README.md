@@ -8,7 +8,7 @@ Desarrollado por [**HLab (Laboratorio de Humanidades Digitales)**](https://hlab.
 
 **EntropIA** es una app de escritorio open-source orientada a investigación en humanidades y ciencias sociales. Está pensada para trabajar con **imágenes, PDFs y audio** de forma **local/offline-first**, construir corpus y sumar capas de análisis asistido sobre las fuentes.
 
-**Release actual:** [`v0.0.16`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.16)
+**Release actual:** [`v0.0.18`](https://github.com/agusnieto77/EntropIA/releases/tag/v0.0.18)
 
 > Si querés probar la app sin compilar, andá directo a [GitHub Releases](https://github.com/agusnieto77/EntropIA/releases).
 
@@ -122,7 +122,6 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 | OCR nativo (cuando `paddle-ocr` está habilitado)                 | **`PP-OCRv5_mobile_det.mnn`** + **`latin_PP-OCRv5_mobile_rec_infer.mnn`**                         |
 | Corrección de orientación OCR nativo                             | **`PP-LCNet_x1_0_doc_ori.mnn`**                                                                   |
 | Detección de layout ONNX (hoy no activa en producción)           | **`PP-DocLayout-L.onnx`**                                                                         |
-| Fallback OCR clásico                                             | **Tesseract** (`spa+eng`)                                                                         |
 
 > Nota: varios pipelines tienen **degradación elegante**. Si falta un runtime, modelo o dependencia opcional, EntropIA intenta seguir funcionando con el mejor fallback disponible.
 
@@ -140,8 +139,8 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 
 | Botón visible | Dónde aparece                | Archivo frontend                         | Función frontend                            | Comando Tauri                                       | Archivo backend                                        | Backend efectivo                                                                        |
 | ------------- | ---------------------------- | ---------------------------------------- | ------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `OCRL`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR / Tesseract según disponibilidad)                                  |
-| `OCRH`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')`  | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR-VL por Python; persiste texto + layout premium cuando corresponde) |
+| `OCRL`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'light')` | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR liviano)                                                           |
+| `OCRH`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractText(selectedAsset, 'high')`  | `extract_text`                                      | `apps/desktop/src-tauri/src/ocr/commands.rs`           | **Local** (PaddleOCR-VL por Python; fallback a PaddleOCR liviano si falla o agota timeout) |
 | `OCRC`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmCorrectOcr()`                     | `llm_correct_ocr` / `llm_correct_ocr_asset`         | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
 | `OCRR`        | Vista de ítem, sección OCR   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()`                      | `llm_summarize` / `llm_summarize_asset`             | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
 | `Transcribe`  | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)`      | `transcribe_audio`                                  | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`)                                                   |
@@ -168,7 +167,7 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 | DB local      | **SQLite**                                                                  |
 | Store/UI      | workspace packages (`@entropia/store`, `@entropia/ui`)                      |
 | ORM cliente   | **Drizzle ORM**                                                             |
-| OCR           | **Tesseract**, `ocr-rs` (feature `paddle-ocr`), **PaddleOCR-VL** vía Python |
+| OCR           | `ocr-rs` (feature `paddle-ocr`) + **PaddleOCR-VL** vía Python               |
 | Transcripción | **faster-whisper** vía Python                                               |
 | Embeddings    | **fastembed** vía Python                                                    |
 | NER           | ONNX local + **spaCy** opcional                                             |
@@ -219,7 +218,7 @@ La app puede abrirse y usarse sin tener todo el stack local instalado, pero algu
 
 | Capacidad                | Requiere                             |
 | ------------------------ | ------------------------------------ |
-| OCR básico / fallback    | Tesseract disponible                 |
+| OCR básico (OCRL)        | PaddleOCR liviano incluido en el binario con feature `paddle-ocr` |
 | OCR High (OCRH)          | Python + `paddleocr[doc-parser]`     |
 | Transcripción            | Python + `faster-whisper`            |
 | Embeddings               | Python + `fastembed`                 |
@@ -280,17 +279,7 @@ La app puede **degradar con gracia** si faltan dependencias opcionales, pero par
 #### Toolchain nativo
 
 - Visual Studio Build Tools 2022 (MSVC)
-- LLVM/Clang para `bindgen`
-- Tesseract instalado vía `vcpkg`
-
-#### Tesseract (vcpkg)
-
-```powershell
-git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg install tesseract:x64-windows-static-md
-C:\vcpkg\vcpkg integrate install
-```
+- LLVM/Clang para dependencias nativas que usan `bindgen`
 
 #### LLVM
 
@@ -326,12 +315,6 @@ python -m spacy download es_core_news_lg
 > - `paddlepaddle==2.6.2` is **incompatible** with `paddleocr>=3.x` (missing `AnalysisConfig.set_optimization_level`).
 > - `paddlepaddle==3.3.1` has a **confirmed upstream bug** in CPU inference with oneDNN/PIR that crashes with `ConvertPirAttribute2RuntimeAttribute` (see [Paddle#77340](https://github.com/PaddlePaddle/Paddle/issues/77340)).
 > - The documented working range is **3.2.1 – 3.2.2**.
-
-#### Variables útiles
-
-```powershell
-[System.Environment]::SetEnvironmentVariable("TESSDATA_PREFIX", "C:\vcpkg\installed\x64-windows-static-md\share", "User")
-```
 
 > Recomendación práctica: si vas a desarrollar o validar OCR/NLP local de punta a punta, arrancá por **Windows**. Es el entorno con mejor cobertura documental y el más probado en este repo hoy.
 

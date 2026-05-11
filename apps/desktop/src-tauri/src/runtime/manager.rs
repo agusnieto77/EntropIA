@@ -300,6 +300,11 @@ impl RuntimeManager {
         app_handle: &AppHandle,
         status: &RuntimeStatus,
     ) -> Result<(), String> {
+        crate::app_logs::info(
+            app_handle,
+            "runtime",
+            format!("Estado runtime: {:?} · {}", status.state, status.summary),
+        );
         app_handle
             .emit("runtime://status", status)
             .map_err(|error| format!("Failed to emit runtime status event: {error}"))
@@ -311,6 +316,20 @@ impl RuntimeManager {
         app_handle: &AppHandle,
         operation: &RuntimeOperation,
     ) -> Result<(), String> {
+        crate::app_logs::info(
+            app_handle,
+            "runtime",
+            format!(
+                "Operación {:?}/{:?}: {}{}",
+                operation.kind,
+                operation.stage,
+                operation.summary,
+                operation
+                    .progress_percent
+                    .map(|pct| format!(" ({pct}%)"))
+                    .unwrap_or_default()
+            ),
+        );
         app_handle
             .emit("runtime://progress", operation)
             .map_err(|error| format!("Failed to emit runtime progress event: {error}"))
@@ -565,27 +584,70 @@ fn resolve_bundle_root(app_handle: &AppHandle) -> Result<std::path::PathBuf, Str
         return Ok(generated_dev_root);
     }
 
-    if let Ok(resource_root) = app_handle.path().resolve(
-        format!("runtime-pack/{platform}"),
-        tauri::path::BaseDirectory::Resource,
-    ) {
-        if resource_root.exists() {
-            return Ok(crate::path_utils::normalize_windows_path(resource_root));
+    let resource_candidates = bundled_runtime_pack_resource_candidates(&platform);
+    for resource_candidate in &resource_candidates {
+        if let Ok(resource_root) = app_handle
+            .path()
+            .resolve(resource_candidate, tauri::path::BaseDirectory::Resource)
+        {
+            if resource_root.join("manifest.json").is_file() {
+                return Ok(crate::path_utils::normalize_windows_path(resource_root));
+            }
         }
     }
 
-    let dev_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("runtime-pack")
-        .join(&platform);
-    if dev_root.exists() {
-        return Ok(dev_root);
+    #[cfg(debug_assertions)]
+    {
+        let dev_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("runtime-pack")
+            .join(&platform);
+        if dev_root.join("manifest.json").is_file() {
+            return Ok(dev_root);
+        }
+
+        return Err(missing_bundle_root_error(
+            &platform,
+            &resource_candidates,
+            Some(&dev_root),
+        ));
     }
 
-    Err(format!(
-        "Bundled runtime-pack not found for platform {platform}. Tried Tauri resources and {}/resources/runtime-pack/{platform}",
-        env!("CARGO_MANIFEST_DIR")
-    ))
+    #[cfg(not(debug_assertions))]
+    {
+        Err(missing_bundle_root_error(
+            &platform,
+            &resource_candidates,
+            None,
+        ))
+    }
+}
+
+fn bundled_runtime_pack_resource_candidates(platform: &str) -> Vec<String> {
+    vec![
+        format!("resources/runtime-pack/{platform}"),
+        format!("runtime-pack/{platform}"),
+    ]
+}
+
+fn missing_bundle_root_error(
+    platform: &str,
+    resource_candidates: &[String],
+    dev_root: Option<&Path>,
+) -> String {
+    let mut tried = resource_candidates
+        .iter()
+        .map(|candidate| format!("Tauri Resource::{candidate}"))
+        .collect::<Vec<_>>();
+
+    if let Some(dev_root) = dev_root {
+        tried.push(format!("dev fallback {}", dev_root.display()));
+    }
+
+    format!(
+        "Bundled runtime-pack not found for platform {platform}. Tried: {}",
+        tried.join(", ")
+    )
 }
 
 fn resolve_generated_dev_bundle_root(platform: &str) -> Option<PathBuf> {
@@ -2694,5 +2756,27 @@ mod tests {
 
         assert!(error.contains(RUNTIME_PACK_ROOT_ENV));
         assert!(error.contains("windows-x86_64/manifest.json"));
+    }
+
+    #[test]
+    fn bundled_runtime_pack_candidates_match_tauri_resource_layout() {
+        let candidates = bundled_runtime_pack_resource_candidates("windows-x86_64");
+
+        assert_eq!(
+            candidates.first().map(String::as_str),
+            Some("resources/runtime-pack/windows-x86_64")
+        );
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate == "runtime-pack/windows-x86_64"));
+    }
+
+    #[test]
+    fn release_missing_bundle_error_does_not_leak_dev_manifest_dir() {
+        let candidates = bundled_runtime_pack_resource_candidates("windows-x86_64");
+        let error = missing_bundle_root_error("windows-x86_64", &candidates, None);
+
+        assert!(error.contains("resources/runtime-pack/windows-x86_64"));
+        assert!(!error.contains(env!("CARGO_MANIFEST_DIR")));
     }
 }

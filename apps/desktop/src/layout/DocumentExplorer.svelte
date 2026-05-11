@@ -481,10 +481,33 @@
 </script>
 
 <aside
-  class="explorer is-open"
-  style:width={`${explorerWidth}px`}
+  class="explorer"
+  class:is-open={isOpen}
+  class:is-collapsed={!isOpen}
+  style:width={`${isOpen ? explorerWidth : COLLAPSED_WIDTH}px`}
   aria-label={$currentLocale && translateExplorer('explorer.aria')}
 >
+  <button
+    type="button"
+    class="explorer__rail-toggle"
+    aria-label={$currentLocale && translateExplorer(isOpen ? 'explorer.collapse' : 'explorer.expand')}
+    title={$currentLocale && translateExplorer(isOpen ? 'explorer.collapse' : 'explorer.expand')}
+    onclick={toggleOpen}
+  >
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d={isOpen ? 'M10 3.5 5.5 8l4.5 4.5' : 'M6 3.5 10.5 8 6 12.5'} />
+    </svg>
+  </button>
+
+  {#if isOpen}
   <div id="document-explorer-panel" class="explorer__panel">
       <div id="document-explorer-content" class="explorer__scroll">
         {#if loadError}
@@ -770,10 +793,12 @@
         onpointerdown={startResize}
       ></div>
   </div>
+  {/if}
 </aside>
 
 <style>
   .explorer {
+    position: relative;
     display: flex;
     flex: 0 0 auto;
     min-width: 180px;
@@ -782,6 +807,49 @@
     background: var(--color-surface);
     overflow: hidden;
     font-size: 12px;
+  }
+
+  .explorer.is-collapsed {
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+  }
+
+  .explorer__rail-toggle {
+    position: absolute;
+    top: 6px;
+    right: 5px;
+    z-index: 6;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition:
+      color var(--transition-base),
+      background-color var(--transition-base),
+      border-color var(--transition-base);
+  }
+
+  .explorer__rail-toggle:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 44%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    color: var(--color-text);
+  }
+
+  .explorer__rail-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+    outline-offset: 2px;
+  }
+
+  .explorer__rail-toggle svg {
+    width: 14px;
+    height: 14px;
   }
 
   .explorer__panel {
@@ -830,7 +898,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 7px 5px 10px 6px;
+    padding: 36px 5px 10px 6px;
     scrollbar-color: color-mix(in srgb, var(--color-text-muted) 58%, transparent) transparent;
     scrollbar-width: thin;
   }

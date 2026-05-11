@@ -710,6 +710,13 @@ where
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn emit_progress(app_handle: &AppHandle, item_id: &str, job: &str, pct: u8) {
+    if pct == 10 || pct == 100 {
+        crate::app_logs::info(
+            app_handle,
+            "nlp",
+            format!("{job} item_id={item_id} progreso={pct}%"),
+        );
+    }
     let _ = app_handle.emit(
         "nlp:progress",
         NlpProgressPayload {
@@ -721,6 +728,11 @@ fn emit_progress(app_handle: &AppHandle, item_id: &str, job: &str, pct: u8) {
 }
 
 fn emit_complete(app_handle: &AppHandle, item_id: &str, job: &str) {
+    crate::app_logs::info(
+        app_handle,
+        "nlp",
+        format!("{job} completado para item_id={item_id}"),
+    );
     let _ = app_handle.emit(
         "nlp:complete",
         NlpCompletePayload {
@@ -731,6 +743,11 @@ fn emit_complete(app_handle: &AppHandle, item_id: &str, job: &str) {
 }
 
 fn emit_error(app_handle: &AppHandle, item_id: &str, job: &str, error: &str) {
+    crate::app_logs::error(
+        app_handle,
+        "nlp",
+        format!("{job} falló para item_id={item_id}: {error}"),
+    );
     let _ = app_handle.emit(
         "nlp:error",
         NlpErrorPayload {

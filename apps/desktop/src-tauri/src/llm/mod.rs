@@ -373,6 +373,9 @@ pub struct LlmDownloadErrorPayload {
 }
 
 fn emit_progress(app_handle: &AppHandle, id: &str, job: &str, pct: u8) {
+    if pct == 0 || pct == 10 || pct == 100 {
+        crate::app_logs::info(app_handle, "llm", format!("{job} id={id} progreso={pct}%"));
+    }
     let _ = app_handle.emit(
         "llm:progress",
         LlmProgressPayload {
@@ -384,6 +387,11 @@ fn emit_progress(app_handle: &AppHandle, id: &str, job: &str, pct: u8) {
 }
 
 fn emit_complete(app_handle: &AppHandle, id: &str, job: &str, result: &str) {
+    crate::app_logs::info(
+        app_handle,
+        "llm",
+        format!("{job} completado para id={id}, caracteres={}", result.len()),
+    );
     let _ = app_handle.emit(
         "llm:complete",
         LlmCompletePayload {
@@ -395,6 +403,11 @@ fn emit_complete(app_handle: &AppHandle, id: &str, job: &str, result: &str) {
 }
 
 fn emit_error(app_handle: &AppHandle, id: &str, job: &str, error: &str) {
+    crate::app_logs::error(
+        app_handle,
+        "llm",
+        format!("{job} falló para id={id}: {error}"),
+    );
     let _ = app_handle.emit(
         "llm:error",
         LlmErrorPayload {
@@ -940,6 +953,16 @@ pub struct LlmQueue {
     db_path: PathBuf,
 }
 
+fn local_llm_disabled_reason() -> Option<&'static str> {
+    if cfg!(all(target_os = "windows", not(debug_assertions))) {
+        Some(
+            "Gemma local está temporalmente deshabilitado en Windows release para evitar cierres nativos de la app. Configurá OpenRouter o esperá el runtime local aislado.",
+        )
+    } else {
+        None
+    }
+}
+
 impl LlmQueue {
     pub fn new(db_path: PathBuf) -> (Self, mpsc::Receiver<LlmJob>) {
         let (sender, receiver) = mpsc::channel::<LlmJob>(64);
@@ -975,6 +998,10 @@ impl LlmQueue {
     /// Report local availability without loading Gemma. Existing models are
     /// usable, and the default model can still auto-download on first local job.
     fn local_model_can_initialize(&self) -> bool {
+        if local_llm_disabled_reason().is_some() {
+            return false;
+        }
+
         let conn = match rusqlite::Connection::open(&self.db_path) {
             Ok(c) => c,
             Err(_) => return false,
@@ -1032,9 +1059,13 @@ impl LlmQueue {
                 eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create app_settings table: {e}");
             }
 
-            eprintln!(
-                "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
-            );
+            if let Some(reason) = local_llm_disabled_reason() {
+                eprintln!("{LLM_LOCAL_PREFIX} Local Gemma engine disabled: {reason}");
+            } else {
+                eprintln!(
+                    "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
+                );
+            }
             let mut engine: Option<LlmEngine> = None;
             let mut init_error: Option<String> = None;
 
@@ -1056,9 +1087,12 @@ impl LlmQueue {
                     settings::get_setting(&conn, "openrouter_api_key").unwrap_or_default();
                 let remote_model = settings::get_setting(&conn, "openrouter_model")
                     .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
+                let local_disabled_reason = local_llm_disabled_reason();
                 let use_openrouter = match llm_mode.as_str() {
                     "openrouter" => true,
-                    "auto" => engine.is_none() && !api_key.is_empty(),
+                    "auto" => {
+                        (local_disabled_reason.is_some() || engine.is_none()) && !api_key.is_empty()
+                    }
                     _ => false, // "local" or unknown
                 };
                 let job_log_prefix = llm_job_prefix(use_openrouter, &job);
@@ -1094,6 +1128,11 @@ impl LlmQueue {
                     }
                 } else {
                     // Local engine path
+                    if let Some(reason) = local_disabled_reason {
+                        emit_error(&app_handle, &id, job_name, reason);
+                        continue;
+                    }
+
                     if engine.is_none() && init_error.is_none() {
                         let init_db_path = db_path.clone();
                         let init_app_handle = app_handle.clone();

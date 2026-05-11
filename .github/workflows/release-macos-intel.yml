@@ -27,12 +27,6 @@ jobs:
         with:
           ref: refs/tags/${{ github.event.inputs.tag }}
 
-      - name: Install macOS OCR dependencies
-        run: |
-          brew update
-          brew install leptonica tesseract pkg-config
-          echo "PKG_CONFIG_PATH=$(brew --prefix leptonica)/lib/pkgconfig:$(brew --prefix tesseract)/lib/pkgconfig:${PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
-
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:

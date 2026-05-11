@@ -2,12 +2,10 @@ pub mod commands;
 pub mod glm_ocr;
 pub mod postprocess;
 pub mod provider;
-pub mod tesseract;
 
 #[cfg(feature = "paddle-ocr")]
 pub mod paddle;
 
-mod engine;
 pub mod layout_onnx;
 pub mod paddle_vl;
 mod pdf;
@@ -19,6 +17,7 @@ pub mod reading_order;
 mod debug_viz;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
+#[cfg(feature = "paddle-ocr")]
 use crate::runtime::{managed_resource_path, RuntimeManager};
 use base64::Engine;
 use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
@@ -36,6 +35,7 @@ const OCRH_MODE_AUTO: &str = "auto";
 const OCRH_SETTING_MODE: &str = "ocrh_mode";
 const OCRH_SETTING_GLM_OCR_API_KEY: &str = "glm_ocr_api_key";
 
+#[cfg(feature = "paddle-ocr")]
 fn managed_runtime_root_for_ocr(
     app_handle: &AppHandle,
 ) -> Result<Option<std::path::PathBuf>, String> {
@@ -45,6 +45,7 @@ fn managed_runtime_root_for_ocr(
     )
 }
 
+#[cfg(any(feature = "paddle-ocr", test))]
 fn managed_runtime_root_for_ocr_with<E, H>(
     ensure_ready_or_bootstrap: E,
     hydrated_runtime_root: H,
@@ -640,12 +641,12 @@ pub struct OcrJob {
 
 /// OCR processing mode.
 ///
-/// - `Light`: Plain PaddleOCR/Tesseract OCR only — no layout detection, no Python subprocess.
+/// - `Light`: Plain lightweight PaddleOCR only — no layout detection, no Python subprocess.
 /// - `High`: PaddleOCR-VL Python subprocess only. Slower but layout-aware extraction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum OcrMode {
     #[default]
-    Light, // Plain OCR (PaddleOCR/Tesseract)
+    Light, // Plain lightweight PaddleOCR
     High, // PaddleOCR-VL only
 }
 
@@ -678,8 +679,8 @@ impl OcrQueue {
     ///
     /// The worker:
     /// 1. Opens its own SQLite connection for persisting extractions.
-    /// 2. Loads the OCR provider (PaddleOCR → Tesseract fallback).
-    /// 3. Keeps PaddleVL lazy; OCRH/high OCR resolves it only when requested.
+    /// 2. Loads the lightweight PaddleOCR provider.
+    /// 3. Keeps PaddleVL lazy; OCRH/high OCR resolves it only when requested and falls back to PaddleOCR.
     /// 4. Drains jobs serially from the receiver.
     /// 5. Saves extracted text to DB, then emits events per job.
     pub fn start_worker(
@@ -687,6 +688,37 @@ impl OcrQueue {
         mut receiver: mpsc::Receiver<OcrJob>,
         app_handle: AppHandle,
     ) {
+        #[cfg(not(feature = "paddle-ocr"))]
+        {
+            let _ = db_path;
+            std::thread::Builder::new()
+                .name("ocr-worker".to_string())
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    init_pdfium_path(&app_handle);
+
+                    eprintln!("[OCR] 🚨 PaddleOCR feature disabled — draining queue with errors");
+                    crate::app_logs::error(
+                        &app_handle,
+                        "ocr",
+                        "OCR local no disponible: binario compilado sin feature paddle-ocr",
+                    );
+                    while let Some(job) = receiver.blocking_recv() {
+                        let _ = app_handle.emit(
+                            "ocr:error",
+                            OcrErrorPayload {
+                                asset_id: job.asset_id,
+                                error: "OCR local no disponible: EntropIA fue compilado sin PaddleOCR liviano"
+                                    .to_string(),
+                            },
+                        );
+                    }
+                })
+                .expect("Failed to spawn OCR worker thread");
+            return;
+        }
+
+        #[cfg(feature = "paddle-ocr")]
         std::thread::Builder::new()
             .name("ocr-worker".to_string())
             .stack_size(8 * 1024 * 1024)
@@ -695,57 +727,63 @@ impl OcrQueue {
                 // This caches the DLL search path for all subsequent PDF operations.
                 init_pdfium_path(&app_handle);
 
-                // ── Provider initialization with fallback chain ───────────────
+                // ── Provider initialization: local OCR is Paddle-only ─────────
                 let provider: Arc<dyn OcrProvider> = {
-                    let mut chosen: Option<Arc<dyn OcrProvider>> = None;
-
                     #[cfg(feature = "paddle-ocr")]
                     {
                         let model_dir = resolve_paddle_model_dir(&app_handle);
                         match paddle::PaddleOcrProvider::new(model_dir) {
-                            Ok(p) => {
-                                chosen = Some(Arc::new(p) as Arc<dyn OcrProvider>);
-                            }
+                            Ok(p) => Arc::new(p) as Arc<dyn OcrProvider>,
                             Err(e) => {
-                                eprintln!(
-                                    "[OCR] ❌ PaddleOCR unavailable ({e}), trying Tesseract fallback"
+                                eprintln!("[OCR] 🚨 PaddleOCR unavailable — draining queue with errors: {e}");
+                                crate::app_logs::error(
+                                    &app_handle,
+                                    "ocr",
+                                    format!("PaddleOCR liviano no está disponible: {e}"),
                                 );
+                                while let Some(job) = receiver.blocking_recv() {
+                                    let _ = app_handle.emit(
+                                        "ocr:error",
+                                        OcrErrorPayload {
+                                            asset_id: job.asset_id,
+                                            error: format!(
+                                                "OCR local no disponible: PaddleOCR liviano no pudo inicializarse ({e})"
+                                            ),
+                                        },
+                                    );
+                                }
+                                return;
                             }
                         }
                     }
 
-                    if chosen.is_none() {
-                        let tessdata_path = resolve_tessdata_dir(&app_handle);
-                        match tesseract::TesseractProvider::init("spa+eng", tessdata_path.as_deref())
-                        {
-                            Ok(t) => {
-                                chosen = Some(Arc::new(t) as Arc<dyn OcrProvider>);
-                            }
-                            Err(e) => {
-                                eprintln!("[OCR] ❌ Tesseract also unavailable ({e})");
-                            }
+                    #[cfg(not(feature = "paddle-ocr"))]
+                    {
+                        eprintln!("[OCR] 🚨 PaddleOCR feature disabled — draining queue with errors");
+                        crate::app_logs::error(
+                            &app_handle,
+                            "ocr",
+                            "OCR local no disponible: binario compilado sin feature paddle-ocr",
+                        );
+                        while let Some(job) = receiver.blocking_recv() {
+                            let _ = app_handle.emit(
+                                "ocr:error",
+                                OcrErrorPayload {
+                                    asset_id: job.asset_id,
+                                    error: "OCR local no disponible: EntropIA fue compilado sin PaddleOCR liviano".to_string(),
+                                },
+                            );
                         }
-                    }
-
-                    match chosen {
-                        Some(p) => p,
-                        None => {
-                            eprintln!("[OCR] 🚨 No OCR provider available — draining queue with errors");
-                            while let Some(job) = receiver.blocking_recv() {
-                                let _ = app_handle.emit(
-                                    "ocr:error",
-                                    OcrErrorPayload {
-                                        asset_id: job.asset_id,
-                                        error: "No OCR engine available (PaddleOCR and Tesseract both failed to load)".to_string(),
-                                    },
-                                );
-                            }
-                            return;
-                        }
+                        return;
                     }
                 };
 
                 eprintln!("[OCR] Provider ready: {}", provider.name());
+                crate::app_logs::info(
+                    &app_handle,
+                    "ocr",
+                    format!("Motor OCR listo: {}", provider.name()),
+                );
 
                 let mut paddle_vl_engine: Option<PaddleVlEngine> = None;
                 eprintln!("[OCR] High OCR mode is lazy; PaddleOCR-VL will initialize on OCRH jobs");
@@ -762,6 +800,11 @@ impl OcrQueue {
                     }
                     Err(e) => {
                         eprintln!("[OCR] Failed to open worker DB connection: {e}");
+                        crate::app_logs::error(
+                            &app_handle,
+                            "ocr",
+                            format!("No se pudo abrir conexión DB del worker OCR: {e}"),
+                        );
                         while let Some(job) = receiver.blocking_recv() {
                             let _ = app_handle.emit(
                                 "ocr:error",
@@ -779,14 +822,29 @@ impl OcrQueue {
                     let asset_id = job.asset_id.clone();
                     if job.mode == OcrMode::High && paddle_vl_engine.is_none() {
                         eprintln!("[OCRH] Re-probing PaddleOCR-VL before high OCR job {asset_id}");
+                        crate::app_logs::info(
+                            &app_handle,
+                            "ocrh",
+                            format!("Re-probando PaddleOCR-VL para asset {asset_id}"),
+                        );
                         crate::python_discovery::invalidate_probe_cache_entry("paddle_vl");
                         match create_paddle_vl_engine_result(&app_handle, &db_path) {
                             Ok(engine) => {
                                 eprintln!("[OCRH] PaddleOCR-VL became available after re-probe");
+                                crate::app_logs::info(
+                                    &app_handle,
+                                    "ocrh",
+                                    "PaddleOCR-VL quedó disponible después de re-probar",
+                                );
                                 paddle_vl_engine = Some(engine);
                             }
                             Err(error) => {
                                 eprintln!("[OCRH] Local PaddleOCR-VL still unavailable after re-probe: {error}");
+                                crate::app_logs::warn(
+                                    &app_handle,
+                                    "ocrh",
+                                    format!("PaddleOCR-VL local sigue no disponible: {error}"),
+                                );
                             }
                         }
                     }
@@ -811,6 +869,11 @@ impl OcrQueue {
 
                             if let Err(e) = &save_result {
                                 eprintln!("[ocr] Failed to save extraction for {asset_id}: {e}");
+                                crate::app_logs::error(
+                                    &app_handle,
+                                    "ocr",
+                                    format!("No se pudo guardar extracción de {asset_id}: {e}"),
+                                );
                             } else if let Ok(Some(item_id)) = &save_result {
                                 let nlp_queue = app_handle.state::<NlpQueue>();
                                 if let Err(e) = nlp_queue.submit(NlpJob::ExtractEntitiesForAsset {
@@ -859,14 +922,24 @@ impl OcrQueue {
                             let _ = app_handle.emit(
                                 "ocr:complete",
                                 OcrCompletePayload {
-                                    asset_id,
-                                    method,
+                                    asset_id: asset_id.clone(),
+                                    method: method.clone(),
                                     text_length: text_content.len(),
                                     text_content,
                                 },
                             );
+                            crate::app_logs::info(
+                                &app_handle,
+                                "ocr",
+                                format!("OCR completado: asset_id={asset_id}, método={method}"),
+                            );
                         }
                         Err(err) => {
+                            crate::app_logs::error(
+                                &app_handle,
+                                "ocr",
+                                format!("OCR falló: asset_id={asset_id}, error={err}"),
+                            );
                             let _ = app_handle.emit(
                                 "ocr:error",
                                 OcrErrorPayload {
@@ -898,17 +971,6 @@ fn resolve_paddle_model_dir(app_handle: &AppHandle) -> std::path::PathBuf {
     )
 }
 
-/// Resolve the Tesseract tessdata directory.
-///
-/// Same pattern as PaddleOCR: Tauri resource path → CARGO_MANIFEST_DIR fallback.
-fn resolve_tessdata_dir(app_handle: &AppHandle) -> Option<String> {
-    let runtime_root = managed_runtime_root_for_ocr(app_handle).ok().flatten();
-    resolve_tessdata_dir_from_roots(
-        runtime_root.as_deref(),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-    )
-}
-
 #[cfg(feature = "paddle-ocr")]
 fn resolve_paddle_model_dir_from_roots(
     managed_root: Option<&std::path::Path>,
@@ -927,25 +989,6 @@ fn resolve_paddle_model_dir_from_roots(
     }
 
     std::path::PathBuf::from("resources/models/ocr")
-}
-
-fn resolve_tessdata_dir_from_roots(
-    managed_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-) -> Option<String> {
-    if let Some(root) = managed_root {
-        let managed = managed_resource_path(root, "tessdata");
-        if managed.exists() {
-            return Some(managed.to_string_lossy().into_owned());
-        }
-    }
-
-    let dev_path = manifest_dir.join("resources").join("tessdata");
-    if dev_path.exists() {
-        return Some(dev_path.to_string_lossy().into_owned());
-    }
-
-    Some(r"C:\vcpkg\installed\x64-windows-static-md\share\tessdata".to_string())
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -1448,18 +1491,19 @@ async fn process_pdf(
                 let engine_clone = paddle_vl_engine.cloned();
                 let mode_clone = mode.clone();
                 let original_page_dimensions = detect_image_dimensions(&page_image);
+                let app_handle_for_page = app_handle.clone();
 
                 let output = tokio::task::spawn_blocking(move || {
                     match mode_clone {
                         OcrMode::Light => {
-                            // Light mode: plain OCR, no layout detection
+                            // Light mode: lightweight PaddleOCR, no layout detection
                             provider_clone
                                 .recognize(&page_image)
                                 .map(|output| (output, None))
                                 .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                         }
                         OcrMode::High => {
-                            // High mode: try PaddleVL, fall back to plain OCR
+                            // High mode: try PaddleVL, fall back to lightweight PaddleOCR
                             if let Some(engine) = engine_clone {
                                 // Downscale large PDF page renders before PaddleVL (same reason as images)
                                 let vl_bytes = maybe_downscale_for_paddlevl(&page_image);
@@ -1471,7 +1515,7 @@ async fn process_pdf(
                                 ));
 
                                 if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
-                                     eprintln!("[OCRH] Failed to write temp file for PaddleVL on PDF page {}: {e}. Falling back to plain OCR.", page_idx + 1);
+                                     eprintln!("[OCRH] Failed to write temp file for PaddleVL on PDF page {}: {e}. Falling back to PaddleOCR light.", page_idx + 1);
                                      return provider_clone
                                          .recognize(&page_image)
                                          .map(|output| (output, None))
@@ -1506,10 +1550,42 @@ async fn process_pdf(
                                             Some(vl_result),
                                         ))
                                     }
-                                    Err(e) => Err(format!("OCRH local falló en la página {} con PaddleOCR-VL: {e}", page_idx + 1)),
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[OCRH] PaddleVL failed for PDF page {}: {e}. Falling back to PaddleOCR light.",
+                                            page_idx + 1
+                                        );
+                                        crate::app_logs::warn(
+                                            &app_handle_for_page,
+                                            "ocrh",
+                                            format!(
+                                                "PaddleOCR-VL falló/agotó timeout en PDF página {}; usando PaddleOCR liviano: {e}",
+                                                page_idx + 1
+                                            ),
+                                        );
+                                        provider_clone
+                                            .recognize(&page_image)
+                                            .map(|output| (output, None))
+                                            .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
+                                    }
                                 }
                             } else {
-                                Err("OCRH local no está disponible: PaddleOCR-VL no pudo inicializarse después de instalar dependencias. Revisá los logs [paddle_vl]/[OCRH] para el error de importación real.".to_string())
+                                eprintln!(
+                                    "[OCRH] PaddleVL engine unavailable for PDF page {}. Falling back to PaddleOCR light.",
+                                    page_idx + 1
+                                );
+                                crate::app_logs::warn(
+                                    &app_handle_for_page,
+                                    "ocrh",
+                                    format!(
+                                        "PaddleOCR-VL no disponible en PDF página {}; usando PaddleOCR liviano",
+                                        page_idx + 1
+                                    ),
+                                );
+                                provider_clone
+                                    .recognize(&page_image)
+                                    .map(|output| (output, None))
+                                    .map_err(|e| format!("OCR page {} failed: {e}", page_idx + 1))
                             }
                         }
                     }
@@ -1565,10 +1641,10 @@ async fn process_pdf(
 
 /// Image pipeline: mode-aware OCR with progressive fallback.
 ///
-/// **Light mode** (OCRL): Plain PaddleOCR/Tesseract OCR on the full image. No layout detection.
+/// **Light mode** (OCRL): Plain lightweight PaddleOCR on the full image. No layout detection.
 /// Fast and simple.
 ///
-/// **High mode** (OCRH): PaddleVL Python subprocess only. Slower but more accurate layout awareness.
+/// **High mode** (OCRH): PaddleVL Python subprocess with 900s timeout, then fallback to PaddleOCR.
 async fn process_image(
     provider: &Arc<dyn OcrProvider>,
     conn: &rusqlite::Connection,
@@ -1594,7 +1670,7 @@ async fn process_image(
     }
 }
 
-/// Light mode: plain PaddleOCR/Tesseract OCR — no layout detection.
+/// Light mode: plain lightweight PaddleOCR — no layout detection.
 ///
 /// Runs the provider's `recognize()` directly on the full image. Fast and simple.
 /// Layout-aware processing is available via High mode (PaddleVL).
@@ -1653,10 +1729,10 @@ async fn process_image_light(
     })
 }
 
-/// High mode: PaddleVL Python subprocess only.
+/// High mode: PaddleVL Python subprocess first, lightweight PaddleOCR fallback.
 ///
 /// Runs PaddleOCR-VL (layout + OCR in one pass) via Python subprocess.
-/// Falls back to plain OCR if PaddleVL is unavailable or fails.
+/// Falls back to PaddleOCR light if PaddleVL is unavailable, fails, or times out.
 async fn process_image_high(
     provider: &Arc<dyn OcrProvider>,
     conn: &rusqlite::Connection,
@@ -1709,6 +1785,7 @@ async fn process_image_high(
         let bytes_owned = bytes.to_vec();
         let asset_id_owned = asset_id.to_string();
         let original_image_dimensions = detect_image_dimensions(bytes);
+        let app_handle_for_high = app_handle.clone();
 
         let output = tokio::task::spawn_blocking(move || {
             // Downscale large images before feeding to PaddleVL — inference time
@@ -1724,7 +1801,7 @@ async fn process_image_high(
             if let Err(e) = std::fs::write(&temp_path, &vl_bytes) {
                 eprintln!(
                     "[OCRH] Failed to write temp file for PaddleVL for {asset_id_owned}: {e}. \
-                     Falling back to plain OCR."
+                     Falling back to PaddleOCR light."
                 );
                 return provider_clone
                     .recognize(&bytes_owned)
@@ -1737,7 +1814,7 @@ async fn process_image_high(
                 None => {
                     eprintln!(
                         "[OCRH] Invalid temp path for PaddleVL for {asset_id_owned}. \
-                         Falling back to plain OCR."
+                         Falling back to PaddleOCR light."
                     );
                     return provider_clone
                         .recognize(&bytes_owned)
@@ -1771,7 +1848,14 @@ async fn process_image_high(
                 Err(e) => {
                     eprintln!(
                         "[OCRH] PaddleVL failed for {asset_id_owned}: {e}. \
-                         Falling back to plain OCR."
+                         Falling back to PaddleOCR light."
+                    );
+                    crate::app_logs::warn(
+                        &app_handle_for_high,
+                        "ocrh",
+                        format!(
+                            "PaddleOCR-VL falló/agotó timeout en {asset_id_owned}; usando PaddleOCR liviano: {e}"
+                        ),
                     );
                     provider_clone
                         .recognize(&bytes_owned)
@@ -1787,7 +1871,15 @@ async fn process_image_high(
         return Ok(output);
     }
 
-    Err("OCRH local no está disponible: PaddleOCR-VL no pudo inicializarse después de instalar dependencias. Revisá los logs [paddle_vl]/[OCRH] para el error de importación real.".to_string())
+    eprintln!(
+        "[OCRH] PaddleVL engine unavailable for {asset_id}. Falling back to PaddleOCR light."
+    );
+    crate::app_logs::warn(
+        app_handle,
+        "ocrh",
+        format!("PaddleOCR-VL no disponible para {asset_id}; usando PaddleOCR liviano"),
+    );
+    process_image_light(provider, bytes, asset_id, app_handle).await
 }
 
 /// Emit an `ocr:progress` event to the frontend.
@@ -2310,7 +2402,7 @@ mod tests {
             &GlmOcrLayoutDetail {
                 index: Some(1),
                 label: Some("text".to_string()),
-                bbox_2d: vec![0.1, 0.2, 0.3, 0.4],
+                bbox_2d: vec![0.1, 0.2, 0.05, 0.04],
                 content: Some("Texto".to_string()),
                 height: Some(1000),
                 width: Some(800),
@@ -2322,8 +2414,8 @@ mod tests {
 
         assert_eq!(bbox.x, 80);
         assert_eq!(bbox.y, 200);
-        assert_eq!(bbox.width, 240);
-        assert_eq!(bbox.height, 400);
+        assert_eq!(bbox.width, 40);
+        assert_eq!(bbox.height, 40);
     }
 
     #[test]
@@ -2386,22 +2478,6 @@ mod tests {
 
         assert!(!glm_response_has_useful_content(&empty));
         assert!(glm_response_has_useful_content(&useful));
-    }
-
-    #[test]
-    fn resolve_tessdata_dir_prefers_managed_runtime_assets() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let managed_tessdata = runtime_dir.path().join("resources").join("tessdata");
-        std::fs::create_dir_all(&managed_tessdata).expect("create tessdata dir");
-
-        let resolved =
-            resolve_tessdata_dir_from_roots(Some(runtime_dir.path()), manifest_dir.path());
-
-        assert_eq!(
-            resolved,
-            Some(managed_tessdata.to_string_lossy().into_owned())
-        );
     }
 
     #[cfg(feature = "paddle-ocr")]

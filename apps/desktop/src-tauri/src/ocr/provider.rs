@@ -34,7 +34,7 @@ pub struct OcrRegion {
 /// Unified OCR output from any provider.
 ///
 /// Contains the full recognized text, structured regions with bounding boxes,
-/// and the method used to produce the result (e.g. "paddle" or "tesseract").
+/// and the method used to produce the result (e.g. "paddle" or "paddle_vl").
 #[derive(Debug, Clone, Serialize)]
 pub struct OcrOutput {
     pub text: String,
@@ -96,7 +96,7 @@ pub trait OcrProvider: Send + Sync {
     /// on small crops because it lacks document-level context.
     ///
     /// Default implementation falls back to `recognize` for providers that
-    /// do not implement orientation correction (e.g. Tesseract).
+    /// do not expose a separate no-orientation path.
     ///
     /// NOTE: Currently unused in production — OCRL mode no longer crops regions.
     /// Kept for potential future re-enablement.
@@ -105,6 +105,6 @@ pub trait OcrProvider: Send + Sync {
         self.recognize(image_bytes)
     }
 
-    /// Short identifier for the provider (e.g. "paddle", "tesseract").
+    /// Short identifier for the provider (e.g. "paddle").
     fn name(&self) -> &str;
 }

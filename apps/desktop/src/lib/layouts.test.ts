@@ -50,7 +50,7 @@ describe('getLayoutByAsset', () => {
 })
 
 describe('buildLayoutBlockViews', () => {
-  it('normalizes block previews, matches overlay regions, and sorts blocks by page/order', () => {
+  it('normalizes block previews and sorts blocks by page/order', () => {
     const layout = {
       id: 'layout-1',
       assetId: 'asset-1',
@@ -107,7 +107,7 @@ describe('buildLayoutBlockViews', () => {
       page: 1,
       imageWidth: 900,
       imageHeight: 1300,
-      overlayBbox: { x: 10, y: 20, width: 120, height: 60 },
+      overlayBbox: { x: 1, y: 2, width: 3, height: 4 },
       overlaySource: 'block',
     })
     expect(blocks[0]?.preview).toHaveLength(120)
@@ -123,7 +123,7 @@ describe('buildLayoutBlockViews', () => {
       imageWidth: 1200,
       imageHeight: 1800,
       preview: 'Segundo bloque con espacios',
-      overlayBbox: { x: 5, y: 15, width: 40, height: 55 },
+      overlayBbox: { x: 10, y: 20, width: 30, height: 40 },
       overlaySource: 'block',
     })
   })

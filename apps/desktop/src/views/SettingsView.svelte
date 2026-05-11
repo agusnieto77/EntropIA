@@ -32,11 +32,12 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { Button, Card, Input } from '@entropia/ui'
   import DependenciasTab from './DependenciasTab.svelte'
+  import LogsTab from './LogsTab.svelte'
 
   // Tab state — auto-open deps tab if critical deps are missing
   let hasDepsWarning = $state(isCriticalMissing())
   const unsubDeps = onCriticalMissingChange((v) => { hasDepsWarning = v })
-  let activeTab = $state<'openrouter' | 'dependencias'>(
+  let activeTab = $state<'openrouter' | 'dependencias' | 'logs'>(
     isCriticalMissing() ? 'dependencias' : 'openrouter',
   )
 
@@ -391,6 +392,14 @@
         {#if hasDepsWarning}
           <span class="settings-tab__badge"></span>
         {/if}
+      </button>
+      <button
+        class="settings-tab"
+        class:settings-tab--active={activeTab === 'logs'}
+        type="button"
+        onclick={() => (activeTab = 'logs')}
+      >
+        Logs
       </button>
     </nav>
 
@@ -843,6 +852,8 @@
 
     {:else if activeTab === 'dependencias'}
     <DependenciasTab />
+    {:else if activeTab === 'logs'}
+    <LogsTab />
     {/if}
   </div>
 {/key}

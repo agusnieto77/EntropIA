@@ -18,7 +18,7 @@
 //! The `pdfium-render` crate requires a native Pdfium shared library (`pdfium.dll`
 //! on Windows, `libpdfium.so` on Linux, `libpdfium.dylib` on macOS).
 //!
-//! Resolution order (3-tier, matching the ONNX/Tesseract patterns):
+//! Resolution order (3-tier, matching the bundled native-library patterns):
 //! 1. **Bundled resource** — `resources/lib/` via Tauri's `BaseDirectory::Resource`
 //! 2. **Dev fallback** — `CARGO_MANIFEST_DIR/resources/lib/` (for development)
 //! 3. **System library** — OS default search paths (`PATH`, `/usr/lib`, etc.)

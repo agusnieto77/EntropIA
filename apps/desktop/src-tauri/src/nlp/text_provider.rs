@@ -212,7 +212,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-            params![asset_id, item_id, "asset.txt", 1_i64],
+            params![asset_id, item_id, "asset.txt", "text", 1_i64],
         )
         .expect("asset insert should succeed");
     }

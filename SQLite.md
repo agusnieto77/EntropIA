@@ -7,13 +7,13 @@ Documentación de la base SQLite activa de EntropIA, cómo inspeccionarla y cuá
 La base activa detectada para la app Tauri actual es:
 
 ```text
-C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite
+%APPDATA%\com.entropia.desktop\entropia.sqlite
 ```
 
 También existe una base legacy de migración:
 
 ```text
-C:\Users\agusn\AppData\Roaming\com.entropia.app\entropia.sqlite
+%APPDATA%\com.entropia.app\entropia.sqlite
 ```
 
 ## De dónde sale esta ruta
@@ -30,7 +30,7 @@ C:\Users\agusn\AppData\Roaming\com.entropia.app\entropia.sqlite
 Si tenés `sqlite3` instalado:
 
 ```powershell
-sqlite3 "C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite"
+sqlite3 "$env:APPDATA\com.entropia.desktop\entropia.sqlite"
 ```
 
 ## Comandos básicos de inspección
@@ -833,7 +833,7 @@ Buscar extractions por método:
 ```sql
 SELECT asset_id, method, confidence, created_at
 FROM extractions
-WHERE method IN ('native', 'paddle_vl', 'paddle', 'tesseract', 'pdf_paddle_vl', 'pdf_paddle', 'pdf_tesseract')
+WHERE method IN ('native', 'paddle_vl', 'paddle', 'pdf_paddle_vl', 'pdf_paddle')
 ORDER BY created_at DESC;
 ```
 

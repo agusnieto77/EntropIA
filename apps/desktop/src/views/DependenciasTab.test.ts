@@ -350,7 +350,7 @@ describe('DependenciasTab', () => {
   it('labels healthy embedded runtime without a managed venv honestly', async () => {
     depsMocks.getUvStatus.mockResolvedValueOnce({
       uv_ready: true,
-      uv_path: 'C:\\Users\\agusn\\AppData\\Roaming\\com.entropia.desktop\\runtime\\2026.05.0\\uv\\uv.exe',
+      uv_path: 'C:\\Users\\test\\AppData\\Roaming\\com.entropia.desktop\\runtime\\2026.05.0\\uv\\uv.exe',
       uv_version: '0.6.14 (a4cec56dc 2025-04-09)',
       uv_source: 'managed-runtime',
       uv_compatible_for_dev: true,

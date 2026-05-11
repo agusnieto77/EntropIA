@@ -925,13 +925,39 @@ async fn update_dependency_status(
         map.statuses.insert(id.clone(), status.clone());
     }
 
-    let _ = app.emit(
-        "deps://progress",
-        DepsProgressPayload {
-            id: id.clone(),
-            status,
-        },
-    );
+    emit_progress_best_effort(app, id.clone(), status);
+}
+
+fn emit_progress_best_effort(app: &tauri::AppHandle, id: DependencyId, status: DependencyStatus) {
+    if let Err(error) = app.emit("deps://progress", DepsProgressPayload { id, status }) {
+        eprintln!("[deps/install] Failed to emit dependency progress event: {error}");
+    }
+}
+
+fn emit_complete_best_effort(app: &tauri::AppHandle, payload: DepsCompletePayload) {
+    if let Err(error) = app.emit("deps://complete", payload) {
+        eprintln!("[deps/install] Failed to emit dependency completion event: {error}");
+    }
+}
+
+fn first_failed_prerequisite_message(
+    dep: &DependencySpec,
+    results: &[DepCheckResult],
+) -> Option<String> {
+    dep.managed_prerequisites.iter().find_map(|prerequisite_id| {
+        let prerequisite_result = results.iter().find(|result| &result.id == prerequisite_id)?;
+        if matches!(prerequisite_result.status, DependencyStatus::Installed { .. }) {
+            return None;
+        }
+
+        let prerequisite_name = find_dep(prerequisite_id)
+            .map(|spec| spec.display_name)
+            .unwrap_or("un prerequisito");
+        Some(format!(
+            "{} bloqueado: {} no quedó instalado correctamente en esta corrida. Repará ese prerequisito antes de continuar.",
+            dep.display_name, prerequisite_name
+        ))
+    })
 }
 
 fn managed_install_plan(dep: &'static DependencySpec) -> Vec<&'static DependencySpec> {
@@ -1163,12 +1189,10 @@ pub async fn install_all(
             DependencyStatus::Installing { percent: 0 },
         );
     }
-    let _ = app.emit(
-        "deps://progress",
-        DepsProgressPayload {
-            id: DependencyId::Python,
-            status: DependencyStatus::Installing { percent: 0 },
-        },
+    emit_progress_best_effort(
+        app,
+        DependencyId::Python,
+        DependencyStatus::Installing { percent: 0 },
     );
 
     let venv_python = match ensure_install_runtime_venv(&runtime).await {
@@ -1180,28 +1204,16 @@ pub async fn install_all(
                 let mut map = state.0.lock().await;
                 map.statuses.insert(DependencyId::Python, status.clone());
             }
-            let _ = app.emit(
-                "deps://progress",
-                DepsProgressPayload {
-                    id: DependencyId::Python,
-                    status,
-                },
-            );
+            emit_progress_best_effort(app, DependencyId::Python, status);
             p
         }
         Err(e) => {
-            let status = DependencyStatus::Failed(e.clone());
+            let status = DependencyStatus::Failed { message: e.clone() };
             {
                 let mut map = state.0.lock().await;
                 map.statuses.insert(DependencyId::Python, status.clone());
             }
-            let _ = app.emit(
-                "deps://progress",
-                DepsProgressPayload {
-                    id: DependencyId::Python,
-                    status,
-                },
-            );
+            emit_progress_best_effort(app, DependencyId::Python, status);
             return Err(e);
         }
     };
@@ -1231,19 +1243,30 @@ pub async fn install_all(
             continue; // Already handled above.
         }
 
+        if let Some(blocked_message) = first_failed_prerequisite_message(dep, &results) {
+            let blocked_status = DependencyStatus::Failed {
+                message: blocked_message,
+            };
+            {
+                let mut map = state.0.lock().await;
+                map.statuses.insert(dep.id.clone(), blocked_status.clone());
+            }
+            emit_progress_best_effort(app, dep.id.clone(), blocked_status.clone());
+            results.push(DepCheckResult {
+                id: dep.id.clone(),
+                status: blocked_status,
+                version: None,
+            });
+            continue;
+        }
+
         // Mark as installing.
         let installing = DependencyStatus::Installing { percent: 0 };
         {
             let mut map = state.0.lock().await;
             map.statuses.insert(dep.id.clone(), installing.clone());
         }
-        let _ = app.emit(
-            "deps://progress",
-            DepsProgressPayload {
-                id: dep.id.clone(),
-                status: installing,
-            },
-        );
+        emit_progress_best_effort(app, dep.id.clone(), installing);
 
         // Clone handles for the closure (on_output captures dep.display_name).
         let display_name = dep.display_name;
@@ -1259,10 +1282,22 @@ pub async fn install_all(
         .await;
 
         let final_status = match install_result {
-            Ok(()) => DependencyStatus::Installed { version: None },
+            Ok(()) => {
+                let verified = probe_one(dep, &venv_python).await;
+                if matches!(verified, DependencyStatus::Installed { .. }) {
+                    verified
+                } else {
+                    DependencyStatus::Failed {
+                        message: format!(
+                            "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
+                            dep.display_name
+                        ),
+                    }
+                }
+            }
             Err(msg) => {
                 eprintln!("[deps/install] failed {}: {msg}", dep.display_name);
-                DependencyStatus::Failed(msg)
+                DependencyStatus::Failed { message: msg }
             }
         };
 
@@ -1270,13 +1305,7 @@ pub async fn install_all(
             let mut map = state.0.lock().await;
             map.statuses.insert(dep.id.clone(), final_status.clone());
         }
-        let _ = app.emit(
-            "deps://progress",
-            DepsProgressPayload {
-                id: dep.id.clone(),
-                status: final_status.clone(),
-            },
-        );
+        emit_progress_best_effort(app, dep.id.clone(), final_status.clone());
 
         results.push(DepCheckResult {
             id: dep.id.clone(),
@@ -1299,8 +1328,8 @@ pub async fn install_all(
         }
     });
 
-    let _ = app.emit(
-        "deps://complete",
+    emit_complete_best_effort(
+        app,
         DepsCompletePayload {
             results,
             all_critical_installed,
@@ -1349,13 +1378,7 @@ pub async fn install_one(
             let mut map = state.0.lock().await;
             map.statuses.insert(DependencyId::Python, status.clone());
         }
-        let _ = app.emit(
-            "deps://progress",
-            DepsProgressPayload {
-                id: DependencyId::Python,
-                status,
-            },
-        );
+        emit_progress_best_effort(app, DependencyId::Python, status);
 
         let created = ensure_install_runtime_venv(&runtime).await?;
 
@@ -1373,13 +1396,7 @@ pub async fn install_one(
             let mut map = state.0.lock().await;
             map.statuses.insert(DependencyId::Python, status.clone());
         }
-        let _ = app.emit(
-            "deps://progress",
-            DepsProgressPayload {
-                id: DependencyId::Python,
-                status,
-            },
-        );
+        emit_progress_best_effort(app, DependencyId::Python, status);
 
         created
     };
@@ -1433,10 +1450,12 @@ pub async fn install_one(
                 app,
                 state,
                 &planned_dep.id,
-                DependencyStatus::Failed(format!(
-                    "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
-                    planned_dep.display_name
-                )),
+                DependencyStatus::Failed {
+                    message: format!(
+                        "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
+                        planned_dep.display_name
+                    ),
+                },
             )
             .await;
             return Err(format!(
@@ -1461,7 +1480,9 @@ pub async fn install_one(
     .await;
 
     if let Err(ref msg) = install_result {
-        let status = DependencyStatus::Failed(msg.clone());
+        let status = DependencyStatus::Failed {
+            message: msg.clone(),
+        };
         update_dependency_status(app, state, id, status).await;
         return Err(msg.clone());
     }
@@ -1482,6 +1503,18 @@ pub async fn install_one(
     .unwrap_or(venv_python);
 
     let probed_status = probe_one(dep, &probe_python).await;
+
+    if !matches!(probed_status, DependencyStatus::Installed { .. }) {
+        let message = format!(
+            "No se pudo confirmar {} dentro del venv administrado después de instalarlo",
+            dep.display_name
+        );
+        let status = DependencyStatus::Failed {
+            message: message.clone(),
+        };
+        update_dependency_status(app, state, id, status).await;
+        return Err(message);
+    }
 
     update_dependency_status(app, state, id, probed_status.clone()).await;
 
@@ -1529,6 +1562,11 @@ async fn ensure_uv(
 
     let app_clone = app.clone();
     uv::download(app_data_dir, move |percent, message| {
+        crate::app_logs::info(
+            &app_clone,
+            "deps/uv",
+            format!("Descarga uv {percent}% · {message}"),
+        );
         let _ = app_clone.emit(
             "deps://uv_progress",
             DepsUvProgressPayload {

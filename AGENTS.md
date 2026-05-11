@@ -7,17 +7,7 @@
 - `rustup` with stable toolchain
 - MSVC Build Tools 2022
 
-### Tesseract (via vcpkg)
-
-```powershell
-# One-time setup
-git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-C:\vcpkg\bootstrap-vcpkg.bat
-C:\vcpkg\vcpkg install tesseract:x64-windows-static-md
-C:\vcpkg\vcpkg integrate install
-```
-
-### LLVM/Clang (required by bindgen for leptess)
+### LLVM/Clang (required by native Rust dependencies that use bindgen)
 
 ```powershell
 choco install llvm -y
@@ -28,13 +18,6 @@ choco install llvm -y
 ### Environment Variables
 
 - `LIBCLANG_PATH=C:\Program Files\LLVM\bin` (for bindgen at build time)
-- `TESSDATA_PREFIX=C:\vcpkg\installed\x64-windows-static-md\share` (for dev mode)
-
-### Tesseract Language Models
-
-- `resources/tessdata/eng.traineddata` and `resources/tessdata/spa.traineddata`
-- Bundled via `tauri.conf.json` resources
-- At runtime, resolved via `BaseDirectory::Resource` → `tessdata/`
 
 ### CMake (required by whisper-rs for whisper.cpp build)
 
@@ -66,25 +49,22 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
   - Returns structured blocks with text content, labels, bounding boxes, and reading order
   - Label mapping (paddle_vl.py → Rust): doc_title/paragraph_title → title, text → plain_text, image → figure, table → table, vision_footnote → abandoned
   - Text formatting rules in paddle_vl.py: titles get `## ` prefix, tables get `---` wrapper, images skipped, vision_footnote gets `Note: ` prefix
-  - Method field: `"paddle_vl"` (when PaddleVL succeeds) or `"paddle"`/`"tesseract"` (fallback to plain OCR)
+  - Method field: `"paddle_vl"` (when PaddleVL succeeds) or `"paddle"` (fallback to lightweight OCR)
 - **Native OCR engine** (feature-gated as `paddle-ocr`): PaddleOCR via `ocr-rs` crate (MNN backend)
   - PP-OCRv5 detection + latin recognition
   - Used as fallback provider when PaddleVL is unavailable
   - PP-LCNet document orientation model (`PP-LCNet_x1_0_doc_ori.mnn`, bundled): auto-detects rotation and corrects before OCR
   - Postprocessing heuristics (`postprocess.rs`) are DISABLED — kept for reference only
-- **Fallback engine**: Tesseract via `leptess` crate
-  - Languages: `spa+eng` (Spanish primary, English fallback)
-  - `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`
-- **Provider chain**: PaddleVL (layout-aware) → PaddleOCR (plain) → Tesseract (plain) → Error
+- **Provider chain**: PaddleVL (layout-aware) → PaddleOCR (plain) → Error
   - PaddleVL is tried first on every image; if it fails or is unavailable, plain OCR via the OcrProvider runs
   - For PDFs: native text extraction first, then each page is rendered and PaddleVL is tried per page
-- **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"` | `"pdf_tesseract"`.
-- **No preprocessing**: Tesseract handles its own binarization internally. PaddleOCR does its own internally.
+- **PDF pipeline**: Native text extraction first (`pdf-extract`), quality-checked with `is_quality_text()` (≥50 alphanumeric chars). If native text fails quality check, ALL pages are rendered via `pdfium-render` at 300 DPI and OCR'd sequentially. Results are concatenated with `---` page separators. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"`.
+- **No preprocessing**: PaddleOCR handles its own preprocessing internally.
 
 ## Pdfium Native Library Resolution
 
 - **Library**: `pdfium.dll` (Windows) / `libpdfium.so` (Linux) / `libpdfium.dylib` (macOS)
-- **Resolution order** (3-tier, matching ONNX/Tesseract patterns):
+- **Resolution order** (3-tier, matching bundled native-library patterns):
   1. **Bundled resource**: `resources/lib/` via Tauri's `BaseDirectory::Resource` (production builds)
   2. **Dev fallback**: `CARGO_MANIFEST_DIR/resources/lib/` (development)
   3. **System library**: OS default search paths (PATH, /usr/lib, etc.)
@@ -140,7 +120,6 @@ Note: Conversion does NOT work on Windows due to paddle2onnx incompatibility wit
 ```powershell
 # Set env vars (already set permanently, but for reference):
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-$env:TESSDATA_PREFIX = "C:\vcpkg\installed\x64-windows-static-md\share"
 
 # Build
 cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -153,14 +132,12 @@ cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 - `apps/desktop/src-tauri/src/ocr/provider.rs` - OcrProvider trait + OcrOutput/OcrRegion/BoundingBox types + LayoutCategory/LayoutRegion/LayoutOutput types
 - `apps/desktop/src-tauri/src/ocr/layout_onnx.rs` - OnnxLayoutEngine: PP-DocLayout-S ONNX inference, PicoDet output parsing, label mapping
-- `apps/desktop/src-tauri/src/ocr/tesseract.rs` - TesseractProvider (LepTess wrapper)
 - `apps/desktop/src-tauri/src/ocr/paddle.rs` - PaddleOcrProvider with ocr-rs, optional OriModel, Debug impl, integration test
 - `apps/desktop/src-tauri/src/ocr/paddle_vl.rs` - PaddleVlEngine, PaddleVlConfig, which_python_for_paddle_vl, create_paddle_vl_engine, sentinel JSON parsing
 - `apps/desktop/src-tauri/src/ocr/layout_onnx.rs` - OnnxLayoutEngine: PP-DocLayout-S (PicoDet) ONNX layout detection, scale_factor input, [N,6] output parsing
 - `apps/desktop/src-tauri/src/ocr/postprocess.rs` - Column grouping, hyphen merge, paragraph detection (DISABLED — kept for reference)
 - `apps/desktop/src-tauri/src/ocr/pdf.rs` - PDF text extraction, page rendering via pdfium-render, and Pdfium DLL resolution (3-tier: bundled → dev → system)
 - `apps/desktop/src-tauri/src/ocr/mod.rs` - Worker with Arc<dyn OcrProvider> fallback chain, PaddleVL integration, multi-page PDF OCR
-- `apps/desktop/src-tauri/src/ocr/engine.rs` - Original Tesseract engine (pub(crate) fields, Debug derive)
 - `apps/desktop/src-tauri/src/transcription/engine.rs` - Python subprocess adapter (spawns transcribe.py)
 - `apps/desktop/src-tauri/src/transcription/mod.rs` - Transcription job queue, worker loop, persistence, Python detection
 - `apps/desktop/src-tauri/src/transcription/commands.rs` - Tauri IPC commands for transcription

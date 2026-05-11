@@ -6,8 +6,8 @@
 //!
 //! PP-OCRv5 detection + latin recognition covers Spanish, English, and 80+
 //! additional languages. The detection model finds text regions first, then
-//! recognition decodes each region — fundamentally better than Tesseract for
-//! complex layouts (multi-column, rotated text, photos of documents).
+//! recognition decodes each region, which is a strong fit for complex layouts
+//! (multi-column, rotated text, photos of documents).
 //!
 //! ## Orientation correction
 //!
@@ -328,7 +328,7 @@ mod tests {
         let workspace_root = manifest_dir
             .parent() // apps/desktop
             .and_then(|p| p.parent()) // apps
-            .and_then(|p| p.parent()) // workspace root (POSITRON/EntropIA)
+            .and_then(|p| p.parent()) // workspace root
             .expect("no workspace root");
         let test_image_path = workspace_root.join("rust_style_binary.png");
 

@@ -7,7 +7,7 @@
 //! 3. **Paragraph detection** — inserts paragraph breaks between lines where
 //!    a sentence ends and the next starts with an uppercase letter.
 //!
-//! Tesseract output (no bounding boxes) bypasses post-processing entirely.
+//! OCR output without bounding boxes bypasses post-processing entirely.
 //!
 //! NOTE: Currently unused in production — was part of the layout-aware pipeline
 //! that is no longer active in OCRL mode. Kept for potential future re-enablement.
@@ -25,7 +25,7 @@ pub(crate) const COLUMN_OVERLAP_THRESHOLD: i32 = 200;
 
 /// Apply all post-processing steps to OCR regions.
 ///
-/// Regions must have bounding boxes (from PaddleOCR). Tesseract-like output
+/// Regions must have bounding boxes (from PaddleOCR). Plain text-only output
 /// with `bbox: None` should skip this pipeline entirely.
 pub fn postprocess(regions: Vec<OcrRegion>) -> Vec<OcrRegion> {
     let grouped = group_columns(regions);

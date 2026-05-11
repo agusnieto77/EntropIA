@@ -18,7 +18,7 @@ PNPM 9.15.4 workspaces + Turborepo. Three layers:
 The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 
 - **`db/`** — SQLite state management, Tauri IPC commands (`db_execute`, `db_select`, `db_select_rows`)
-- **`ocr/`** — OCR engine with provider chain (PaddleOCR primary → Tesseract fallback), PDF text extraction, layout-aware OCR, async job queue
+- **`ocr/`** — OCR engine with PaddleOCR light + PaddleOCR-VL high mode, PDF text extraction, layout-aware OCR, async job queue
 - **`nlp/`** — FTS5 indexing, embeddings (Python subprocess), hybrid NER (ONNX BERT + spaCy + rule-based), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`) with its own engine registry.
 - **`layout/`** — DocLayout-YOLO document structure analysis (Python subprocess), reading order algorithm, stores results in `layouts` table
 - **`transcription/`** — Audio transcription via Python faster-whisper subprocess, async job queue
@@ -30,7 +30,7 @@ The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 - **`deps/`** — Python dependency manager using **uv** (venv creation + pip). Checks/installs: Python, fastembed, paddleocr, faster-whisper, spacy. Emits `deps://progress|complete|error` Tauri events. Frontend: `DependenciasTab.svelte` in settings. Critical deps block AI features if missing.
 
 `openspec/` contains SDD (Specification-Driven Development) specs and change archives — not code.
-`AGENTS.md` contains detailed build prerequisites (Windows toolchain, vcpkg Tesseract, LLVM/Clang) and engine architecture notes.
+`AGENTS.md` contains detailed build prerequisites (Windows toolchain, LLVM/Clang, Python OCR/NLP packages) and engine architecture notes.
 
 ## Common Commands
 
@@ -70,7 +70,7 @@ pnpm rust:quality:report
 pnpm test:ui
 ```
 
-**First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, vcpkg Tesseract, LLVM/Clang, CMake). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
+**First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, LLVM/Clang, CMake, Python OCR/NLP packages). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
 
 ## Testing
 
@@ -127,9 +127,8 @@ OCR uses a fallback chain defined in `ocr/mod.rs`:
 
 - **PaddleOCR-VL** (primary) — Python subprocess (`paddle_vl.py`) using `paddleocr[doc-parser]`. Does layout detection + OCR in a single pass, returns structured blocks with labels, bounding boxes, and reading order. Method field: `"paddle_vl"`.
 - **PaddleOCR** (fallback) — `ocr-rs` crate with MNN backend, feature-gated as `paddle-ocr`. PP-OCRv5 detection + latin recognition. PP-LCNet orientation model auto-corrects 0°/90°/180°/270° rotation. `OcrEngine` is `Send + Sync`.
-- **Tesseract** (fallback) — `leptess` crate, languages `spa+eng`. `LepTess` is NOT `Send` → created per-call inside `spawn_blocking`.
-- **Provider chain**: PaddleVL → PaddleOCR → Tesseract → Error. PaddleVL is tried first automatically; if unavailable, falls back to plain OCR.
-- **PDF pipeline** — Native text extraction first (`pdf-extract`), quality-checked (`is_quality_text()`: ≥50 alphanumeric chars). Falls back to pdfium-render at 300 DPI + OCR per page. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"` | `"pdf_tesseract"`.
+- **Provider chain**: PaddleVL → PaddleOCR → Error. PaddleVL is tried first automatically in OCRH; if unavailable, fails, or times out, it falls back to PaddleOCR light.
+- **PDF pipeline** — Native text extraction first (`pdf-extract`), quality-checked (`is_quality_text()`: ≥50 alphanumeric chars). Falls back to pdfium-render at 300 DPI + OCR per page. Method field: `"native"` | `"pdf_paddle_vl"` | `"pdf_paddle"`.
 
 Postprocessing heuristics in `postprocess.rs` are **DISABLED** (mixed columns). Kept for reference only.
 

@@ -5,13 +5,13 @@ Guía operativa para diagnosticar problemas en la base SQLite de EntropIA sin da
 ## Base activa
 
 ```text
-C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite
+%APPDATA%\com.entropia.desktop\entropia.sqlite
 ```
 
 ## Abrir la base
 
 ```powershell
-sqlite3 "C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite"
+sqlite3 "$env:APPDATA\com.entropia.desktop\entropia.sqlite"
 ```
 
 ## Filosofía de debugging
@@ -184,7 +184,7 @@ ORDER BY assets_missing_embedding DESC, type ASC;
 Si querés todo junto sin pensar, corré:
 
 ```powershell
-sqlite3 "C:\Users\agusn\AppData\Roaming\com.entropia.desktop\entropia.sqlite" ".read scripts/sqlite_audit.sql"
+sqlite3 "$env:APPDATA\com.entropia.desktop\entropia.sqlite" ".read scripts/sqlite_audit.sql"
 ```
 
 ### 7. Backfill operativo de `vec_assets`
