@@ -2778,6 +2778,5 @@ mod tests {
 
         assert!(error.contains("resources/runtime-pack/windows-x86_64"));
         assert!(!error.contains(env!("CARGO_MANIFEST_DIR")));
-        assert!(!error.contains("F:\\POSITRON"));
     }
 }

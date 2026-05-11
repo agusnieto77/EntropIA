@@ -132,7 +132,7 @@ En Windows sin GPU NVIDIA, PaddleOCR-VL puede usar CPU. El timeout de 900s es ac
 Para probarlo en dev sin copiar 3GB a `resources/`, arrancá Tauri con:
 
 ```powershell
-$env:ENTROPIA_RUNTIME_PACK_ROOT = "F:\POSITRON\EntropIA\apps\desktop\src-tauri\target\runtime-pack"
+$env:ENTROPIA_RUNTIME_PACK_ROOT = "<repo>\apps\desktop\src-tauri\target\runtime-pack"
 pnpm --filter @entropia/desktop tauri dev
 ```
 
