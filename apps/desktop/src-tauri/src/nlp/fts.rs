@@ -287,8 +287,8 @@ mod tests {
 
         let fts_rowid: i64 = conn
             .query_row(
-                "SELECT rowid FROM fts_items WHERE item_id = ?1",
-                params!["item-rowid"],
+                "SELECT rowid FROM fts_items WHERE fts_items MATCH ?1",
+                params!["texto"],
                 |row| row.get(0),
             )
             .expect("lookup fts rowid failed");
@@ -454,6 +454,7 @@ mod tests {
               item_id TEXT NOT NULL,
               path TEXT NOT NULL,
               type TEXT NOT NULL,
+              sort_index INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
 
@@ -501,7 +502,7 @@ mod tests {
         )
         .expect("item insert");
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
             params!["asset-t1", "item-t1", "audio.mp3", "audio", 1_i64],
         )
         .expect("asset insert");
@@ -536,7 +537,7 @@ mod tests {
         .expect("item insert");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
             params!["asset-t2", "item-t2", "page1.png", "image", 1_i64],
         )
         .expect("asset insert");

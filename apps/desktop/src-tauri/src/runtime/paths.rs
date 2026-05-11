@@ -119,9 +119,17 @@ mod tests {
 
         let venv_python = managed_venv_python_path(&managed_root);
         if cfg!(windows) {
-            assert!(venv_python
-                .to_string_lossy()
-                .ends_with("Scripts/python.exe"));
+            assert_eq!(
+                venv_python.file_name().and_then(|name| name.to_str()),
+                Some("python.exe")
+            );
+            assert_eq!(
+                venv_python
+                    .parent()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str()),
+                Some("Scripts")
+            );
         } else {
             assert!(venv_python.to_string_lossy().ends_with("bin/python"));
         }

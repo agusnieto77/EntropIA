@@ -608,6 +608,7 @@ mod tests {
               item_id TEXT NOT NULL,
               path TEXT NOT NULL,
               type TEXT NOT NULL,
+              sort_index INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL
             );
 
@@ -657,7 +658,7 @@ mod tests {
         .expect("item insert should succeed");
 
         conn.execute(
-            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO assets(id, item_id, path, type, sort_index, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
             params![asset_id, item_id, "audio.mp3", "audio", 1_i64],
         )
         .expect("asset insert should succeed");
