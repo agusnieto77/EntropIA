@@ -33,9 +33,25 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "wix": {
+        "fragmentPaths": ["./windows/fragments/force-webview2-bootstrapper.wxs"],
+        "componentRefs": [
+          "ForceWebView2BootstrapperHook",
+          "AppLocalConcrt140",
+          "AppLocalMsvcp140",
+          "AppLocalMsvcp1401",
+          "AppLocalVcomp140",
+          "AppLocalVcruntime140",
+          "AppLocalVcruntime1401"
+        ]
+      }
+    },
     "resources": [
       "resources/*",
-      "resources/tessdata/*",
       "resources/models/*",
       "resources/models/ner/*",
       "resources/models/ocr/*",

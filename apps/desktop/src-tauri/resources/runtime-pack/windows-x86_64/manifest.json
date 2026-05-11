@@ -36,8 +36,8 @@
     },
     {
       "path": "scripts/paddle_vl.py",
-      "sha256": "daa15f2398bab94a6cbdfff82a55626d7f9a3533998d62f81f5a9f4137bee904",
-      "size": 14496,
+      "sha256": "da3307b0fb8c96871a82f855178bb096db6bd5f03b27e8207303ec70f2c5a245",
+      "size": 14858,
       "executable": false
     },
     {
