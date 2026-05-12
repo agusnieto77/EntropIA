@@ -19,7 +19,6 @@
     type ModelInfo,
   } from '$lib/settings'
   import {
-    llmIsAvailable,
     llmLocalModelInfo,
     llmOpenModelsDir,
     llmDownloadModel,
@@ -133,7 +132,6 @@
       storedAssemblyAiKey,
       storedGlmOcrKey,
       storedLanguage,
-      isAvail,
       modelInfo,
     ] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
@@ -144,7 +142,6 @@
       settingsGet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY),
       settingsGet(SETTINGS_KEYS.GLM_OCR_API_KEY),
       settingsGet(LANGUAGE_KEY),
-      llmIsAvailable(),
       llmLocalModelInfo().catch(() => null),
     ])
 
@@ -167,8 +164,8 @@
     if (!languageTouched) {
       selectedLocale = isLocale(storedLanguage) ? storedLanguage : get(locale)
     }
-    localAvailable = isAvail
     localModel = modelInfo
+    localAvailable = modelInfo?.available ?? false
     localModelSourceUrl = modelInfo?.source_url ?? ''
     localModelFilename = modelInfo?.filename ?? ''
 
@@ -184,7 +181,7 @@
         downloadPct = 100
         downloadError = null
         localModel = await llmLocalModelInfo().catch(() => null)
-        localAvailable = await llmIsAvailable()
+        localAvailable = localModel?.available ?? false
       }),
       await listen<LlmDownloadErrorPayload>('llm:download_error', (event) => {
         downloading = false
@@ -450,9 +447,13 @@
               <strong>{t('settings.llmMode.local.label')}</strong>
               <span class="settings__radio-desc">
                 {t('settings.llmMode.local.description')}
-                {#if localAvailable}
+                {#if localModel?.exists}
                   <span class="settings__badge settings__badge--ok"
                     >{t('settings.badge.available')}</span
+                  >
+                {:else if localModel?.can_auto_download || localAvailable}
+                  <span class="settings__badge settings__badge--warn"
+                    >{t('settings.badge.downloadable')}</span
                   >
                 {:else}
                   <span class="settings__badge settings__badge--warn"
@@ -582,6 +583,8 @@
               {#if localModel.exists}
                 <span class="settings__badge settings__badge--ok">{t('settings.localModel.found')}</span>
                 <span class="settings__local-model-size">{formatBytes(localModel.size_bytes)}</span>
+              {:else if localModel.can_auto_download}
+                <span class="settings__badge settings__badge--warn">{t('settings.localModel.downloadable')}</span>
               {:else}
                 <span class="settings__badge settings__badge--warn">{t('settings.localModel.missing')}</span>
               {/if}

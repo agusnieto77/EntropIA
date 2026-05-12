@@ -55,6 +55,9 @@ describe('SettingsView', () => {
     llmDownloadModelMock.mockReset().mockResolvedValue(undefined)
     llmLocalModelInfoMock.mockReset().mockResolvedValue({
       exists: true,
+      available: true,
+      can_auto_download: false,
+      disabled_reason: null,
       path: '/home/test/.local/share/com.entropia.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf',
       size_bytes: 2_500_000_000,
       filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
@@ -152,6 +155,9 @@ describe('SettingsView', () => {
     llmIsAvailableMock.mockResolvedValue(false)
     llmLocalModelInfoMock.mockResolvedValue({
       exists: false,
+      available: true,
+      can_auto_download: true,
+      disabled_reason: null,
       path: '/home/test/.local/share/com.entropia.desktop/models/gemma-4-E2B-it-Q4_K_M.gguf',
       size_bytes: null,
       filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
@@ -162,6 +168,7 @@ describe('SettingsView', () => {
     render(SettingsView)
 
     const sourceInput = await screen.findByLabelText('Fuente de descarga')
+    expect(await screen.findByText('Listo para descargar desde la app')).toBeInTheDocument()
     expect(sourceInput).toHaveValue(
       'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf?download=true'
     )

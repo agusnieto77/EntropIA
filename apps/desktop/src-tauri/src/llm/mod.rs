@@ -129,10 +129,21 @@ fn ensure_default_model_downloaded_if_missing(
 #[derive(Clone, serde::Serialize)]
 pub struct LocalModelInfo {
     pub exists: bool,
+    pub available: bool,
+    pub can_auto_download: bool,
+    pub disabled_reason: Option<String>,
     pub path: String,
     pub size_bytes: Option<u64>,
     pub filename: String,
     pub source_url: String,
+}
+
+fn local_model_can_initialize_from_conn(
+    conn: &rusqlite::Connection,
+    db_path: &std::path::Path,
+) -> bool {
+    let model_path = resolve_model_path(db_path);
+    model_path.exists() || should_auto_download_default_model(conn, &model_path)
 }
 
 /// Resolve the expected model path and report whether the file is present.
@@ -184,13 +195,19 @@ pub fn get_local_model_info(db_path: &std::path::Path) -> LocalModelInfo {
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| MODEL_FILENAME.to_string());
-    let source_url = if let Ok(conn) = rusqlite::Connection::open(db_path) {
-        resolve_local_model_source_url(Some(&conn))
+    let (source_url, can_auto_download) = if let Ok(conn) = rusqlite::Connection::open(db_path) {
+        (
+            resolve_local_model_source_url(Some(&conn)),
+            should_auto_download_default_model(&conn, &path),
+        )
     } else {
-        DEFAULT_MODEL_SOURCE_URL.to_string()
+        (DEFAULT_MODEL_SOURCE_URL.to_string(), false)
     };
     LocalModelInfo {
         exists,
+        available: exists || can_auto_download,
+        can_auto_download,
+        disabled_reason: None,
         path: path.to_string_lossy().to_string(),
         size_bytes,
         filename,
@@ -953,16 +970,6 @@ pub struct LlmQueue {
     db_path: PathBuf,
 }
 
-fn local_llm_disabled_reason() -> Option<&'static str> {
-    if cfg!(all(target_os = "windows", not(debug_assertions))) {
-        Some(
-            "Gemma local está temporalmente deshabilitado en Windows release para evitar cierres nativos de la app. Configurá OpenRouter o esperá el runtime local aislado.",
-        )
-    } else {
-        None
-    }
-}
-
 impl LlmQueue {
     pub fn new(db_path: PathBuf) -> (Self, mpsc::Receiver<LlmJob>) {
         let (sender, receiver) = mpsc::channel::<LlmJob>(64);
@@ -998,16 +1005,11 @@ impl LlmQueue {
     /// Report local availability without loading Gemma. Existing models are
     /// usable, and the default model can still auto-download on first local job.
     fn local_model_can_initialize(&self) -> bool {
-        if local_llm_disabled_reason().is_some() {
-            return false;
-        }
-
         let conn = match rusqlite::Connection::open(&self.db_path) {
             Ok(c) => c,
             Err(_) => return false,
         };
-        let model_path = resolve_model_path(&self.db_path);
-        model_path.exists() || should_auto_download_default_model(&conn, &model_path)
+        local_model_can_initialize_from_conn(&conn, &self.db_path)
     }
 
     /// Check if OpenRouter is configured with an API key and mode is not `local`.
@@ -1059,13 +1061,9 @@ impl LlmQueue {
                 eprintln!("{LLM_LOCAL_PREFIX} Warning: could not create app_settings table: {e}");
             }
 
-            if let Some(reason) = local_llm_disabled_reason() {
-                eprintln!("{LLM_LOCAL_PREFIX} Local Gemma engine disabled: {reason}");
-            } else {
-                eprintln!(
-                    "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
-                );
-            }
+            eprintln!(
+                "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
+            );
             let mut engine: Option<LlmEngine> = None;
             let mut init_error: Option<String> = None;
 
@@ -1087,12 +1085,10 @@ impl LlmQueue {
                     settings::get_setting(&conn, "openrouter_api_key").unwrap_or_default();
                 let remote_model = settings::get_setting(&conn, "openrouter_model")
                     .unwrap_or_else(|| "google/gemma-3-4b-it".to_string());
-                let local_disabled_reason = local_llm_disabled_reason();
+                let local_can_initialize = local_model_can_initialize_from_conn(&conn, &db_path);
                 let use_openrouter = match llm_mode.as_str() {
                     "openrouter" => true,
-                    "auto" => {
-                        (local_disabled_reason.is_some() || engine.is_none()) && !api_key.is_empty()
-                    }
+                    "auto" => engine.is_none() && !local_can_initialize && !api_key.is_empty(),
                     _ => false, // "local" or unknown
                 };
                 let job_log_prefix = llm_job_prefix(use_openrouter, &job);
@@ -1128,12 +1124,7 @@ impl LlmQueue {
                     }
                 } else {
                     // Local engine path
-                    if let Some(reason) = local_disabled_reason {
-                        emit_error(&app_handle, &id, job_name, reason);
-                        continue;
-                    }
-
-                    if engine.is_none() && init_error.is_none() {
+                    if engine.is_none() {
                         let init_db_path = db_path.clone();
                         let init_app_handle = app_handle.clone();
                         eprintln!("{LLM_LOCAL_PREFIX} Initializing local Gemma engine on demand for job '{job_name}'");
@@ -1159,6 +1150,7 @@ impl LlmQueue {
                             Ok(Ok(resolved_engine)) => {
                                 eprintln!("{LLM_LOCAL_PREFIX} Engine ready (lazy local init)");
                                 available.store(true, Ordering::Relaxed);
+                                init_error = None;
                                 engine = Some(resolved_engine);
                             }
                             Ok(Err(error)) => {
@@ -1174,22 +1166,46 @@ impl LlmQueue {
                         }
                     }
 
-                    eprintln!(
-                        "{job_log_prefix} Running job '{job_name}' for {id} via local engine"
-                    );
-
                     match &engine {
-                        Some(e) => tokio::task::block_in_place(|| process_job(e, &conn, &job)),
-                        None => {
-                            emit_error(
-                                &app_handle,
-                                &id,
-                                job_name,
-                                init_error.as_deref().unwrap_or(
-                                    "LLM no disponible. Colocá un modelo GGUF en models/ o configurá OpenRouter.",
-                                ),
+                        Some(e) => {
+                            eprintln!(
+                                "{job_log_prefix} Running job '{job_name}' for {id} via local engine"
                             );
-                            continue;
+                            tokio::task::block_in_place(|| process_job(e, &conn, &job))
+                        }
+                        None => {
+                            if llm_mode == "auto" && !api_key.is_empty() {
+                                let fallback_log_prefix = llm_job_prefix(true, &job);
+                                eprintln!(
+                                    "{fallback_log_prefix} Local Gemma unavailable; falling back to OpenRouter for job '{job_name}' on {id}"
+                                );
+                                let client = OpenRouterClient::new(api_key, remote_model);
+                                match prepare_remote_job_request(&conn, &job, client.n_ctx()) {
+                                    Ok(request) => {
+                                        match client
+                                            .generate(&request.prompt, request.max_tokens)
+                                            .await
+                                        {
+                                            Ok(output) if request.truncate_to_sentence_boundary => {
+                                                Ok(truncate_to_sentence_boundary(&output))
+                                            }
+                                            Ok(output) => Ok(output),
+                                            Err(e) => Err(e),
+                                        }
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            } else {
+                                emit_error(
+                                    &app_handle,
+                                    &id,
+                                    job_name,
+                                    init_error.as_deref().unwrap_or(
+                                        "LLM no disponible. Colocá un modelo GGUF en models/ o configurá OpenRouter.",
+                                    ),
+                                );
+                                continue;
+                            }
                         }
                     }
                 };
@@ -1895,6 +1911,9 @@ mod tests {
         let db_path = tmp.path().join("app.db");
         let info = get_local_model_info(&db_path);
         assert!(!info.exists);
+        assert!(info.available);
+        assert!(info.can_auto_download);
+        assert!(info.disabled_reason.is_none());
         assert!(info.size_bytes.is_none());
         assert_eq!(info.filename, MODEL_FILENAME);
         assert!(info.path.ends_with(MODEL_FILENAME));
@@ -1913,10 +1932,39 @@ mod tests {
 
         let info = get_local_model_info(&db_path);
         assert!(info.exists);
+        assert!(info.available);
+        assert!(!info.can_auto_download);
+        assert!(info.disabled_reason.is_none());
         assert_eq!(info.size_bytes, Some(content.len() as u64));
         assert_eq!(info.filename, MODEL_FILENAME);
         assert_eq!(info.path, model_file.to_string_lossy().to_string());
         assert_eq!(info.source_url, DEFAULT_MODEL_SOURCE_URL);
+    }
+
+    #[test]
+    fn get_local_model_info_reports_custom_missing_as_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("app.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        crate::settings::set_setting(&conn, LOCAL_MODEL_FILENAME_KEY, "custom-model.gguf").unwrap();
+        crate::settings::set_setting(
+            &conn,
+            LOCAL_MODEL_SOURCE_URL_KEY,
+            "https://example.invalid/custom-model.gguf",
+        )
+        .unwrap();
+
+        let info = get_local_model_info(&db_path);
+
+        assert!(!info.exists);
+        assert!(!info.available);
+        assert!(!info.can_auto_download);
+        assert!(info.disabled_reason.is_none());
+        assert_eq!(info.filename, "custom-model.gguf");
     }
 
     #[test]

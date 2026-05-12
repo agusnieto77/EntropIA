@@ -243,6 +243,9 @@ export function llmIsAvailable(): Promise<boolean> {
 /** Detailed status of the local GGUF model file. */
 export interface LocalModelInfo {
   exists: boolean
+  available: boolean
+  can_auto_download: boolean
+  disabled_reason: string | null
   path: string
   size_bytes: number | null
   filename: string
