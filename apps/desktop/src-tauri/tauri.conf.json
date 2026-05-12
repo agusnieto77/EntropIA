@@ -1,6 +1,6 @@
 {
   "productName": "EntropIA",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "identifier": "com.entropia.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @entropia/desktop dev",
@@ -48,6 +48,9 @@
           "AppLocalVcruntime140",
           "AppLocalVcruntime1401"
         ]
+      },
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh"
       }
     },
     "resources": [
@@ -61,6 +64,7 @@
       "resources/tools/uv/windows-aarch64/*",
       "resources/runtime-pack/windows-x86_64/**/*",
       "resources/runtime-pack/linux-x86_64/**/*",
+      "target/release/vc-runtime/*",
       "scripts/*"
     ]
   }
