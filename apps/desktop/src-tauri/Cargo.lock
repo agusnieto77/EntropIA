@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "entropia-desktop"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",

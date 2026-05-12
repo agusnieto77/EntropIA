@@ -1,6 +1,6 @@
 {
   "productName": "EntropIA",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "identifier": "com.entropia.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @entropia/desktop dev",
