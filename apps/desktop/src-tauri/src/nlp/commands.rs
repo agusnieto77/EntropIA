@@ -4,8 +4,9 @@
 /// `Ok("queued")`. The worker emits `nlp:progress`, `nlp:complete`, or
 /// `nlp:error` events asynchronously.
 use super::{NlpJob, NlpQueue};
+use crate::db::state::AppDbState;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 type SimilarAssetRow = (String, String, String, String, String, String, Vec<u8>);
 
@@ -41,6 +42,108 @@ fn triples_retired_error(target: &str) -> String {
     format!(
         "NLP triples extraction was retired for {target}. Use the Gemma LLM triples commands instead."
     )
+}
+
+fn local_embedding_model_dir(db: &AppDbState) -> std::path::PathBuf {
+    db.ui_conn
+        .lock()
+        .ok()
+        .and_then(|conn| super::embeddings::local_embedding_model_dir_from_settings(&conn))
+        .unwrap_or_else(super::embeddings::default_local_embedding_model_dir_for_commands)
+}
+
+#[tauri::command]
+pub async fn embedding_local_model_info(
+    db: State<'_, AppDbState>,
+) -> Result<super::embeddings::LocalEmbeddingModelInfo, String> {
+    Ok(super::embeddings::get_local_embedding_model_info(Some(
+        local_embedding_model_dir(&db),
+    )))
+}
+
+#[tauri::command]
+pub async fn embedding_open_models_dir(db: State<'_, AppDbState>) -> Result<(), String> {
+    let models_dir = local_embedding_model_dir(&db);
+    std::fs::create_dir_all(&models_dir)
+        .map_err(|e| format!("Failed to create local BGE-M3 model dir: {e}"))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn embedding_download_model(
+    db: State<'_, AppDbState>,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    let model_dir = local_embedding_model_dir(&db);
+    crate::app_logs::info(
+        &app_handle,
+        "embedding/download",
+        format!(
+            "Inicio instalación de BGE-M3 local en {}",
+            model_dir.display()
+        ),
+    );
+
+    let app_handle_clone = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            super::embeddings::download_local_embedding_model_files(&model_dir, &app_handle_clone)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {
+                crate::app_logs::info(
+                    &app_handle,
+                    "embedding/download",
+                    "Instalación BGE-M3 completada",
+                );
+            }
+            Ok(Err(error)) => {
+                crate::app_logs::error(
+                    &app_handle,
+                    "embedding/download",
+                    format!("Instalación BGE-M3 falló: {error}"),
+                );
+                let _ = app_handle.emit(
+                    "embedding:download_error",
+                    super::embeddings::EmbeddingDownloadErrorPayload { error },
+                );
+            }
+            Err(error) => {
+                let message = format!("BGE-M3 download task panicked: {error}");
+                crate::app_logs::error(&app_handle, "embedding/download", message.clone());
+                let _ = app_handle.emit(
+                    "embedding:download_error",
+                    super::embeddings::EmbeddingDownloadErrorPayload { error: message },
+                );
+            }
+        }
+    });
+
+    Ok("started".to_string())
 }
 
 /// Submit an FTS5 indexing job for `item_id`.
@@ -151,7 +254,19 @@ pub async fn backfill_asset_embeddings(
         let coverage = super::embeddings::summarize_asset_embedding_coverage(&conn)?;
         let candidates = super::embeddings::list_asset_embedding_candidates(&conn, force, limit)?;
 
+        eprintln!(
+            "[nlp/embeddings] EMBED backfill scan force={force} limit={limit:?} total_assets={} assets_with_text={} assets_with_embedding={} assets_missing_embedding={} candidates={}",
+            coverage.total_assets,
+            coverage.assets_with_text,
+            coverage.assets_with_embedding,
+            coverage.assets_missing_embedding,
+            candidates.len()
+        );
+
         if candidates.is_empty() {
+            eprintln!(
+                "[nlp/embeddings] EMBED backfill skipped: no candidates (use force=true to recompute existing embeddings)"
+            );
             return Ok(AssetEmbeddingBackfillReport {
                 force,
                 limit,
@@ -169,6 +284,11 @@ pub async fn backfill_asset_embeddings(
         let engine = super::embeddings::EmbeddingEngine::init(
             super::embeddings::config_from_settings(&conn)?,
         )?;
+        eprintln!(
+            "[nlp/embeddings] EMBED backfill using provider={} requested={}",
+            engine.provider_name(),
+            candidates.len()
+        );
 
         let mut succeeded = 0_usize;
         let mut failures = Vec::new();
@@ -190,6 +310,15 @@ pub async fn backfill_asset_embeddings(
         }
 
         let updated_coverage = super::embeddings::summarize_asset_embedding_coverage(&conn)?;
+        eprintln!(
+            "[nlp/embeddings] EMBED backfill complete provider={} requested={} succeeded={} failed={} assets_with_embedding={} assets_missing_embedding={}",
+            engine.provider_name(),
+            candidates.len(),
+            succeeded,
+            failures.len(),
+            updated_coverage.assets_with_embedding,
+            updated_coverage.assets_missing_embedding
+        );
 
         Ok(AssetEmbeddingBackfillReport {
             force,

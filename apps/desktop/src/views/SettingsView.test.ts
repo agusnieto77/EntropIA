@@ -12,6 +12,9 @@ const {
   llmIsAvailableMock,
   llmLocalModelInfoMock,
   llmDownloadModelMock,
+  embeddingLocalModelInfoMock,
+  embeddingOpenModelsDirMock,
+  embeddingDownloadModelMock,
 } =
   vi.hoisted(() => ({
     settingsGetMock: vi.fn(),
@@ -22,6 +25,9 @@ const {
     llmIsAvailableMock: vi.fn(),
     llmLocalModelInfoMock: vi.fn(),
     llmDownloadModelMock: vi.fn(),
+    embeddingLocalModelInfoMock: vi.fn(),
+    embeddingOpenModelsDirMock: vi.fn(),
+    embeddingDownloadModelMock: vi.fn(),
   }))
 
 vi.mock('$lib/settings', async () => {
@@ -43,6 +49,12 @@ vi.mock('$lib/llm', () => ({
   llmDownloadModel: llmDownloadModelMock,
 }))
 
+vi.mock('$lib/embeddings', () => ({
+  embeddingLocalModelInfo: embeddingLocalModelInfoMock,
+  embeddingOpenModelsDir: embeddingOpenModelsDirMock,
+  embeddingDownloadModel: embeddingDownloadModelMock,
+}))
+
 describe('SettingsView', () => {
   beforeEach(() => {
     locale.set('es')
@@ -53,6 +65,27 @@ describe('SettingsView', () => {
     testGlmOcrConnectionMock.mockReset().mockResolvedValue(undefined)
     llmIsAvailableMock.mockReset().mockResolvedValue(true)
     llmDownloadModelMock.mockReset().mockResolvedValue(undefined)
+    embeddingOpenModelsDirMock.mockReset().mockResolvedValue(undefined)
+    embeddingDownloadModelMock.mockReset().mockResolvedValue('started')
+    embeddingLocalModelInfoMock.mockReset().mockResolvedValue({
+      exists: false,
+      available: false,
+      can_auto_download: true,
+      directory: 'F:/POSITRON/EntropIA/apps/desktop/src-tauri/resources/models/embeddings/bge-m3',
+      path: 'F:/POSITRON/EntropIA/apps/desktop/src-tauri/resources/models/embeddings/bge-m3/model.onnx',
+      size_bytes: null,
+      required_files: [
+        { filename: 'model.onnx', source_path: 'onnx/model.onnx', destination: 'model.onnx', size_bytes: 724923, exists: false },
+        { filename: 'model.onnx_data', source_path: 'onnx/model.onnx_data', destination: 'model.onnx_data', size_bytes: 2266820608, exists: false },
+        { filename: 'tokenizer.json', source_path: 'onnx/tokenizer.json', destination: 'tokenizer.json', size_bytes: 17082821, exists: false },
+      ],
+      missing_files: [
+        { filename: 'model.onnx', source_path: 'onnx/model.onnx', destination: 'model.onnx', size_bytes: 724923, exists: false },
+        { filename: 'model.onnx_data', source_path: 'onnx/model.onnx_data', destination: 'model.onnx_data', size_bytes: 2266820608, exists: false },
+        { filename: 'tokenizer.json', source_path: 'onnx/tokenizer.json', destination: 'tokenizer.json', size_bytes: 17082821, exists: false },
+      ],
+      source_repo: 'BAAI/bge-m3',
+    })
     llmLocalModelInfoMock.mockReset().mockResolvedValue({
       exists: true,
       available: true,
@@ -151,6 +184,35 @@ describe('SettingsView', () => {
       expect(settingsSetMock).toHaveBeenCalledWith('embedding_provider', 'local')
       expect(settingsSetMock).toHaveBeenCalledWith('openrouter_embedding_model', 'baai/bge-m3')
       expect(settingsSetMock).toHaveBeenCalledWith('local_embedding_model_dir', 'C:/models/bge-m3')
+    })
+  })
+
+  it('shows local BGE-M3 install status and can start the embedding asset download', async () => {
+    render(SettingsView)
+
+    const localEmbeddingOption = await screen.findByRole('radio', { name: /Local ONNX/i })
+    await fireEvent.click(localEmbeddingOption)
+
+    expect(await screen.findByText('Modelo BGE-M3 local incompleto')).toBeInTheDocument()
+    expect(screen.getAllByText(/model\.onnx_data/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/BAAI\/bge-m3/)).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Instalar BGE-M3 local' }))
+
+    await waitFor(() => {
+      expect(embeddingDownloadModelMock).toHaveBeenCalled()
+    })
+  })
+
+  it('opens the local BGE-M3 embeddings folder from Settings', async () => {
+    render(SettingsView)
+
+    const localEmbeddingOption = await screen.findByRole('radio', { name: /Local ONNX/i })
+    await fireEvent.click(localEmbeddingOption)
+    await fireEvent.click(screen.getByRole('button', { name: 'Abrir carpeta BGE-M3' }))
+
+    await waitFor(() => {
+      expect(embeddingOpenModelsDirMock).toHaveBeenCalled()
     })
   })
 

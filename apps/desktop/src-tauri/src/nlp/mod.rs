@@ -405,11 +405,23 @@ impl NlpQueue {
                     // not the entire item. Results are stored with both item_id
                     // (for ownership/cascade) and asset_id (for filtering).
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
+                        eprintln!(
+                            "[nlp/embeddings] EMBED job queued item_id={item_id} asset_id={asset_id}"
+                        );
                         emit_progress(&app_handle, &item_id, "embed", 10);
                         if embed_engine.is_none() {
                             embed_engine = try_init_embed_engine(&conn);
                         }
                         let engine_ref = embed_engine.as_deref();
+                        match engine_ref {
+                            Some(engine) => eprintln!(
+                                "[nlp/embeddings] EMBED job using provider={} item_id={item_id} asset_id={asset_id}",
+                                engine.provider_name()
+                            ),
+                            None => eprintln!(
+                                "[nlp/embeddings] EMBED job has no engine item_id={item_id} asset_id={asset_id}"
+                            ),
+                        }
                         let result = tokio::task::block_in_place(|| {
                             embeddings::compute_and_store_for_asset(
                                 engine_ref, &conn, &item_id, &asset_id,
@@ -421,6 +433,12 @@ impl NlpQueue {
                         match result {
                             Ok(_) => match asset_embedding_exists(&conn, &asset_id) {
                                 Ok(true) => {
+                                    let provider = engine_ref
+                                        .map(|engine| engine.provider_name())
+                                        .unwrap_or("none");
+                                    eprintln!(
+                                        "[nlp/embeddings] EMBED job complete provider={provider} item_id={item_id} asset_id={asset_id}"
+                                    );
                                     emit_progress(&app_handle, &item_id, "embed", 100);
                                     emit_complete(&app_handle, &item_id, "embed");
                                 }

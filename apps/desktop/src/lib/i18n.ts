@@ -83,7 +83,15 @@ const es = {
     'Dejá baai/bge-m3 para mantener compatibilidad entre embeddings API y locales.',
   'settings.embeddingProvider.localPath': 'Carpeta del modelo local BGE-M3',
   'settings.embeddingProvider.localPathHint':
-    'Debe contener model.onnx y tokenizer.json. Si queda vacío, EntropIA busca resources/models/embeddings/bge-m3.',
+    'Debe contener model.onnx, model.onnx_data y tokenizer.json. Si queda vacío, EntropIA busca resources/models/embeddings/bge-m3.',
+  'settings.embeddingProvider.localStatus': 'Estado BGE-M3 local',
+  'settings.embeddingProvider.localComplete': 'Modelo BGE-M3 local completo',
+  'settings.embeddingProvider.localIncomplete': 'Modelo BGE-M3 local incompleto',
+  'settings.embeddingProvider.localInstallHint':
+    'EntropIA instala los assets ONNX desde {repo} y conserva los nombres esperados por el proveedor local.',
+  'settings.embeddingProvider.installLocal': 'Instalar BGE-M3 local',
+  'settings.embeddingProvider.openLocalFolder': 'Abrir carpeta BGE-M3',
+  'settings.embeddingProvider.downloading': 'Instalando BGE-M3…',
   'settings.embeddingProvider.apiPrivacyNotice':
     'Privacidad: si usás embeddings por API, el texto extraído se envía a OpenRouter para vectorizarlo.',
   'settings.sttModeTitle': 'Modo STT',
@@ -698,7 +706,15 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
     'Keep baai/bge-m3 to maintain compatibility between API and local embeddings.',
   'settings.embeddingProvider.localPath': 'Local BGE-M3 model folder',
   'settings.embeddingProvider.localPathHint':
-    'Must contain model.onnx and tokenizer.json. If empty, EntropIA checks resources/models/embeddings/bge-m3.',
+    'Must contain model.onnx, model.onnx_data, and tokenizer.json. If empty, EntropIA checks resources/models/embeddings/bge-m3.',
+  'settings.embeddingProvider.localStatus': 'Local BGE-M3 status',
+  'settings.embeddingProvider.localComplete': 'Local BGE-M3 model complete',
+  'settings.embeddingProvider.localIncomplete': 'Local BGE-M3 model incomplete',
+  'settings.embeddingProvider.localInstallHint':
+    'EntropIA installs the ONNX assets from {repo} and keeps the filenames expected by the local provider.',
+  'settings.embeddingProvider.installLocal': 'Install local BGE-M3',
+  'settings.embeddingProvider.openLocalFolder': 'Open BGE-M3 folder',
+  'settings.embeddingProvider.downloading': 'Installing BGE-M3…',
   'settings.embeddingProvider.apiPrivacyNotice':
     'Privacy: when API embeddings are enabled, extracted text is sent to OpenRouter for vectorization.',
   'settings.sttModeTitle': 'STT mode',

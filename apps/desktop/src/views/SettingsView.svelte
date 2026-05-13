@@ -30,6 +30,15 @@
     type LlmDownloadCompletePayload,
     type LlmDownloadErrorPayload,
   } from '$lib/llm'
+  import {
+    embeddingLocalModelInfo,
+    embeddingOpenModelsDir,
+    embeddingDownloadModel,
+    type LocalEmbeddingModelInfo,
+    type EmbeddingDownloadProgressPayload,
+    type EmbeddingDownloadCompletePayload,
+    type EmbeddingDownloadErrorPayload,
+  } from '$lib/embeddings'
   import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
   import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { Button, Card, Input } from '@entropia/ui'
@@ -51,6 +60,7 @@
   let embeddingProvider = $state<EmbeddingProvider>(DEFAULT_EMBEDDING_PROVIDER)
   let embeddingModel = $state(DEFAULT_OPENROUTER_EMBEDDING_MODEL)
   let localEmbeddingModelDir = $state('')
+  let localEmbeddingModel = $state<LocalEmbeddingModelInfo | null>(null)
   let llmMode = $state<LlmMode>(DEFAULT_LLM_MODE)
   let sttMode = $state<SttMode>(DEFAULT_STT_MODE)
   let ocrhMode = $state<OcrhMode>(DEFAULT_OCRH_MODE)
@@ -83,6 +93,10 @@
   let localModelSourceUrl = $state('')
   let localModelFilename = $state('')
   let downloadUnlisteners: UnlistenFn[] = []
+  let embeddingDownloading = $state(false)
+  let embeddingDownloadPct = $state(0)
+  let embeddingDownloadFile = $state('')
+  let embeddingDownloadError = $state<string | null>(null)
 
   // Save state
   let saving = $state(false)
@@ -142,6 +156,7 @@
       storedGlmOcrKey,
       storedLanguage,
       modelInfo,
+      embeddingModelInfo,
     ] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
@@ -155,6 +170,7 @@
       settingsGet(SETTINGS_KEYS.GLM_OCR_API_KEY),
       settingsGet(LANGUAGE_KEY),
       llmLocalModelInfo().catch(() => null),
+      embeddingLocalModelInfo().catch(() => null),
     ])
 
     if (storedKey) {
@@ -185,6 +201,7 @@
     localAvailable = modelInfo?.available ?? false
     localModelSourceUrl = modelInfo?.source_url ?? ''
     localModelFilename = modelInfo?.filename ?? ''
+    localEmbeddingModel = embeddingModelInfo
 
     // Listen to model download events
     downloadUnlisteners.push(
@@ -204,6 +221,25 @@
         downloading = false
         downloadPct = 0
         downloadError = event.payload.error
+      }),
+      await listen<EmbeddingDownloadProgressPayload>('embedding:download_progress', (event) => {
+        embeddingDownloading = true
+        embeddingDownloadPct = event.payload.pct
+        embeddingDownloadFile = event.payload.file
+        embeddingDownloadError = null
+      }),
+      await listen<EmbeddingDownloadCompletePayload>('embedding:download_complete', async () => {
+        embeddingDownloading = false
+        embeddingDownloadPct = 100
+        embeddingDownloadFile = ''
+        embeddingDownloadError = null
+        localEmbeddingModel = await embeddingLocalModelInfo().catch(() => null)
+      }),
+      await listen<EmbeddingDownloadErrorPayload>('embedding:download_error', (event) => {
+        embeddingDownloading = false
+        embeddingDownloadPct = 0
+        embeddingDownloadFile = ''
+        embeddingDownloadError = event.payload.error
       }),
     )
   })
@@ -366,6 +402,20 @@
     } catch (e) {
       downloading = false
       downloadError = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  async function handleDownloadEmbeddingModel() {
+    if (embeddingDownloading) return
+    embeddingDownloading = true
+    embeddingDownloadPct = 0
+    embeddingDownloadError = null
+    try {
+      await settingsSet(SETTINGS_KEYS.LOCAL_EMBEDDING_MODEL_DIR, localEmbeddingModelDir.trim())
+      await embeddingDownloadModel()
+    } catch (e) {
+      embeddingDownloading = false
+      embeddingDownloadError = e instanceof Error ? e.message : String(e)
     }
   }
 </script>
@@ -560,6 +610,57 @@
             />
             <p class="settings__hint">{t('settings.embeddingProvider.localPathHint')}</p>
           </div>
+
+          {#if localEmbeddingModel}
+            <div class="settings__local-model">
+              <div class="settings__local-model-row">
+                <span class="settings__label">{t('settings.embeddingProvider.localStatus')}</span>
+                {#if localEmbeddingModel.available}
+                  <span class="settings__badge settings__badge--ok">{t('settings.embeddingProvider.localComplete')}</span>
+                {:else}
+                  <span class="settings__badge settings__badge--warn">{t('settings.embeddingProvider.localIncomplete')}</span>
+                {/if}
+              </div>
+
+              <div class="settings__local-model-row">
+                <span class="settings__label">{t('settings.embeddingProvider.localPath')}</span>
+                <code class="settings__local-model-path">{localEmbeddingModel.directory}</code>
+              </div>
+
+              <p class="settings__hint">
+                {t('settings.embeddingProvider.localInstallHint', { repo: localEmbeddingModel.source_repo })}
+              </p>
+
+              {#if localEmbeddingModel.missing_files.length > 0}
+                <ul class="settings__hint">
+                  {#each localEmbeddingModel.missing_files as file}
+                    <li><code>{file.filename}</code> ← {file.source_path} ({formatBytes(file.size_bytes)})</li>
+                  {/each}
+                </ul>
+              {/if}
+
+              {#if embeddingDownloading}
+                <div class="settings__download-progress">
+                  <span class="settings__download-progress-bar" style="width: {embeddingDownloadPct}%"></span>
+                  <span class="settings__download-progress-text">
+                    {embeddingDownloadPct}% — {embeddingDownloadFile || t('settings.embeddingProvider.downloading')}
+                  </span>
+                </div>
+              {:else if !localEmbeddingModel.available}
+                <Button variant="primary" size="sm" onclick={handleDownloadEmbeddingModel}>
+                  {t('settings.embeddingProvider.installLocal')}
+                </Button>
+              {/if}
+
+              {#if embeddingDownloadError}
+                <p class="surface-message surface-message--error">{embeddingDownloadError}</p>
+              {/if}
+
+              <Button variant="secondary" size="sm" onclick={() => embeddingOpenModelsDir()}>
+                {t('settings.embeddingProvider.openLocalFolder')}
+              </Button>
+            </div>
+          {/if}
         {:else}
           <p class="settings__hint settings__hint--privacy">
             {t('settings.embeddingProvider.apiPrivacyNotice')}

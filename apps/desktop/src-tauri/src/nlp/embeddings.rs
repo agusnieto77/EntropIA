@@ -14,9 +14,11 @@ use ort::{
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 use tokenizers::Tokenizer;
 
 use super::text_provider;
@@ -30,7 +32,12 @@ pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1024;
 const OPENROUTER_EMBEDDINGS_URL: &str = "https://openrouter.ai/api/v1/embeddings";
 const DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH: usize = 8192;
 const LOCAL_EMBEDDING_MODEL_FILE: &str = "model.onnx";
+const LOCAL_EMBEDDING_ONNX_DATA_FILE: &str = "model.onnx_data";
 const LOCAL_EMBEDDING_TOKENIZER_FILE: &str = "tokenizer.json";
+const BGE_M3_SOURCE_REPO: &str = "BAAI/bge-m3";
+const BGE_M3_RESOLVE_BASE_URL: &str = "https://huggingface.co/BAAI/bge-m3/resolve/main";
+const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
+const DOWNLOAD_TIMEOUT_SECS: u64 = 900;
 
 static LOCAL_EMBEDDING_ORT_INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -69,6 +76,46 @@ pub struct AssetEmbeddingCoverageSummary {
     pub assets_with_text: i64,
     pub assets_with_embedding: i64,
     pub assets_missing_embedding: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LocalEmbeddingModelFileInfo {
+    pub filename: String,
+    pub source_path: String,
+    pub destination: String,
+    pub size_bytes: Option<u64>,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LocalEmbeddingModelInfo {
+    pub exists: bool,
+    pub available: bool,
+    pub can_auto_download: bool,
+    pub directory: String,
+    pub path: String,
+    pub size_bytes: Option<u64>,
+    pub required_files: Vec<LocalEmbeddingModelFileInfo>,
+    pub missing_files: Vec<LocalEmbeddingModelFileInfo>,
+    pub source_repo: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct EmbeddingDownloadProgressPayload {
+    pub pct: u8,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub file: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct EmbeddingDownloadCompletePayload {
+    pub path: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct EmbeddingDownloadErrorPayload {
+    pub error: String,
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -327,6 +374,16 @@ impl LocalBgeM3EmbeddingEngine {
             ));
         }
 
+        let onnx_data_path = paths
+            .model_path
+            .with_file_name(LOCAL_EMBEDDING_ONNX_DATA_FILE);
+        if !onnx_data_path.exists() {
+            return Err(format!(
+                "Local BGE-M3 ONNX external data not found at {}. BAAI/bge-m3 ONNX requires {LOCAL_EMBEDDING_ONNX_DATA_FILE} next to {LOCAL_EMBEDDING_MODEL_FILE}.",
+                onnx_data_path.display()
+            ));
+        }
+
         let model_dir = paths.model_path.parent().ok_or_else(|| {
             format!(
                 "Local BGE-M3 model has no parent directory: {}",
@@ -508,6 +565,218 @@ fn resolve_local_embedding_paths(config: &EmbeddingConfig) -> LocalEmbeddingPath
     }
 }
 
+pub fn local_embedding_model_dir_from_settings(conn: &Connection) -> Option<PathBuf> {
+    crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+pub fn get_local_embedding_model_info(model_dir: Option<PathBuf>) -> LocalEmbeddingModelInfo {
+    let directory = model_dir.unwrap_or_else(default_local_embedding_model_dir);
+    std::fs::create_dir_all(&directory).ok();
+
+    let required_files = required_local_embedding_files(&directory);
+    let missing_files: Vec<LocalEmbeddingModelFileInfo> = required_files
+        .iter()
+        .filter(|file| !file.exists)
+        .cloned()
+        .collect();
+    let model_path = directory.join(LOCAL_EMBEDDING_MODEL_FILE);
+    let size_bytes = required_files
+        .iter()
+        .filter_map(|file| file.size_bytes)
+        .reduce(|left, right| left.saturating_add(right));
+    let available = missing_files.is_empty();
+
+    LocalEmbeddingModelInfo {
+        exists: available,
+        available,
+        can_auto_download: true,
+        directory: directory.to_string_lossy().to_string(),
+        path: model_path.to_string_lossy().to_string(),
+        size_bytes,
+        required_files,
+        missing_files,
+        source_repo: BGE_M3_SOURCE_REPO.to_string(),
+    }
+}
+
+fn required_local_embedding_files(directory: &Path) -> Vec<LocalEmbeddingModelFileInfo> {
+    [
+        (
+            LOCAL_EMBEDDING_MODEL_FILE,
+            "onnx/model.onnx",
+            Some(724_923_u64),
+        ),
+        (
+            LOCAL_EMBEDDING_ONNX_DATA_FILE,
+            "onnx/model.onnx_data",
+            Some(2_266_820_608_u64),
+        ),
+        (
+            LOCAL_EMBEDDING_TOKENIZER_FILE,
+            "onnx/tokenizer.json",
+            Some(17_082_821_u64),
+        ),
+    ]
+    .into_iter()
+    .map(|(filename, source_path, expected_size)| {
+        let destination = directory.join(filename);
+        let exists = destination.exists();
+        let actual_size = exists
+            .then(|| {
+                std::fs::metadata(&destination)
+                    .ok()
+                    .map(|metadata| metadata.len())
+            })
+            .flatten();
+        LocalEmbeddingModelFileInfo {
+            filename: filename.to_string(),
+            source_path: source_path.to_string(),
+            destination: destination.to_string_lossy().to_string(),
+            size_bytes: actual_size.or(expected_size),
+            exists,
+        }
+    })
+    .collect()
+}
+
+pub fn download_local_embedding_model_files(
+    model_dir: &Path,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    std::fs::create_dir_all(model_dir).map_err(|e| {
+        format!(
+            "Failed to create local BGE-M3 model directory {}: {e}",
+            model_dir.display()
+        )
+    })?;
+
+    let files = required_local_embedding_files(model_dir);
+    let missing: Vec<_> = files.into_iter().filter(|file| !file.exists).collect();
+    if missing.is_empty() {
+        let _ = app_handle.emit(
+            "embedding:download_complete",
+            EmbeddingDownloadCompletePayload {
+                path: model_dir.to_string_lossy().to_string(),
+            },
+        );
+        return Ok(());
+    }
+
+    for file in missing {
+        let url = format!(
+            "{BGE_M3_RESOLVE_BASE_URL}/{}?download=true",
+            file.source_path
+        );
+        let dest = PathBuf::from(&file.destination);
+        download_local_embedding_file(&url, &dest, &file.filename, app_handle)?;
+    }
+
+    let info = get_local_embedding_model_info(Some(model_dir.to_path_buf()));
+    if !info.available {
+        return Err(format!(
+            "Local BGE-M3 install incomplete. Missing: {}",
+            info.missing_files
+                .iter()
+                .map(|file| file.filename.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let _ = app_handle.emit(
+        "embedding:download_complete",
+        EmbeddingDownloadCompletePayload {
+            path: model_dir.to_string_lossy().to_string(),
+        },
+    );
+    Ok(())
+}
+
+fn download_local_embedding_file(
+    url: &str,
+    dest: &Path,
+    filename: &str,
+    app_handle: &AppHandle,
+) -> Result<(), String> {
+    let tmp_path = dest.with_extension("download.tmp");
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("Failed to create BGE-M3 download client: {e}"))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Failed to start BGE-M3 asset download for {filename}: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "BGE-M3 asset download failed for {filename} with HTTP {status}"
+        ));
+    }
+
+    let total_bytes = response.content_length();
+    let mut reader = response;
+    let mut file = std::fs::File::create(&tmp_path).map_err(|e| {
+        format!(
+            "Failed to create temp BGE-M3 asset {}: {e}",
+            tmp_path.display()
+        )
+    })?;
+    let mut downloaded_bytes = 0_u64;
+    let mut buffer = vec![0_u8; DOWNLOAD_CHUNK_SIZE];
+    let mut last_reported_pct = 0_u8;
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed while reading BGE-M3 asset {filename}: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|e| format!("Failed while writing BGE-M3 asset {filename}: {e}"))?;
+        downloaded_bytes += read as u64;
+        if let Some(total) = total_bytes.filter(|total| *total > 0) {
+            let pct = ((downloaded_bytes.saturating_mul(100)) / total).min(100) as u8;
+            if pct >= last_reported_pct.saturating_add(5) || pct == 100 {
+                last_reported_pct = pct;
+                let _ = app_handle.emit(
+                    "embedding:download_progress",
+                    EmbeddingDownloadProgressPayload {
+                        pct,
+                        downloaded_bytes,
+                        total_bytes,
+                        file: filename.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    drop(file);
+    let downloaded_size = std::fs::metadata(&tmp_path)
+        .map_err(|e| format!("Failed to inspect downloaded BGE-M3 asset {filename}: {e}"))?
+        .len();
+    if downloaded_size == 0 {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Downloaded BGE-M3 asset {filename} is empty"));
+    }
+
+    std::fs::rename(&tmp_path, dest).map_err(|e| {
+        format!(
+            "Failed to finalize BGE-M3 asset from {} to {}: {e}",
+            tmp_path.display(),
+            dest.display()
+        )
+    })
+}
+
 fn default_local_embedding_model_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("ENTROPIA_LOCAL_EMBEDDING_MODEL_DIR") {
         return PathBuf::from(path);
@@ -518,6 +787,10 @@ fn default_local_embedding_model_dir() -> PathBuf {
     }
 
     PathBuf::from("resources/models/embeddings/bge-m3")
+}
+
+pub fn default_local_embedding_model_dir_for_commands() -> PathBuf {
+    default_local_embedding_model_dir()
 }
 
 fn ensure_local_embedding_ort_init(model_dir: &Path) -> Result<(), String> {
@@ -671,20 +944,40 @@ pub fn compute_and_store_for_asset(
         None => {
             return Err(embedding_degradation_log(
                 item_id,
-                "No OpenRouter embedding engine configured (set OpenRouter API key; Python/fastembed fallback is disabled)",
+                "No BGE-M3 embedding engine configured (set OpenRouter API key for api provider or local BGE-M3 ONNX assets for local provider; Python/fastembed fallback is disabled)",
             ));
         }
     };
 
+    let provider = engine.provider_name();
+    eprintln!(
+        "[nlp/embeddings] EMBED start provider={provider} item_id={item_id} asset_id={asset_id} chars={}",
+        text.chars().count()
+    );
+
     let vector = match engine.embed_text(&text) {
-        Ok(v) => v,
+        Ok(v) => {
+            eprintln!(
+                "[nlp/embeddings] EMBED computed provider={provider} item_id={item_id} asset_id={asset_id} dims={}",
+                v.len()
+            );
+            v
+        }
         Err(e) => {
+            eprintln!(
+                "[nlp/embeddings] EMBED error provider={provider} item_id={item_id} asset_id={asset_id}: {e}"
+            );
             return Err(embedding_degradation_log(item_id, &e));
         }
     };
 
     let blob = floats_to_blob(&vector);
-    upsert_vec_asset(conn, item_id, asset_id, &blob)
+    upsert_vec_asset(conn, item_id, asset_id, &blob)?;
+    eprintln!(
+        "[nlp/embeddings] EMBED persisted provider={provider} item_id={item_id} asset_id={asset_id} bytes={}",
+        blob.len()
+    );
+    Ok(())
 }
 
 pub fn summarize_asset_embedding_coverage(
@@ -994,6 +1287,54 @@ mod tests {
 
         assert!(error.contains("Local BGE-M3 ONNX model not found"));
         assert!(error.contains(LOCAL_EMBEDDING_MODEL_FILE));
+    }
+
+    #[test]
+    fn local_embedding_model_info_requires_onnx_external_data_and_tokenizer() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        std::fs::write(temp.path().join(LOCAL_EMBEDDING_MODEL_FILE), b"onnx")
+            .expect("model file should be writable");
+        std::fs::write(
+            temp.path().join(LOCAL_EMBEDDING_TOKENIZER_FILE),
+            b"tokenizer",
+        )
+        .expect("tokenizer should be writable");
+
+        let info = get_local_embedding_model_info(Some(temp.path().to_path_buf()));
+
+        assert!(
+            !info.available,
+            "external ONNX data file is required by BAAI/bge-m3"
+        );
+        assert_eq!(info.required_files.len(), 3);
+        assert!(info
+            .missing_files
+            .iter()
+            .any(|file| file.filename == LOCAL_EMBEDDING_ONNX_DATA_FILE));
+        assert!(info
+            .required_files
+            .iter()
+            .any(|file| file.source_path == "onnx/model.onnx_data"));
+    }
+
+    #[test]
+    fn local_embedding_model_info_reports_available_when_all_bge_m3_assets_exist() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        for filename in [
+            LOCAL_EMBEDDING_MODEL_FILE,
+            LOCAL_EMBEDDING_ONNX_DATA_FILE,
+            LOCAL_EMBEDDING_TOKENIZER_FILE,
+        ] {
+            std::fs::write(temp.path().join(filename), b"asset")
+                .expect("asset file should be writable");
+        }
+
+        let info = get_local_embedding_model_info(Some(temp.path().to_path_buf()));
+
+        assert!(info.exists);
+        assert!(info.available);
+        assert!(info.missing_files.is_empty());
+        assert_eq!(info.directory, temp.path().to_string_lossy());
     }
 
     #[test]
