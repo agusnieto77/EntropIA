@@ -45,7 +45,6 @@ pub struct EmbeddingConfig {
 /// Embedding engine — calls OpenRouter's embeddings endpoint.
 pub struct EmbeddingEngine {
     config: EmbeddingConfig,
-    client: reqwest::blocking::Client,
     endpoint_url: String,
     cache: Mutex<HashMap<u64, Vec<f32>>>,
 }
@@ -88,15 +87,8 @@ impl EmbeddingEngine {
             config.model_name, OPENROUTER_EMBEDDING_DIMENSIONS,
         );
 
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("EntropIA-Desktop/0.1 (historical-research-app)")
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| format!("Failed to build OpenRouter embedding client: {e}"))?;
-
         Ok(Self {
             config,
-            client,
             endpoint_url,
             cache: Mutex::new(HashMap::new()),
         })
@@ -124,8 +116,13 @@ impl EmbeddingEngine {
             input: text,
         };
 
-        let response = self
-            .client
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("EntropIA-Desktop/0.1 (historical-research-app)")
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("Failed to build OpenRouter embedding client: {e}"))?;
+
+        let response = client
             .post(&self.endpoint_url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("HTTP-Referer", "https://hlab.com.ar/")
@@ -472,6 +469,20 @@ mod tests {
 
         assert!(error.contains("OpenRouter API key"));
         assert!(error.contains("No hay fallback"));
+    }
+
+    #[tokio::test]
+    async fn init_can_drop_embedding_engine_inside_tokio_context() {
+        let engine = EmbeddingEngine::init_with_endpoint(
+            EmbeddingConfig {
+                api_key: "sk-test".to_string(),
+                model_name: DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            },
+            "http://127.0.0.1:9".to_string(),
+        )
+        .expect("engine init should not create a blocking runtime");
+
+        drop(engine);
     }
 
     #[test]
