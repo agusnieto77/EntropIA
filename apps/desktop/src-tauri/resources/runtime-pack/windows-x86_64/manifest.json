@@ -29,27 +29,9 @@
   ],
   "script_files": [
     {
-      "path": "scripts/embed.py",
-      "sha256": "6052ec5cab826d7748175c4113b912ecf39f3383bd65a1284314f6440f18ff3a",
-      "size": 11684,
-      "executable": false
-    },
-    {
       "path": "scripts/paddle_vl.py",
       "sha256": "da3307b0fb8c96871a82f855178bb096db6bd5f03b27e8207303ec70f2c5a245",
       "size": 14858,
-      "executable": false
-    },
-    {
-      "path": "scripts/spacy_ner.py",
-      "sha256": "4bf09ff769657b155fabedf9f4bdca1c1b2b200a7481c71aa80aef7b9c90ea3a",
-      "size": 2036,
-      "executable": false
-    },
-    {
-      "path": "scripts/spacy_triples.py",
-      "sha256": "4bd986bd69080366d798a48d9f6aa17ebe49da80f60631f9421981a5bc2eeaba",
-      "size": 2050,
       "executable": false
     },
     {
@@ -62,8 +44,8 @@
   "wheelhouse": [
     {
       "path": "wheelhouse/README.txt",
-      "sha256": "fe3aeb2cce31a7ffd07f9cef2880f790233033ca9cf4e544a6278d5b8acc329d",
-      "size": 161,
+      "sha256": "a367ca8761e0f10cf39ebe2b6883ff6f8569e24bf556563be496ad7154e37114",
+      "size": 149,
       "executable": false
     }
   ],
@@ -78,12 +60,6 @@
       "path": "caches/paddlex/README.txt",
       "sha256": "7bb311f2f0bc456603d759ceaed42ffd9a326a66ac105e0841dc6bb2107a4a1c",
       "size": 122,
-      "executable": false
-    },
-    {
-      "path": "caches/spacy/README.txt",
-      "sha256": "c9e314b900c5e2c458f1b414611330fc7a23e076988527f4b4d4a404e269fb84",
-      "size": 136,
       "executable": false
     }
   ],

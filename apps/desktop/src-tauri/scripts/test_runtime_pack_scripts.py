@@ -69,9 +69,6 @@ def create_fixture_root(root: Path, platform: str = 'linux-x86_64') -> Path:
     script_entries = [
         write_fixture_file(pack_root, 'scripts/paddle_vl.py', 'print("paddle fixture")\n'),
         write_fixture_file(pack_root, 'scripts/transcribe.py', 'print("transcribe fixture")\n'),
-        write_fixture_file(pack_root, 'scripts/embed.py', 'print("embed fixture")\n'),
-        write_fixture_file(pack_root, 'scripts/spacy_ner.py', 'print("spacy ner fixture")\n'),
-        write_fixture_file(pack_root, 'scripts/spacy_triples.py', 'print("spacy triples fixture")\n'),
     ]
     manifest = {
         'platform': platform,
@@ -208,7 +205,7 @@ class RuntimePackScriptTests(unittest.TestCase):
             self.assertTrue(smoke_payload['ok'])
             self.assertEqual(smoke_payload['payload_profile'], 'release')
             self.assertEqual(smoke_payload['external_artifacts_required'], [])
-            self.assertGreaterEqual(smoke_payload['entry_counts']['wheelhouse'], 6)
+            self.assertGreaterEqual(smoke_payload['entry_counts']['wheelhouse'], 3)
 
     def test_materialize_windows_repackages_installed_dist_info_as_wheel(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

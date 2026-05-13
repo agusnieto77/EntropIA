@@ -24,9 +24,6 @@ use crate::runtime::{
     RuntimeManager,
 };
 
-#[cfg(test)]
-const SPACY_MODEL_ES_VERSION: &str = "3.8.0";
-
 // ---------------------------------------------------------------------------
 // GPU / CUDA detection for PaddlePaddle automatic GPU selection
 // ---------------------------------------------------------------------------
@@ -319,8 +316,6 @@ fn resolve_paddlepaddle_install_target(wheelhouse_dir: Option<&Path>) -> (String
         (format!("paddlepaddle{VERSION_SPEC}"), None)
     }
 }
-const SPACY_MODEL_ES_WHEEL_SPEC: &str =
-    "https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl";
 const UV_VENV_TIMEOUT: Duration = Duration::from_secs(180);
 const UV_PIP_INSTALL_TIMEOUT: Duration = Duration::from_secs(1800);
 const SUBPROCESS_TAIL_LINES: usize = 20;
@@ -840,10 +835,8 @@ pub fn persist_venv_paths(conn: &rusqlite::Connection, python_path: &Path) -> Re
 
     let keys = [
         "deps_venv_python_path",
-        "python.fastembed.path",
         "python.paddle_vl.path",
         "python.faster_whisper.path",
-        "python.spacy.path",
     ];
 
     for key in keys {
@@ -861,7 +854,6 @@ pub fn persist_venv_paths(conn: &rusqlite::Connection, python_path: &Path) -> Re
 /// Install one dependency into the managed venv.
 ///
 /// - Deps with `pip_spec`: `uv pip install <spec> --python <venv_python>`
-/// - `SpacyModelEs`: `uv pip install <exact-wheel-url> --python <venv_python>`
 /// - `Python` (no pip_spec, managed by uv): immediate `Ok(())`
 ///
 /// Streams stderr line-by-line, calling `on_output(line)` for each line.
@@ -954,10 +946,9 @@ fn requires_binary_only(uses_online_indexes: bool) -> bool {
     uses_online_indexes
 }
 
-fn managed_install_spec(dep: &DependencySpec, wheelhouse_dir: Option<&Path>) -> Option<String> {
+fn managed_install_spec(dep: &DependencySpec, _wheelhouse_dir: Option<&Path>) -> Option<String> {
     match dep.id {
         DependencyId::Python => None,
-        DependencyId::SpacyModelEs => resolve_spacy_model_install_spec(wheelhouse_dir),
         DependencyId::PaddlePaddle => {
             // Dynamic resolution is handled inside install_package; for probes
             // and status checks we still return the static CPU spec.
@@ -965,25 +956,6 @@ fn managed_install_spec(dep: &DependencySpec, wheelhouse_dir: Option<&Path>) -> 
         }
         _ => dep.pip_spec.map(str::to_owned),
     }
-}
-
-fn resolve_spacy_model_install_spec(wheelhouse_dir: Option<&Path>) -> Option<String> {
-    if let Some(dir) = wheelhouse_dir {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default();
-                if file_name.starts_with("es_core_news_sm-") && file_name.ends_with(".whl") {
-                    return Some(path.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-
-    Some(SPACY_MODEL_ES_WHEEL_SPEC.to_string())
 }
 
 async fn ensure_managed_prerequisites_installed(
@@ -1351,7 +1323,6 @@ pub async fn install_all(
         if dep.id == DependencyId::Python {
             continue; // Already handled above.
         }
-
         if let Some(blocked_message) = first_failed_prerequisite_message(dep, &results) {
             let blocked_status = DependencyStatus::Failed {
                 message: blocked_message,
@@ -1922,10 +1893,8 @@ mod tests {
 
         let keys = [
             "deps_venv_python_path",
-            "python.fastembed.path",
             "python.paddle_vl.path",
             "python.faster_whisper.path",
-            "python.spacy.path",
         ];
         for key in keys {
             let value: String = conn
@@ -1944,17 +1913,6 @@ mod tests {
     }
 
     #[test]
-    fn test_managed_install_plan_keeps_spacy_before_model() {
-        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
-        let plan = managed_install_plan(spacy_model)
-            .into_iter()
-            .map(|dep| dep.id.clone())
-            .collect::<Vec<_>>();
-
-        assert_eq!(plan, vec![DependencyId::Spacy, DependencyId::SpacyModelEs]);
-    }
-
-    #[test]
     fn test_managed_install_plan_keeps_paddlepaddle_before_paddleocr() {
         let paddleocr = find_dep(&DependencyId::PaddleOcr).expect("PaddleOcr present");
         let plan = managed_install_plan(paddleocr)
@@ -1969,43 +1927,13 @@ mod tests {
     }
 
     #[test]
-    fn test_managed_install_spec_uses_offline_spacy_model_requirement() {
-        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
-
-        assert_eq!(
-            managed_install_spec(spacy_model, None),
-            Some(SPACY_MODEL_ES_WHEEL_SPEC.to_string())
-        );
-        assert!(SPACY_MODEL_ES_WHEEL_SPEC
-            .starts_with("https://github.com/explosion/spacy-models/releases/download/"));
-    }
-
-    #[test]
     fn test_managed_install_spec_preserves_regular_pip_specs() {
-        let spacy = find_dep(&DependencyId::Spacy).expect("spacy dep present");
+        let whisper = find_dep(&DependencyId::FasterWhisper).expect("faster-whisper dep present");
 
         assert_eq!(
-            managed_install_spec(spacy, None),
-            spacy.pip_spec.map(str::to_owned)
+            managed_install_spec(whisper, None),
+            whisper.pip_spec.map(str::to_owned)
         );
-    }
-
-    #[test]
-    fn test_spacy_model_version_constant_matches_wheel_url() {
-        assert!(SPACY_MODEL_ES_WHEEL_SPEC.contains(SPACY_MODEL_ES_VERSION));
-    }
-
-    #[test]
-    fn test_spacy_model_prefers_local_wheelhouse_copy_when_available() {
-        let wheelhouse = tempdir().expect("wheelhouse dir");
-        let local_wheel = wheelhouse
-            .path()
-            .join("es_core_news_sm-3.8.0-py3-none-any.whl");
-        std::fs::write(&local_wheel, b"wheel").expect("write wheel");
-
-        let resolved = resolve_spacy_model_install_spec(Some(wheelhouse.path()));
-
-        assert_eq!(resolved, Some(local_wheel.to_string_lossy().into_owned()));
     }
 
     #[test]

@@ -167,7 +167,7 @@ describe('AppShell', () => {
 
     expect(await screen.findByText('Dependencias de IA pendientes')).toBeInTheDocument()
     expect(
-      screen.getByText('Se necesitan Python y paquetes para OCR, embeddings y transcripción.'),
+      screen.getByText('Se necesitan Python y paquetes para OCR/transcripción; embeddings usan OpenRouter.'),
     ).toBeInTheDocument()
   })
 

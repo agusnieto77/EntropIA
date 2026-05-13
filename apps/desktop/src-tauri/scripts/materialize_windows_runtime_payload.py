@@ -24,17 +24,12 @@ WINDOWS_PLATFORM = "windows-x86_64"
 REQUIRED_SCRIPTS = (
     "paddle_vl.py",
     "transcribe.py",
-    "embed.py",
-    "spacy_ner.py",
-    "spacy_triples.py",
 )
 CORE_HF_CACHE_ENTRIES = (
     # Direct model directory used by transcribe.py before falling back to HF cache.
     "Systran--faster-whisper-base",
     # HF-style cache for faster-whisper.
     "models--Systran--faster-whisper-base",
-    # FastEmbed resolves EntropIA's friendly model to Qdrant's ONNX repo.
-    "models--qdrant--paraphrase-multilingual-MiniLM-L12-v2-onnx-Q",
 )
 WINDOWS_NATIVE_LIBS = ("pdfium.dll", "onnxruntime.dll")
 
@@ -288,12 +283,10 @@ def copy_caches(
     hf_cache_mode: str,
     hf_cache_source: Path | None = None,
     paddlex_cache_source: Path | None = None,
-    spacy_cache_source: Path | None = None,
 ) -> None:
     caches_root = payload_root / "caches"
     hf_source = hf_cache_source or app_data_dir / "hf_cache"
     paddlex_source = paddlex_cache_source or app_data_dir / "paddlex_cache"
-    spacy_source = spacy_cache_source or app_data_dir / "spacy_cache"
 
     selected_hf = None if hf_cache_mode == "all" else CORE_HF_CACHE_ENTRIES
     if hf_cache_mode == "none":
@@ -301,8 +294,6 @@ def copy_caches(
 
     copy_cache_dir(hf_source, caches_root / "hf", selected_hf)
     copy_cache_dir(paddlex_source, caches_root / "paddlex", None)
-    if spacy_source.is_dir() and any(path.is_file() for path in spacy_source.rglob("*")):
-        copy_cache_dir(spacy_source, caches_root / "spacy", None)
 
 
 def copy_native_libs(payload_root: Path, native_source_dirs: list[Path]) -> None:
@@ -359,7 +350,6 @@ def materialize_payload(
     hf_cache_mode: str,
     hf_cache_source: Path | None = None,
     paddlex_cache_source: Path | None = None,
-    spacy_cache_source: Path | None = None,
 ) -> Path:
     payload_root = output_dir / WINDOWS_PLATFORM
     if payload_root.exists():
@@ -377,7 +367,6 @@ def materialize_payload(
         hf_cache_mode,
         hf_cache_source=hf_cache_source,
         paddlex_cache_source=paddlex_cache_source,
-        spacy_cache_source=spacy_cache_source,
     )
     copy_native_libs(payload_root, native_source_dirs)
     write_manifest_overrides(payload_root, pack_version, app_version)
@@ -400,7 +389,6 @@ def main() -> int:
     parser.add_argument("--app-data-dir", default=str(default_app_data_dir()))
     parser.add_argument("--hf-cache-source")
     parser.add_argument("--paddlex-cache-source")
-    parser.add_argument("--spacy-cache-source")
     parser.add_argument(
         "--native-source-dir",
         action="append",
@@ -430,7 +418,6 @@ def main() -> int:
             hf_cache_mode=args.hf_cache_mode,
             hf_cache_source=Path(args.hf_cache_source) if args.hf_cache_source else None,
             paddlex_cache_source=Path(args.paddlex_cache_source) if args.paddlex_cache_source else None,
-            spacy_cache_source=Path(args.spacy_cache_source) if args.spacy_cache_source else None,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

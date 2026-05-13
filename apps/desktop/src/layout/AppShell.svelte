@@ -340,7 +340,7 @@
         <span class="toast__icon">⚠</span>
         <div class="toast__body">
           <span class="toast__title">Dependencias de IA pendientes</span>
-          <span class="toast__text">Se necesitan Python y paquetes para OCR, embeddings y transcripción.</span>
+          <span class="toast__text">Se necesitan Python y paquetes para OCR/transcripción; embeddings usan OpenRouter.</span>
         </div>
         <button class="toast__action" onclick={goToDepSettings}>Configurar →</button>
         <button class="toast__close" onclick={dismissToast} aria-label="Cerrar">×</button>

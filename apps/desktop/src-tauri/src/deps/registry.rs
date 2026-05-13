@@ -16,12 +16,12 @@ pub struct DependencySpec {
     pub id: DependencyId,
     /// Human-readable name shown in the UI.
     pub display_name: &'static str,
-    /// pip/uv install specifier, e.g. `"fastembed>=0.4.0"`.
-    /// `None` means the dependency has a custom install path (e.g. spaCy model).
+    /// pip/uv install specifier, e.g. `"paddlepaddle>=3.2.1,<3.3.0"`.
+    /// `None` means the dependency has a custom install path.
     pub pip_spec: Option<&'static str>,
     /// One-liner Python code that prints `"ok"` when the dependency is available.
     pub probe_code: &'static str,
-    /// Whether the main AI pipeline cannot function without this dependency.
+    /// Whether the main local Python AI pipeline cannot function without this dependency.
     pub critical: bool,
     /// Managed-environment prerequisites that must exist before this dep can install.
     pub managed_prerequisites: &'static [DependencyId],
@@ -30,7 +30,6 @@ pub struct DependencySpec {
 }
 
 const NO_PREREQUISITES: &[DependencyId] = &[];
-const SPACY_MODEL_PREREQUISITES: &[DependencyId] = &[DependencyId::Spacy];
 const PADDLEOCR_PREREQUISITES: &[DependencyId] = &[DependencyId::PaddlePaddle];
 
 // ---------------------------------------------------------------------------
@@ -48,15 +47,6 @@ static ALL_DEPS: &[DependencySpec] = &[
         install_order: 0,
     },
     DependencySpec {
-        id: DependencyId::Fastembed,
-        display_name: "fastembed",
-        pip_spec: Some("fastembed>=0.4.0"),
-        probe_code: "import fastembed; print('ok')",
-        critical: true,
-        managed_prerequisites: NO_PREREQUISITES,
-        install_order: 1,
-    },
-    DependencySpec {
         id: DependencyId::PaddlePaddle,
         display_name: "PaddlePaddle",
         // PaddlePaddle 2.6.2 is incompatible with paddleocr[doc-parser]>=3.x
@@ -68,7 +58,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "import paddle; print('ok')",
         critical: true,
         managed_prerequisites: NO_PREREQUISITES,
-        install_order: 2,
+        install_order: 1,
     },
     DependencySpec {
         id: DependencyId::PaddleOcr,
@@ -77,7 +67,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "from paddleocr import PaddleOCRVL; print('ok')",
         critical: true,
         managed_prerequisites: PADDLEOCR_PREREQUISITES,
-        install_order: 3,
+        install_order: 2,
     },
     DependencySpec {
         id: DependencyId::FasterWhisper,
@@ -86,25 +76,7 @@ static ALL_DEPS: &[DependencySpec] = &[
         probe_code: "import faster_whisper; print('ok')",
         critical: false,
         managed_prerequisites: NO_PREREQUISITES,
-        install_order: 4,
-    },
-    DependencySpec {
-        id: DependencyId::Spacy,
-        display_name: "spaCy",
-        pip_spec: Some("spacy>=3.7.0,<4.0.0"),
-        probe_code: "import spacy; print('ok')",
-        critical: false,
-        managed_prerequisites: NO_PREREQUISITES,
-        install_order: 5,
-    },
-    DependencySpec {
-        id: DependencyId::SpacyModelEs,
-        display_name: "spaCy model (es_core_news_sm)",
-        pip_spec: None, // installed from a pinned wheel URL via the managed uv venv flow
-        probe_code: "import spacy; spacy.load('es_core_news_sm'); print('ok')",
-        critical: false,
-        managed_prerequisites: SPACY_MODEL_PREREQUISITES,
-        install_order: 6,
+        install_order: 3,
     },
 ];
 
@@ -137,8 +109,8 @@ mod tests {
     fn test_registry_length() {
         assert_eq!(
             all_deps().len(),
-            7,
-            "Registry should have exactly 7 entries"
+            4,
+            "Registry should have exactly 4 Python runtime entries"
         );
     }
 
@@ -162,18 +134,6 @@ mod tests {
         let python = find_dep(&DependencyId::Python);
         assert!(python.is_some(), "Python dep must be in registry");
         assert_eq!(python.unwrap().install_order, 0);
-
-        let spacy_model = find_dep(&DependencyId::SpacyModelEs);
-        assert!(spacy_model.is_some());
-        assert!(
-            spacy_model.unwrap().pip_spec.is_none(),
-            "SpacyModelEs has no pip_spec"
-        );
-
-        assert!(
-            find_dep(&DependencyId::Fastembed).is_some(),
-            "Fastembed must be in registry"
-        );
 
         let paddlepaddle = find_dep(&DependencyId::PaddlePaddle);
         assert!(paddlepaddle.is_some(), "PaddlePaddle must be in registry");
@@ -248,12 +208,6 @@ mod tests {
             paddleocr.probe_code, "from paddleocr import PaddleOCRVL; print('ok')",
             "PaddleOcr probe must verify PaddleOCRVL is importable"
         );
-    }
-
-    #[test]
-    fn test_spacy_model_declares_spacy_prerequisite() {
-        let spacy_model = find_dep(&DependencyId::SpacyModelEs).expect("spacy model present");
-        assert_eq!(spacy_model.managed_prerequisites, SPACY_MODEL_PREREQUISITES);
     }
 
     #[test]

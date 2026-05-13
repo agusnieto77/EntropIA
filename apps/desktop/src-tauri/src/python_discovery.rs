@@ -1,6 +1,6 @@
 //! Shared Python interpreter discovery and module probing.
 //!
-//! All subsystems (PaddleVL, transcription, embeddings, spaCy NER) that need a
+//! All subsystems (PaddleVL, transcription) that need a
 //! Python interpreter follow the same pattern: discover candidate interpreters,
 //! then probe each for the required module. This module consolidates the
 //! discovery step so it runs ONCE and the results are shared, reducing log noise
@@ -485,8 +485,8 @@ pub fn invalidate_probe_cache() {
 
 /// Clear a single module probe cache entry so the next call for that key re-probes.
 ///
-/// Used by NLP worker retry logic: when a previously-failed init (e.g. fastembed
-/// or spacy not yet installed) is retried after dependencies are installed, we
+/// Used by runtime retry logic: when a previously-failed init is retried after
+/// dependencies are installed, we
 /// must drop the cached `None` miss so the probe actually runs again.
 pub fn invalidate_probe_cache_entry(cache_key: &str) {
     if let Ok(mut cache) = get_probe_cache().lock() {

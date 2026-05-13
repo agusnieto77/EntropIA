@@ -18,17 +18,11 @@ RUNTIME_PACK_ROOT = TAURI_ROOT / 'resources' / 'runtime-pack'
 REQUIRED_RELEASE_SCRIPTS = {
     'scripts/paddle_vl.py',
     'scripts/transcribe.py',
-    'scripts/embed.py',
-    'scripts/spacy_ner.py',
-    'scripts/spacy_triples.py',
 }
 REQUIRED_RELEASE_WHEELS = {
     'paddleocr',
     'paddlepaddle',
     'faster_whisper',
-    'spacy',
-    'fastembed',
-    'es_core_news_sm',
 }
 REQUIRED_RELEASE_CACHE_DIRS = (
     'caches/hf',
@@ -36,17 +30,13 @@ REQUIRED_RELEASE_CACHE_DIRS = (
 )
 CACHE_NOT_SEEDED_MARKER = 'CACHE_NOT_SEEDED.txt'
 INSTALL_PROBE_SPECS = (
-    'fastembed>=0.4.0',
     'paddlepaddle>=3.2.1,<3.3.0',
     'paddleocr[doc-parser]>=2.9.0',
     'faster-whisper>=1.0.0',
-    'spacy>=3.7.0,<4.0.0',
 )
 INSTALL_PROBE_IMPORTS = (
-    'import fastembed; print("fastembed ok")',
     'import paddle; from paddleocr import PaddleOCRVL; print("paddleocr ok")',
     'import faster_whisper, ctranslate2; print("faster_whisper ok")',
-    'import spacy, es_core_news_sm; spacy.load("es_core_news_sm"); print("spacy ok")',
 )
 
 
@@ -83,7 +73,6 @@ def required_paths(manifest: dict) -> list[str]:
         manifest['uv_relpath'],
         'scripts/paddle_vl.py',
         'scripts/transcribe.py',
-        'scripts/embed.py',
     ]
 
 
@@ -166,11 +155,6 @@ def run_install_probe(pack_root: Path, manifest: dict, expected_platform: str) -
     python_path = pack_root / manifest['python_relpath']
     uv_path = pack_root / manifest['uv_relpath']
     wheelhouse = pack_root / 'wheelhouse'
-    spacy_wheels = sorted(wheelhouse.glob('es_core_news_sm-*.whl'))
-    if not spacy_wheels:
-        probe['ok'] = False
-        probe['error'] = 'missing es_core_news_sm wheel for install probe'
-        return probe
 
     probe['attempted'] = True
     with tempfile.TemporaryDirectory(prefix='entropia-runtime-probe-') as temp_dir:
@@ -196,19 +180,6 @@ def run_install_probe(pack_root: Path, manifest: dict, expected_platform: str) -
                 str(wheelhouse),
             ]
             for spec in INSTALL_PROBE_SPECS
-        )
-        commands.append(
-            [
-                str(uv_path),
-                'pip',
-                'install',
-                str(spacy_wheels[0]),
-                '--python',
-                str(venv_python),
-                '--no-index',
-                '--find-links',
-                str(wheelhouse),
-            ]
         )
         commands.extend([str(venv_python), '-c', code] for code in INSTALL_PROBE_IMPORTS)
 

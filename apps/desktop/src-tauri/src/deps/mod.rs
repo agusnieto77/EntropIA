@@ -43,12 +43,9 @@ pub use checks::resolve_probe_python;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum DependencyId {
     Python,
-    Fastembed,
     PaddlePaddle,
     PaddleOcr,
     FasterWhisper,
-    Spacy,
-    SpacyModelEs,
 }
 
 /// The runtime status of a single dependency.
@@ -89,15 +86,7 @@ fn default_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
     use DependencyId::*;
 
     let mut map = HashMap::new();
-    for id in [
-        Python,
-        Fastembed,
-        PaddlePaddle,
-        PaddleOcr,
-        FasterWhisper,
-        Spacy,
-        SpacyModelEs,
-    ] {
+    for id in [Python, PaddlePaddle, PaddleOcr, FasterWhisper] {
         map.insert(id, DependencyStatus::Unknown);
     }
     map
@@ -203,10 +192,8 @@ pub fn should_invalidate_cache_for_setting(key: &str) -> bool {
         key,
         "deps_venv_python_path"
             | "python.runtime_selection"
-            | "python.fastembed.path"
             | "python.paddle_vl.path"
             | "python.faster_whisper.path"
-            | "python.spacy.path"
     )
 }
 
@@ -467,7 +454,7 @@ pub async fn deps_install_all(
 
 /// Install a single dependency by id string.
 ///
-/// - The `id` must match a `DependencyId` variant in snake_case (e.g. `"fastembed"`).
+/// - The `id` must match a `DependencyId` variant in snake_case (e.g. `"paddle_ocr"`).
 /// - Pre-flight: uv and venv must already exist.
 /// - Emits `deps://progress` Installing → Installed/Failed.
 #[tauri::command]
@@ -675,10 +662,8 @@ pub async fn deps_reset(
         let keys = [
             "deps_venv_python_path",
             "python.runtime_selection",
-            "python.fastembed.path",
             "python.paddle_vl.path",
             "python.faster_whisper.path",
-            "python.spacy.path",
         ];
         for key in keys {
             crate::settings::delete_setting(&conn, key)

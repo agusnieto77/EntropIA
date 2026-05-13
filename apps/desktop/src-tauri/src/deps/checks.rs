@@ -25,16 +25,9 @@ const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
 const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const PROBE_PADDLEPADDLE_CUDA: &str = "import paddle; assert paddle.device.is_compiled_with_cuda(), 'PaddlePaddle CPU wheel installed on NVIDIA hardware'; print('ok')";
-const PROBE_FASTEMBED: &str = "import fastembed; print('ok')";
 const PROBE_PADDLE_VL: &str = "from paddleocr import PaddleOCRVL; print('ok')";
 const PROBE_FASTER_WHISPER: &str = "import faster_whisper; print('ok')";
-const PROBE_SPACY_ES: &str = "import spacy, es_core_news_sm; print('ok')";
-const RUNTIME_PYTHON_KEYS: &[&str] = &[
-    "python.fastembed.path",
-    "python.paddle_vl.path",
-    "python.faster_whisper.path",
-    "python.spacy.path",
-];
+const RUNTIME_PYTHON_KEYS: &[&str] = &["python.paddle_vl.path", "python.faster_whisper.path"];
 
 static LOGGED_RUNTIME_FALLBACK: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
@@ -445,12 +438,11 @@ fn resolve_runtime_python_candidates(mut candidates: Vec<PathBuf>) -> Option<Pat
 
     for candidate in candidates {
         let capabilities = probe_runtime_capabilities(&candidate);
-        if !(capabilities.has_fastembed && capabilities.has_paddle_vl) {
+        if !capabilities.has_paddle_vl {
             continue;
         }
 
-        let optional_score =
-            usize::from(capabilities.has_faster_whisper) + usize::from(capabilities.has_spacy);
+        let optional_score = usize::from(capabilities.has_faster_whisper);
 
         match &best_match {
             Some((_, best_score)) if *best_score >= optional_score => {}
@@ -504,21 +496,17 @@ fn persisted_runtime_candidates(conn: &rusqlite::Connection) -> Vec<PathBuf> {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct RuntimeCapabilities {
-    has_fastembed: bool,
     has_paddle_vl: bool,
     has_faster_whisper: bool,
-    has_spacy: bool,
 }
 
 fn probe_runtime_capabilities(path: &Path) -> RuntimeCapabilities {
     RuntimeCapabilities {
-        has_fastembed: crate::python_discovery::probe_python_module(path, PROBE_FASTEMBED),
         has_paddle_vl: crate::python_discovery::probe_python_module(path, PROBE_PADDLE_VL),
         has_faster_whisper: crate::python_discovery::probe_python_module(
             path,
             PROBE_FASTER_WHISPER,
         ),
-        has_spacy: crate::python_discovery::probe_python_module(path, PROBE_SPACY_ES),
     }
 }
 
@@ -585,11 +573,11 @@ mod tests {
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
             rusqlite::params![
-                "python.fastembed.path",
+                "python.faster_whisper.path",
                 current_exe.to_string_lossy().as_ref()
             ],
         )
-        .expect("insert fastembed path");
+        .expect("insert paddle path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
             rusqlite::params![
@@ -598,11 +586,6 @@ mod tests {
             ],
         )
         .expect("insert duplicate path");
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["python.spacy.path", "/nonexistent/path/python.exe"],
-        )
-        .expect("insert stale path");
 
         let candidates = persisted_runtime_candidates(&conn);
         assert_eq!(candidates, vec![current_exe]);
@@ -633,7 +616,10 @@ mod tests {
         let current_exe = std::env::current_exe().expect("current exe path");
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
-            rusqlite::params!["python.spacy.path", current_exe.to_string_lossy().as_ref()],
+            rusqlite::params![
+                "python.paddle_vl.path",
+                current_exe.to_string_lossy().as_ref()
+            ],
         )
         .expect("insert runtime python path");
 
@@ -654,7 +640,7 @@ mod tests {
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
             rusqlite::params![
-                "python.fastembed.path",
+                "python.paddle_vl.path",
                 current_exe.to_string_lossy().as_ref()
             ],
         )

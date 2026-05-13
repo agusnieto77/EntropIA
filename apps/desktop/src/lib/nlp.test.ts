@@ -455,17 +455,21 @@ describe('NlpStore', () => {
 })
 
 describe('embedding architecture governance', () => {
-  it('does not depend on Rust fastembed crate (migrated to Python subprocess)', () => {
+  it('uses OpenRouter embeddings without reintroducing local fastembed crates', () => {
     const cargoToml = readRepoFile('../../src-tauri/Cargo.toml')
+    const embeddingsRs = readRepoFile('../../src-tauri/src/nlp/embeddings.rs')
 
-    // Embeddings now use Python subprocess (scripts/embed.py) instead of
-    // the Rust fastembed crate, which fails on Windows due to ORT/MSVC
-    // linker issues. This test ensures we don't accidentally re-introduce
-    // the Rust crate dependency.
+    // Lightweight embeddings are API-first through OpenRouter BGE-M3. This
+    // keeps the Windows release path away from local fastembed/ORT subprocess
+    // failure modes.
     expect(cargoToml).not.toContain('fastembed-upstream')
     expect(cargoToml).not.toContain('fastembed-shim')
     expect(cargoToml).not.toContain('sqlite-vec-shim')
     expect(cargoToml).not.toContain('fastembed =')
     expect(cargoToml).not.toContain('fastembed-core')
+    expect(embeddingsRs).toContain('baai/bge-m3')
+    expect(embeddingsRs).toContain('https://openrouter.ai/api/v1/embeddings')
+    expect(embeddingsRs).not.toContain('Command::new')
+    expect(embeddingsRs).not.toContain('script_path')
   })
 })

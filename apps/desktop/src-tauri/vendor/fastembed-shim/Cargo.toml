@@ -1,8 +1,0 @@
-[package]
-name = "fastembed"
-version = "5.0.0"
-edition = "2021"
-
-[lib]
-name = "fastembed"
-path = "src/lib.rs"

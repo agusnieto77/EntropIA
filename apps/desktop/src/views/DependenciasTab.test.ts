@@ -29,7 +29,7 @@ vi.mock('$lib/deps', () => ({
   onDepsError: depsMocks.onDepsError,
   DEP_DISPLAY_NAMES: {
     Python: 'Python 3.11',
-    Fastembed: 'Fastembed (embeddings)',
+    Fastembed: 'Fastembed (legacy embeddings)',
     PaddlePaddle: 'PaddlePaddle (runtime OCR)',
     PaddleOcr: 'PaddleOCR (OCR principal)',
     FasterWhisper: 'Faster Whisper (transcripción)',
@@ -38,14 +38,14 @@ vi.mock('$lib/deps', () => ({
   },
   DEP_DESCRIPTIONS: {
     Python: 'Intérprete Python requerido para todas las funciones de IA',
-    Fastembed: 'Motor de embeddings para búsqueda semántica',
+    Fastembed: 'Motor legacy de embeddings; el perfil liviano usa OpenRouter BGE-M3',
     PaddlePaddle: 'Base de ejecución requerida por PaddleOCR-VL',
     PaddleOcr: 'Motor principal de reconocimiento óptico de caracteres',
     FasterWhisper: 'Transcripción de audio a texto',
     Spacy: 'Reconocimiento de entidades nombradas',
     SpacyModelEs: 'Modelo de lenguaje español para spaCy',
   },
-  CRITICAL_DEPS: ['Python', 'Fastembed', 'PaddlePaddle', 'PaddleOcr'],
+  CRITICAL_DEPS: ['Python', 'PaddlePaddle', 'PaddleOcr'],
 }))
 
 vi.mock('$lib/runtime', () => ({

@@ -103,7 +103,7 @@ export function resetDeps(): Promise<void> {
 
 export const DEP_DISPLAY_NAMES: Record<DependencyId, string> = {
   Python: 'Python 3.11',
-  Fastembed: 'Fastembed (embeddings)',
+  Fastembed: 'Fastembed (legacy embeddings)',
   PaddlePaddle: 'PaddlePaddle (runtime OCR)',
   PaddleOcr: 'PaddleOCR (OCR principal)',
   FasterWhisper: 'Faster Whisper (transcripción)',
@@ -111,11 +111,11 @@ export const DEP_DISPLAY_NAMES: Record<DependencyId, string> = {
   SpacyModelEs: 'Modelo spaCy español',
 }
 
-export const CRITICAL_DEPS: DependencyId[] = ['Python', 'Fastembed', 'PaddlePaddle', 'PaddleOcr']
+export const CRITICAL_DEPS: DependencyId[] = ['Python', 'PaddlePaddle', 'PaddleOcr']
 
 export const DEP_DESCRIPTIONS: Record<DependencyId, string> = {
   Python: 'Intérprete Python requerido para todas las funciones de IA',
-  Fastembed: 'Motor de embeddings para búsqueda semántica',
+  Fastembed: 'Motor legacy de embeddings; el perfil liviano usa OpenRouter BGE-M3',
   PaddlePaddle: 'Base de ejecución requerida por PaddleOCR-VL',
   PaddleOcr: 'Motor principal de reconocimiento óptico de caracteres',
   FasterWhisper: 'Transcripción de audio a texto',

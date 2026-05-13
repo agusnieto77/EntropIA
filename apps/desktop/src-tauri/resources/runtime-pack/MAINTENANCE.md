@@ -13,8 +13,8 @@ Antes de publicar una release que diga “self-contained”, CI/release DEBE ree
 
 1. Python relocatable redistribuible por plataforma.
 2. `uv` auditado si cambia respecto del fixture.
-3. Wheelhouse offline real para OCR/transcripción/NLP.
-4. Caches/modelos presembrados (HF y PaddleX) requeridos por los flujos core; spaCy se cubre por wheelhouse offline.
+3. Wheelhouse offline real para OCR/transcripción.
+4. Caches/modelos presembrados (HF y PaddleX) requeridos por los flujos core. El NLP liviano usa OpenRouter (`baai/bge-m3` para embeddings y Gemma JSON para NER), sin `scripts/embed.py` ni spaCy en el runtime fallback.
 5. Shared libraries Linux auditadas (`libpdfium.so`, `libonnxruntime.so`, y cualquier dependencia adicional que resulte obligatoria).
 
 ## Contrato de payload externo
