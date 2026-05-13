@@ -96,6 +96,22 @@ def create_fixture_root(root: Path, platform: str = 'linux-x86_64') -> Path:
     return root
 
 
+def create_complete_payload_source(root: Path) -> Path:
+    write_fixture_file(root, 'python/bin/python3', '#!/bin/sh\necho Python 3.12.0\n', executable=True)
+    write_fixture_file(root, 'python/Lib/asyncio/__init__.py', '# asyncio source stays\n')
+    write_fixture_file(root, 'python/Lib/__pycache__/__future__.cpython-311.pyc', 'mutable bytecode\n')
+    write_fixture_file(root, 'python/Lib/site.pyc', 'mutable bytecode\n')
+    write_fixture_file(root, 'python/Lib/site.pyo', 'mutable optimized bytecode\n')
+    write_fixture_file(root, 'uv/bin/uv', '#!/bin/sh\necho uv 0.6.14\n', executable=True)
+    for prefix in ('paddleocr', 'paddlepaddle', 'faster_whisper', 'spacy', 'fastembed', 'es_core_news_sm'):
+        write_fixture_file(root, f'wheelhouse/{prefix}-0.0.0-py3-none-any.whl', f'{prefix} wheel\n')
+    write_fixture_file(root, 'caches/hf/model.bin', 'hf cache\n')
+    write_fixture_file(root, 'caches/paddlex/model.bin', 'paddlex cache\n')
+    write_fixture_file(root, 'resources/lib/libpdfium.so', 'pdfium\n')
+    write_fixture_file(root, 'resources/lib/libonnxruntime.so', 'onnxruntime\n')
+    return root
+
+
 class RuntimePackScriptTests(unittest.TestCase):
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -209,6 +225,77 @@ class RuntimePackScriptTests(unittest.TestCase):
             self.assertEqual(smoke_payload['payload_profile'], 'release')
             self.assertEqual(smoke_payload['external_artifacts_required'], [])
             self.assertGreaterEqual(smoke_payload['entry_counts']['wheelhouse'], 6)
+
+    def test_prepare_release_payload_excludes_python_bytecode_cache_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_root = create_complete_payload_source(root / 'source')
+            output_root = root / 'payloads'
+
+            result = self.run_script(
+                str(PREPARE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(output_root),
+                '--pack-version',
+                'test-pack',
+                '--app-version',
+                'test-app',
+                '--payload-source-dir',
+                str(source_root),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            prepared_root = output_root / 'linux-x86_64'
+            self.assertTrue((prepared_root / 'python/Lib/asyncio/__init__.py').is_file())
+            self.assertFalse((prepared_root / 'python/Lib/__pycache__').exists())
+            self.assertFalse((prepared_root / 'python/Lib/site.pyc').exists())
+            self.assertFalse((prepared_root / 'python/Lib/site.pyo').exists())
+
+    def test_release_build_excludes_ignored_runtime_artifacts_from_pack_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload_root = root / 'payloads'
+            pack_root = root / 'runtime-pack'
+            fixture_root = create_fixture_root(root / 'fixtures')
+
+            prepare_result = self.run_script(
+                str(PREPARE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(payload_root),
+                '--pack-version',
+                'test-pack',
+                '--app-version',
+                'test-app',
+                '--fixture',
+            )
+            self.assertEqual(prepare_result.returncode, 0, prepare_result.stderr)
+            write_fixture_file(fixture_root / 'linux-x86_64', 'python/lib-dynload/module.pyo', 'fixture bytecode\n')
+            write_fixture_file(payload_root / 'linux-x86_64', 'python/Lib/__pycache__/module.pyc', 'payload bytecode\n')
+
+            build_result = self.run_script(
+                str(BUILD_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(pack_root),
+                '--fixture-root',
+                str(fixture_root),
+                '--payload-root',
+                str(payload_root),
+                '--require-release-payload',
+            )
+            self.assertEqual(build_result.returncode, 0, build_result.stderr)
+
+            assembled_root = pack_root / 'linux-x86_64'
+            manifest = json.loads((assembled_root / 'manifest.json').read_text(encoding='utf-8'))
+            manifest_paths = [entry['path'] for key in ('python_files', 'uv_files', 'script_files', 'wheelhouse', 'caches', 'native_assets') for entry in manifest[key]]
+            self.assertFalse(any('__pycache__' in path or path.endswith(('.pyc', '.pyo')) for path in manifest_paths))
+            self.assertFalse((assembled_root / 'python/Lib/__pycache__/module.pyc').exists())
+            self.assertFalse((assembled_root / 'python/lib-dynload/module.pyo').exists())
 
     def test_materialize_windows_repackages_installed_dist_info_as_wheel(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -329,6 +416,139 @@ class RuntimePackScriptTests(unittest.TestCase):
             smoke_payload = json.loads(smoke_result.stdout)
             self.assertIn(
                 'release smoke found unseeded cache marker: caches/hf/CACHE_NOT_SEEDED.txt',
+                smoke_payload['release_errors'],
+            )
+
+    def test_release_smoke_rejects_ignored_runtime_artifacts_in_manifest_or_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload_root = root / 'payloads'
+            pack_root = root / 'runtime-pack'
+            fixture_root = create_fixture_root(root / 'fixtures')
+
+            prepare_result = self.run_script(
+                str(PREPARE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(payload_root),
+                '--pack-version',
+                'test-pack',
+                '--app-version',
+                'test-app',
+                '--fixture',
+            )
+            self.assertEqual(prepare_result.returncode, 0, prepare_result.stderr)
+            build_result = self.run_script(
+                str(BUILD_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(pack_root),
+                '--fixture-root',
+                str(fixture_root),
+                '--payload-root',
+                str(payload_root),
+                '--require-release-payload',
+            )
+            self.assertEqual(build_result.returncode, 0, build_result.stderr)
+
+            assembled_root = pack_root / 'linux-x86_64'
+            ignored_entry = write_fixture_file(
+                assembled_root,
+                'python/Lib/__pycache__/__future__.cpython-311.pyc',
+                'mutable bytecode\n',
+            )
+            manifest_path = assembled_root / 'manifest.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['python_files'].append(ignored_entry)
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+
+            smoke_result = self.run_script(
+                str(SMOKE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--root',
+                str(pack_root),
+                '--release',
+            )
+
+            self.assertNotEqual(smoke_result.returncode, 0)
+            smoke_payload = json.loads(smoke_result.stdout)
+            self.assertIn(
+                'release smoke manifest contains ignored runtime artifact: python/Lib/__pycache__/__future__.cpython-311.pyc',
+                smoke_payload['release_errors'],
+            )
+            self.assertIn(
+                'release smoke found ignored runtime artifact: python/Lib/__pycache__/__future__.cpython-311.pyc',
+                smoke_payload['release_errors'],
+            )
+
+    def test_release_smoke_rejects_ignored_manifest_backslashes_and_empty_pycache_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            payload_root = root / 'payloads'
+            pack_root = root / 'runtime-pack'
+            fixture_root = create_fixture_root(root / 'fixtures')
+
+            prepare_result = self.run_script(
+                str(PREPARE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(payload_root),
+                '--pack-version',
+                'test-pack',
+                '--app-version',
+                'test-app',
+                '--fixture',
+            )
+            self.assertEqual(prepare_result.returncode, 0, prepare_result.stderr)
+            build_result = self.run_script(
+                str(BUILD_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--output-dir',
+                str(pack_root),
+                '--fixture-root',
+                str(fixture_root),
+                '--payload-root',
+                str(payload_root),
+                '--require-release-payload',
+            )
+            self.assertEqual(build_result.returncode, 0, build_result.stderr)
+
+            assembled_root = pack_root / 'linux-x86_64'
+            (assembled_root / 'python/Lib/__pycache__').mkdir(parents=True)
+            manifest_path = assembled_root / 'manifest.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['python_files'].append(
+                {
+                    'path': 'python\\Lib\\__pycache__\\module.cache',
+                    'sha256': '0' * 64,
+                    'size': 0,
+                    'executable': False,
+                }
+            )
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+
+            smoke_result = self.run_script(
+                str(SMOKE_SCRIPT),
+                '--platform',
+                'linux-x86_64',
+                '--root',
+                str(pack_root),
+                '--release',
+            )
+
+            self.assertNotEqual(smoke_result.returncode, 0)
+            smoke_payload = json.loads(smoke_result.stdout)
+            self.assertIn(
+                'release smoke manifest contains ignored runtime artifact: python\\Lib\\__pycache__\\module.cache',
+                smoke_payload['release_errors'],
+            )
+            self.assertIn(
+                'release smoke found ignored runtime artifact: python/Lib/__pycache__',
                 smoke_payload['release_errors'],
             )
 

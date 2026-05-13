@@ -35,6 +35,8 @@ REQUIRED_RELEASE_CACHE_DIRS = (
     'caches/paddlex',
 )
 CACHE_NOT_SEEDED_MARKER = 'CACHE_NOT_SEEDED.txt'
+IGNORED_RUNTIME_DIR_NAMES = {'__pycache__'}
+IGNORED_RUNTIME_SUFFIXES = {'.pyc', '.pyo'}
 INSTALL_PROBE_SPECS = (
     'fastembed>=0.4.0',
     'paddlepaddle>=3.2.1,<3.3.0',
@@ -63,6 +65,11 @@ def iter_manifest_entries(manifest: dict) -> list[dict]:
     for key in ('python_files', 'uv_files', 'script_files', 'wheelhouse', 'caches', 'native_assets'):
         entries.extend(manifest.get(key, []))
     return entries
+
+
+def is_ignored_runtime_artifact(path: str | Path) -> bool:
+    path = Path(str(path).replace('\\', '/'))
+    return any(part in IGNORED_RUNTIME_DIR_NAMES for part in path.parts) or path.suffix.lower() in IGNORED_RUNTIME_SUFFIXES
 
 
 def resolve_pack_root(root: Path, platform: str) -> Path:
@@ -246,6 +253,18 @@ def unseeded_cache_markers(pack_root: Path) -> list[str]:
     return sorted(path.relative_to(pack_root).as_posix() for path in pack_root.rglob(CACHE_NOT_SEEDED_MARKER))
 
 
+def ignored_manifest_entries(manifest: dict) -> list[str]:
+    return sorted(entry['path'] for entry in iter_manifest_entries(manifest) if is_ignored_runtime_artifact(entry['path']))
+
+
+def ignored_physical_artifacts(pack_root: Path) -> list[str]:
+    return sorted(
+        path.relative_to(pack_root).as_posix()
+        for path in pack_root.rglob('*')
+        if is_ignored_runtime_artifact(path.relative_to(pack_root))
+    )
+
+
 def missing_release_cache_dirs(pack_root: Path) -> list[str]:
     missing = []
     for rel in REQUIRED_RELEASE_CACHE_DIRS:
@@ -310,6 +329,10 @@ def run_smoke(platform: str, root: Path, release: bool = False, install_probe: b
             release_errors.append(f'release smoke missing seeded cache directory: {cache_dir}')
         for marker in unseeded_cache_markers(pack_root):
             release_errors.append(f'release smoke found unseeded cache marker: {marker}')
+        for entry in ignored_manifest_entries(manifest):
+            release_errors.append(f'release smoke manifest contains ignored runtime artifact: {entry}')
+        for artifact in ignored_physical_artifacts(pack_root):
+            release_errors.append(f'release smoke found ignored runtime artifact: {artifact}')
         if python_relpath and (pack_root / python_relpath).exists():
             version_probes['python'] = run_version_probe(pack_root / python_relpath, platform)
         if uv_relpath and (pack_root / uv_relpath).exists():
