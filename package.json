@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
+    "desktop:dev:isolated": "pnpm --filter @entropia/desktop tauri:dev:isolated",
+    "desktop:build:isolated": "pnpm --filter @entropia/desktop tauri:build:isolated",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",

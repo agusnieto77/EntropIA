@@ -6,6 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
+    "tauri:dev:isolated": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "tauri:build:isolated": "tauri build --config src-tauri/tauri.dev.conf.json",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint src",
     "test": "vitest run"
