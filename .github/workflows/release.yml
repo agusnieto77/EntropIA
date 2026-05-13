@@ -99,13 +99,6 @@ jobs:
         shell: bash
         run: python apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform ${{ matrix.runtime_pack_platform }} --root apps/desktop/src-tauri/target/runtime-pack --release --install-probe
 
-      - name: Upload assembled runtime-pack
-        uses: actions/upload-artifact@v6
-        with:
-          name: assembled-runtime-pack-${{ matrix.runtime_pack_platform }}
-          path: apps/desktop/src-tauri/target/runtime-pack/${{ matrix.runtime_pack_platform }}
-          if-no-files-found: error
-
   build:
     name: Build ${{ matrix.name }}
     needs: [runtime-pack]
@@ -167,12 +160,37 @@ jobs:
         run: |
           rustup target add ${{ matrix.rust_target }}
 
+      - name: Setup Python for runtime-pack assembly
+        if: steps.runtime_pack.outputs.platform != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
       - name: Restore canonical lockfile
         run: git checkout -- pnpm-lock.yaml
 
       - name: Install frontend dependencies
         shell: pwsh
         run: npm exec --package=pnpm@${{ env.PNPM_VERSION }} -- pnpm install --frozen-lockfile
+
+      - name: Download release runtime payload artifact
+        if: steps.runtime_pack.outputs.platform != ''
+        uses: actions/download-artifact@v6
+        with:
+          name: ${{ inputs.runtime_payload_artifact }}
+          path: ${{ runner.temp }}/runtime-payloads
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.runtime_payload_run_id }}
+
+      - name: Assemble bundled runtime-pack payload
+        if: steps.runtime_pack.outputs.platform != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORM="${{ steps.runtime_pack.outputs.platform }}"
+          RUNTIME_PAYLOAD_ROOT="${RUNNER_TEMP}/runtime-payloads"
+          ASSEMBLED_RUNTIME_PACK_ROOT="apps/desktop/src-tauri/target/runtime-pack"
+          python apps/desktop/src-tauri/scripts/build_runtime_pack.py --platform "$PLATFORM" --payload-root "$RUNTIME_PAYLOAD_ROOT" --output-dir "$ASSEMBLED_RUNTIME_PACK_ROOT" --require-release-payload
 
       - name: Clear bundled runtime-pack fixture
         if: steps.runtime_pack.outputs.platform != ''
@@ -183,10 +201,19 @@ jobs:
 
       - name: Inject assembled runtime-pack into bundle resources
         if: steps.runtime_pack.outputs.platform != ''
-        uses: actions/download-artifact@v6
-        with:
-          name: assembled-runtime-pack-${{ steps.runtime_pack.outputs.platform }}
-          path: apps/desktop/src-tauri/resources/runtime-pack/${{ steps.runtime_pack.outputs.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLATFORM="${{ steps.runtime_pack.outputs.platform }}"
+          mkdir -p "apps/desktop/src-tauri/resources/runtime-pack"
+          cp -a "apps/desktop/src-tauri/target/runtime-pack/$PLATFORM" "apps/desktop/src-tauri/resources/runtime-pack/"
+
+      - name: Validate bundled runtime-pack
+        if: steps.runtime_pack.outputs.platform != ''
+        shell: bash
+        run: |
+          PLATFORM="${{ steps.runtime_pack.outputs.platform }}"
+          python apps/desktop/src-tauri/scripts/runtime-pack-smoke.py --platform "$PLATFORM" --root apps/desktop/src-tauri/resources/runtime-pack --release
 
       - name: Build Tauri application
         uses: tauri-apps/tauri-action@v0
