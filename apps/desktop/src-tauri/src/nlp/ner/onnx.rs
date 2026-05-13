@@ -139,7 +139,6 @@ impl OnnxNerEngine {
             super::types::NerEngineKind::RuleBased => "rule_based",
             super::types::NerEngineKind::Onnx => "onnx",
             super::types::NerEngineKind::Hybrid => "hybrid",
-            super::types::NerEngineKind::Spacy => "spacy",
         }
         .to_string();
 

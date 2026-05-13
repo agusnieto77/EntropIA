@@ -4,13 +4,12 @@ pub mod fts;
 pub mod ner;
 pub mod text_provider;
 // NOTE: `triples` module removed — semantic triples are now Gemma-only via the LLM pipeline
-// (see llm::LlmJob::ExtractTriples / ExtractTriplesAsset). The old NLP regex+spaCy route has
+// (see llm::LlmJob::ExtractTriples / ExtractTriplesAsset). The old NLP regex route has
 // been retired to prevent low-quality triples from overwriting LLM results in the `triples` table.
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -18,9 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::llm::LlmQueue;
 use crate::path_utils::normalize_windows_path;
-use crate::runtime::{
-    managed_hf_cache_dir, managed_resource_path, managed_script_path, RuntimeManager,
-};
+use crate::runtime::{managed_resource_path, RuntimeManager};
 use embeddings::EmbeddingEngine;
 use ner::{
     types::{NerConfig, NerEngineKind},
@@ -262,12 +259,7 @@ impl NlpQueue {
                 eprintln!("[nlp] Failed to create embedding tables: {e} — embedding storage will be unavailable");
             }
 
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let ner_engine = resolve_ner_engine_kind();
-
             let mut embed_engine: Option<Arc<EmbeddingEngine>> = None;
-            let mut ner_registry: Option<NerRegistry> = None;
-            let mut ner_last_python_path: Option<PathBuf> = None;
 
             while let Some(job) = receiver.recv().await {
                 match job {
@@ -285,37 +277,19 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let current_python_path = ner::spacy::which_python(Some(&db_path));
-                        if should_reinit_ner_registry(
-                            &ner_registry,
-                            &ner_last_python_path,
-                            &current_python_path,
-                        ) {
-                            if ner_registry.is_none() || ner_last_python_path.is_none() {
-                                crate::python_discovery::invalidate_probe_cache_entry("spacy");
-                            }
-                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
-                                Ok(root) => root,
-                                Err(error) => {
-                                    if let Ok(mut pending) = ner_pending.lock() {
-                                        pending.remove(&item_id);
-                                    }
-                                    emit_error(&app_handle, &item_id, "ner", &error);
-                                    continue;
+                        let result = ner::prepare_openrouter_candidates_for_item(&conn, &item_id)
+                            .and_then(|input| {
+                                if input.text.trim().is_empty() {
+                                    Ok(None)
+                                } else {
+                                    Ok(Some(input))
                                 }
-                            };
-                            ner_registry = Some(try_init_ner_registry(
-                                runtime_root.as_deref(),
-                                &manifest_dir,
-                                ner_engine.clone(),
-                                current_python_path.clone(),
-                            ));
-                            ner_last_python_path = current_python_path;
-                        }
-                        let registry = ner_registry
-                            .as_ref()
-                            .expect("NER registry should initialize before use");
-                        let result = run_ner_for_item(&conn, &item_id, registry);
+                            });
+                        let result = match result {
+                            Ok(Some(input)) => run_openrouter_ner_input(input).await,
+                            Ok(None) => Ok(Vec::new()),
+                            Err(error) => Err(format!("NER extraction failed: {error}")),
+                        };
                         // Remove from dedup set so future enqueues for this item are allowed
                         if let Ok(mut pending) = ner_pending.lock() {
                             pending.remove(&item_id);
@@ -383,39 +357,24 @@ impl NlpQueue {
                         if ner_already_pending {
                             eprintln!("[nlp/ner] Skipping NER in EnrichItem for item_id={item_id} — already queued or in progress");
                         } else {
-                            let current_python_path = ner::spacy::which_python(Some(&db_path));
-                            if should_reinit_ner_registry(
-                                &ner_registry,
-                                &ner_last_python_path,
-                                &current_python_path,
-                            ) {
-                                if ner_registry.is_none() || ner_last_python_path.is_none() {
-                                    crate::python_discovery::invalidate_probe_cache_entry("spacy");
-                                }
-                                let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
-                                    Ok(root) => root,
-                                    Err(error) => {
-                                        emit_error(&app_handle, &item_id, "ner", &error);
-                                        continue;
-                                    }
-                                };
-                                ner_registry = Some(try_init_ner_registry(
-                                    runtime_root.as_deref(),
-                                    &manifest_dir,
-                                    ner_engine.clone(),
-                                    current_python_path.clone(),
-                                ));
-                                ner_last_python_path = current_python_path;
-                            }
-                            let registry = ner_registry
-                                .as_ref()
-                                .expect("NER registry should initialize before use");
                             // Register in dedup set before starting NER
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.insert(item_id.clone());
                             }
                             emit_progress(&app_handle, &item_id, "ner", 10);
-                            let r = run_ner_for_item(&conn, &item_id, registry);
+                            let r = ner::prepare_openrouter_candidates_for_item(&conn, &item_id)
+                                .and_then(|input| {
+                                    if input.text.trim().is_empty() {
+                                        Ok(None)
+                                    } else {
+                                        Ok(Some(input))
+                                    }
+                                });
+                            let r = match r {
+                                Ok(Some(input)) => run_openrouter_ner_input(input).await,
+                                Ok(None) => Ok(Vec::new()),
+                                Err(error) => Err(format!("NER extraction failed: {error}")),
+                            };
                             // Remove from dedup set after NER completes
                             if let Ok(mut pending) = ner_pending.lock() {
                                 pending.remove(&item_id);
@@ -453,29 +412,7 @@ impl NlpQueue {
                     NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "embed", 10);
                         if embed_engine.is_none() {
-                            // Clear cached miss so we re-probe for fastembed
-                            crate::python_discovery::invalidate_probe_cache_entry("fastembed");
-                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
-                                Ok(root) => root,
-                                Err(error) => {
-                                    if let Ok(mut pending) = embedding_pending.lock() {
-                                        pending.remove(&asset_id);
-                                    }
-                                    emit_error(&app_handle, &item_id, "embed", &error);
-                                    continue;
-                                }
-                            };
-                            let app_data_dir = app_handle
-                                .path()
-                                .app_data_dir()
-                                .expect("Failed to get app data dir for NLP cache");
-                            embed_engine = try_init_embed_engine(
-                                &db_path,
-                                runtime_root.as_deref(),
-                                &manifest_dir,
-                                &app_data_dir,
-                                embeddings::which_python,
-                            );
+                            embed_engine = try_init_embed_engine(&conn);
                         }
                         let engine_ref = embed_engine.as_deref();
                         let result = tokio::task::block_in_place(|| {
@@ -506,54 +443,20 @@ impl NlpQueue {
 
                     NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let current_python_path = ner::spacy::which_python(Some(&db_path));
-                        if should_reinit_ner_registry(
-                            &ner_registry,
-                            &ner_last_python_path,
-                            &current_python_path,
-                        ) {
-                            if ner_registry.is_none() || ner_last_python_path.is_none() {
-                                crate::python_discovery::invalidate_probe_cache_entry("spacy");
-                            }
-                            let runtime_root = match managed_runtime_root_for_nlp(&app_handle) {
-                                Ok(root) => root,
-                                Err(error) => {
-                                    if let Ok(mut pending) = asset_ner_pending.lock() {
-                                        pending.remove(&asset_id);
-                                    }
-                                    emit_error(&app_handle, &item_id, "ner", &error);
-                                    continue;
-                                }
-                            };
-                            ner_registry = Some(try_init_ner_registry(
-                                runtime_root.as_deref(),
-                                &manifest_dir,
-                                ner_engine.clone(),
-                                current_python_path.clone(),
-                            ));
-                            ner_last_python_path = current_python_path;
-                        }
-                        let registry = ner_registry
-                            .as_ref()
-                            .expect("NER registry should initialize before use");
-                        let result = tokio::task::block_in_place(|| {
-                            catch_unwind(AssertUnwindSafe(|| {
-                                ner::extract_candidates_for_asset(
-                                    &conn, &item_id, &asset_id, registry,
-                                )
-                            }))
-                            .map_err(|panic| {
-                                format_panic_payload("NER extraction for asset panicked", panic)
-                            })?
-                        });
+                        let result = ner::prepare_openrouter_candidates_for_asset(
+                            &conn, &item_id, &asset_id,
+                        );
+                        let result = match result {
+                            Ok(input) => run_openrouter_ner_batch(input).await,
+                            Err(error) => Err(format!("NER extraction for asset failed: {error}")),
+                        };
                         // Remove from asset-level dedup set so later OCR/transcription saves can refresh it.
                         if let Ok(mut pending) = asset_ner_pending.lock() {
                             pending.remove(&asset_id);
                         }
                         match result {
                             Ok(batch) => {
-                                // NER now runs only hybrid extraction (RegEx + BERT/ONNX + spaCy).
-                                // LLM consolidation with Gemma is intentionally disabled for speed.
+                                // NER now runs OpenRouter/Gemma JSON extraction for lightweight mode.
                                 let final_entities = if batch.text.trim().is_empty() {
                                     Vec::new()
                                 } else {
@@ -602,37 +505,25 @@ pub(crate) fn should_reinit_ner_registry(
     registry.is_none() || last_python_path != current_python_path
 }
 
-/// Attempt to initialize the embedding engine.
-///
-/// Accepts an injected `which_python` resolver so tests can mock Python
-/// availability without touching the filesystem or global caches.
-pub(crate) fn try_init_embed_engine(
-    db_path: &std::path::Path,
-    runtime_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-    app_data_dir: &std::path::Path,
-    which_python: impl FnOnce(Option<&std::path::Path>) -> Option<PathBuf>,
-) -> Option<Arc<EmbeddingEngine>> {
-    let embed_script_path = resolve_embed_script_path_from_roots(runtime_root, manifest_dir);
-    let embed_cache_dir = resolve_embed_cache_dir(runtime_root, app_data_dir);
-    match which_python(Some(db_path)) {
-        Some(python_path) => match EmbeddingEngine::init(embeddings::EmbeddingConfig {
-            python_path,
-            script_path: embed_script_path,
-            model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-            cache_dir: Some(embed_cache_dir),
-        }) {
-            Ok(engine) => {
-                eprintln!("[nlp/embeddings] Engine ready (lazy init)");
-                Some(Arc::new(engine))
-            }
-            Err(e) => {
-                eprintln!("[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully");
-                None
-            }
-        },
-        None => {
-            eprintln!("[nlp/embeddings] No Python with fastembed found — embedding jobs will degrade gracefully.");
+/// Attempt to initialize the OpenRouter embedding engine from app settings.
+pub(crate) fn try_init_embed_engine(conn: &rusqlite::Connection) -> Option<Arc<EmbeddingEngine>> {
+    let config = match embeddings::config_from_settings(conn) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("[nlp/embeddings] Engine init blocked: {error}");
+            return None;
+        }
+    };
+
+    match EmbeddingEngine::init(config) {
+        Ok(engine) => {
+            eprintln!("[nlp/embeddings] OpenRouter engine ready (lazy init)");
+            Some(Arc::new(engine))
+        }
+        Err(e) => {
+            eprintln!(
+                "[nlp/embeddings] Engine init failed: {e} — embedding jobs will degrade gracefully"
+            );
             None
         }
     }
@@ -640,13 +531,12 @@ pub(crate) fn try_init_embed_engine(
 
 /// Attempt to initialize the NER registry.
 ///
-/// Returns the registry along with the `python_path` that was used, so the
-/// caller can track it for retry decisions.
+/// Legacy ONNX/rule-based registry helper retained for focused tests and offline helpers.
 pub(crate) fn try_init_ner_registry(
     runtime_root: Option<&std::path::Path>,
     manifest_dir: &std::path::Path,
     ner_engine: NerEngineKind,
-    python_path: Option<PathBuf>,
+    _python_path: Option<PathBuf>,
 ) -> NerRegistry {
     let ner_config = NerConfig {
         engine: ner_engine,
@@ -660,13 +550,9 @@ pub(crate) fn try_init_ner_registry(
             manifest_dir,
             "tokenizer.json",
         )),
-        python_path: python_path.clone(),
-        script_path: Some(resolve_ner_script_path_from_roots(
-            runtime_root,
-            manifest_dir,
-            "spacy_ner.py",
-        )),
-        model_name: Some("es_core_news_sm".to_string()),
+        python_path: None,
+        script_path: None,
+        model_name: None,
         max_length: 256,
         stride: 32,
         score_threshold: 0.65,
@@ -758,23 +644,44 @@ fn emit_error(app_handle: &AppHandle, item_id: &str, job: &str, error: &str) {
     );
 }
 
-fn run_ner_for_item(
-    conn: &rusqlite::Connection,
-    item_id: &str,
-    ner_registry: &NerRegistry,
+async fn run_openrouter_ner_input(
+    input: ner::OpenRouterExtractionInput,
 ) -> Result<Vec<ner::types::Entity>, String> {
-    let batch = tokio::task::block_in_place(|| {
-        catch_unwind(AssertUnwindSafe(|| {
-            ner::extract_candidates_for_item(conn, item_id, ner_registry)
-        }))
-        .map_err(|panic| format_panic_payload("NER extraction panicked", panic))?
-    })?;
-
-    if batch.text.trim().is_empty() {
+    if input.text.trim().is_empty() {
         return Ok(Vec::new());
     }
 
-    Ok(batch.entities)
+    ner::openrouter::extract_entities_with_openrouter(
+        input.api_key,
+        input.model_name,
+        &input.text,
+        &input.protected_entities,
+    )
+    .await
+    .map_err(|error| format!("NER extraction failed: {error}"))
+}
+
+async fn run_openrouter_ner_batch(
+    input: ner::OpenRouterExtractionInput,
+) -> Result<ner::EntityExtractionBatch, String> {
+    let entities = if input.text.trim().is_empty() {
+        Vec::new()
+    } else {
+        ner::openrouter::extract_entities_with_openrouter(
+            input.api_key,
+            input.model_name,
+            &input.text,
+            &input.protected_entities,
+        )
+        .await
+        .map_err(|error| format!("NER extraction for asset failed: {error}"))?
+    };
+
+    Ok(ner::EntityExtractionBatch {
+        text: input.text,
+        protected_entities: input.protected_entities,
+        entities,
+    })
 }
 
 fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result<bool, String> {
@@ -830,34 +737,6 @@ fn run_coalesced_fts_reindex(
     }
 }
 
-fn resolve_embed_script_path_from_roots(
-    managed_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-) -> PathBuf {
-    if let Some(root) = managed_root {
-        let managed = managed_script_path(root, "embed.py");
-        if managed.exists() {
-            return managed;
-        }
-    }
-
-    let dev_path = manifest_dir.join("resources/scripts/embed.py");
-    if dev_path.exists() {
-        return normalize_windows_path(dev_path);
-    }
-
-    normalize_windows_path(manifest_dir.join("scripts/embed.py"))
-}
-
-fn resolve_embed_cache_dir(
-    managed_root: Option<&std::path::Path>,
-    app_data_dir: &std::path::Path,
-) -> PathBuf {
-    managed_root
-        .map(managed_hf_cache_dir)
-        .unwrap_or_else(|| app_data_dir.join("hf_cache"))
-}
-
 fn resolve_ner_resource_path_from_roots(
     managed_root: Option<&std::path::Path>,
     manifest_dir: &std::path::Path,
@@ -878,26 +757,6 @@ fn resolve_ner_resource_path_from_roots(
     normalize_windows_path(PathBuf::from(format!("models/ner/{file_name}")))
 }
 
-fn resolve_ner_script_path_from_roots(
-    managed_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-    file_name: &str,
-) -> PathBuf {
-    if let Some(root) = managed_root {
-        let managed = managed_script_path(root, file_name);
-        if managed.exists() {
-            return managed;
-        }
-    }
-
-    let dev_path = manifest_dir.join("scripts").join(file_name);
-    if dev_path.exists() {
-        return dev_path;
-    }
-
-    normalize_windows_path(PathBuf::from(format!("scripts/{file_name}")))
-}
-
 fn resolve_ner_engine_kind() -> NerEngineKind {
     match std::env::var("ENTROPIA_NER_ENGINE")
         .ok()
@@ -909,7 +768,10 @@ fn resolve_ner_engine_kind() -> NerEngineKind {
         Some("rule") | Some("rule_based") => NerEngineKind::RuleBased,
         Some("onnx") => NerEngineKind::Onnx,
         Some("hybrid") | None => NerEngineKind::Hybrid,
-        Some("spacy") => NerEngineKind::Spacy,
+        Some("spacy") => {
+            eprintln!("[nlp/ner] ENTROPIA_NER_ENGINE=spacy is no longer supported — using OpenRouter job path or ONNX legacy helpers only");
+            NerEngineKind::Hybrid
+        }
         Some(other) => {
             eprintln!("[nlp/ner] Unknown ENTROPIA_NER_ENGINE={other} — defaulting to hybrid (BERT-first + RegEx dates)");
             NerEngineKind::Hybrid
@@ -1355,31 +1217,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_embed_script_prefers_managed_runtime_copy() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let managed_script = runtime_dir.path().join("scripts").join("embed.py");
-        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
-            .expect("create script dir");
-        std::fs::write(&managed_script, "print('ok')").expect("write script");
-
-        let resolved =
-            resolve_embed_script_path_from_roots(Some(runtime_dir.path()), manifest_dir.path());
-
-        assert_eq!(resolved, managed_script);
-    }
-
-    #[test]
-    fn resolve_embed_cache_prefers_managed_hf_cache() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let app_data_dir = tempfile::tempdir().expect("app data dir");
-
-        let resolved = resolve_embed_cache_dir(Some(runtime_dir.path()), app_data_dir.path());
-
-        assert_eq!(resolved, runtime_dir.path().join("caches").join("hf"));
-    }
-
-    #[test]
     fn resolve_ner_assets_prefer_managed_runtime_copy() {
         let runtime_dir = tempfile::tempdir().expect("runtime dir");
         let manifest_dir = tempfile::tempdir().expect("manifest dir");
@@ -1389,27 +1226,17 @@ mod tests {
             .join("models")
             .join("ner")
             .join("model.onnx");
-        let managed_script = runtime_dir.path().join("scripts").join("spacy_ner.py");
         std::fs::create_dir_all(managed_model.parent().expect("model parent"))
             .expect("create ner dir");
-        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
-            .expect("create script dir");
         std::fs::write(&managed_model, b"model").expect("write model");
-        std::fs::write(&managed_script, "print('ok')").expect("write script");
 
         let resolved_model = resolve_ner_resource_path_from_roots(
             Some(runtime_dir.path()),
             manifest_dir.path(),
             "model.onnx",
         );
-        let resolved_script = resolve_ner_script_path_from_roots(
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            "spacy_ner.py",
-        );
 
         assert_eq!(resolved_model, managed_model);
-        assert_eq!(resolved_script, managed_script);
     }
 
     #[test]
@@ -1475,18 +1302,6 @@ mod tests {
 
         assert_eq!(resolved, None);
         assert_eq!(calls.into_inner(), vec!["ensure_ready"]);
-    }
-
-    #[test]
-    fn nlp_path_resolution_falls_back_to_dev_when_runtime_root_is_none() {
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let dev_script = manifest_dir.path().join("resources/scripts/embed.py");
-        std::fs::create_dir_all(dev_script.parent().unwrap()).unwrap();
-        std::fs::write(&dev_script, "print('ok')").unwrap();
-
-        // With None runtime root, should fall back to manifest_dir
-        let resolved = resolve_embed_script_path_from_roots(None, manifest_dir.path());
-        assert_eq!(resolved, dev_script);
     }
 
     #[test]
@@ -1561,91 +1376,63 @@ mod tests {
     }
 
     #[test]
-    fn try_init_embed_engine_returns_none_when_python_unavailable() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let app_data_dir = tempfile::tempdir().expect("app data dir");
+    fn try_init_embed_engine_returns_none_when_openrouter_key_missing() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .expect("settings table should be created");
 
-        let result = try_init_embed_engine(
-            runtime_dir.path(),
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            app_data_dir.path(),
-            |_| None,
-        );
+        let result = try_init_embed_engine(&conn);
         assert!(
             result.is_none(),
-            "Engine should be None when Python resolver returns None"
+            "Engine should be None when OpenRouter API key is missing"
         );
     }
 
     #[test]
-    fn try_init_embed_engine_returns_some_when_script_exists() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let app_data_dir = tempfile::tempdir().expect("app data dir");
+    fn try_init_embed_engine_returns_some_when_openrouter_key_exists() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('openrouter_api_key', 'sk-test');",
+        )
+        .expect("settings table should be created");
 
-        // Create the embed script so init succeeds
-        let script = manifest_dir.path().join("resources/scripts/embed.py");
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "print('ok')").unwrap();
-
-        let result = try_init_embed_engine(
-            runtime_dir.path(),
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            app_data_dir.path(),
-            |_| Some(PathBuf::from("/bin/true")),
-        );
+        let result = try_init_embed_engine(&conn);
         assert!(
             result.is_some(),
-            "Engine should be Some when script exists and Python is available"
+            "Engine should be Some when OpenRouter API key exists"
         );
     }
 
     #[test]
-    fn embed_engine_retries_after_failed_init() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let app_data_dir = tempfile::tempdir().expect("app data dir");
-        let script = manifest_dir.path().join("resources/scripts/embed.py");
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "print('ok')").unwrap();
+    fn embed_engine_retries_after_key_is_configured() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .expect("settings table should be created");
 
-        // First attempt: no Python → None
-        let first = try_init_embed_engine(
-            runtime_dir.path(),
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            app_data_dir.path(),
-            |_| None,
-        );
+        let first = try_init_embed_engine(&conn);
         assert!(
             first.is_none(),
-            "First init should fail when Python unavailable"
+            "First init should fail when OpenRouter key is unavailable"
         );
 
-        // Second attempt: Python available → Some
-        let second = try_init_embed_engine(
-            runtime_dir.path(),
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            app_data_dir.path(),
-            |_| Some(PathBuf::from("/bin/true")),
-        );
+        conn.execute(
+            "INSERT INTO app_settings(key, value) VALUES ('openrouter_api_key', 'sk-test')",
+            [],
+        )
+        .expect("setting insert should succeed");
+
+        let second = try_init_embed_engine(&conn);
         assert!(
             second.is_some(),
-            "Second init should succeed after Python becomes available"
+            "Second init should succeed after OpenRouter key is configured"
         );
     }
 
     #[test]
-    fn try_init_ner_registry_captures_python_path() {
+    fn try_init_ner_registry_falls_back_when_onnx_assets_missing() {
         let runtime_dir = tempfile::tempdir().expect("runtime dir");
         let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let script = manifest_dir.path().join("scripts/spacy_ner.py");
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "print('ok')").unwrap();
 
         let python_path = Some(PathBuf::from("/usr/bin/python"));
         let registry = try_init_ner_registry(
@@ -1655,7 +1442,7 @@ mod tests {
             python_path.clone(),
         );
 
-        // The registry should exist and fall back to rule-based when ONNX/spaCy
+        // The registry should exist and fall back to rule-based when ONNX
         // assets are missing (which they are in this test).
         let entities = registry
             .extract("Don Manuel Belgrano en Buenos Aires")
@@ -1672,10 +1459,6 @@ mod tests {
     fn ner_registry_reinitializes_when_python_path_changes() {
         let runtime_dir = tempfile::tempdir().expect("runtime dir");
         let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let script = manifest_dir.path().join("scripts/spacy_ner.py");
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "print('ok')").unwrap();
-
         let first_python: Option<PathBuf> = None;
         let first_registry = try_init_ner_registry(
             Some(runtime_dir.path()),

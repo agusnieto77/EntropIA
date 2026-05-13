@@ -1,27 +1,21 @@
-/// Embedding computation via fastembed Python subprocess.
+/// Embedding computation via OpenRouter embeddings API.
 ///
-/// Spawns `embed.py` as a child process to compute text embeddings using
-/// `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dims,
-/// 50+ languages including Spanish).
-///
-/// This replaces the Rust fastembed crate which fails on Windows due to
-/// ORT/MSVC linker issues (LNK2001/LNK2019 with `__std_*` symbols).
-/// The subprocess approach provides complete crash isolation — if Python
-/// crashes, we catch it as `Result::Err` instead of a hard abort.
-///
-/// Architecture mirrors the transcription engine (transcription/engine.rs):
-/// - Each embedding call spawns a fresh Python process
-/// - Model is loaded per-call (cached by fastembed after first download)
-/// - Output wrapped in sentinel markers for reliable JSON extraction
+/// Lightweight EntropIA embeddings are API-first: the default provider is
+/// OpenRouter `baai/bge-m3`, which returns 1024-dimensional vectors. This path
+/// intentionally does NOT fall back to Python or fastembed;
+/// if OpenRouter is not configured, callers receive an explicit degraded state.
 use rusqlite::{params, Connection};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use super::text_provider;
-use crate::python_discovery::apply_windows_no_window;
+
+pub const OPENROUTER_EMBEDDING_MODEL_SETTING_KEY: &str = "openrouter_embedding_model";
+pub const DEFAULT_OPENROUTER_EMBEDDING_MODEL: &str = "baai/bge-m3";
+pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1024;
+const OPENROUTER_EMBEDDINGS_URL: &str = "https://openrouter.ai/api/v1/embeddings";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetEmbeddingCandidate {
@@ -39,62 +33,83 @@ pub struct AssetEmbeddingCoverageSummary {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Embedding engine configuration — resolved once at NLP worker startup.
+/// Embedding engine configuration — resolved from app settings.
 #[derive(Clone)]
 pub struct EmbeddingConfig {
-    /// Path to the Python interpreter with `fastembed` installed.
-    pub python_path: PathBuf,
-    /// Path to the `embed.py` script.
-    pub script_path: PathBuf,
-    /// Model name for fastembed (default: multilingual).
+    /// OpenRouter API key. Never log this value.
+    pub api_key: String,
+    /// Embedding model name. Defaults to `baai/bge-m3`.
     pub model_name: String,
-    /// Directory to cache HuggingFace models (avoids broken symlinks on Windows).
-    pub cache_dir: Option<PathBuf>,
 }
 
-/// Embedding engine — spawns Python as a child process.
+/// Embedding engine — calls OpenRouter's embeddings endpoint.
 pub struct EmbeddingEngine {
     config: EmbeddingConfig,
+    client: reqwest::blocking::Client,
+    endpoint_url: String,
     cache: Mutex<HashMap<u64, Vec<f32>>>,
 }
 
-/// JSON output from the Python `embed.py` script.
+#[derive(Debug, Serialize)]
+struct EmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a str,
+}
+
 #[derive(Debug, Deserialize)]
-struct EmbedOutput {
-    vector: Vec<f32>,
+struct EmbeddingResponse {
+    data: Vec<EmbeddingData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
 }
 
 impl EmbeddingEngine {
-    /// Initialize the engine by verifying the script path.
-    ///
-    /// NOTE: Python interpreter was already validated by `which_python_for_module()`
-    /// which ran `import fastembed; print('ok')` successfully. No redundant
-    /// verification needed — the discovery module already proved it works.
+    /// Initialize the engine without contacting OpenRouter.
     pub fn init(config: EmbeddingConfig) -> Result<Self, String> {
-        // Verify the script exists
-        if !config.script_path.exists() {
-            return Err(format!(
-                "Embedding script not found: {}",
-                config.script_path.display()
-            ));
+        Self::init_with_endpoint_url(config, OPENROUTER_EMBEDDINGS_URL.to_string())
+    }
+
+    fn init_with_endpoint_url(
+        config: EmbeddingConfig,
+        endpoint_url: String,
+    ) -> Result<Self, String> {
+        if config.api_key.trim().is_empty() {
+            return Err("OpenRouter API key no configurada para embeddings".to_string());
+        }
+        if config.model_name.trim().is_empty() {
+            return Err("OpenRouter embedding model no configurado".to_string());
         }
 
         eprintln!(
-            "[nlp/embeddings] Engine configured: python={}, script={}, model={}",
-            config.python_path.display(),
-            config.script_path.display(),
-            config.model_name,
+            "[nlp/embeddings] OpenRouter embedding engine configured: model={}, dimensions={}",
+            config.model_name, OPENROUTER_EMBEDDING_DIMENSIONS,
         );
+
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("EntropIA-Desktop/0.1 (historical-research-app)")
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("Failed to build OpenRouter embedding client: {e}"))?;
 
         Ok(Self {
             config,
+            client,
+            endpoint_url,
             cache: Mutex::new(HashMap::new()),
         })
     }
 
-    /// Compute embedding for a single text string via Python subprocess.
+    #[cfg(test)]
+    fn init_with_endpoint(config: EmbeddingConfig, endpoint_url: String) -> Result<Self, String> {
+        Self::init_with_endpoint_url(config, endpoint_url)
+    }
+
+    /// Compute embedding for a single text string via OpenRouter.
     ///
-    /// Returns a 384-dimensional float vector. Errors are non-fatal —
+    /// Returns a 1024-dimensional float vector. Errors are non-fatal —
     /// callers should treat them as degradation.
     pub fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
         let key = rolling_hash64(text.as_bytes());
@@ -104,74 +119,80 @@ impl EmbeddingEngine {
             }
         }
 
-        let mut cmd = Command::new(&self.config.python_path);
-        apply_windows_no_window(&mut cmd);
-        cmd.arg(&self.config.script_path)
-            .arg("--text")
-            .arg(text)
-            .arg("--model")
-            .arg(&self.config.model_name);
+        let request = EmbeddingRequest {
+            model: self.config.model_name.as_str(),
+            input: text,
+        };
 
-        if let Some(ref cache_dir) = self.config.cache_dir {
-            cmd.arg("--cache-dir").arg(cache_dir);
+        let response = self
+            .client
+            .post(&self.endpoint_url)
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("HTTP-Referer", "https://hlab.com.ar/")
+            .header("X-Title", "EntropIA")
+            .json(&request)
+            .send()
+            .map_err(|e| format!("OpenRouter embedding request failed: {e}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(format!("OpenRouter embedding API error ({status}): {body}"));
         }
 
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        let parsed: EmbeddingResponse = response
+            .json()
+            .map_err(|e| format!("Failed to parse OpenRouter embedding response: {e}"))?;
 
-        let output = cmd.output().map_err(|e| {
-            format!(
-                "Failed to spawn Python process (python={}): {e}",
-                self.config.python_path.display()
-            )
-        })?;
+        let vector = parsed
+            .data
+            .into_iter()
+            .next()
+            .map(|entry| entry.embedding)
+            .ok_or_else(|| "OpenRouter embedding response returned no vectors".to_string())?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if !output.status.success() {
-            let exit_code = output.status.code().unwrap_or(-1);
+        if vector.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
             return Err(format!(
-                "Embedding script failed (exit code {exit_code}).\n\
-                 Python: {}\n\
-                 Script: {}\n\
-                 Stderr: {}",
-                self.config.python_path.display(),
-                self.config.script_path.display(),
-                stderr.trim(),
+                "OpenRouter embedding model '{}' returned {} dimensions; expected {} for {}",
+                self.config.model_name,
+                vector.len(),
+                OPENROUTER_EMBEDDING_DIMENSIONS,
+                DEFAULT_OPENROUTER_EMBEDDING_MODEL,
             ));
         }
 
-        // Extract JSON between sentinel markers
-        let json_str = extract_sentinel_json(&stdout);
-
-        let embed_output: EmbedOutput = serde_json::from_str(json_str).map_err(|e| {
-            format!(
-                "Failed to parse embedding JSON: {e}\n\
-                 Extracted ({} chars): {}\n\
-                 Stderr: {}",
-                json_str.len(),
-                if json_str.len() > 200 {
-                    &json_str[..200]
-                } else {
-                    json_str
-                },
-                stderr.trim(),
-            )
-        })?;
-
         if let Ok(mut cache) = self.cache.lock() {
-            // Tiny bounded cache to avoid re-spawning Python for repeated text.
+            // Tiny bounded cache to avoid repeated API calls for identical text.
             if cache.len() >= 128 {
                 if let Some(first_key) = cache.keys().next().copied() {
                     cache.remove(&first_key);
                 }
             }
-            cache.insert(key, embed_output.vector.clone());
+            cache.insert(key, vector.clone());
         }
 
-        Ok(embed_output.vector)
+        Ok(vector)
     }
+}
+
+pub fn config_from_settings(conn: &Connection) -> Result<EmbeddingConfig, String> {
+    let api_key = crate::settings::get_setting(conn, "openrouter_api_key")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "OpenRouter API key no configurada. Configurá OpenRouter para generar embeddings BGE-M3. No hay fallback a Python/fastembed."
+                .to_string()
+        })?;
+
+    let model_name = crate::settings::get_setting(conn, OPENROUTER_EMBEDDING_MODEL_SETTING_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string());
+
+    Ok(EmbeddingConfig {
+        api_key,
+        model_name,
+    })
 }
 
 /// Compute embedding for a single asset's text and store it.
@@ -197,7 +218,7 @@ pub fn compute_and_store_for_asset(
         None => {
             return Err(embedding_degradation_log(
                 item_id,
-                "No embedding engine configured (Python with fastembed not found)",
+                "No OpenRouter embedding engine configured (set OpenRouter API key; Python/fastembed fallback is disabled)",
             ));
         }
     };
@@ -354,44 +375,14 @@ fn rolling_hash64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Extract JSON content between `===EMBED_JSON_BEGIN===` and
-/// `===EMBED_JSON_END===` sentinels. Falls back to the full output
-/// if sentinels are not found (backwards compatibility).
-fn extract_sentinel_json(output: &str) -> &str {
-    const BEGIN: &str = "===EMBED_JSON_BEGIN===";
-    const END: &str = "===EMBED_JSON_END===";
-
-    if let Some(start_idx) = output.find(BEGIN) {
-        let content_start = start_idx + BEGIN.len();
-        if let Some(end_idx) = output[content_start..].find(END) {
-            let json_content = &output[content_start..content_start + end_idx];
-            return json_content.trim();
-        }
-    }
-
-    // Fallback: return the full trimmed output (backwards compat)
-    output.trim()
-}
-
-/// Find the Python interpreter on the system that has `fastembed` available.
-///
-/// Uses the shared Python candidate cache to avoid redundant filesystem scans
-/// and log noise. Probes each candidate for the `fastembed` module.
-pub fn which_python(settings_db_path: Option<&std::path::Path>) -> Option<PathBuf> {
-    crate::python_discovery::which_python_for_module(
-        "nlp/embeddings",
-        "fastembed",
-        "fastembed",
-        "import fastembed; print('ok')",
-        settings_db_path,
-    )
-}
-
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn floats_to_blob_produces_correct_byte_count() {
@@ -432,7 +423,7 @@ mod tests {
 
     #[test]
     fn embedding_degradation_log_keeps_expected_prefix_for_grepability() {
-        let message = embedding_degradation_log("item-99", "fastembed embedding failed");
+        let message = embedding_degradation_log("item-99", "OpenRouter embedding failed");
         assert!(
             message.starts_with("[nlp/embeddings] Skipping embedding for "),
             "log message prefix should remain stable for observability tooling"
@@ -440,24 +431,144 @@ mod tests {
     }
 
     #[test]
-    fn extract_sentinel_json_finds_embedded_json() {
-        let output = "some noise\n===EMBED_JSON_BEGIN===\n{\"vector\":[1.0],\"dim\":1,\"model\":\"test\"}\n===EMBED_JSON_END===\nmore noise";
-        let json = extract_sentinel_json(output);
-        assert!(
-            json.contains("\"vector\""),
-            "should extract JSON between sentinels"
-        );
+    fn config_from_settings_defaults_to_bge_m3() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('openrouter_api_key', 'sk-test');",
+        )
+        .expect("settings table should be created");
+
+        let config = config_from_settings(&conn).expect("config should resolve");
+
+        assert_eq!(config.model_name, DEFAULT_OPENROUTER_EMBEDDING_MODEL);
     }
 
     #[test]
-    fn extract_sentinel_json_falls_back_to_full_output() {
-        let output = "{\"vector\":[1.0],\"dim\":1}";
-        let json = extract_sentinel_json(output);
-        assert_eq!(
-            json,
-            output.trim(),
-            "should return full output when no sentinels"
+    fn config_from_settings_allows_embedding_model_override() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('openrouter_api_key', 'sk-test');\
+             INSERT INTO app_settings(key, value) VALUES ('openrouter_embedding_model', 'custom/model');",
+        )
+        .expect("settings table should be created");
+
+        let config = config_from_settings(&conn).expect("config should resolve");
+
+        assert_eq!(config.model_name, "custom/model");
+    }
+
+    #[test]
+    fn config_from_settings_requires_openrouter_key() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .expect("settings table should be created");
+
+        let error = match config_from_settings(&conn) {
+            Ok(_) => panic!("missing key should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("OpenRouter API key"));
+        assert!(error.contains("No hay fallback"));
+    }
+
+    #[test]
+    fn embed_text_accepts_successful_openrouter_bge_m3_response_with_1024_dimensions() {
+        let vector: Vec<f32> = (0..OPENROUTER_EMBEDDING_DIMENSIONS)
+            .map(|index| index as f32 / 10.0)
+            .collect();
+        let expected_last = vector[OPENROUTER_EMBEDDING_DIMENSIONS - 1];
+        let endpoint = local_openrouter_embedding_server(vector.clone());
+        let engine = EmbeddingEngine::init_with_endpoint(
+            EmbeddingConfig {
+                api_key: "sk-test".to_string(),
+                model_name: DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            },
+            endpoint,
+        )
+        .expect("test embedding engine should initialize");
+
+        let result = engine
+            .embed_text("texto histórico para embedding")
+            .expect("mocked OpenRouter response should embed successfully");
+
+        assert_eq!(result.len(), OPENROUTER_EMBEDDING_DIMENSIONS);
+        assert_eq!(result[0], 0.0);
+        assert_eq!(result[OPENROUTER_EMBEDDING_DIMENSIONS - 1], expected_last);
+    }
+
+    fn local_openrouter_embedding_server(vector: Vec<f32>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("local addr should exist")
         );
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("mock server should receive request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            let content_length = request_text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length: ")
+                        .and_then(|value| value.parse::<usize>().ok())
+                })
+                .expect("OpenRouter request should include a JSON body length");
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .expect("HTTP headers should terminate");
+            while request.len() < header_end + content_length {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("request body should be readable");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            assert!(request_text.starts_with("POST / HTTP/1.1"));
+            assert!(request_text.contains("authorization: Bearer sk-test"));
+            assert!(request_text.contains("\"model\":\"baai/bge-m3\""));
+            assert!(request_text.contains("texto histórico para embedding"));
+
+            let body = serde_json::json!({
+                "data": [
+                    { "embedding": vector }
+                ]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("mock response should write");
+        });
+
+        endpoint
     }
 
     #[test]

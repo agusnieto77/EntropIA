@@ -117,7 +117,6 @@ fn is_rule_based_institution_like(winner: &Entity, loser: &Entity) -> bool {
 fn prefer_onnx_core_entity(existing: &Entity, candidate: &Entity) -> bool {
     candidate.source == EntitySource::Onnx
         && existing.source != EntitySource::Onnx
-        && existing.source != EntitySource::Spacy
         && matches!(
             candidate.entity_type,
             EntityType::Person
@@ -157,8 +156,7 @@ fn source_rank(source: &EntitySource) -> u8 {
     match source {
         EntitySource::RuleBased => 1,
         EntitySource::Onnx => 2,
-        EntitySource::Spacy => 3,
-        EntitySource::Llm => 4,
+        EntitySource::Llm => 3,
     }
 }
 

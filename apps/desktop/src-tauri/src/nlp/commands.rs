@@ -4,10 +4,7 @@
 /// `Ok("queued")`. The worker emits `nlp:progress`, `nlp:complete`, or
 /// `nlp:error` events asynchronously.
 use super::{NlpJob, NlpQueue};
-use crate::path_utils::normalize_windows_path;
-use crate::runtime::{managed_hf_cache_dir, managed_script_path};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
 type SimilarAssetRow = (String, String, String, String, String, String, Vec<u8>);
@@ -44,34 +41,6 @@ fn triples_retired_error(target: &str) -> String {
     format!(
         "NLP triples extraction was retired for {target}. Use the Gemma LLM triples commands instead."
     )
-}
-
-fn resolve_embedding_backfill_script_path(
-    managed_root: Option<&Path>,
-    manifest_dir: &Path,
-) -> PathBuf {
-    if let Some(root) = managed_root {
-        let managed = managed_script_path(root, "embed.py");
-        if managed.exists() {
-            return managed;
-        }
-    }
-
-    let resource_path = manifest_dir.join("resources/scripts/embed.py");
-    if resource_path.exists() {
-        return normalize_windows_path(resource_path);
-    }
-
-    normalize_windows_path(manifest_dir.join("scripts/embed.py"))
-}
-
-fn resolve_embedding_backfill_cache_dir(
-    managed_root: Option<&Path>,
-    app_data_dir: &Path,
-) -> PathBuf {
-    managed_root
-        .map(managed_hf_cache_dir)
-        .unwrap_or_else(|| app_data_dir.join("hf_cache"))
 }
 
 /// Submit an FTS5 indexing job for `item_id`.
@@ -127,16 +96,15 @@ pub async fn enrich_item(
 
 /// Submit an embedding computation job for a specific asset.
 ///
-/// The worker will extract the asset's text, compute a 384-dim vector,
+/// The worker will extract the asset's text, compute a 1024-dim BGE-M3 vector via OpenRouter,
 /// and upsert into `vec_assets` keyed by `asset_id`.
 #[tauri::command]
 pub async fn embed_asset(
     item_id: String,
     asset_id: String,
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     nlp_queue: State<'_, NlpQueue>,
 ) -> Result<String, String> {
-    super::ensure_nlp_runtime_ready(&app_handle)?;
     enqueue(
         &nlp_queue,
         NlpJob::ComputeAssetEmbedding { item_id, asset_id },
@@ -159,8 +127,6 @@ pub async fn backfill_asset_embeddings(
 
     tokio::task::spawn_blocking(move || {
         use tauri::Manager;
-
-        let runtime_root = super::managed_runtime_root_for_nlp(&app_handle)?;
 
         let app_data_dir = app_handle.path().app_data_dir().map_err(|e| {
             format!("Failed to resolve app data dir for asset embedding backfill: {e}")
@@ -200,25 +166,9 @@ pub async fn backfill_asset_embeddings(
             });
         }
 
-        let python_path = super::embeddings::which_python(Some(&db_path)).ok_or_else(|| {
-            "No Python with fastembed available for asset embedding backfill".to_string()
-        })?;
-
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let script_path =
-            resolve_embedding_backfill_script_path(runtime_root.as_deref(), &manifest_dir);
-
-        let embed_cache_dir =
-            resolve_embedding_backfill_cache_dir(runtime_root.as_deref(), &app_data_dir);
-
-        let engine =
-            super::embeddings::EmbeddingEngine::init(super::embeddings::EmbeddingConfig {
-                python_path,
-                script_path,
-                model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-                    .to_string(),
-                cache_dir: Some(embed_cache_dir),
-            })?;
+        let engine = super::embeddings::EmbeddingEngine::init(
+            super::embeddings::config_from_settings(&conn)?,
+        )?;
 
         let mut succeeded = 0_usize;
         let mut failures = Vec::new();
@@ -421,33 +371,6 @@ mod tests {
             }
             _ => panic!("Expected EnrichItem job, got: {:?}", job),
         }
-    }
-
-    #[test]
-    fn resolve_embedding_backfill_script_prefers_managed_runtime_copy() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let managed_script = runtime_dir.path().join("scripts").join("embed.py");
-        std::fs::create_dir_all(managed_script.parent().expect("script parent"))
-            .expect("create script dir");
-        std::fs::write(&managed_script, "print('ok')").expect("write script");
-
-        let resolved =
-            resolve_embedding_backfill_script_path(Some(runtime_dir.path()), manifest_dir.path());
-
-        assert_eq!(resolved, managed_script);
-    }
-
-    #[test]
-    fn resolve_embedding_backfill_cache_prefers_managed_hf_cache() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let app_data_dir = tempfile::tempdir().expect("app data dir");
-        let managed_cache = runtime_dir.path().join("caches").join("hf");
-
-        let resolved =
-            resolve_embedding_backfill_cache_dir(Some(runtime_dir.path()), app_data_dir.path());
-
-        assert_eq!(resolved, managed_cache);
     }
 
     #[test]

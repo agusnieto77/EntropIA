@@ -157,7 +157,6 @@ fn mojibake_score(value: &str) -> usize {
 pub enum EntitySource {
     RuleBased,
     Onnx,
-    Spacy,
     #[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
     Llm,
 }
@@ -167,7 +166,6 @@ impl EntitySource {
         match self {
             Self::RuleBased => "rule_based",
             Self::Onnx => "onnx",
-            Self::Spacy => "spacy",
             Self::Llm => "llm",
         }
     }
@@ -190,7 +188,6 @@ pub enum NerEngineKind {
     RuleBased,
     Onnx,
     Hybrid,
-    Spacy,
 }
 
 #[derive(Debug, Clone)]

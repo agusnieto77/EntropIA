@@ -1,21 +1,20 @@
 //! Smart hybrid NER engine that routes extraction by entity type:
 //!
-//! - **PER, ORG, LOC** → BERT (ONNX) primary, spaCy fallback if BERT unavailable
-//! - **DATE** → RegEx (rule-based) ONLY — never from BERT or spaCy
+//! - **PER, ORG, LOC** → BERT (ONNX) primary, rule-based fallback if BERT unavailable
+//! - **DATE** → RegEx (rule-based) ONLY — never from BERT
 //! - **Institution** → merge rule-based + BERT (current behavior)
-//! - **Misc** → BERT primary, spaCy fallback
+//! - **Misc** → BERT primary
 
 use super::{
     merge::merge_institutions,
     onnx::consolidate_onnx_entities,
     onnx::OnnxNerEngine,
     rule_based::RuleBasedNerEngine,
-    spacy::SpacyNerEngine,
     types::{sanitize_entity_value, Entity, EntityType, NerEngine},
 };
 
 /// Entity types for which BERT (ONNX) is the authority.
-/// PER, ORG, LOC come from BERT only — spaCy serves as fallback
+/// PER, ORG, LOC come from BERT first; rule-based serves as degraded fallback
 /// if the ONNX engine is unavailable or produces zero results.
 const BERT_FIRST_TYPES: [EntityType; 3] = [
     EntityType::Person,
@@ -26,20 +25,11 @@ const BERT_FIRST_TYPES: [EntityType; 3] = [
 pub struct HybridNerEngine<'a> {
     rule_based: &'a RuleBasedNerEngine,
     onnx: Option<&'a OnnxNerEngine>,
-    spacy: Option<&'a SpacyNerEngine>,
 }
 
 impl<'a> HybridNerEngine<'a> {
-    pub fn new(
-        rule_based: &'a RuleBasedNerEngine,
-        onnx: Option<&'a OnnxNerEngine>,
-        spacy: Option<&'a SpacyNerEngine>,
-    ) -> Self {
-        Self {
-            rule_based,
-            onnx,
-            spacy,
-        }
+    pub fn new(rule_based: &'a RuleBasedNerEngine, onnx: Option<&'a OnnxNerEngine>) -> Self {
+        Self { rule_based, onnx }
     }
 }
 
@@ -55,18 +45,13 @@ impl NerEngine for HybridNerEngine<'_> {
             Some(engine) => engine.extract(text).unwrap_or_default(),
             None => vec![],
         };
-        let spacy_entities: Vec<Entity> = match self.spacy {
-            Some(engine) => engine.extract(text).unwrap_or_default(),
-            None => vec![],
-        };
-
         // Re-consolidate ONNX entities to merge window-boundary duplicates
         // and near-duplicates before routing by type.
         onnx_entities = consolidate_onnx_entities(onnx_entities);
 
         let mut result = Vec::new();
 
-        // ── PER / ORG / LOC: BERT primary → spaCy fallback → rule-based last resort ──
+        // ── PER / ORG / LOC: BERT primary → rule-based degraded fallback ──
         let onnx_core: Vec<Entity> = onnx_entities
             .iter()
             .filter(|e| BERT_FIRST_TYPES.contains(&e.entity_type))
@@ -76,25 +61,15 @@ impl NerEngine for HybridNerEngine<'_> {
         if !onnx_core.is_empty() {
             result.extend(onnx_core);
         } else {
-            let spacy_core: Vec<Entity> = spacy_entities
+            let rule_core: Vec<Entity> = rule_entities
                 .iter()
                 .filter(|e| BERT_FIRST_TYPES.contains(&e.entity_type))
                 .cloned()
                 .collect();
-
-            if !spacy_core.is_empty() {
-                result.extend(spacy_core);
-            } else {
-                let rule_core: Vec<Entity> = rule_entities
-                    .iter()
-                    .filter(|e| BERT_FIRST_TYPES.contains(&e.entity_type))
-                    .cloned()
-                    .collect();
-                result.extend(rule_core);
-            }
+            result.extend(rule_core);
         }
 
-        // ── DATE: RegEx ONLY — never from BERT or spaCy ──
+        // ── DATE: RegEx ONLY — never from BERT ──
         let rule_dates: Vec<Entity> = rule_entities
             .iter()
             .filter(|e| e.entity_type == EntityType::Date)
@@ -117,22 +92,14 @@ impl NerEngine for HybridNerEngine<'_> {
             .collect();
         result.extend(merge_institutions(rule_institutions, onnx_institutions));
 
-        // ── Misc: BERT primary → spaCy fallback ──
+        // ── Misc: BERT primary only ──
         let onnx_misc: Vec<Entity> = onnx_entities
             .iter()
             .filter(|e| e.entity_type == EntityType::Misc)
             .cloned()
             .collect();
-        let spacy_misc: Vec<Entity> = spacy_entities
-            .iter()
-            .filter(|e| e.entity_type == EntityType::Misc)
-            .cloned()
-            .collect();
-
         if !onnx_misc.is_empty() {
             result.extend(onnx_misc);
-        } else {
-            result.extend(spacy_misc);
         }
 
         // ── Final deduplication ──
@@ -289,7 +256,7 @@ mod tests {
         // This test runs without ML engines (both None),
         // so rule-based acts as fallback for core types.
         let rb = RuleBasedNerEngine::new();
-        let engine = HybridNerEngine::new(&rb, None, None);
+        let engine = HybridNerEngine::new(&rb, None);
         let text = "Don Manuel Belgrano en la ciudad de Buenos Aires, a 15 de mayo de 1810.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
@@ -312,7 +279,7 @@ mod tests {
     #[test]
     fn hybrid_core_entities_use_regex_fallback_when_no_ml() {
         let rb = RuleBasedNerEngine::new();
-        let engine = HybridNerEngine::new(&rb, None, None);
+        let engine = HybridNerEngine::new(&rb, None);
         let text = "Don Manuel Belgrano en la ciudad de Buenos Aires.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
@@ -360,7 +327,7 @@ mod tests {
         // When both rule-based and ONNX detect an institution,
         // the merge should resolve overlaps
         let rb = RuleBasedNerEngine::new();
-        let engine = HybridNerEngine::new(&rb, None, None);
+        let engine = HybridNerEngine::new(&rb, None);
         let text = "El Cabildo de Buenos Aires y la Real Audiencia.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
@@ -379,7 +346,7 @@ mod tests {
         // Even if we could add ONNX date entities, the routing
         // strictly filters them out — only RegEx dates survive
         let rb = RuleBasedNerEngine::new();
-        let engine = HybridNerEngine::new(&rb, None, None);
+        let engine = HybridNerEngine::new(&rb, None);
         let text = "El 25 de mayo de 1810 fue una fecha importante.";
         let entities = engine.extract(text).expect("hybrid extract should work");
 
@@ -414,7 +381,7 @@ mod tests {
                 10,
                 40,
                 0.92,
-                EntitySource::Spacy,
+                EntitySource::RuleBased,
             ),
         ]);
 
@@ -480,7 +447,7 @@ mod tests {
                 101,
                 115,
                 0.90,
-                EntitySource::Spacy,
+                EntitySource::RuleBased,
             ),
         ]);
 
@@ -517,7 +484,7 @@ mod tests {
                 410,
                 423,
                 0.84,
-                EntitySource::Spacy,
+                EntitySource::RuleBased,
             ),
         ]);
 

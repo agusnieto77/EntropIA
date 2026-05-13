@@ -40,10 +40,8 @@ urlencoding = "2"
 sha2 = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
-# Embeddings now use Python fastembed subprocess (scripts/embed.py) instead of
-# the Rust crate, which fails on Windows due to ORT/MSVC linker issues.
-# Transcription also uses Python subprocess (scripts/transcribe.py).
-# Both follow the same pattern: Rust spawns Python, captures JSON output.
+# Embeddings use OpenRouter BGE-M3 via Rust reqwest. Transcription still uses
+# Python subprocess (scripts/transcribe.py) for faster-whisper isolation.
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"

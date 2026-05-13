@@ -1,8 +1,8 @@
 pub mod hybrid;
 pub mod merge;
 pub mod onnx;
+pub mod openrouter;
 pub mod rule_based;
-pub mod spacy;
 pub mod types;
 
 use rusqlite::{params, Connection};
@@ -14,7 +14,6 @@ use self::{
     hybrid::HybridNerEngine,
     onnx::{OnnxNerEngine, OnnxPreflightReport},
     rule_based::RuleBasedNerEngine,
-    spacy::{SpacyNerEngine, SpacyPreflightReport},
     types::{sanitize_entity_value, Entity, NerConfig, NerEngine, NerEngineKind},
 };
 
@@ -24,23 +23,14 @@ const MIN_ENTITY_CONFIDENCE: f32 = 0.89;
 pub use self::types::{EntitySource, EntityType};
 
 pub fn log_startup_status(config: &NerConfig) {
-    match config.engine {
-        NerEngineKind::Spacy => {
-            let report: SpacyPreflightReport = SpacyNerEngine::inspect_assets(config);
-            report.log();
-        }
-        _ => {
-            let report: OnnxPreflightReport = OnnxNerEngine::inspect_assets(config);
-            report.log();
-        }
-    }
+    let report: OnnxPreflightReport = OnnxNerEngine::inspect_assets(config);
+    report.log();
 }
 
 pub struct NerRegistry {
     config: NerConfig,
     rule_based: RuleBasedNerEngine,
     onnx: Option<OnnxNerEngine>,
-    spacy: Option<SpacyNerEngine>,
 }
 
 impl NerRegistry {
@@ -65,31 +55,10 @@ impl NerRegistry {
             }
         };
 
-        let spacy = match SpacyNerEngine::init(&config) {
-            Ok(engine) => {
-                if matches!(config.engine, NerEngineKind::Spacy) {
-                    eprintln!(
-                        "[nlp/ner] spaCy engine ready: {} — rule-based fallback remains available.",
-                        engine.model_name()
-                    );
-                }
-                Some(engine)
-            }
-            Err(error) => {
-                if matches!(config.engine, NerEngineKind::Spacy) {
-                    eprintln!(
-                        "[nlp/ner] spaCy engine unavailable: {error} — using rule-based fallback."
-                    );
-                }
-                None
-            }
-        };
-
         Self {
             config,
             rule_based: RuleBasedNerEngine::new(),
             onnx,
-            spacy,
         }
     }
 
@@ -101,13 +70,8 @@ impl NerRegistry {
                 None => self.rule_based.extract(text),
             },
             NerEngineKind::Hybrid => {
-                HybridNerEngine::new(&self.rule_based, self.onnx.as_ref(), self.spacy.as_ref())
-                    .extract(text)
+                HybridNerEngine::new(&self.rule_based, self.onnx.as_ref()).extract(text)
             }
-            NerEngineKind::Spacy => match self.spacy.as_ref() {
-                Some(spacy) => spacy.extract(text),
-                None => self.rule_based.extract(text),
-            },
         }
     }
 }
@@ -125,6 +89,13 @@ pub struct EntityExtractionBatch {
     #[allow(dead_code)] // Future: will be used for entity consolidation/review pipeline
     pub protected_entities: Vec<Entity>,
     pub entities: Vec<Entity>,
+}
+
+pub struct OpenRouterExtractionInput {
+    pub text: String,
+    pub protected_entities: Vec<Entity>,
+    pub api_key: String,
+    pub model_name: String,
 }
 
 #[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
@@ -164,6 +135,22 @@ pub fn extract_candidates_for_item(
     })
 }
 
+pub fn prepare_openrouter_candidates_for_item(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<OpenRouterExtractionInput, String> {
+    let text = text_provider::get_item_text(conn, item_id)?;
+    let protected_entities = load_protected_entities(conn, item_id)?;
+    let (api_key, model_name) = openrouter_settings(conn)?;
+
+    Ok(OpenRouterExtractionInput {
+        text,
+        protected_entities,
+        api_key,
+        model_name,
+    })
+}
+
 pub fn extract_candidates_for_asset(
     conn: &Connection,
     item_id: &str,
@@ -178,6 +165,23 @@ pub fn extract_candidates_for_asset(
         text,
         protected_entities,
         entities,
+    })
+}
+
+pub fn prepare_openrouter_candidates_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+) -> Result<OpenRouterExtractionInput, String> {
+    let text = text_provider::get_asset_text(conn, asset_id)?;
+    let protected_entities = load_protected_entities(conn, item_id)?;
+    let (api_key, model_name) = openrouter_settings(conn)?;
+
+    Ok(OpenRouterExtractionInput {
+        text,
+        protected_entities,
+        api_key,
+        model_name,
     })
 }
 
@@ -463,7 +467,6 @@ fn load_protected_entities(conn: &Connection, item_id: &str) -> Result<Vec<Entit
             let entity_type = parse_entity_type(&entity_type_str).unwrap_or(EntityType::Misc);
             let source_str: Option<String> = row.get(5)?;
             let source = match source_str.as_deref() {
-                Some("spacy") => EntitySource::Spacy,
                 Some("onnx") => EntitySource::Onnx,
                 _ => EntitySource::RuleBased,
             };
@@ -482,6 +485,23 @@ fn load_protected_entities(conn: &Connection, item_id: &str) -> Result<Vec<Entit
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect protected entities: {e}"))
+}
+
+fn openrouter_settings(conn: &Connection) -> Result<(String, String), String> {
+    let api_key = crate::settings::get_setting(conn, "openrouter_api_key")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            openrouter::openrouter_ner_unavailable("OpenRouter API key no configurada")
+        })?;
+
+    let model_name =
+        crate::settings::get_setting(conn, openrouter::OPENROUTER_NER_MODEL_SETTING_KEY)
+            .or_else(|| crate::settings::get_setting(conn, "openrouter_model"))
+            .map(|value| openrouter::normalize_model_name(&value))
+            .unwrap_or_else(|| openrouter::DEFAULT_OPENROUTER_NER_MODEL.to_string());
+
+    Ok((api_key, model_name))
 }
 
 #[allow(dead_code)] // Future: used by apply_llm_review (not yet wired)
@@ -588,6 +608,7 @@ fn now_millis() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use super::openrouter::{build_ner_prompt, parse_openrouter_entities};
     use super::*;
     use rusqlite::{params, Connection};
 
@@ -733,6 +754,81 @@ mod tests {
             stride: 32,
             score_threshold: 0.65,
         })
+    }
+
+    #[test]
+    fn openrouter_ner_strips_json_fences_and_normalizes_aliases() {
+        let text = "Don Manuel Belgrano llegó a Buenos Aires con el Cabildo el 25 de mayo.";
+        let raw = r#"```json
+        [
+          {"value":"Manuel Belgrano","type":"PER","confidence":0.97},
+          {"entity":"Buenos Aires","category":"LOC"},
+          {"text":"Cabildo","label":"ORG"},
+          {"value":"25 de mayo","type":"DATE"}
+        ]
+        ```"#;
+
+        let entities = parse_openrouter_entities(text, &[], raw, "google/gemma-3-4b-it")
+            .expect("valid fenced JSON should parse");
+
+        assert_eq!(entities.len(), 4);
+        assert_eq!(entities[0].entity_type, EntityType::Person);
+        assert_eq!(entities[0].value, "Manuel Belgrano");
+        assert_eq!(entities[1].entity_type, EntityType::Place);
+        assert_eq!(entities[2].entity_type, EntityType::Organization);
+        assert_eq!(entities[3].entity_type, EntityType::Date);
+        assert!(entities
+            .iter()
+            .all(|entity| entity.source == EntitySource::Llm));
+    }
+
+    #[test]
+    fn openrouter_ner_rejects_bad_json_without_spacy_fallback() {
+        let error = parse_openrouter_entities("texto", &[], "not json", "google/gemma-3-4b-it")
+            .expect_err("bad JSON should not silently fall back");
+
+        assert!(error.contains("OpenRouter NER"));
+        assert!(error.contains("spaCy fallback is disabled"));
+    }
+
+    #[test]
+    fn openrouter_ner_preserves_manual_entity_protection() {
+        let protected = vec![Entity {
+            entity_type: EntityType::Person,
+            value: "Manuel Belgrano".to_string(),
+            start_offset: 4,
+            end_offset: 20,
+            confidence: 1.0,
+            source: EntitySource::RuleBased,
+            model_name: None,
+        }];
+        let raw =
+            r#"[{"value":"Manuel Belgrano","type":"PER"},{"value":"Buenos Aires","type":"LOC"}]"#;
+
+        let entities = parse_openrouter_entities(
+            "Don Manuel Belgrano viajó a Buenos Aires.",
+            &protected,
+            raw,
+            "google/gemma-3-4b-it",
+        )
+        .expect("valid JSON should parse");
+
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].value, "Buenos Aires");
+        assert_eq!(entities[0].entity_type, EntityType::Place);
+    }
+
+    #[test]
+    fn openrouter_ner_prompt_requests_only_supported_categories() {
+        let prompt = build_ner_prompt("Juan llegó a Rosario.");
+
+        assert!(prompt.contains("PER"));
+        assert!(prompt.contains("LOC"));
+        assert!(prompt.contains("ORG"));
+        assert!(prompt.contains("DATE"));
+        assert!(prompt.contains("MISC"));
+        assert!(prompt.contains("JSON"));
+        assert!(prompt.contains("no uses spaCy"));
     }
 
     #[test]
