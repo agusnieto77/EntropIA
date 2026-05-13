@@ -97,10 +97,13 @@ def validate_manifest_contract(platform: str, manifest: dict, require_release: b
                 raise ValueError(f'{platform}: release runtime-pack must include non-empty {key}')
 
 
-def validate_manifest(platform: str, root: Path, require_release: bool = False) -> dict:
+def validate_manifest(platform: str, root: Path, require_release: bool = False, verify_entries: bool = True) -> dict:
     manifest_path = root / 'manifest.json'
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
     validate_manifest_contract(platform, manifest, require_release=require_release)
+
+    if not verify_entries:
+        return manifest
 
     missing = []
     mismatched = []
@@ -221,7 +224,7 @@ def build_platform(
         overrides = load_manifest_overrides(resolved_payload_root)
 
     source = fixture_root / platform
-    fixture_manifest = validate_manifest(platform, source)
+    fixture_manifest = validate_manifest(platform, source, verify_entries=not require_release_payload)
 
     destination = output_root / platform
     if destination.resolve() == source.resolve():
