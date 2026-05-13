@@ -1,21 +1,61 @@
-/// Embedding computation via OpenRouter embeddings API.
+/// Embedding computation via BGE-M3 providers.
 ///
-/// Lightweight EntropIA embeddings are API-first: the default provider is
-/// OpenRouter `baai/bge-m3`, which returns 1024-dimensional vectors. This path
-/// intentionally does NOT fall back to Python or fastembed;
-/// if OpenRouter is not configured, callers receive an explicit degraded state.
+/// Lightweight EntropIA embeddings are provider-explicit: `api` calls
+/// OpenRouter `baai/bge-m3`, while `local` loads an ONNX BGE-M3 model from disk.
+/// Both providers must return 1024-dimensional vectors. The engine intentionally
+/// does NOT fall back to Python or fastembed; if the selected provider is not
+/// configured, callers receive an explicit degraded state.
+use ndarray::{Array2, ArrayViewD, Axis};
+use ort::{
+    inputs,
+    session::{builder::GraphOptimizationLevel, Session},
+    value::TensorRef,
+};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tokenizers::Tokenizer;
 
 use super::text_provider;
 
+pub const EMBEDDING_PROVIDER_SETTING_KEY: &str = "embedding_provider";
 pub const OPENROUTER_EMBEDDING_MODEL_SETTING_KEY: &str = "openrouter_embedding_model";
+pub const LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY: &str = "local_embedding_model_dir";
+pub const LOCAL_EMBEDDING_MAX_LENGTH_SETTING_KEY: &str = "local_embedding_max_length";
 pub const DEFAULT_OPENROUTER_EMBEDDING_MODEL: &str = "baai/bge-m3";
 pub const OPENROUTER_EMBEDDING_DIMENSIONS: usize = 1024;
 const OPENROUTER_EMBEDDINGS_URL: &str = "https://openrouter.ai/api/v1/embeddings";
+const DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH: usize = 8192;
+const LOCAL_EMBEDDING_MODEL_FILE: &str = "model.onnx";
+const LOCAL_EMBEDDING_TOKENIZER_FILE: &str = "tokenizer.json";
+
+static LOCAL_EMBEDDING_ORT_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingProvider {
+    Api,
+    Local,
+}
+
+impl EmbeddingProvider {
+    fn from_setting(value: Option<&str>) -> Result<Self, String> {
+        match value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("api") | Some("openrouter") => Ok(Self::Api),
+            Some("local") | Some("offline") | Some("onnx") => Ok(Self::Local),
+            Some(other) => Err(format!(
+                "Proveedor de embeddings no soportado: {other}. Usá 'api' o 'local'."
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetEmbeddingCandidate {
@@ -36,17 +76,72 @@ pub struct AssetEmbeddingCoverageSummary {
 /// Embedding engine configuration — resolved from app settings.
 #[derive(Clone)]
 pub struct EmbeddingConfig {
-    /// OpenRouter API key. Never log this value.
+    /// Selected provider. `api` is OpenRouter; `local` is ONNX BGE-M3.
+    pub provider: EmbeddingProvider,
+    /// OpenRouter API key. Never log this value. Required only for `api`.
     pub api_key: String,
-    /// Embedding model name. Defaults to `baai/bge-m3`.
+    /// Embedding model name. Defaults to `baai/bge-m3` for both providers.
     pub model_name: String,
+    /// Local model directory. Defaults to `resources/models/embeddings/bge-m3`.
+    pub local_model_dir: Option<PathBuf>,
+    /// Local ONNX model path. Defaults to `<local_model_dir>/model.onnx`.
+    pub local_model_path: Option<PathBuf>,
+    /// Local tokenizer path. Defaults to `<local_model_dir>/tokenizer.json`.
+    pub local_tokenizer_path: Option<PathBuf>,
+    /// Local tokenizer/model token cap.
+    pub local_max_length: usize,
 }
 
-/// Embedding engine — calls OpenRouter's embeddings endpoint.
+impl EmbeddingConfig {
+    #[cfg(test)]
+    fn openrouter(api_key: String, model_name: String) -> Self {
+        Self {
+            provider: EmbeddingProvider::Api,
+            api_key,
+            model_name,
+            local_model_dir: None,
+            local_model_path: None,
+            local_tokenizer_path: None,
+            local_max_length: DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH,
+        }
+    }
+
+    #[cfg(test)]
+    fn local(model_name: String, model_dir: Option<PathBuf>) -> Self {
+        Self {
+            provider: EmbeddingProvider::Local,
+            api_key: String::new(),
+            model_name,
+            local_model_dir: model_dir,
+            local_model_path: None,
+            local_tokenizer_path: None,
+            local_max_length: DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH,
+        }
+    }
+}
+
+/// Embedding engine — dispatches to the selected BGE-M3 provider.
 pub struct EmbeddingEngine {
-    config: EmbeddingConfig,
-    endpoint_url: String,
+    backend: EmbeddingBackend,
     cache: Mutex<HashMap<u64, Vec<f32>>>,
+}
+
+enum EmbeddingBackend {
+    OpenRouter(OpenRouterEmbeddingClient),
+    Local(LocalBgeM3EmbeddingEngine),
+}
+
+struct OpenRouterEmbeddingClient {
+    api_key: String,
+    model_name: String,
+    endpoint_url: String,
+}
+
+struct LocalBgeM3EmbeddingEngine {
+    model_name: String,
+    max_length: usize,
+    tokenizer: Mutex<Tokenizer>,
+    session: Mutex<Session>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,12 +161,17 @@ struct EmbeddingData {
 }
 
 impl EmbeddingEngine {
-    /// Initialize the engine without contacting OpenRouter.
+    /// Initialize the selected provider without contacting remote APIs.
     pub fn init(config: EmbeddingConfig) -> Result<Self, String> {
-        Self::init_with_endpoint_url(config, OPENROUTER_EMBEDDINGS_URL.to_string())
+        match config.provider {
+            EmbeddingProvider::Api => {
+                Self::init_openrouter_with_endpoint(config, OPENROUTER_EMBEDDINGS_URL.to_string())
+            }
+            EmbeddingProvider::Local => Self::init_local(config),
+        }
     }
 
-    fn init_with_endpoint_url(
+    fn init_openrouter_with_endpoint(
         config: EmbeddingConfig,
         endpoint_url: String,
     ) -> Result<Self, String> {
@@ -88,18 +188,38 @@ impl EmbeddingEngine {
         );
 
         Ok(Self {
-            config,
-            endpoint_url,
+            backend: EmbeddingBackend::OpenRouter(OpenRouterEmbeddingClient {
+                api_key: config.api_key,
+                model_name: config.model_name,
+                endpoint_url,
+            }),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn init_local(config: EmbeddingConfig) -> Result<Self, String> {
+        let local = LocalBgeM3EmbeddingEngine::init(&config)?;
+        eprintln!(
+            "[nlp/embeddings] Local BGE-M3 embedding engine configured: model={}, dimensions={}",
+            local.model_name, OPENROUTER_EMBEDDING_DIMENSIONS,
+        );
+
+        Ok(Self {
+            backend: EmbeddingBackend::Local(local),
             cache: Mutex::new(HashMap::new()),
         })
     }
 
     #[cfg(test)]
-    fn init_with_endpoint(config: EmbeddingConfig, endpoint_url: String) -> Result<Self, String> {
-        Self::init_with_endpoint_url(config, endpoint_url)
+    fn init_with_endpoint(
+        mut config: EmbeddingConfig,
+        endpoint_url: String,
+    ) -> Result<Self, String> {
+        config.provider = EmbeddingProvider::Api;
+        Self::init_openrouter_with_endpoint(config, endpoint_url)
     }
 
-    /// Compute embedding for a single text string via OpenRouter.
+    /// Compute embedding for a single text string via the selected BGE-M3 provider.
     ///
     /// Returns a 1024-dimensional float vector. Errors are non-fatal —
     /// callers should treat them as degradation.
@@ -111,8 +231,36 @@ impl EmbeddingEngine {
             }
         }
 
+        let vector = match &self.backend {
+            EmbeddingBackend::OpenRouter(client) => client.embed_text(text)?,
+            EmbeddingBackend::Local(local) => local.embed_text(text)?,
+        };
+
+        if let Ok(mut cache) = self.cache.lock() {
+            // Tiny bounded cache to avoid repeated work/API calls for identical text.
+            if cache.len() >= 128 {
+                if let Some(first_key) = cache.keys().next().copied() {
+                    cache.remove(&first_key);
+                }
+            }
+            cache.insert(key, vector.clone());
+        }
+
+        Ok(vector)
+    }
+
+    pub fn provider_name(&self) -> &'static str {
+        match &self.backend {
+            EmbeddingBackend::OpenRouter(_) => "api",
+            EmbeddingBackend::Local(_) => "local",
+        }
+    }
+}
+
+impl OpenRouterEmbeddingClient {
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
         let request = EmbeddingRequest {
-            model: self.config.model_name.as_str(),
+            model: self.model_name.as_str(),
             input: text,
         };
 
@@ -124,7 +272,7 @@ impl EmbeddingEngine {
 
         let response = client
             .post(&self.endpoint_url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("HTTP-Referer", "https://hlab.com.ar/")
             .header("X-Title", "EntropIA")
             .json(&request)
@@ -151,45 +299,353 @@ impl EmbeddingEngine {
         if vector.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
             return Err(format!(
                 "OpenRouter embedding model '{}' returned {} dimensions; expected {} for {}",
-                self.config.model_name,
+                self.model_name,
                 vector.len(),
                 OPENROUTER_EMBEDDING_DIMENSIONS,
                 DEFAULT_OPENROUTER_EMBEDDING_MODEL,
             ));
         }
 
-        if let Ok(mut cache) = self.cache.lock() {
-            // Tiny bounded cache to avoid repeated API calls for identical text.
-            if cache.len() >= 128 {
-                if let Some(first_key) = cache.keys().next().copied() {
-                    cache.remove(&first_key);
-                }
-            }
-            cache.insert(key, vector.clone());
-        }
-
         Ok(vector)
     }
 }
 
+impl LocalBgeM3EmbeddingEngine {
+    fn init(config: &EmbeddingConfig) -> Result<Self, String> {
+        let paths = resolve_local_embedding_paths(config);
+
+        if !paths.model_path.exists() {
+            return Err(format!(
+                "Local BGE-M3 ONNX model not found at {}. Configure {LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY} or place {LOCAL_EMBEDDING_MODEL_FILE} there.",
+                paths.model_path.display()
+            ));
+        }
+        if !paths.tokenizer_path.exists() {
+            return Err(format!(
+                "Local BGE-M3 tokenizer not found at {}. Configure {LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY} or place {LOCAL_EMBEDDING_TOKENIZER_FILE} there.",
+                paths.tokenizer_path.display()
+            ));
+        }
+
+        let model_dir = paths.model_path.parent().ok_or_else(|| {
+            format!(
+                "Local BGE-M3 model has no parent directory: {}",
+                paths.model_path.display()
+            )
+        })?;
+
+        ensure_local_embedding_ort_init(model_dir)?;
+
+        let tokenizer = Tokenizer::from_file(&paths.tokenizer_path).map_err(|e| {
+            format!(
+                "Failed to load local BGE-M3 tokenizer from {}: {e}",
+                paths.tokenizer_path.display()
+            )
+        })?;
+
+        let session = Session::builder()
+            .map_err(|e| format!("Failed to create local BGE-M3 ORT session builder: {e}"))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| format!("Failed to configure local BGE-M3 ORT optimization: {e}"))?
+            .commit_from_file(&paths.model_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to load local BGE-M3 ONNX model {}: {e}",
+                    paths.model_path.display()
+                )
+            })?;
+
+        Ok(Self {
+            model_name: config.model_name.clone(),
+            max_length: config
+                .local_max_length
+                .clamp(8, DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH),
+            tokenizer: Mutex::new(tokenizer),
+            session: Mutex::new(session),
+        })
+    }
+
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
+        if text.trim().is_empty() {
+            return Err("Local BGE-M3 embedding input is empty".to_string());
+        }
+
+        let encoding = {
+            let tokenizer = self
+                .tokenizer
+                .lock()
+                .map_err(|_| "Local BGE-M3 tokenizer mutex poisoned".to_string())?;
+            tokenizer
+                .encode(text, true)
+                .map_err(|e| format!("Failed to tokenize text for local BGE-M3: {e}"))?
+        };
+
+        let token_count = encoding.get_ids().len().min(self.max_length);
+        if token_count == 0 {
+            return Err("Local BGE-M3 tokenizer returned no tokens".to_string());
+        }
+
+        let input_ids = array_from_u32(&encoding.get_ids()[..token_count])?;
+        let attention_mask = array_from_u32(&encoding.get_attention_mask()[..token_count])?;
+        let type_ids = array_from_u32(&encoding.get_type_ids()[..token_count])?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "Local BGE-M3 ONNX session mutex poisoned".to_string())?;
+
+        let outputs = match session.inputs.len() {
+            2 => session
+                .run(inputs![
+                    TensorRef::from_array_view(&input_ids).map_err(|e| format!(
+                        "Failed to create local BGE-M3 input_ids tensor: {e}"
+                    ))?,
+                    TensorRef::from_array_view(&attention_mask).map_err(|e| {
+                        format!("Failed to create local BGE-M3 attention_mask tensor: {e}")
+                    })?,
+                ])
+                .map_err(|e| format!("Local BGE-M3 ONNX inference failed: {e}"))?,
+            3 => session
+                .run(inputs![
+                    TensorRef::from_array_view(&input_ids).map_err(|e| format!(
+                        "Failed to create local BGE-M3 input_ids tensor: {e}"
+                    ))?,
+                    TensorRef::from_array_view(&attention_mask).map_err(|e| {
+                        format!("Failed to create local BGE-M3 attention_mask tensor: {e}")
+                    })?,
+                    TensorRef::from_array_view(&type_ids).map_err(|e| {
+                        format!("Failed to create local BGE-M3 token_type_ids tensor: {e}")
+                    })?,
+                ])
+                .map_err(|e| format!("Local BGE-M3 ONNX inference failed: {e}"))?,
+            count => {
+                return Err(format!(
+                    "Unsupported local BGE-M3 ONNX input count: expected 2 or 3 inputs, got {count}"
+                ))
+            }
+        };
+
+        let output = outputs[0]
+            .try_extract_array::<f32>()
+            .map_err(|e| format!("Failed to extract local BGE-M3 ONNX output: {e}"))?;
+        let vector = embedding_vector_from_onnx_output(output)?;
+
+        if vector.len() != OPENROUTER_EMBEDDING_DIMENSIONS {
+            return Err(format!(
+                "Local BGE-M3 model '{}' returned {} dimensions; expected {}",
+                self.model_name,
+                vector.len(),
+                OPENROUTER_EMBEDDING_DIMENSIONS,
+            ));
+        }
+
+        l2_normalize(vector)
+    }
+}
+
 pub fn config_from_settings(conn: &Connection) -> Result<EmbeddingConfig, String> {
+    let provider_setting = crate::settings::get_setting(conn, EMBEDDING_PROVIDER_SETTING_KEY);
+    let provider = EmbeddingProvider::from_setting(provider_setting.as_deref())?;
+
     let api_key = crate::settings::get_setting(conn, "openrouter_api_key")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "OpenRouter API key no configurada. Configurá OpenRouter para generar embeddings BGE-M3. No hay fallback a Python/fastembed."
-                .to_string()
-        })?;
+        .unwrap_or_default();
 
     let model_name = crate::settings::get_setting(conn, OPENROUTER_EMBEDDING_MODEL_SETTING_KEY)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string());
 
+    let local_model_dir = crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+
+    let local_max_length =
+        crate::settings::get_setting(conn, LOCAL_EMBEDDING_MAX_LENGTH_SETTING_KEY)
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH)
+            .clamp(8, DEFAULT_LOCAL_EMBEDDING_MAX_LENGTH);
+
+    if provider == EmbeddingProvider::Api && api_key.is_empty() {
+        return Err(
+            "OpenRouter API key no configurada. Configurá OpenRouter para generar embeddings BGE-M3 o cambiá embedding_provider=local. No hay fallback a Python/fastembed."
+                .to_string(),
+        );
+    }
+
     Ok(EmbeddingConfig {
+        provider,
         api_key,
         model_name,
+        local_model_dir,
+        local_model_path: None,
+        local_tokenizer_path: None,
+        local_max_length,
     })
+}
+
+struct LocalEmbeddingPaths {
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+}
+
+fn resolve_local_embedding_paths(config: &EmbeddingConfig) -> LocalEmbeddingPaths {
+    let model_dir = config
+        .local_model_dir
+        .clone()
+        .unwrap_or_else(default_local_embedding_model_dir);
+    LocalEmbeddingPaths {
+        model_path: config
+            .local_model_path
+            .clone()
+            .unwrap_or_else(|| model_dir.join(LOCAL_EMBEDDING_MODEL_FILE)),
+        tokenizer_path: config
+            .local_tokenizer_path
+            .clone()
+            .unwrap_or_else(|| model_dir.join(LOCAL_EMBEDDING_TOKENIZER_FILE)),
+    }
+}
+
+fn default_local_embedding_model_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("ENTROPIA_LOCAL_EMBEDDING_MODEL_DIR") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        return PathBuf::from(manifest_dir).join("resources/models/embeddings/bge-m3");
+    }
+
+    PathBuf::from("resources/models/embeddings/bge-m3")
+}
+
+fn ensure_local_embedding_ort_init(model_dir: &Path) -> Result<(), String> {
+    LOCAL_EMBEDDING_ORT_INIT
+        .get_or_init(|| initialize_local_embedding_ort(model_dir.to_path_buf()))
+        .clone()
+}
+
+fn initialize_local_embedding_ort(model_dir: PathBuf) -> Result<(), String> {
+    if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+        ort::init()
+            .commit()
+            .map_err(|e| format!("Failed to initialize ORT from ORT_DYLIB_PATH: {e}"))?;
+        return Ok(());
+    }
+
+    let dylib_path = find_ort_dylib(&model_dir).ok_or_else(|| {
+        format!(
+            "No ONNX Runtime dynamic library found near local BGE-M3 model directory {}. Expected onnxruntime.dll / libonnxruntime.* or set ORT_DYLIB_PATH.",
+            model_dir.display()
+        )
+    })?;
+
+    ort::init_from(dylib_path.display().to_string())
+        .commit()
+        .map_err(|e| {
+            format!(
+                "Failed to initialize ORT from {}: {e}",
+                dylib_path.display()
+            )
+        })?;
+
+    Ok(())
+}
+
+fn find_ort_dylib(model_dir: &Path) -> Option<PathBuf> {
+    runtime_candidates(model_dir)
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn runtime_candidates(model_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut push_names = |base: &Path| {
+        for name in runtime_file_names() {
+            candidates.push(base.join(name));
+        }
+    };
+
+    push_names(model_dir);
+    if let Some(parent) = model_dir.parent() {
+        push_names(parent);
+        // Reuse the existing app-local ORT DLL when BGE-M3 lives in
+        // resources/models/embeddings and ORT is bundled in a sibling model dir.
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    push_names(&path);
+                }
+            }
+        }
+    }
+
+    candidates
+}
+
+fn runtime_file_names() -> &'static [&'static str] {
+    #[cfg(target_os = "windows")]
+    {
+        &["onnxruntime.dll"]
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        &["libonnxruntime.so", "libonnxruntime.so.1"]
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        &["libonnxruntime.dylib"]
+    }
+}
+
+fn array_from_u32(values: &[u32]) -> Result<Array2<i64>, String> {
+    Array2::from_shape_vec(
+        (1, values.len()),
+        values.iter().map(|value| *value as i64).collect(),
+    )
+    .map_err(|e| format!("Failed to build local BGE-M3 ONNX input tensor: {e}"))
+}
+
+fn embedding_vector_from_onnx_output(output: ArrayViewD<'_, f32>) -> Result<Vec<f32>, String> {
+    let shape = output.shape();
+    match shape {
+        [dim] if *dim == OPENROUTER_EMBEDDING_DIMENSIONS => Ok(output.iter().copied().collect()),
+        [batch, dim] if *batch == 1 && *dim == OPENROUTER_EMBEDDING_DIMENSIONS => {
+            Ok(output.iter().copied().collect())
+        }
+        [batch, tokens, hidden]
+            if *batch == 1 && *tokens > 0 && *hidden == OPENROUTER_EMBEDDING_DIMENSIONS =>
+        {
+            let batch = output.index_axis(Axis(0), 0);
+            let cls = batch.index_axis(Axis(0), 0);
+            Ok(cls.iter().copied().collect())
+        }
+        _ => Err(format!(
+            "Unexpected local BGE-M3 ONNX output shape: {shape:?}; expected [1024], [1,1024], or [1,tokens,1024]"
+        )),
+    }
+}
+
+fn l2_normalize(mut vector: Vec<f32>) -> Result<Vec<f32>, String> {
+    let norm = vector
+        .iter()
+        .map(|value| (*value as f64) * (*value as f64))
+        .sum::<f64>()
+        .sqrt();
+
+    if !norm.is_finite() || norm <= f64::EPSILON {
+        return Err("Local BGE-M3 produced a zero or invalid vector".to_string());
+    }
+
+    for value in &mut vector {
+        *value /= norm as f32;
+    }
+
+    Ok(vector)
 }
 
 /// Compute embedding for a single asset's text and store it.
@@ -438,6 +894,7 @@ mod tests {
 
         let config = config_from_settings(&conn).expect("config should resolve");
 
+        assert_eq!(config.provider, EmbeddingProvider::Api);
         assert_eq!(config.model_name, DEFAULT_OPENROUTER_EMBEDDING_MODEL);
     }
 
@@ -454,6 +911,45 @@ mod tests {
         let config = config_from_settings(&conn).expect("config should resolve");
 
         assert_eq!(config.model_name, "custom/model");
+    }
+
+    #[test]
+    fn config_from_settings_allows_local_provider_without_openrouter_key() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('embedding_provider', 'local');\
+             INSERT INTO app_settings(key, value) VALUES ('local_embedding_model_dir', 'C:/models/bge-m3');",
+        )
+        .expect("settings table should be created");
+
+        let config = config_from_settings(&conn).expect("local config should not require API key");
+
+        assert_eq!(config.provider, EmbeddingProvider::Local);
+        assert_eq!(config.model_name, DEFAULT_OPENROUTER_EMBEDDING_MODEL);
+        assert_eq!(
+            config.local_model_dir,
+            Some(PathBuf::from("C:/models/bge-m3"))
+        );
+    }
+
+    #[test]
+    fn config_from_settings_rejects_unknown_embedding_provider() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('embedding_provider', 'mystery');",
+        )
+        .expect("settings table should be created");
+
+        let error = match config_from_settings(&conn) {
+            Ok(_) => panic!("unknown provider should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("Proveedor de embeddings no soportado"));
+        assert!(error.contains("api"));
+        assert!(error.contains("local"));
     }
 
     #[test]
@@ -474,15 +970,54 @@ mod tests {
     #[tokio::test]
     async fn init_can_drop_embedding_engine_inside_tokio_context() {
         let engine = EmbeddingEngine::init_with_endpoint(
-            EmbeddingConfig {
-                api_key: "sk-test".to_string(),
-                model_name: DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
-            },
+            EmbeddingConfig::openrouter(
+                "sk-test".to_string(),
+                DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            ),
             "http://127.0.0.1:9".to_string(),
         )
         .expect("engine init should not create a blocking runtime");
 
         drop(engine);
+    }
+
+    #[test]
+    fn init_local_provider_reports_missing_bge_m3_assets() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let error = match EmbeddingEngine::init(EmbeddingConfig::local(
+            DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            Some(temp.path().to_path_buf()),
+        )) {
+            Ok(_) => panic!("local provider should fail when ONNX assets are absent"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("Local BGE-M3 ONNX model not found"));
+        assert!(error.contains(LOCAL_EMBEDDING_MODEL_FILE));
+    }
+
+    #[test]
+    fn embedding_vector_from_onnx_output_accepts_cls_hidden_state_shape() {
+        let values: Vec<f32> = (0..(2 * OPENROUTER_EMBEDDING_DIMENSIONS))
+            .map(|index| index as f32)
+            .collect();
+        let array =
+            ndarray::Array3::from_shape_vec((1, 2, OPENROUTER_EMBEDDING_DIMENSIONS), values)
+                .expect("array shape should be valid");
+
+        let vector = embedding_vector_from_onnx_output(array.view().into_dyn())
+            .expect("CLS hidden state should be accepted");
+
+        assert_eq!(vector.len(), OPENROUTER_EMBEDDING_DIMENSIONS);
+        assert_eq!(vector[0], 0.0);
+        assert_eq!(vector[OPENROUTER_EMBEDDING_DIMENSIONS - 1], 1023.0);
+    }
+
+    #[test]
+    fn l2_normalize_returns_unit_length_vector() {
+        let vector = l2_normalize(vec![3.0, 4.0]).expect("vector should normalize");
+        assert!((vector[0] - 0.6).abs() < 0.0001);
+        assert!((vector[1] - 0.8).abs() < 0.0001);
     }
 
     #[test]
@@ -493,10 +1028,10 @@ mod tests {
         let expected_last = vector[OPENROUTER_EMBEDDING_DIMENSIONS - 1];
         let endpoint = local_openrouter_embedding_server(vector.clone());
         let engine = EmbeddingEngine::init_with_endpoint(
-            EmbeddingConfig {
-                api_key: "sk-test".to_string(),
-                model_name: DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
-            },
+            EmbeddingConfig::openrouter(
+                "sk-test".to_string(),
+                DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            ),
             endpoint,
         )
         .expect("test embedding engine should initialize");

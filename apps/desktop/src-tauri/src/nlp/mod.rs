@@ -517,7 +517,10 @@ pub(crate) fn try_init_embed_engine(conn: &rusqlite::Connection) -> Option<Arc<E
 
     match EmbeddingEngine::init(config) {
         Ok(engine) => {
-            eprintln!("[nlp/embeddings] OpenRouter engine ready (lazy init)");
+            eprintln!(
+                "[nlp/embeddings] {} engine ready (lazy init)",
+                engine.provider_name()
+            );
             Some(Arc::new(engine))
         }
         Err(e) => {

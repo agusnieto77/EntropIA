@@ -69,6 +69,23 @@ const es = {
   'settings.llmMode.openrouter.description': 'API remota. Requiere API key y conexión a internet.',
   'settings.llmMode.auto.description':
     'Prioriza el motor local y usa OpenRouter sólo como respaldo.',
+  'settings.embeddingProvider.title': 'Embeddings BGE-M3',
+  'settings.embeddingProvider.description':
+    'Elegí cómo EntropIA genera vectores semánticos. API y local usan el mismo contrato BGE-M3 de 1024 dimensiones.',
+  'settings.embeddingProvider.api.label': 'API OpenRouter',
+  'settings.embeddingProvider.api.description':
+    'Usa OpenRouter con baai/bge-m3. Requiere API key y conexión.',
+  'settings.embeddingProvider.local.label': 'Local ONNX',
+  'settings.embeddingProvider.local.description':
+    'Usa un modelo BGE-M3 ONNX instalado en este equipo. Sin internet.',
+  'settings.embeddingProvider.model': 'Modelo de embeddings',
+  'settings.embeddingProvider.modelHint':
+    'Dejá baai/bge-m3 para mantener compatibilidad entre embeddings API y locales.',
+  'settings.embeddingProvider.localPath': 'Carpeta del modelo local BGE-M3',
+  'settings.embeddingProvider.localPathHint':
+    'Debe contener model.onnx y tokenizer.json. Si queda vacío, EntropIA busca resources/models/embeddings/bge-m3.',
+  'settings.embeddingProvider.apiPrivacyNotice':
+    'Privacidad: si usás embeddings por API, el texto extraído se envía a OpenRouter para vectorizarlo.',
   'settings.sttModeTitle': 'Modo STT',
   'settings.sttMode.local.label': 'Local',
   'settings.sttMode.local.summary': 'Procesa el audio con faster-whisper en este equipo.',
@@ -667,6 +684,23 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
     'Remote API. Requires an API key and internet connection.',
   'settings.llmMode.auto.description':
     'Prioritize the local engine and use OpenRouter only as fallback.',
+  'settings.embeddingProvider.title': 'BGE-M3 embeddings',
+  'settings.embeddingProvider.description':
+    'Choose how EntropIA generates semantic vectors. API and local use the same 1024-dimensional BGE-M3 contract.',
+  'settings.embeddingProvider.api.label': 'OpenRouter API',
+  'settings.embeddingProvider.api.description':
+    'Use OpenRouter with baai/bge-m3. Requires an API key and connection.',
+  'settings.embeddingProvider.local.label': 'Local ONNX',
+  'settings.embeddingProvider.local.description':
+    'Use a BGE-M3 ONNX model installed on this machine. No internet required.',
+  'settings.embeddingProvider.model': 'Embedding model',
+  'settings.embeddingProvider.modelHint':
+    'Keep baai/bge-m3 to maintain compatibility between API and local embeddings.',
+  'settings.embeddingProvider.localPath': 'Local BGE-M3 model folder',
+  'settings.embeddingProvider.localPathHint':
+    'Must contain model.onnx and tokenizer.json. If empty, EntropIA checks resources/models/embeddings/bge-m3.',
+  'settings.embeddingProvider.apiPrivacyNotice':
+    'Privacy: when API embeddings are enabled, extracted text is sent to OpenRouter for vectorization.',
   'settings.sttModeTitle': 'STT mode',
   'settings.sttMode.local.label': 'Local',
   'settings.sttMode.local.summary': 'Process audio with faster-whisper on this machine.',

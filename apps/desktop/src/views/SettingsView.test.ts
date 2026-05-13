@@ -68,6 +68,8 @@ describe('SettingsView', () => {
     settingsGetMock.mockImplementation(async (key: string) => {
       if (key === 'openrouter_api_key') return 'sk-or-v1-test-key'
       if (key === 'openrouter_model') return 'anthropic/claude-3.7-sonnet'
+      if (key === 'embedding_provider') return 'api'
+      if (key === 'openrouter_embedding_model') return 'baai/bge-m3'
       if (key === 'llm_mode') return 'openrouter'
       if (key === 'assemblyai_api_key') return 'aai-orig-test-1234'
       if (key === 'stt_mode') return 'assemblyai'
@@ -129,6 +131,27 @@ describe('SettingsView', () => {
         'Configuración guardada. Ya podés usar esta preferencia en toda la app.'
       )
     ).toBeInTheDocument()
+    expect(settingsSetMock).toHaveBeenCalledWith('embedding_provider', 'api')
+    expect(settingsSetMock).toHaveBeenCalledWith('openrouter_embedding_model', 'baai/bge-m3')
+    expect(settingsSetMock).toHaveBeenCalledWith('local_embedding_model_dir', '')
+  })
+
+  it('saves the local BGE-M3 embedding provider and model directory', async () => {
+    render(SettingsView)
+
+    const localEmbeddingOption = await screen.findByRole('radio', { name: /Local ONNX/i })
+    await fireEvent.click(localEmbeddingOption)
+
+    const localPathInput = await screen.findByLabelText('Carpeta del modelo local BGE-M3')
+    await fireEvent.input(localPathInput, { target: { value: 'C:/models/bge-m3' } })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }))
+
+    await waitFor(() => {
+      expect(settingsSetMock).toHaveBeenCalledWith('embedding_provider', 'local')
+      expect(settingsSetMock).toHaveBeenCalledWith('openrouter_embedding_model', 'baai/bge-m3')
+      expect(settingsSetMock).toHaveBeenCalledWith('local_embedding_model_dir', 'C:/models/bge-m3')
+    })
   })
 
   it('saves language preference and updates the interface reactively', async () => {

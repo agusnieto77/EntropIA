@@ -59,7 +59,10 @@ export function testGlmOcrConnection(apiKey: string): Promise<void> {
 export const SETTINGS_KEYS = {
   OPENROUTER_API_KEY: 'openrouter_api_key',
   OPENROUTER_MODEL: 'openrouter_model',
+  OPENROUTER_EMBEDDING_MODEL: 'openrouter_embedding_model',
   LLM_MODE: 'llm_mode',
+  EMBEDDING_PROVIDER: 'embedding_provider',
+  LOCAL_EMBEDDING_MODEL_DIR: 'local_embedding_model_dir',
   ASSEMBLYAI_API_KEY: 'assemblyai_api_key',
   STT_MODE: 'stt_mode',
   GLM_OCR_API_KEY: 'glm_ocr_api_key',
@@ -72,10 +75,13 @@ export const SETTINGS_KEYS = {
 } as const
 
 export type LlmMode = 'local' | 'openrouter' | 'auto'
+export type EmbeddingProvider = 'api' | 'local'
 export type SttMode = 'local' | 'assemblyai' | 'auto'
 export type OcrhMode = 'local' | 'glm_ocr' | 'auto'
 
 export const DEFAULT_OPENROUTER_MODEL = 'google/gemma-3-4b-it'
+export const DEFAULT_OPENROUTER_EMBEDDING_MODEL = 'baai/bge-m3'
 export const DEFAULT_LLM_MODE: LlmMode = 'local'
+export const DEFAULT_EMBEDDING_PROVIDER: EmbeddingProvider = 'api'
 export const DEFAULT_STT_MODE: SttMode = 'local'
 export const DEFAULT_OCRH_MODE: OcrhMode = 'local'

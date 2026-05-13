@@ -10,9 +10,12 @@
     testGlmOcrConnection,
     SETTINGS_KEYS,
     DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_EMBEDDING_MODEL,
     DEFAULT_LLM_MODE,
+    DEFAULT_EMBEDDING_PROVIDER,
     DEFAULT_STT_MODE,
     DEFAULT_OCRH_MODE,
+    type EmbeddingProvider,
     type LlmMode,
     type OcrhMode,
     type SttMode,
@@ -45,6 +48,9 @@
   let maskedApiKey = $state('')
   let showApiKey = $state(false)
   let model = $state(DEFAULT_OPENROUTER_MODEL)
+  let embeddingProvider = $state<EmbeddingProvider>(DEFAULT_EMBEDDING_PROVIDER)
+  let embeddingModel = $state(DEFAULT_OPENROUTER_EMBEDDING_MODEL)
+  let localEmbeddingModelDir = $state('')
   let llmMode = $state<LlmMode>(DEFAULT_LLM_MODE)
   let sttMode = $state<SttMode>(DEFAULT_STT_MODE)
   let ocrhMode = $state<OcrhMode>(DEFAULT_OCRH_MODE)
@@ -126,6 +132,9 @@
     const [
       storedKey,
       storedModel,
+      storedEmbeddingProvider,
+      storedEmbeddingModel,
+      storedLocalEmbeddingModelDir,
       storedMode,
       storedSttMode,
       storedOcrhMode,
@@ -136,6 +145,9 @@
     ] = await Promise.all([
       settingsGet(SETTINGS_KEYS.OPENROUTER_API_KEY),
       settingsGet(SETTINGS_KEYS.OPENROUTER_MODEL),
+      settingsGet(SETTINGS_KEYS.EMBEDDING_PROVIDER),
+      settingsGet(SETTINGS_KEYS.OPENROUTER_EMBEDDING_MODEL),
+      settingsGet(SETTINGS_KEYS.LOCAL_EMBEDDING_MODEL_DIR),
       settingsGet(SETTINGS_KEYS.LLM_MODE),
       settingsGet(SETTINGS_KEYS.STT_MODE),
       settingsGet(SETTINGS_KEYS.OCRH_MODE),
@@ -150,6 +162,11 @@
       maskedApiKey = maskKey(storedKey)
     }
     if (storedModel) model = storedModel
+    if (storedEmbeddingProvider === 'api' || storedEmbeddingProvider === 'local') {
+      embeddingProvider = storedEmbeddingProvider
+    }
+    if (storedEmbeddingModel) embeddingModel = storedEmbeddingModel
+    if (storedLocalEmbeddingModelDir) localEmbeddingModelDir = storedLocalEmbeddingModelDir
     if (storedMode) llmMode = storedMode as LlmMode
     if (storedSttMode) sttMode = storedSttMode as SttMode
     if (storedOcrhMode) ocrhMode = storedOcrhMode as OcrhMode
@@ -277,6 +294,9 @@
       await Promise.all([
         settingsSet(SETTINGS_KEYS.OPENROUTER_API_KEY, apiKey.trim()),
         settingsSet(SETTINGS_KEYS.OPENROUTER_MODEL, model),
+        settingsSet(SETTINGS_KEYS.EMBEDDING_PROVIDER, embeddingProvider),
+        settingsSet(SETTINGS_KEYS.OPENROUTER_EMBEDDING_MODEL, embeddingModel.trim() || DEFAULT_OPENROUTER_EMBEDDING_MODEL),
+        settingsSet(SETTINGS_KEYS.LOCAL_EMBEDDING_MODEL_DIR, localEmbeddingModelDir.trim()),
         settingsSet(SETTINGS_KEYS.LLM_MODE, llmMode),
         settingsSet(SETTINGS_KEYS.ASSEMBLYAI_API_KEY, assemblyAiApiKey.trim()),
         settingsSet(SETTINGS_KEYS.STT_MODE, sttMode),
@@ -484,6 +504,67 @@
             </div>
           </label>
         </div>
+      </section>
+    </Card>
+
+    <Card>
+      <section class="settings-card-section">
+        <div class="settings-card-section__copy">
+          <h2>{t('settings.embeddingProvider.title')}</h2>
+          <p>{t('settings.embeddingProvider.description')}</p>
+        </div>
+
+        <div class="settings__mode-options">
+          <label class="settings__radio" class:active={embeddingProvider === 'api'}>
+            <input type="radio" name="embedding_provider" value="api" bind:group={embeddingProvider} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.embeddingProvider.api.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.embeddingProvider.api.description')}
+              </span>
+            </div>
+          </label>
+
+          <label class="settings__radio" class:active={embeddingProvider === 'local'}>
+            <input type="radio" name="embedding_provider" value="local" bind:group={embeddingProvider} />
+            <div class="settings__radio-content">
+              <strong>{t('settings.embeddingProvider.local.label')}</strong>
+              <span class="settings__radio-desc">
+                {t('settings.embeddingProvider.local.description')}
+              </span>
+            </div>
+          </label>
+        </div>
+
+        <div class="settings__field settings__field--stacked">
+          <Input
+            label={t('settings.embeddingProvider.model')}
+            type="text"
+            bind:value={embeddingModel}
+            placeholder={DEFAULT_OPENROUTER_EMBEDDING_MODEL}
+          />
+          <p class="settings__hint">{t('settings.embeddingProvider.modelHint')}</p>
+        </div>
+
+        {#if embeddingProvider === 'local'}
+          <div class="settings__field settings__field--stacked">
+            <label class="settings__label" for="local-embedding-model-dir">
+              {t('settings.embeddingProvider.localPath')}
+            </label>
+            <input
+              id="local-embedding-model-dir"
+              type="text"
+              class="settings__input"
+              bind:value={localEmbeddingModelDir}
+              placeholder="resources/models/embeddings/bge-m3"
+            />
+            <p class="settings__hint">{t('settings.embeddingProvider.localPathHint')}</p>
+          </div>
+        {:else}
+          <p class="settings__hint settings__hint--privacy">
+            {t('settings.embeddingProvider.apiPrivacyNotice')}
+          </p>
+        {/if}
       </section>
     </Card>
 
