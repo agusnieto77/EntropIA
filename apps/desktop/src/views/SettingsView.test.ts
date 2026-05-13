@@ -71,8 +71,8 @@ describe('SettingsView', () => {
       exists: false,
       available: false,
       can_auto_download: true,
-      directory: 'F:/POSITRON/EntropIA/apps/desktop/src-tauri/resources/models/embeddings/bge-m3',
-      path: 'F:/POSITRON/EntropIA/apps/desktop/src-tauri/resources/models/embeddings/bge-m3/model.onnx',
+      directory: 'C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3',
+      path: 'C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3/model.onnx',
       size_bytes: null,
       required_files: [
         { filename: 'model.onnx', source_path: 'onnx/model.onnx', destination: 'model.onnx', size_bytes: 724923, exists: false },
@@ -201,6 +201,32 @@ describe('SettingsView', () => {
 
     await waitFor(() => {
       expect(embeddingDownloadModelMock).toHaveBeenCalled()
+    })
+  })
+
+  it('keeps the local BGE-M3 directory setting empty when using the AppData default', async () => {
+    settingsGetMock.mockImplementation(async (key: string) => {
+      if (key === 'embedding_provider') return 'local'
+      if (key === 'local_embedding_model_dir') return 'resources/models/embeddings/bge-m3'
+      if (key === 'openrouter_embedding_model') return 'baai/bge-m3'
+      if (key === 'llm_mode') return 'openrouter'
+      if (key === 'stt_mode') return 'assemblyai'
+      if (key === 'language') return 'es'
+      return null
+    })
+
+    render(SettingsView)
+
+    const localPathInput = await screen.findByLabelText('Carpeta del modelo local BGE-M3')
+    expect(localPathInput).toHaveValue('')
+    expect(
+      screen.getByText('C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3')
+    ).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }))
+
+    await waitFor(() => {
+      expect(settingsSetMock).toHaveBeenCalledWith('local_embedding_model_dir', '')
     })
   })
 

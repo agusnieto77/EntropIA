@@ -45,11 +45,14 @@ fn triples_retired_error(target: &str) -> String {
 }
 
 fn local_embedding_model_dir(db: &AppDbState) -> std::path::PathBuf {
-    db.ui_conn
-        .lock()
-        .ok()
-        .and_then(|conn| super::embeddings::local_embedding_model_dir_from_settings(&conn))
-        .unwrap_or_else(super::embeddings::default_local_embedding_model_dir_for_commands)
+    let app_data_dir = db.db_path.parent();
+    let configured = db.ui_conn.lock().ok().and_then(|conn| {
+        crate::settings::get_setting(
+            &conn,
+            super::embeddings::LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY,
+        )
+    });
+    super::embeddings::resolve_local_embedding_model_dir(configured.as_deref(), app_data_dir)
 }
 
 #[tauri::command]

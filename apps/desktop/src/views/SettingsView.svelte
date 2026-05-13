@@ -85,6 +85,7 @@
   let availableModels = $state<ModelInfo[]>([])
 
   const LANGUAGE_KEY = 'language'
+  const LEGACY_LOCAL_EMBEDDING_MODEL_DIR = 'resources/models/embeddings/bge-m3'
 
   // Local model download state
   let downloading = $state(false)
@@ -182,7 +183,9 @@
       embeddingProvider = storedEmbeddingProvider
     }
     if (storedEmbeddingModel) embeddingModel = storedEmbeddingModel
-    if (storedLocalEmbeddingModelDir) localEmbeddingModelDir = storedLocalEmbeddingModelDir
+    if (storedLocalEmbeddingModelDir && !isLegacyLocalEmbeddingModelDir(storedLocalEmbeddingModelDir)) {
+      localEmbeddingModelDir = storedLocalEmbeddingModelDir
+    }
     if (storedMode) llmMode = storedMode as LlmMode
     if (storedSttMode) sttMode = storedSttMode as SttMode
     if (storedOcrhMode) ocrhMode = storedOcrhMode as OcrhMode
@@ -405,6 +408,14 @@
     }
   }
 
+  function isLegacyLocalEmbeddingModelDir(value: string): boolean {
+    const normalized = value.trim().replaceAll('\\', '/').replace(/^\.\//, '').toLowerCase()
+    return (
+      normalized === LEGACY_LOCAL_EMBEDDING_MODEL_DIR ||
+      normalized.endsWith(`/${LEGACY_LOCAL_EMBEDDING_MODEL_DIR}`)
+    )
+  }
+
   async function handleDownloadEmbeddingModel() {
     if (embeddingDownloading) return
     embeddingDownloading = true
@@ -606,7 +617,7 @@
               type="text"
               class="settings__input"
               bind:value={localEmbeddingModelDir}
-              placeholder="resources/models/embeddings/bge-m3"
+              placeholder={t('settings.embeddingProvider.localPathPlaceholder')}
             />
             <p class="settings__hint">{t('settings.embeddingProvider.localPathHint')}</p>
           </div>

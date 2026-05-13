@@ -129,7 +129,7 @@ pub struct EmbeddingConfig {
     pub api_key: String,
     /// Embedding model name. Defaults to `baai/bge-m3` for both providers.
     pub model_name: String,
-    /// Local model directory. Defaults to `resources/models/embeddings/bge-m3`.
+    /// Local model directory. Defaults to app-data `models/embeddings/bge-m3`.
     pub local_model_dir: Option<PathBuf>,
     /// Local ONNX model path. Defaults to `<local_model_dir>/model.onnx`.
     pub local_model_path: Option<PathBuf>,
@@ -514,10 +514,18 @@ pub fn config_from_settings(conn: &Connection) -> Result<EmbeddingConfig, String
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string());
 
-    let local_model_dir = crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
+    let local_model_dir = if provider == EmbeddingProvider::Local {
+        let configured = crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY);
+        Some(resolve_local_embedding_model_dir(
+            configured.as_deref(),
+            app_data_dir_from_connection(conn).as_deref(),
+        ))
+    } else {
+        crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
 
     let local_max_length =
         crate::settings::get_setting(conn, LOCAL_EMBEDDING_MAX_LENGTH_SETTING_KEY)
@@ -565,11 +573,28 @@ fn resolve_local_embedding_paths(config: &EmbeddingConfig) -> LocalEmbeddingPath
     }
 }
 
-pub fn local_embedding_model_dir_from_settings(conn: &Connection) -> Option<PathBuf> {
-    crate::settings::get_setting(conn, LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+pub fn resolve_local_embedding_model_dir(
+    configured: Option<&str>,
+    app_data_dir: Option<&Path>,
+) -> PathBuf {
+    let app_data_default = || default_local_embedding_model_dir_in_app_data(app_data_dir);
+    let Some(value) = configured.map(str::trim).filter(|value| !value.is_empty()) else {
+        return app_data_default();
+    };
+
+    let configured_path = PathBuf::from(value);
+    if configured_path.is_absolute() {
+        return configured_path;
+    }
+
+    if is_legacy_resource_embedding_dir(value) {
+        return app_data_default();
+    }
+
+    match app_data_dir {
+        Some(root) => root.join("models").join("embeddings").join(configured_path),
+        None => configured_path,
+    }
 }
 
 pub fn get_local_embedding_model_info(model_dir: Option<PathBuf>) -> LocalEmbeddingModelInfo {
@@ -789,8 +814,29 @@ fn default_local_embedding_model_dir() -> PathBuf {
     PathBuf::from("resources/models/embeddings/bge-m3")
 }
 
-pub fn default_local_embedding_model_dir_for_commands() -> PathBuf {
-    default_local_embedding_model_dir()
+fn default_local_embedding_model_dir_in_app_data(app_data_dir: Option<&Path>) -> PathBuf {
+    app_data_dir
+        .map(|root| root.join("models").join("embeddings").join("bge-m3"))
+        .unwrap_or_else(default_local_embedding_model_dir)
+}
+
+fn app_data_dir_from_connection(conn: &Connection) -> Option<PathBuf> {
+    let db_path: String = conn
+        .query_row("PRAGMA database_list", [], |row| {
+            let name: String = row.get(1)?;
+            let file: String = row.get(2)?;
+            Ok((name, file))
+        })
+        .ok()
+        .and_then(|(name, file)| (name == "main" && !file.trim().is_empty()).then_some(file))?;
+    PathBuf::from(db_path).parent().map(Path::to_path_buf)
+}
+
+fn is_legacy_resource_embedding_dir(value: &str) -> bool {
+    let normalized = value.trim().replace('\\', "/").to_ascii_lowercase();
+    let normalized = normalized.trim_start_matches("./");
+    normalized == "resources/models/embeddings/bge-m3"
+        || normalized.ends_with("/resources/models/embeddings/bge-m3")
 }
 
 fn ensure_local_embedding_ort_init(model_dir: &Path) -> Result<(), String> {
@@ -1223,6 +1269,45 @@ mod tests {
         assert_eq!(
             config.local_model_dir,
             Some(PathBuf::from("C:/models/bge-m3"))
+        );
+    }
+
+    #[test]
+    fn config_from_settings_uses_app_data_default_for_local_provider_when_dir_is_empty() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let db_path = temp.path().join("entropia.sqlite");
+        let conn = Connection::open(&db_path).expect("sqlite file should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('embedding_provider', 'local');",
+        )
+        .expect("settings table should be created");
+
+        let config = config_from_settings(&conn).expect("local config should resolve");
+
+        assert_eq!(
+            config.local_model_dir,
+            Some(temp.path().join("models").join("embeddings").join("bge-m3"))
+        );
+    }
+
+    #[test]
+    fn config_from_settings_ignores_legacy_resource_relative_dir_for_local_provider() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let db_path = temp.path().join("entropia.sqlite");
+        let conn = Connection::open(&db_path).expect("sqlite file should open");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('embedding_provider', 'local');\
+             INSERT INTO app_settings(key, value) VALUES ('local_embedding_model_dir', 'resources/models/embeddings/bge-m3');",
+        )
+        .expect("settings table should be created");
+
+        let config = config_from_settings(&conn).expect("local config should resolve");
+
+        assert_eq!(
+            config.local_model_dir,
+            Some(temp.path().join("models").join("embeddings").join("bge-m3"))
         );
     }
 

@@ -82,8 +82,9 @@ const es = {
   'settings.embeddingProvider.modelHint':
     'Dejá baai/bge-m3 para mantener compatibilidad entre embeddings API y locales.',
   'settings.embeddingProvider.localPath': 'Carpeta del modelo local BGE-M3',
+  'settings.embeddingProvider.localPathPlaceholder': 'Vacío = carpeta predeterminada en AppData',
   'settings.embeddingProvider.localPathHint':
-    'Debe contener model.onnx, model.onnx_data y tokenizer.json. Si queda vacío, EntropIA busca resources/models/embeddings/bge-m3.',
+    'Debe contener model.onnx, model.onnx_data y tokenizer.json. Si queda vacío, EntropIA usa la carpeta de datos de la app.',
   'settings.embeddingProvider.localStatus': 'Estado BGE-M3 local',
   'settings.embeddingProvider.localComplete': 'Modelo BGE-M3 local completo',
   'settings.embeddingProvider.localIncomplete': 'Modelo BGE-M3 local incompleto',
@@ -705,8 +706,9 @@ const en: Record<keyof typeof es | ExtraI18nKey, string> = {
   'settings.embeddingProvider.modelHint':
     'Keep baai/bge-m3 to maintain compatibility between API and local embeddings.',
   'settings.embeddingProvider.localPath': 'Local BGE-M3 model folder',
+  'settings.embeddingProvider.localPathPlaceholder': 'Empty = default AppData folder',
   'settings.embeddingProvider.localPathHint':
-    'Must contain model.onnx, model.onnx_data, and tokenizer.json. If empty, EntropIA checks resources/models/embeddings/bge-m3.',
+    'Must contain model.onnx, model.onnx_data, and tokenizer.json. If empty, EntropIA uses the app data folder.',
   'settings.embeddingProvider.localStatus': 'Local BGE-M3 status',
   'settings.embeddingProvider.localComplete': 'Local BGE-M3 model complete',
   'settings.embeddingProvider.localIncomplete': 'Local BGE-M3 model incomplete',
