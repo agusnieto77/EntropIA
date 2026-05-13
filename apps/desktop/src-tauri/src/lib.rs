@@ -249,13 +249,13 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             if let Err(error) = app
                 .state::<runtime::manager::RuntimeManager>()
                 .inner()
-                .validate_startup(&app.handle().clone())
+                .ensure_ready_or_bootstrap(&app.handle().clone())
             {
-                eprintln!("[runtime] startup validation failed: {error}");
+                eprintln!("[runtime] startup bootstrap failed: {error}");
                 app_logs::error(
                     &app.handle().clone(),
                     "runtime",
-                    format!("Validación inicial falló: {error}"),
+                    format!("Bootstrap inicial falló: {error}"),
                 );
             }
 
