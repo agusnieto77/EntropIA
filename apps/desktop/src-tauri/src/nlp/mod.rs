@@ -16,13 +16,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::llm::LlmQueue;
-use crate::path_utils::normalize_windows_path;
-use crate::runtime::{managed_resource_path, RuntimeManager};
+use crate::runtime::RuntimeManager;
 use embeddings::EmbeddingEngine;
-use ner::{
-    types::{NerConfig, NerEngineKind},
-    NerRegistry,
-};
 
 // ── Event payloads ───────────────────────────────────────────────────────────
 
@@ -492,19 +487,6 @@ impl NlpQueue {
     }
 }
 
-/// Decide whether the NER registry should be re-initialized.
-///
-/// Re-init is needed when:
-/// - No registry exists yet
-/// - The Python path has changed since the last init (e.g. deps were installed)
-pub(crate) fn should_reinit_ner_registry(
-    registry: &Option<NerRegistry>,
-    last_python_path: &Option<PathBuf>,
-    current_python_path: &Option<PathBuf>,
-) -> bool {
-    registry.is_none() || last_python_path != current_python_path
-}
-
 /// Attempt to initialize the OpenRouter embedding engine from app settings.
 pub(crate) fn try_init_embed_engine(conn: &rusqlite::Connection) -> Option<Arc<EmbeddingEngine>> {
     let config = match embeddings::config_from_settings(conn) {
@@ -530,39 +512,6 @@ pub(crate) fn try_init_embed_engine(conn: &rusqlite::Connection) -> Option<Arc<E
             None
         }
     }
-}
-
-/// Attempt to initialize the NER registry.
-///
-/// Legacy ONNX/rule-based registry helper retained for focused tests and offline helpers.
-pub(crate) fn try_init_ner_registry(
-    runtime_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-    ner_engine: NerEngineKind,
-    _python_path: Option<PathBuf>,
-) -> NerRegistry {
-    let ner_config = NerConfig {
-        engine: ner_engine,
-        model_path: Some(resolve_ner_resource_path_from_roots(
-            runtime_root,
-            manifest_dir,
-            "model.onnx",
-        )),
-        tokenizer_path: Some(resolve_ner_resource_path_from_roots(
-            runtime_root,
-            manifest_dir,
-            "tokenizer.json",
-        )),
-        python_path: None,
-        script_path: None,
-        model_name: None,
-        max_length: 256,
-        stride: 32,
-        score_threshold: 0.65,
-    };
-    ner::log_startup_status(&ner_config);
-    eprintln!("[nlp/ner] Registry ready (lazy init)");
-    NerRegistry::init(ner_config)
 }
 
 pub(crate) fn ensure_nlp_runtime_ready(app_handle: &AppHandle) -> Result<(), String> {
@@ -682,7 +631,6 @@ async fn run_openrouter_ner_batch(
 
     Ok(ner::EntityExtractionBatch {
         text: input.text,
-        protected_entities: input.protected_entities,
         entities,
     })
 }
@@ -738,60 +686,6 @@ fn run_coalesced_fts_reindex(
 
         return Ok(());
     }
-}
-
-fn resolve_ner_resource_path_from_roots(
-    managed_root: Option<&std::path::Path>,
-    manifest_dir: &std::path::Path,
-    file_name: &str,
-) -> PathBuf {
-    if let Some(root) = managed_root {
-        let managed = managed_resource_path(root, "models/ner").join(file_name);
-        if managed.exists() {
-            return managed;
-        }
-    }
-
-    let dev_path = manifest_dir.join("resources/models/ner").join(file_name);
-    if dev_path.exists() {
-        return dev_path;
-    }
-
-    normalize_windows_path(PathBuf::from(format!("models/ner/{file_name}")))
-}
-
-fn resolve_ner_engine_kind() -> NerEngineKind {
-    match std::env::var("ENTROPIA_NER_ENGINE")
-        .ok()
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("rule") | Some("rule_based") => NerEngineKind::RuleBased,
-        Some("onnx") => NerEngineKind::Onnx,
-        Some("hybrid") | None => NerEngineKind::Hybrid,
-        Some("spacy") => {
-            eprintln!("[nlp/ner] ENTROPIA_NER_ENGINE=spacy is no longer supported — using OpenRouter job path or ONNX legacy helpers only");
-            NerEngineKind::Hybrid
-        }
-        Some(other) => {
-            eprintln!("[nlp/ner] Unknown ENTROPIA_NER_ENGINE={other} — defaulting to hybrid (BERT-first + RegEx dates)");
-            NerEngineKind::Hybrid
-        }
-    }
-}
-
-fn format_panic_payload(context: &str, panic: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = panic.downcast_ref::<&str>() {
-        return format!("{context}: {message}");
-    }
-
-    if let Some(message) = panic.downcast_ref::<String>() {
-        return format!("{context}: {message}");
-    }
-
-    context.to_string()
 }
 
 fn table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
@@ -952,37 +846,17 @@ mod tests {
     fn run_job_without_events(conn: &Connection, job: &NlpJob) -> Result<(), String> {
         match job {
             NlpJob::IndexFts { item_id } => fts::index_item_from_db(conn, item_id),
-            NlpJob::ExtractEntities { item_id } => {
-                ner::extract_and_store(conn, item_id, &rule_based_registry())
-            }
+            NlpJob::ExtractEntities { .. } => Ok(()),
             NlpJob::ComputeAssetEmbedding { item_id, asset_id } => {
                 // No engine in test context → graceful degradation
                 embeddings::compute_and_store_for_asset(None, conn, item_id, asset_id)
             }
-            NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
-                ner::extract_and_store_for_asset(conn, item_id, asset_id, &rule_based_registry())
-            }
+            NlpJob::ExtractEntitiesForAsset { .. } => Ok(()),
             NlpJob::EnrichItem { item_id } => {
-                // Run remaining item-level NLP sub-jobs sequentially.
-                let _ = fts::index_item_from_db(conn, item_id);
-                let _ = ner::extract_and_store(conn, item_id, &rule_based_registry());
-                Ok(())
+                // Unit-test the local part of EnrichItem without making remote OpenRouter calls.
+                fts::index_item_from_db(conn, item_id)
             }
         }
-    }
-
-    fn rule_based_registry() -> NerRegistry {
-        NerRegistry::init(NerConfig {
-            engine: NerEngineKind::RuleBased,
-            model_path: None,
-            tokenizer_path: None,
-            python_path: None,
-            script_path: None,
-            model_name: None,
-            max_length: 256,
-            stride: 32,
-            score_threshold: 0.65,
-        })
     }
 
     fn setup_worker_test_db() -> Connection {
@@ -1113,7 +987,6 @@ mod tests {
             .expect("fts count should be queryable");
         assert_eq!(fts_rows, 1, "FTS should index the item");
 
-        // NER should have detected entities
         let entity_rows: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
@@ -1121,7 +994,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("entity count should be queryable");
-        assert!(entity_rows > 0, "NER should persist at least one entity");
+        assert_eq!(entity_rows, 0, "test helper should not call remote NER");
     }
 
     #[test]
@@ -1153,7 +1026,6 @@ mod tests {
             "FTS should still index the item after partial failure"
         );
 
-        // NER should still have detected entities
         let entity_rows: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM entities WHERE item_id = ?1",
@@ -1161,10 +1033,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("entity count should be queryable");
-        assert!(
-            entity_rows > 0,
-            "NER should still detect entities after partial failure"
-        );
+        assert_eq!(entity_rows, 0, "test helper should not call remote NER");
     }
 
     #[test]
@@ -1217,29 +1086,6 @@ mod tests {
             fts_rows, 1,
             "FTS should index the item with transcription text"
         );
-    }
-
-    #[test]
-    fn resolve_ner_assets_prefer_managed_runtime_copy() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let managed_model = runtime_dir
-            .path()
-            .join("resources")
-            .join("models")
-            .join("ner")
-            .join("model.onnx");
-        std::fs::create_dir_all(managed_model.parent().expect("model parent"))
-            .expect("create ner dir");
-        std::fs::write(&managed_model, b"model").expect("write model");
-
-        let resolved_model = resolve_ner_resource_path_from_roots(
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            "model.onnx",
-        );
-
-        assert_eq!(resolved_model, managed_model);
     }
 
     #[test]
@@ -1336,48 +1182,6 @@ mod tests {
         assert_eq!(result.unwrap(), None);
     }
 
-    // ── Retry behaviour tests ───────────────────────────────────────────────
-
-    #[test]
-    fn should_reinit_ner_registry_when_registry_none() {
-        assert!(
-            should_reinit_ner_registry(&None, &None, &None),
-            "Should re-init when no registry exists"
-        );
-    }
-
-    #[test]
-    fn should_reinit_ner_registry_when_python_becomes_available() {
-        let registry = Some(rule_based_registry());
-        let old_path: Option<PathBuf> = None;
-        let new_path = Some(PathBuf::from("/usr/bin/python"));
-        assert!(
-            should_reinit_ner_registry(&registry, &old_path, &new_path),
-            "Should re-init when Python path changes from None to Some"
-        );
-    }
-
-    #[test]
-    fn should_not_reinit_ner_registry_when_unchanged() {
-        let registry = Some(rule_based_registry());
-        let path = Some(PathBuf::from("/usr/bin/python"));
-        assert!(
-            !should_reinit_ner_registry(&registry, &path, &path),
-            "Should NOT re-init when Python path is unchanged"
-        );
-    }
-
-    #[test]
-    fn should_reinit_ner_registry_when_python_removed() {
-        let registry = Some(rule_based_registry());
-        let old_path = Some(PathBuf::from("/usr/bin/python"));
-        let new_path: Option<PathBuf> = None;
-        assert!(
-            should_reinit_ner_registry(&registry, &old_path, &new_path),
-            "Should re-init when Python path changes from Some to None"
-        );
-    }
-
     #[test]
     fn try_init_embed_engine_returns_none_when_openrouter_key_missing() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
@@ -1429,69 +1233,6 @@ mod tests {
         assert!(
             second.is_some(),
             "Second init should succeed after OpenRouter key is configured"
-        );
-    }
-
-    #[test]
-    fn try_init_ner_registry_falls_back_when_onnx_assets_missing() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-
-        let python_path = Some(PathBuf::from("/usr/bin/python"));
-        let registry = try_init_ner_registry(
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            NerEngineKind::Hybrid,
-            python_path.clone(),
-        );
-
-        // The registry should exist and fall back to rule-based when ONNX
-        // assets are missing (which they are in this test).
-        let entities = registry
-            .extract("Don Manuel Belgrano en Buenos Aires")
-            .expect("rule-based fallback should always work");
-        assert!(
-            entities
-                .iter()
-                .any(|e| e.entity_type == ner::types::EntityType::Person),
-            "Fallback should still detect person entities"
-        );
-    }
-
-    #[test]
-    fn ner_registry_reinitializes_when_python_path_changes() {
-        let runtime_dir = tempfile::tempdir().expect("runtime dir");
-        let manifest_dir = tempfile::tempdir().expect("manifest dir");
-        let first_python: Option<PathBuf> = None;
-        let first_registry = try_init_ner_registry(
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            NerEngineKind::Hybrid,
-            first_python.clone(),
-        );
-
-        // Simulate Python becoming available
-        let second_python = Some(PathBuf::from("/usr/bin/python"));
-        assert!(
-            should_reinit_ner_registry(&Some(first_registry), &first_python, &second_python),
-            "Should re-init when Python becomes available"
-        );
-
-        let second_registry = try_init_ner_registry(
-            Some(runtime_dir.path()),
-            manifest_dir.path(),
-            NerEngineKind::Hybrid,
-            second_python.clone(),
-        );
-        // Both should work because rule-based is always present
-        let entities = second_registry
-            .extract("Don Manuel Belgrano")
-            .expect("second registry should work");
-        assert!(
-            entities
-                .iter()
-                .any(|e| e.entity_type == ner::types::EntityType::Person),
-            "Re-initialized registry should still extract entities"
         );
     }
 }

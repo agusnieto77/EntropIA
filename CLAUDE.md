@@ -66,7 +66,7 @@ cargo fmt --check                     # check Rust formatting
 pnpm rust:quality:report
 ```
 
-**First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, LLVM/Clang, CMake, Python OCR/NLP packages). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER ONNX model tokenizer/vocab are bundled in `resources/models/ner/`; the ONNX model binary itself must be prepared via `scripts/prepare-ner-model.ps1`. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
+**First-time setup**: See `AGENTS.md` for Windows prerequisites (MSVC Build Tools, LLVM/Clang, CMake, Python OCR/transcription packages). Before `pnpm tauri dev` or `pnpm tauri build`, OCR models must be downloaded — Tauri's `beforeDevCommand` and `beforeBuildCommand` both run `pnpm download-ocr-models` (PowerShell script) automatically. NER runs through Gemma/OpenRouter JSON extraction; the legacy native ONNX/hybrid NER assets and `prepare-ner-model.ps1` flow were removed. Python scripts live in both `scripts/` (dev) and `resources/scripts/` (bundled with release).
 
 ## Testing
 

@@ -128,8 +128,8 @@ fn runtime_candidates(model_dir: &Path) -> Vec<PathBuf> {
     push_names(model_dir);
     if let Some(parent) = model_dir.parent() {
         push_names(parent);
-        // Also search sibling directories — the NER module bundles onnxruntime.dll
-        // in resources/models/ner/, which is a sibling of resources/models/ocr/
+        // Also search sibling directories — Windows dev currently keeps the
+        // shared onnxruntime.dll handoff under resources/models/ner/.
         if let Ok(entries) = std::fs::read_dir(parent) {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {

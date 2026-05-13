@@ -77,7 +77,7 @@ pub fn raw_consolidate_entities(text: &str, candidate_entities_json: &str) -> St
 
 Recibís:
 1. El texto original.
-2. Una lista preliminar de entidades detectadas por NER híbrido (RegEx + BERT).
+2. Una lista preliminar de entidades detectadas por el pipeline NER actual.
 
 Tu tarea:
 - Revisá las entidades preliminares.

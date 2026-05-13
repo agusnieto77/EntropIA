@@ -6,8 +6,10 @@ This directory is reserved for bundled Tauri resources.
   Download from [pdfium-render releases](https://github.com/ajrcarey/pdfium-render/releases).
   The DLL is resolved at runtime with a 3-tier search (bundled → dev → system library).
   See `resources/lib/.gitkeep` for details.
-- `models/ner/onnxruntime.dll` — ONNX Runtime for native NER/layout inference on
-  Windows. Release runtime payloads also copy this DLL into
+- `models/ner/onnxruntime.dll` — ONNX Runtime for native layout/local-ONNX
+  inference on Windows. The legacy native NER model was removed; this path is
+  retained only as the current dev DLL handoff location until ORT is relocated.
+  Release runtime payloads also copy this DLL into
   `runtime-pack/<platform>/resources/lib/` so Python ONNX consumers can resolve it
   through the app-managed DLL path.
 

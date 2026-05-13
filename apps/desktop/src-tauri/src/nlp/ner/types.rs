@@ -1,5 +1,4 @@
 use encoding_rs::WINDOWS_1252;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityType {
@@ -156,8 +155,6 @@ fn mojibake_score(value: &str) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntitySource {
     RuleBased,
-    Onnx,
-    #[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
     Llm,
 }
 
@@ -165,7 +162,6 @@ impl EntitySource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::RuleBased => "rule_based",
-            Self::Onnx => "onnx",
             Self::Llm => "llm",
         }
     }
@@ -180,33 +176,6 @@ pub struct Entity {
     pub confidence: f32,
     pub source: EntitySource,
     pub model_name: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NerEngineKind {
-    RuleBased,
-    Onnx,
-    Hybrid,
-}
-
-#[derive(Debug, Clone)]
-pub struct NerConfig {
-    pub engine: NerEngineKind,
-    pub model_path: Option<PathBuf>,
-    pub tokenizer_path: Option<PathBuf>,
-    pub python_path: Option<PathBuf>,
-    pub script_path: Option<PathBuf>,
-    pub model_name: Option<String>,
-    pub max_length: usize,
-    pub stride: usize,
-    pub score_threshold: f32,
-}
-
-#[allow(dead_code)]
-pub trait NerEngine: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn extract(&self, text: &str) -> Result<Vec<Entity>, String>;
 }
 
 #[cfg(test)]

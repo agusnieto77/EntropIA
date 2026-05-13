@@ -87,7 +87,7 @@ $env:Path += ";C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Co
 - **PicoDet applies NMS internally** — no separate NMS step needed
 - **Preprocessing**: Direct resize to 480×480 (no letterbox), scale_factor passed to model for coordinate remapping
 - **Coordinate mapping**: Output coords are in 480×480 space; scaled back to original via `scale_x = orig_w / 480`, `scale_y = orig_h / 480`
-- **ORT DLL resolution**: Scans `resources/models/ner/` sibling directory for `onnxruntime.dll` (shared with NER module)
+- **ORT DLL resolution**: Scans sibling model directories for `onnxruntime.dll`; Windows dev currently keeps the shared DLL under `resources/models/ner/` even though native ONNX NER was removed.
 - **Feature-gated**: `paddle-ocr` feature for native PaddleOCR fallback; layout engine always available when model file exists
 - **Conversion note**: Paddle → ONNX is Linux-only (paddle2onnx DLL bug on Windows). Script: `scripts/convert_layout_to_onnx.py`
 

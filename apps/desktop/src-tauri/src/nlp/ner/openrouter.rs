@@ -1,9 +1,7 @@
 use serde::Deserialize;
 
 use super::types::{sanitize_entity_value, Entity, EntitySource, EntityType};
-use super::{
-    find_entity_span, is_suppressed_by_protected, normalize_entity_value, same_entity_family,
-};
+use super::{find_entity_span, is_suppressed_by_protected, normalize_entity_value};
 
 pub const DEFAULT_OPENROUTER_NER_MODEL: &str = "google/gemma-3-4b-it";
 pub const OPENROUTER_NER_MODEL_SETTING_KEY: &str = "openrouter_ner_model";
@@ -192,9 +190,4 @@ fn extract_json_payload(content: &str) -> Result<&str, String> {
     }
 
     Ok(&content[start..=end])
-}
-
-#[allow(dead_code)]
-fn _same_family_for_supported_categories(a: &EntityType, b: &EntityType) -> bool {
-    same_entity_family(a, b)
 }
