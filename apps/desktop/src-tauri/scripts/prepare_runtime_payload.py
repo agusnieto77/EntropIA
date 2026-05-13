@@ -85,8 +85,6 @@ def ensure_repo_scripts(payload_root: Path) -> None:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     for script_name in REQUIRED_SCRIPTS:
         target = scripts_dir / script_name
-        if target.exists():
-            continue
         source = SCRIPT_SOURCE_DIR / script_name
         if not source.exists():
             raise ValueError(f'required repo script missing: {source}')

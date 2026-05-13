@@ -21,6 +21,15 @@ on:
         description: 'Workflow run ID that produced runtime_payload_artifact. Required when using the Runtime Payload workflow artifact.'
         required: false
         type: string
+      release_tag:
+        description: 'Release tag to create/update when manually dispatching from main, e.g. v0.0.23-rc.1.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release.'
+        required: false
+        default: false
+        type: boolean
 
 env:
   PNPM_VERSION: 9.15.4
@@ -184,9 +193,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'EntropIA ${{ github.ref_name }}'
+          tagName: ${{ inputs.release_tag || github.ref_name }}
+          releaseName: 'EntropIA ${{ inputs.release_tag || github.ref_name }}'
           releaseBody: 'See the assets below to download the installer for your platform.'
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ inputs.prerelease || false }}
           args: ${{ matrix.build_args }}
