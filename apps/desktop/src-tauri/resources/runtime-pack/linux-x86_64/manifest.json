@@ -1,6 +1,6 @@
 {
   "pack_version": "2026.05.0",
-  "app_version": "0.0.18",
+  "app_version": "0.0.23",
   "platform": "linux-x86_64",
   "payload_profile": "fixture",
   "release_injection_required": true,
@@ -15,90 +15,90 @@
   "python_files": [
     {
       "path": "python/bin/python3",
-      "sha256": "2377f2da1974bfdce9bdfe11674fcc138a3c157c067bd80748c289a4b8da0f43",
-      "size": 61,
-      "executable": false
+      "sha256": "ea73b1c0cb9796fe7e9d1adafe277d984b6e431e9b8dd2e2fa11b5518523de1c",
+      "size": 59,
+      "executable": true
     }
   ],
   "uv_files": [
     {
       "path": "uv/bin/uv",
-      "sha256": "71335f215cf20271b2e95d93a687a9b1d637f57f9eaf44f77d1a2168ad6134fe",
-      "size": 48,
-      "executable": false
+      "sha256": "618a26a17482ae1f4838a41ff882302a4c04f1d2ad2b676d20b0af01b9150664",
+      "size": 46,
+      "executable": true
     }
   ],
   "script_files": [
     {
       "path": "scripts/embed.py",
-      "sha256": "6052ec5cab826d7748175c4113b912ecf39f3383bd65a1284314f6440f18ff3a",
-      "size": 11684,
+      "sha256": "04a4c6c01e1cb26f145cdbb3a17c81cae94ef42c9a54ce5d4537a5e8764afef1",
+      "size": 11384,
       "executable": false
     },
     {
       "path": "scripts/paddle_vl.py",
-      "sha256": "daa15f2398bab94a6cbdfff82a55626d7f9a3533998d62f81f5a9f4137bee904",
-      "size": 14496,
+      "sha256": "9de62d8169c6296bc0e984f4b68e8652d10d6daee90572c04f7e50250a701d5b",
+      "size": 14494,
       "executable": false
     },
     {
       "path": "scripts/spacy_ner.py",
-      "sha256": "4bf09ff769657b155fabedf9f4bdca1c1b2b200a7481c71aa80aef7b9c90ea3a",
-      "size": 2036,
+      "sha256": "50c15860de5814e56e7472019da0a38e0725bc855467a38345fa7ba4dd780bcc",
+      "size": 1967,
       "executable": false
     },
     {
       "path": "scripts/spacy_triples.py",
-      "sha256": "4bd986bd69080366d798a48d9f6aa17ebe49da80f60631f9421981a5bc2eeaba",
-      "size": 2050,
+      "sha256": "324b616dcfcb350af44123933ab3bbebe3245a5f36cedc416beb22d81c82ce86",
+      "size": 1982,
       "executable": false
     },
     {
       "path": "scripts/transcribe.py",
-      "sha256": "11ecb216b35a7a21b1345ec131c8efda68abc53f1b5468c01f5b7fb7ea03b1cb",
-      "size": 9682,
+      "sha256": "371b1d7c92d014ea94656e5feab80bf2d2bce8618839b3ff477f5131f3004b54",
+      "size": 9432,
       "executable": false
     }
   ],
   "wheelhouse": [
     {
       "path": "wheelhouse/README.txt",
-      "sha256": "64f7262e1aa6e559210c03470a3954d22c14365bd5d150c50d60d29d88a02626",
-      "size": 159,
+      "sha256": "b601f71b7976de5bf467630ff1d874912e9ff534c84f699fc22d0a59bc92b7ac",
+      "size": 157,
       "executable": false
     }
   ],
   "caches": [
     {
       "path": "caches/hf/README.txt",
-      "sha256": "284740dae8d81d5657cc9b3228b2a103e302b0eca8944d337cf12c171603b36a",
-      "size": 121,
+      "sha256": "ede20041a93a5c23d72a5c2d733635567b485ce164b65628a90d317366a05703",
+      "size": 119,
       "executable": false
     },
     {
       "path": "caches/paddlex/README.txt",
-      "sha256": "9d945a45c7fb84f582a48a89e119a2e3ef3421dfeccc15edb937ba8e976effc0",
-      "size": 120,
+      "sha256": "a39973c7671ef02b926c2b2f282e9dadb21d18e96deac068a03448d530d6e942",
+      "size": 118,
       "executable": false
     },
     {
       "path": "caches/spacy/README.txt",
-      "sha256": "f137213e473e69413eb524ba21a172d026c42c86ceaa50a67e5574688146f8f4",
-      "size": 134,
+      "sha256": "84be67b2aed84ea325e917400ab03cdd4f9f58ee0b03e561ae2acc251d2964c5",
+      "size": 132,
       "executable": false
     }
   ],
   "native_assets": [
     {
       "path": "resources/lib/libonnxruntime.so",
-      "sha256": "7244f14e73e62c06d5f2828b1cb5775c55df8d20782c1e0d0be8e891f099f5fa",
-      "size": 56,
+      "sha256": "88273cb9344e1f7037bfc5f472bca034153dc175f0ab542d38ee3438f85c1217",
+      "size": 55,
       "executable": false
     },
     {
       "path": "resources/lib/libpdfium.so",
-      "sha256": "93dcbebfd81416ccd4e7afaef9ca8e808a8f336abe4b5a1b9980b09dd02ee988",
-      "size": 51,
+      "sha256": "51e2766de282e16623f87ebb81c8592a05e342f33282d13400d0a5bdf2692b02",
+      "size": 50,
       "executable": false
     }
   ]

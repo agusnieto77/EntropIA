@@ -1,97 +1,104 @@
 {
   "pack_version": "2026.05.0",
-  "app_version": "0.0.18",
+  "app_version": "0.0.23",
   "platform": "windows-x86_64",
   "payload_profile": "fixture",
   "release_injection_required": true,
   "external_artifacts_required": [
     "relocatable-python-windows-x86_64",
     "offline-wheelhouse-core",
-    "seeded-model-caches"
+    "seeded-model-caches",
+    "windows-native-libs"
   ],
   "python_relpath": "python/python.exe",
   "uv_relpath": "uv/uv.exe",
   "python_files": [
     {
       "path": "python/python.exe",
-      "sha256": "44666181d30254fcbdfe039b4dea8a2a1a75f4e74e672a70e3471ef13547d05a",
-      "size": 37,
+      "sha256": "78ecf9f069c4d7bbfe964c1a8f5bc98d9b63347ddd1711c470c970cdb8f2dcc8",
+      "size": 36,
       "executable": true
     }
   ],
   "uv_files": [
     {
       "path": "uv/uv.exe",
-      "sha256": "cce6e0626e5f61b3e07fca8fe4ba25a86be51b43a222d8ceac440146ba99aac5",
-      "size": 24,
+      "sha256": "04a684724e9c3e9204bbe72b3fde56dacd01728bc8ff43e2d0fee9bba9eed9df",
+      "size": 23,
       "executable": true
     }
   ],
   "script_files": [
     {
       "path": "scripts/embed.py",
-      "sha256": "6052ec5cab826d7748175c4113b912ecf39f3383bd65a1284314f6440f18ff3a",
-      "size": 11684,
+      "sha256": "04a4c6c01e1cb26f145cdbb3a17c81cae94ef42c9a54ce5d4537a5e8764afef1",
+      "size": 11384,
       "executable": false
     },
     {
       "path": "scripts/paddle_vl.py",
-      "sha256": "daa15f2398bab94a6cbdfff82a55626d7f9a3533998d62f81f5a9f4137bee904",
-      "size": 14496,
+      "sha256": "9de62d8169c6296bc0e984f4b68e8652d10d6daee90572c04f7e50250a701d5b",
+      "size": 14494,
       "executable": false
     },
     {
       "path": "scripts/spacy_ner.py",
-      "sha256": "4bf09ff769657b155fabedf9f4bdca1c1b2b200a7481c71aa80aef7b9c90ea3a",
-      "size": 2036,
+      "sha256": "50c15860de5814e56e7472019da0a38e0725bc855467a38345fa7ba4dd780bcc",
+      "size": 1967,
       "executable": false
     },
     {
       "path": "scripts/spacy_triples.py",
-      "sha256": "4bd986bd69080366d798a48d9f6aa17ebe49da80f60631f9421981a5bc2eeaba",
-      "size": 2050,
+      "sha256": "324b616dcfcb350af44123933ab3bbebe3245a5f36cedc416beb22d81c82ce86",
+      "size": 1982,
       "executable": false
     },
     {
       "path": "scripts/transcribe.py",
-      "sha256": "11ecb216b35a7a21b1345ec131c8efda68abc53f1b5468c01f5b7fb7ea03b1cb",
-      "size": 9682,
+      "sha256": "371b1d7c92d014ea94656e5feab80bf2d2bce8618839b3ff477f5131f3004b54",
+      "size": 9432,
       "executable": false
     }
   ],
   "wheelhouse": [
     {
       "path": "wheelhouse/README.txt",
-      "sha256": "fe3aeb2cce31a7ffd07f9cef2880f790233033ca9cf4e544a6278d5b8acc329d",
-      "size": 161,
+      "sha256": "f668eb58876765e63c84fc0c4756bcdb6c9c309ab4c0534f4618d8ed5c2522e8",
+      "size": 159,
       "executable": false
     }
   ],
   "caches": [
     {
       "path": "caches/hf/README.txt",
-      "sha256": "e3c9bb90cce90b1e6571e5f61f155f378f396372f3adef0411184c4ea00ba508",
-      "size": 123,
+      "sha256": "accf908c1c5882cb873a2701606450a81a2b0f6c1803ef68018f01fc36d5cc84",
+      "size": 121,
       "executable": false
     },
     {
       "path": "caches/paddlex/README.txt",
-      "sha256": "7bb311f2f0bc456603d759ceaed42ffd9a326a66ac105e0841dc6bb2107a4a1c",
-      "size": 122,
+      "sha256": "8ae88605b2f66f0ed6df5e976e1a18204cef7893b74b447b93237c10aeed22de",
+      "size": 120,
       "executable": false
     },
     {
       "path": "caches/spacy/README.txt",
-      "sha256": "c9e314b900c5e2c458f1b414611330fc7a23e076988527f4b4d4a404e269fb84",
-      "size": 136,
+      "sha256": "5772c31c62578e54c93229cc1b11c835bf4b04a5e637d912f423f76800702bea",
+      "size": 134,
       "executable": false
     }
   ],
   "native_assets": [
     {
+      "path": "resources/lib/onnxruntime.dll",
+      "sha256": "e1e374d8b17a571452e8554f6358ae63c0d39c2d6014af1ca31ac7a27d049989",
+      "size": 43,
+      "executable": false
+    },
+    {
       "path": "resources/lib/pdfium.dll",
-      "sha256": "166168a127c7de1e71bc90f8e78696fc8d94d96ffd3e86110ad0782cfbe26b64",
-      "size": 60,
+      "sha256": "119248df654016c84072875b7560ef6bd03c95af2d673428def42df6e139433a",
+      "size": 59,
       "executable": false
     }
   ]

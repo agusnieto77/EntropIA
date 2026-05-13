@@ -6,6 +6,10 @@ This directory is reserved for bundled Tauri resources.
   Download from [pdfium-render releases](https://github.com/ajrcarey/pdfium-render/releases).
   The DLL is resolved at runtime with a 3-tier search (bundled → dev → system library).
   See `resources/lib/.gitkeep` for details.
+- `models/ner/onnxruntime.dll` — ONNX Runtime for native NER/layout inference on
+  Windows. Release runtime payloads also copy this DLL into
+  `runtime-pack/<platform>/resources/lib/` so Python ONNX consumers can resolve it
+  through the app-managed DLL path.
 
 ## Bundled Tools
 
@@ -26,8 +30,8 @@ This directory is reserved for bundled Tauri resources.
 ### Release payload flow
 
 1. Run the **Runtime Payload** workflow to prepare `runtime-payloads` from audited source payload files.
-2. Run the **Release** workflow with `runtime_payload_artifact=runtime-payloads`; release assembly injects that payload, regenerates manifests, and runs release smoke checks.
-3. Installers are self-contained only when the release payload is real. `runtime-payloads-fixture` is CI/test-only and must never be used for releasable installers.
+2. Run the **Release** workflow manually with `runtime_payload_artifact=runtime-payloads` and `runtime_payload_run_id=<run id>`; the `runtime-pack` job injects that payload, regenerates manifests, and runs release smoke checks before installer builds start.
+3. Installers are self-contained only when the release payload is real. Tag-push releases fail closed if no runtime payload is provided. `runtime-payloads-fixture` is CI/test-only and must never be used for releasable installers.
 
 See `scripts/prepare_runtime_payload.py`, `scripts/materialize_windows_runtime_payload.py`, `scripts/build_runtime_pack.py`, `scripts/runtime-pack-smoke.py`, and each platform `ASSEMBLY_NOTES.md` for the release handoff contract.
 

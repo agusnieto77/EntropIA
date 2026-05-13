@@ -15,14 +15,14 @@ Antes de publicar una release que diga “self-contained”, CI/release DEBE ree
 2. `uv` auditado si cambia respecto del fixture.
 3. Wheelhouse offline real para OCR/transcripción/NLP.
 4. Caches/modelos presembrados (HF y PaddleX) requeridos por los flujos core; spaCy se cubre por wheelhouse offline.
-5. Shared libraries Linux auditadas (`libpdfium.so`, `libonnxruntime.so`, y cualquier dependencia adicional que resulte obligatoria).
+5. Shared libraries auditadas por plataforma (`pdfium.dll`/`onnxruntime.dll` en Windows, `libpdfium.so`/`libonnxruntime.so` en Linux, y cualquier dependencia adicional que resulte obligatoria).
 
 ## Contrato de payload externo
 
 - El script `scripts/build_runtime_pack.py` ahora acepta `--payload-root`.
 - Ese directorio puede venir como layout directo (`python/`, `uv/`, `wheelhouse/`, `caches/`, `resources/lib/`) o como `<payload-root>/<platform>/...`.
 - Si existe `manifest.overrides.json`, el script aplica esos overrides al manifest final y **recalcula** los listados/checksums/tamaños a partir de los archivos realmente ensamblados.
-- Workflow de release: busca payloads externos en `${RUNNER_TEMP}/runtime-payloads/`. Si no aparecen, arma fixture packs de forma explícita.
+- Workflow de release: descarga el artifact `runtime-payloads` desde el `runtime_payload_run_id` indicado, arma el pack en `target/runtime-pack/` y falla cerrado si no hay payload release real. Ya no se permite publicar instaladores desde fixtures.
 - El workflow ensambla primero en `apps/desktop/src-tauri/target/runtime-pack/`, corre smoke ahí y recién después reemplaza `resources/runtime-pack/<platform>` para que el `tauri-action` bundlee el payload real sin destruir la fuente fixture durante el armado.
 
 ### Layouts aceptados para `--payload-root`
@@ -63,7 +63,7 @@ runtime-payloads/
 
 | Plataforma | `python_relpath` esperado | `uv_relpath` esperado | Native assets mínimos | Artifactos externos mínimos |
 | ---------- | ------------------------- | --------------------- | --------------------- | --------------------------- |
-| `windows-x86_64` | `python/python.exe` | `uv/uv.exe` | `resources/lib/pdfium.dll` | `relocatable-python-windows-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches` |
+| `windows-x86_64` | `python/python.exe` | `uv/uv.exe` | `resources/lib/pdfium.dll`, `resources/lib/onnxruntime.dll` | `relocatable-python-windows-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches`, `windows-native-libs` |
 | `linux-x86_64` | `python/bin/python3` | `uv/bin/uv` | `resources/lib/libpdfium.so`, `resources/lib/libonnxruntime.so` | `relocatable-python-linux-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches`, `linux-native-libs` |
 
 ### Output verificable del armado
