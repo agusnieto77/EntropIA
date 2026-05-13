@@ -58,7 +58,7 @@ Hoy el foco del proyecto está en:
 
 ### NLP y exploración
 
-- **NER** con pipeline híbrido (**ONNX + spaCy** cuando está disponible)
+- **NER** liviano vía **Gemma/OpenRouter JSON** con categorías normalizadas (`PER`, `LOC`, `ORG`, `DATE`, `MISC`)
 - extracción de **triples S-P-O**
 - indexación **FTS**
 - **embeddings** y búsqueda de ítems similares
@@ -115,9 +115,8 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | LLM local (OCR correction, summaries, triples, tareas asistidas) | **`gemma-4-E2B-it-Q4_K_M.gguf`** vía `llama.cpp` (`llama-cpp-2`), `n_ctx=4096`                    |
 | Transcripción de audio                                           | **`faster-whisper/base`** vía subprocess de Python (`compute_type=int8`, idioma por defecto `es`) |
-| Embeddings                                                       | **`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`** vía `fastembed` en Python       |
-| NER local principal                                              | modelo **ONNX local** en `resources/models/ner/model.onnx`                                        |
-| NER opcional / fallback enriquecido                              | **`es_core_news_lg`** vía spaCy en Python                                                         |
+| Embeddings                                                       | **`baai/bge-m3`** vía OpenRouter embeddings API (`1024` dims)                                      |
+| NER liviano                                                      | **Gemma/OpenRouter JSON** con salida normalizada a `PER`, `LOC`, `ORG`, `DATE`, `MISC`            |
 | OCR High (OCRH)                                                  | **PaddleOCR-VL** vía `paddleocr[doc-parser]` en Python                                            |
 | OCR nativo (cuando `paddle-ocr` está habilitado)                 | **`PP-OCRv5_mobile_det.mnn`** + **`latin_PP-OCRv5_mobile_rec_infer.mnn`**                         |
 | Corrección de orientación OCR nativo                             | **`PP-LCNet_x1_0_doc_ori.mnn`**                                                                   |
@@ -146,8 +145,8 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 | `Transcribe`  | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleTranscribeAudio(selectedAsset)`      | `transcribe_audio`                                  | `apps/desktop/src-tauri/src/transcription/commands.rs` | **Local** (Python + `faster-whisper`)                                                   |
 | `OCRR`        | Vista de ítem, sección audio | `apps/desktop/src/views/ItemView.svelte` | `handleLlmSummarize()`                      | `llm_summarize` / `llm_summarize_asset`             | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
 | `INDEX`       | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleIndexFts()`                          | `index_fts`                                         | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (SQLite FTS)                                                                  |
-| `EMBED`       | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleEmbedAsset()`                        | `embed_asset`                                       | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (Python + `fastembed`, asset-level)                                           |
-| `NER`         | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractEntities()`                   | `extract_entities` / `extract_entities_for_asset`   | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **Local** (ONNX + spaCy opcional)                                                       |
+| `EMBED`       | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleEmbedAsset()`                        | `embed_asset`                                       | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **OpenRouter** (`baai/bge-m3`, asset-level, sin fallback Python)                        |
+| `NER`         | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleExtractEntities()`                   | `extract_entities` / `extract_entities_for_asset`   | `apps/desktop/src-tauri/src/nlp/commands.rs`           | **OpenRouter/Gemma JSON** (`PER`, `LOC`, `ORG`, `DATE`, `MISC`; sin fallback spaCy)     |
 | `TRIPLET`     | Vista de ítem, sección NLP   | `apps/desktop/src/views/ItemView.svelte` | `handleLlmExtractTriples()`                 | `llm_extract_triples` / `llm_extract_triples_asset` | `apps/desktop/src-tauri/src/llm/commands.rs`           | **LLM local o LLMCloud**, según `llm_mode`                                              |
 
 ### Capacidades implementadas pero no visibles todavía en la UI
@@ -169,8 +168,8 @@ OCRH sigue corriendo hoy en **CPU** vía subprocess de Python. La calidad estruc
 | ORM cliente   | **Drizzle ORM**                                                             |
 | OCR           | `ocr-rs` (feature `paddle-ocr`) + **PaddleOCR-VL** vía Python               |
 | Transcripción | **faster-whisper** vía Python                                               |
-| Embeddings    | **fastembed** vía Python                                                    |
-| NER           | ONNX local + **spaCy** opcional                                             |
+| Embeddings    | **OpenRouter `baai/bge-m3`**                                                |
+| NER           | **Gemma/OpenRouter JSON**                                                   |
 | LLM local     | **llama.cpp** + GGUF (**Gemma 4 E2B IT Q4_K_M**)                            |
 
 ## Estado actual de la persistencia local
@@ -207,11 +206,17 @@ EntropIA ahora incluye en el repo y en el bundle de Tauri la estructura `resourc
 
 - **Self-contained ahora**: contrato de manifiesto, estructura de payload, scripts administrados, placeholders de caches/wheelhouse, espejos de libs nativas, wiring de bundle, assembly script y smoke validation de runtime-pack.
 - **Todavía no self-contained al 100% desde git**: los binarios pesados y redistribuibles reales NO se commitean acá. Siguen entrando por **release-time artifact injection** en CI/release.
-- Eso pendiente incluye: Python relocatable real, wheelhouse offline real (`faster-whisper`, `fastembed`, `paddleocr`, `spaCy`), caches/modelos presembrados y libs Linux auditadas.
+- Eso pendiente incluye: Python relocatable real, wheelhouse offline real para OCR/transcripción (`faster-whisper`, `paddleocr`), caches/modelos presembrados y libs Linux auditadas. Embeddings livianos usan OpenRouter `baai/bge-m3`, no `fastembed` ni `scripts/embed.py`.
 - **Flujo de release**: primero se ejecuta el workflow **Runtime Payload** para producir el artifact `runtime-payloads`; después el workflow **Release** se ejecuta manualmente con `runtime_payload_artifact=runtime-payloads` y `runtime_payload_run_id=<run id>`. El job `runtime-pack` arma el runtime-pack final, valida smoke checks de release y recién ahí habilita el build de instaladores. El artifact `runtime-payloads-fixture` existe solo para CI/tests y NO es releasable.
 - Los pushes de tags `v*` están protegidos: si no hay payload de runtime release verificable, el workflow falla antes de construir instaladores para no publicar builds con fixture runtime.
 
 Mientras esos artifacts no se inyecten, los manifests del runtime-pack quedan marcados como `payload_profile: fixture` + `release_injection_required: true`, y la app reporta el runtime como incompatible para no mentir sobre soporte offline total.
+
+### Compliance y firma
+
+- Política de firma: [`CODE_SIGNING.md`](CODE_SIGNING.md)
+- Privacidad: [`PRIVACY.md`](PRIVACY.md)
+- Notices/payloads de terceros: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
 
 ### Qué necesitás para la experiencia completa hoy
 
@@ -222,8 +227,8 @@ La app puede abrirse y usarse sin tener todo el stack local instalado, pero algu
 | OCR básico (OCRL)        | PaddleOCR liviano incluido en el binario con feature `paddle-ocr` |
 | OCR High (OCRH)          | Python + `paddleocr[doc-parser]`     |
 | Transcripción            | Python + `faster-whisper`            |
-| Embeddings               | Python + `fastembed`                 |
-| NER enriquecido opcional | Python + `spacy` + `es_core_news_lg` |
+| Embeddings               | OpenRouter API key (`baai/bge-m3`)   |
+| NER liviano              | OpenRouter API key + modelo Gemma configurado |
 
 > En la práctica, **Windows es hoy la plataforma mejor documentada y más verificada** para levantar el stack completo de OCR/NLP local.
 
@@ -253,6 +258,12 @@ pnpm install --frozen-lockfile
 
 ```bash
 pnpm --filter @entropia/desktop tauri dev
+```
+
+Para probar una build con identidad separada —útil para ramas de compliance o staging que no deberían compartir app data/instalador con `EntropIA`— usá:
+
+```bash
+pnpm desktop:dev:isolated
 ```
 
 > Importante: en clones nuevos o cuando cambiás de sistema operativo, corré primero `pnpm install --frozen-lockfile`. Si no, Vite puede fallar resolviendo dependencias del workspace (por ejemplo `@tiptap/*`) aunque el código del repo esté bien.
@@ -299,17 +310,13 @@ Variable recomendada:
 Necesitás **Python 3.8+** con estos paquetes:
 
 - `faster-whisper`
-- `fastembed`
 - `paddleocr[doc-parser]`
 - `paddlepaddle` — **must be `>=3.2.1,<3.3.0`** (e.g. `3.2.2` is the verified sweet spot)
-- `spacy`
-- `es_core_news_lg`
 
 Ejemplo:
 
 ```powershell
-pip install faster-whisper fastembed "paddleocr[doc-parser]" "paddlepaddle>=3.2.1,<3.3.0" spacy
-python -m spacy download es_core_news_lg
+pip install faster-whisper "paddleocr[doc-parser]" "paddlepaddle>=3.2.1,<3.3.0"
 ```
 
 > **Version compatibility note for Linux dev:**
@@ -329,6 +336,8 @@ pnpm build
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm desktop:dev:isolated
+pnpm desktop:build:isolated
 ```
 
 ## Estado del proyecto

@@ -19,7 +19,7 @@ The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 
 - **`db/`** — SQLite state management, Tauri IPC commands (`db_execute`, `db_select`, `db_select_rows`)
 - **`ocr/`** — OCR engine with PaddleOCR light + PaddleOCR-VL high mode, PDF text extraction, layout-aware OCR, async job queue
-- **`nlp/`** — FTS5 indexing, embeddings (Python subprocess), hybrid NER (ONNX BERT + spaCy + rule-based), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`) with its own engine registry.
+- **`nlp/`** — FTS5 indexing, OpenRouter `baai/bge-m3` embeddings, Gemma/OpenRouter JSON NER (`PER`, `LOC`, `ORG`, `DATE`, `MISC`), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`).
 - **`layout/`** — DocLayout-YOLO document structure analysis (Python subprocess), reading order algorithm, stores results in `layouts` table
 - **`transcription/`** — Audio transcription via Python faster-whisper subprocess, async job queue
 
@@ -132,28 +132,25 @@ Reading order uses union-find column grouping: regions with ≥50% horizontal ov
 
 ### Python Subprocess Architecture
 
-Several features delegate to Python scripts (ORT/MSVC linker failures on Windows made native Rust unusable for some tasks):
+Several features delegate to Python scripts, but embeddings are no longer one of them:
 
-- **`scripts/embed.py`** — fastembed with `paraphrase-multilingual-MiniLM-L12-v2` (384 dims, 50+ languages). Returns JSON wrapped in `===EMBED_JSON_BEGIN===` / `===EMBED_JSON_END===` sentinels.
+- **Embeddings** — OpenRouter `baai/bge-m3` via `https://openrouter.ai/api/v1/embeddings` (1024 dims). No Python/fastembed fallback.
 - **`scripts/transcribe.py`** — faster-whisper with `base` model, `int8` compute, default language `es`. Same sentinel pattern.
-- **`scripts/spacy_ner.py`** — spaCy NER backend (optional, used by hybrid NER engine when spaCy is available).
 - **`scripts/layout_detect.py`** — DocLayout-YOLO layout detection. Same sentinel pattern (`===LAYOUT_JSON_BEGIN===` / `===LAYOUT_JSON_END===`).
 - **`scripts/paddle_vl.py`** — PaddleOCR-VL layout + OCR in one pass. Sentinel pattern (`===VL_JSON_BEGIN===` / `===VL_JSON_END===`). Label mapping: doc_title/paragraph_title → title, text → plain_text, image → figure.
 
 Rust spawns Python via `which_python()` / `which_python_for_layout()` (searches conda envs first, falls back to system Python). All Python-backed features degrade non-fatally if Python or dependencies are unavailable.
 
-**Python deps required**: `fastembed`, `faster-whisper`, `doclayout-yolo`, `paddleocr[doc-parser]` (install via pip/conda). Optional: `spacy` + `es_core_news_sm` model for spaCy NER.
+**Python deps required**: `faster-whisper`, `doclayout-yolo`, `paddleocr[doc-parser]` (install via pip/conda). Embeddings and lightweight NER do not use Python fallbacks.
 
-### Hybrid NER Architecture
+### Lightweight NER Architecture
 
-NER uses a multi-engine approach (`nlp/ner/`):
+NER uses Gemma/OpenRouter JSON extraction in `nlp/ner/openrouter.rs`:
 
-- **ONNX** (`onnx.rs`) — BERT-based NER via `ort` (ONNX Runtime) + `tokenizers`. Model files bundled in `resources/models/ner/` (config, tokenizer, vocab). Requires ONNX Runtime dynamic library at runtime (`load-dynamic` feature).
-- **spaCy** (`spacy.rs`) — Python subprocess calling `spacy_ner.py`. Optional fallback/complement.
-- **Rule-based** (`rule_based.rs`) — Pattern matching for dates, locations, etc. Always available.
-- **Hybrid** (`hybrid.rs`) — Orchestrates all three engines, merges results via `merge.rs`.
+- **OpenRouter/Gemma** — strict JSON response parsing and category normalization to `PER`, `LOC`, `ORG`, `DATE`, `MISC`.
+- **ONNX/rule-based code** — legacy optional support only when isolated; it is not the lightweight runtime fallback path.
 
-Engine selection is configured via `NerConfig` with `NerEngineKind` (Onnx, Spacy, Hybrid, RuleBased). The `NerRegistry` initializes available engines at startup and logs preflight status.
+If the provider is missing or returns invalid JSON, EntropIA reports a degraded/unavailable error. It does not fall back to spaCy.
 
 ### LLM Architecture
 

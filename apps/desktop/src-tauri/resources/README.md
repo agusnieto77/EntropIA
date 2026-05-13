@@ -25,7 +25,7 @@ This directory is reserved for bundled Tauri resources.
 - `payload_profile: fixture` means these packs are structurally real and bundleable, but they are NOT the final heavy release payloads.
 - `release_injection_required: true` means CI/release must replace fixture placeholders with audited redistributable artifacts before claiming a truly self-contained release.
 - **Self-contained ahora**: runtime-pack layout, manifest contract, bundle globs, assembly wiring, smoke checks, and explicit offline ownership boundaries are in-repo.
-- **Todavía pendiente por release-time artifact injection**: relocatable Python runtimes, offline wheelhouse contents, seeded HuggingFace/PaddleX/spaCy caches, and audited Linux shared libraries.
+- **Todavía pendiente por release-time artifact injection**: relocatable Python runtimes, offline wheelhouse contents for OCR/transcription, seeded HuggingFace/PaddleX caches, and audited Linux shared libraries. Lightweight embeddings/NER use OpenRouter and do not require `scripts/embed.py` or spaCy.
 
 ### Release payload flow
 
