@@ -147,6 +147,12 @@ jobs:
         with:
           toolchain: 1.88.0
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          cache-on-failure: true
+
       - name: Install Rust target (macOS cross-compilation)
         if: matrix.rust_target != ''
         run: |

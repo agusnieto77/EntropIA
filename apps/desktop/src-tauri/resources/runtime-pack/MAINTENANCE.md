@@ -15,7 +15,7 @@ Antes de publicar una release que diga “self-contained”, CI/release DEBE ree
 2. `uv` auditado si cambia respecto del fixture.
 3. Wheelhouse offline real para OCR/transcripción/NLP.
 4. Caches/modelos presembrados (HF y PaddleX) requeridos por los flujos core; spaCy se cubre por wheelhouse offline.
-5. Shared libraries Linux auditadas (`libpdfium.so`, `libonnxruntime.so`, y cualquier dependencia adicional que resulte obligatoria).
+5. Shared libraries auditadas por plataforma (`pdfium.dll`/`onnxruntime.dll` en Windows, `libpdfium.so`/`libonnxruntime.so` en Linux, y cualquier dependencia adicional que resulte obligatoria).
 
 ## Contrato de payload externo
 
@@ -63,7 +63,7 @@ runtime-payloads/
 
 | Plataforma | `python_relpath` esperado | `uv_relpath` esperado | Native assets mínimos | Artifactos externos mínimos |
 | ---------- | ------------------------- | --------------------- | --------------------- | --------------------------- |
-| `windows-x86_64` | `python/python.exe` | `uv/uv.exe` | `resources/lib/pdfium.dll`, `resources/lib/onnxruntime.dll` | `relocatable-python-windows-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches` |
+| `windows-x86_64` | `python/python.exe` | `uv/uv.exe` | `resources/lib/pdfium.dll`, `resources/lib/onnxruntime.dll` | `relocatable-python-windows-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches`, `windows-native-libs` |
 | `linux-x86_64` | `python/bin/python3` | `uv/bin/uv` | `resources/lib/libpdfium.so`, `resources/lib/libonnxruntime.so` | `relocatable-python-linux-x86_64`, `offline-wheelhouse-core`, `seeded-model-caches`, `linux-native-libs` |
 
 ### Output verificable del armado
