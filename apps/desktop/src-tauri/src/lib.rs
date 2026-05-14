@@ -265,6 +265,20 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let db_state = app_handle_deps.state::<AppDbState>();
                 let deps_state = app_handle_deps.state::<deps::DepsState>();
+                if let Err(err) = deps::ensure_startup_release_runtime_deps_ready(
+                    &app_handle_deps,
+                    deps_state.inner(),
+                    db_state.inner(),
+                )
+                .await
+                {
+                    eprintln!("[deps] Startup dependency materialization failed: {err}");
+                    app_logs::error(
+                        &app_handle_deps,
+                        "deps",
+                        format!("Instalación inicial de dependencias falló: {err}"),
+                    );
+                }
                 match deps::probe_all_once(deps_state.inner(), db_state.inner()).await {
                     Ok(results) => {
                         deps::emit_probe_complete(&app_handle_deps, &results);
