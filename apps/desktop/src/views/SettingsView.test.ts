@@ -200,6 +200,9 @@ describe('SettingsView', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Instalar BGE-M3 local' }))
 
     await waitFor(() => {
+      expect(settingsSetMock).toHaveBeenCalledWith('embedding_provider', 'local')
+      expect(settingsSetMock).toHaveBeenCalledWith('openrouter_embedding_model', 'baai/bge-m3')
+      expect(settingsSetMock).toHaveBeenCalledWith('local_embedding_model_dir', '')
       expect(embeddingDownloadModelMock).toHaveBeenCalled()
     })
   })

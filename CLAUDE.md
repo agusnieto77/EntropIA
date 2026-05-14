@@ -134,7 +134,7 @@ Reading order uses union-find column grouping: regions with ≥50% horizontal ov
 
 Several features delegate to Python scripts, but embeddings are no longer one of them:
 
-- **Embeddings** — OpenRouter `baai/bge-m3` via `https://openrouter.ai/api/v1/embeddings` (1024 dims). No Python/fastembed fallback.
+- **Embeddings** — BGE-M3 providers: OpenRouter `baai/bge-m3` via `https://openrouter.ai/api/v1/embeddings` or Local ONNX BGE-M3 assets (1024 dims). No legacy Python embedding fallback.
 - **`scripts/transcribe.py`** — faster-whisper with `base` model, `int8` compute, default language `es`. Same sentinel pattern.
 - **`scripts/layout_detect.py`** — DocLayout-YOLO layout detection. Same sentinel pattern (`===LAYOUT_JSON_BEGIN===` / `===LAYOUT_JSON_END===`).
 - **`scripts/paddle_vl.py`** — PaddleOCR-VL layout + OCR in one pass. Sentinel pattern (`===VL_JSON_BEGIN===` / `===VL_JSON_END===`). Label mapping: doc_title/paragraph_title → title, text → plain_text, image → figure.

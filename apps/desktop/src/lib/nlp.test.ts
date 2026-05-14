@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import {
   NlpStore,
   backfillAssetEmbeddings,
+  embedAsset,
   indexFts,
   extractEntities,
   enrichItem,
@@ -138,6 +139,17 @@ describe('NlpStore', () => {
     expect(invoke).toHaveBeenCalledWith('backfill_asset_embeddings', {
       force: true,
       limit: 25,
+    })
+  })
+
+  it('embedAsset calls the asset-level backend command used by the EMBED button', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('queued')
+
+    await embedAsset('item-local', 'asset-local')
+
+    expect(invoke).toHaveBeenCalledWith('embed_asset', {
+      itemId: 'item-local',
+      assetId: 'asset-local',
     })
   })
 
@@ -368,11 +380,11 @@ describe('NlpStore', () => {
 
     await store.startListening(listen)
 
-    errorCallback!({ payload: { item_id: 'item-err2', job: 'embed', error: 'fastembed failed' } })
+    errorCallback!({ payload: { item_id: 'item-err2', job: 'embed', error: 'BGE-M3 failed' } })
 
     const state = store.getState('item-err2')
     expect(state.embed).toBe('error')
-    expect(state.errors?.embed).toBe('fastembed failed')
+    expect(state.errors?.embed).toBe('BGE-M3 failed')
   })
 
   it('nlp:error for ner job transitions ner to error with message', async () => {
@@ -455,13 +467,12 @@ describe('NlpStore', () => {
 })
 
 describe('embedding architecture governance', () => {
-  it('uses OpenRouter embeddings without reintroducing local fastembed crates', () => {
+  it('uses BGE-M3 providers without reintroducing legacy embedding crates', () => {
     const cargoToml = readRepoFile('../../src-tauri/Cargo.toml')
     const embeddingsRs = readRepoFile('../../src-tauri/src/nlp/embeddings.rs')
 
-    // Lightweight embeddings are API-first through OpenRouter BGE-M3. This
-    // keeps the Windows release path away from local fastembed/ORT subprocess
-    // failure modes.
+    // Lightweight embeddings use explicit BGE-M3 providers. This keeps the
+    // Windows release path away from legacy embedding subprocess failure modes.
     expect(cargoToml).not.toContain('fastembed-upstream')
     expect(cargoToml).not.toContain('fastembed-shim')
     expect(cargoToml).not.toContain('sqlite-vec-shim')
@@ -469,6 +480,8 @@ describe('embedding architecture governance', () => {
     expect(cargoToml).not.toContain('fastembed-core')
     expect(embeddingsRs).toContain('baai/bge-m3')
     expect(embeddingsRs).toContain('https://openrouter.ai/api/v1/embeddings')
+    expect(embeddingsRs).not.toContain('fallback is disabled')
+    expect(embeddingsRs).not.toContain(`No hay fallback a Python/${'fastembed'}`)
     expect(embeddingsRs).not.toContain('Command::new')
     expect(embeddingsRs).not.toContain('script_path')
   })

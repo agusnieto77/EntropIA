@@ -422,7 +422,15 @@
     embeddingDownloadPct = 0
     embeddingDownloadError = null
     try {
-      await settingsSet(SETTINGS_KEYS.LOCAL_EMBEDDING_MODEL_DIR, localEmbeddingModelDir.trim())
+      await Promise.all([
+        settingsSet(SETTINGS_KEYS.EMBEDDING_PROVIDER, 'local'),
+        settingsSet(
+          SETTINGS_KEYS.OPENROUTER_EMBEDDING_MODEL,
+          embeddingModel.trim() || DEFAULT_OPENROUTER_EMBEDDING_MODEL
+        ),
+        settingsSet(SETTINGS_KEYS.LOCAL_EMBEDDING_MODEL_DIR, localEmbeddingModelDir.trim()),
+      ])
+      embeddingProvider = 'local'
       await embeddingDownloadModel()
     } catch (e) {
       embeddingDownloading = false

@@ -202,8 +202,8 @@ pub async fn enrich_item(
 
 /// Submit an embedding computation job for a specific asset.
 ///
-/// The worker will extract the asset's text, compute a 1024-dim BGE-M3 vector via OpenRouter,
-/// and upsert into `vec_assets` keyed by `asset_id`.
+/// The worker will extract the asset's text, compute a 1024-dim BGE-M3 vector via the
+/// configured embedding provider, and upsert into `vec_assets` keyed by `asset_id`.
 #[tauri::command]
 pub async fn embed_asset(
     item_id: String,

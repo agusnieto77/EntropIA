@@ -206,7 +206,7 @@ EntropIA ahora incluye en el repo y en el bundle de Tauri la estructura `resourc
 
 - **Self-contained ahora**: contrato de manifiesto, estructura de payload, scripts administrados, placeholders de caches/wheelhouse, espejos de libs nativas, wiring de bundle, assembly script y smoke validation de runtime-pack.
 - **Todavía no self-contained al 100% desde git**: los binarios pesados y redistribuibles reales NO se commitean acá. Siguen entrando por **release-time artifact injection** en CI/release.
-- Eso pendiente incluye: Python relocatable real, wheelhouse offline real para OCR/transcripción (`faster-whisper`, `paddleocr`), caches/modelos presembrados y libs Linux auditadas. Embeddings livianos usan OpenRouter `baai/bge-m3`, no `fastembed` ni `scripts/embed.py`.
+- Eso pendiente incluye: Python relocatable real, wheelhouse offline real para OCR/transcripción (`faster-whisper`, `paddleocr`), caches/modelos presembrados y libs Linux auditadas. Embeddings livianos usan proveedores BGE-M3 configurados (OpenRouter API o Local ONNX), sin scripts legacy de embeddings.
 - **Flujo de release**: primero se ejecuta el workflow **Runtime Payload** para producir el artifact `runtime-payloads`; después el workflow **Release** se ejecuta manualmente con `runtime_payload_artifact=runtime-payloads` y `runtime_payload_run_id=<run id>`. El job `runtime-pack` arma el runtime-pack final, valida smoke checks de release y recién ahí habilita el build de instaladores. El artifact `runtime-payloads-fixture` existe solo para CI/tests y NO es releasable.
 - Los pushes de tags `v*` están protegidos: si no hay payload de runtime release verificable, el workflow falla antes de construir instaladores para no publicar builds con fixture runtime.
 

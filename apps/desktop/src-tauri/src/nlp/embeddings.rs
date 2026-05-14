@@ -39,7 +39,7 @@ const BGE_M3_RESOLVE_BASE_URL: &str = "https://huggingface.co/BAAI/bge-m3/resolv
 const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 const DOWNLOAD_TIMEOUT_SECS: u64 = 900;
 
-static LOCAL_EMBEDDING_ORT_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+static LOCAL_EMBEDDING_ORT_INIT: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbeddingProvider {
@@ -304,6 +304,26 @@ impl EmbeddingEngine {
     }
 }
 
+pub(crate) fn config_cache_key(config: &EmbeddingConfig) -> String {
+    let api_key_hash = rolling_hash64(config.api_key.as_bytes());
+    let path_key = |path: &Option<PathBuf>| {
+        path.as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+
+    format!(
+        "{:?}|{}|{}|{}|{}|{}|{}",
+        config.provider,
+        config.model_name,
+        api_key_hash,
+        path_key(&config.local_model_dir),
+        path_key(&config.local_model_path),
+        path_key(&config.local_tokenizer_path),
+        config.local_max_length,
+    )
+}
+
 impl OpenRouterEmbeddingClient {
     fn embed_text(&self, text: &str) -> Result<Vec<f32>, String> {
         let request = EmbeddingRequest {
@@ -361,35 +381,16 @@ impl LocalBgeM3EmbeddingEngine {
     fn init(config: &EmbeddingConfig) -> Result<Self, String> {
         let paths = resolve_local_embedding_paths(config);
 
-        if !paths.model_path.exists() {
-            return Err(format!(
-                "Local BGE-M3 ONNX model not found at {}. Configure {LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY} or place {LOCAL_EMBEDDING_MODEL_FILE} there.",
-                paths.model_path.display()
-            ));
-        }
-        if !paths.tokenizer_path.exists() {
-            return Err(format!(
-                "Local BGE-M3 tokenizer not found at {}. Configure {LOCAL_EMBEDDING_MODEL_DIR_SETTING_KEY} or place {LOCAL_EMBEDDING_TOKENIZER_FILE} there.",
-                paths.tokenizer_path.display()
-            ));
-        }
-
-        let onnx_data_path = paths
-            .model_path
-            .with_file_name(LOCAL_EMBEDDING_ONNX_DATA_FILE);
-        if !onnx_data_path.exists() {
-            return Err(format!(
-                "Local BGE-M3 ONNX external data not found at {}. BAAI/bge-m3 ONNX requires {LOCAL_EMBEDDING_ONNX_DATA_FILE} next to {LOCAL_EMBEDDING_MODEL_FILE}.",
-                onnx_data_path.display()
-            ));
-        }
-
         let model_dir = paths.model_path.parent().ok_or_else(|| {
             format!(
                 "Local BGE-M3 model has no parent directory: {}",
                 paths.model_path.display()
             )
         })?;
+
+        if let Some(error) = local_embedding_model_incomplete_error(model_dir) {
+            return Err(error);
+        }
 
         ensure_local_embedding_ort_init(model_dir)?;
 
@@ -535,7 +536,7 @@ pub fn config_from_settings(conn: &Connection) -> Result<EmbeddingConfig, String
 
     if provider == EmbeddingProvider::Api && api_key.is_empty() {
         return Err(
-            "OpenRouter API key no configurada. Configurá OpenRouter para generar embeddings BGE-M3 o cambiá embedding_provider=local. No hay fallback a Python/fastembed."
+            "OpenRouter API key no configurada. Configurá OpenRouter para generar embeddings BGE-M3 o cambiá el proveedor a Local ONNX con el modelo BGE-M3 instalado."
                 .to_string(),
         );
     }
@@ -840,9 +841,13 @@ fn is_legacy_resource_embedding_dir(value: &str) -> bool {
 }
 
 fn ensure_local_embedding_ort_init(model_dir: &Path) -> Result<(), String> {
-    LOCAL_EMBEDDING_ORT_INIT
-        .get_or_init(|| initialize_local_embedding_ort(model_dir.to_path_buf()))
-        .clone()
+    if LOCAL_EMBEDDING_ORT_INIT.get().is_some() {
+        return Ok(());
+    }
+
+    initialize_local_embedding_ort(model_dir.to_path_buf())?;
+    let _ = LOCAL_EMBEDDING_ORT_INIT.set(());
+    Ok(())
 }
 
 fn initialize_local_embedding_ort(model_dir: PathBuf) -> Result<(), String> {
@@ -901,7 +906,53 @@ fn runtime_candidates(model_dir: &Path) -> Vec<PathBuf> {
         }
     }
 
+    if let Some(app_data_root) = app_data_root_from_local_embedding_model_dir(model_dir) {
+        let runtime_root = app_data_root.join("runtime");
+        if let Ok(entries) = std::fs::read_dir(&runtime_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    push_names(&path.join("resources").join("lib"));
+                }
+            }
+        }
+        push_names(&app_data_root.join("resources").join("lib"));
+    }
+
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_dir = PathBuf::from(manifest_dir);
+        push_names(&manifest_dir.join("resources").join("lib"));
+        push_names(&manifest_dir.join("resources").join("models").join("ner"));
+    }
+
     candidates
+}
+
+fn app_data_root_from_local_embedding_model_dir(model_dir: &Path) -> Option<PathBuf> {
+    let bge_dir = model_dir.file_name()?.to_string_lossy();
+    if !bge_dir.eq_ignore_ascii_case("bge-m3") {
+        return None;
+    }
+
+    let embeddings_dir = model_dir.parent()?;
+    if !embeddings_dir
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("embeddings")
+    {
+        return None;
+    }
+
+    let models_dir = embeddings_dir.parent()?;
+    if !models_dir
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("models")
+    {
+        return None;
+    }
+
+    models_dir.parent().map(Path::to_path_buf)
 }
 
 fn runtime_file_names() -> &'static [&'static str] {
@@ -978,6 +1029,16 @@ pub fn compute_and_store_for_asset(
     item_id: &str,
     asset_id: &str,
 ) -> Result<(), String> {
+    compute_and_store_for_asset_with_unavailable_reason(engine, conn, item_id, asset_id, None)
+}
+
+pub fn compute_and_store_for_asset_with_unavailable_reason(
+    engine: Option<&EmbeddingEngine>,
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+    unavailable_reason: Option<&str>,
+) -> Result<(), String> {
     let text = text_provider::get_asset_text(conn, asset_id)?;
     if text.trim().is_empty() {
         return Err(format!(
@@ -990,7 +1051,7 @@ pub fn compute_and_store_for_asset(
         None => {
             return Err(embedding_degradation_log(
                 item_id,
-                "No BGE-M3 embedding engine configured (set OpenRouter API key for api provider or local BGE-M3 ONNX assets for local provider; Python/fastembed fallback is disabled)",
+                &embedding_engine_unavailable_reason(unavailable_reason),
             ));
         }
     };
@@ -1024,6 +1085,15 @@ pub fn compute_and_store_for_asset(
         blob.len()
     );
     Ok(())
+}
+
+pub fn embedding_engine_unavailable_reason(last_init_error: Option<&str>) -> String {
+    match last_init_error.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(error) => format!(
+            "No BGE-M3 embedding engine configured. Last initialization error: {error}"
+        ),
+        None => "No BGE-M3 embedding engine configured. Set OpenRouter API credentials for the api provider or install/select the local BGE-M3 ONNX assets for the local provider.".to_string(),
+    }
 }
 
 pub fn summarize_asset_embedding_coverage(
@@ -1135,6 +1205,31 @@ fn floats_to_blob(v: &[f32]) -> Vec<u8> {
 
 fn embedding_degradation_log(item_id: &str, reason: &str) -> String {
     format!("[nlp/embeddings] Skipping embedding for {item_id}: {reason}")
+}
+
+fn local_embedding_model_incomplete_error(model_dir: &Path) -> Option<String> {
+    let info = get_local_embedding_model_info(Some(model_dir.to_path_buf()));
+    if info.available {
+        return None;
+    }
+
+    let missing = info
+        .missing_files
+        .iter()
+        .map(|file| {
+            format!(
+                "{} (expected at {})",
+                file.filename,
+                PathBuf::from(&file.destination).display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Some(format!(
+        "Local BGE-M3 model incomplete at {}. Missing required files: {missing}. Install BGE-M3 from Settings or place all required files ({LOCAL_EMBEDDING_MODEL_FILE}, {LOCAL_EMBEDDING_ONNX_DATA_FILE}, {LOCAL_EMBEDDING_TOKENIZER_FILE}) in that folder. The EMBED action only uses the configured BGE-M3 provider.",
+        info.directory
+    ))
 }
 
 fn upsert_vec_asset(
@@ -1342,7 +1437,7 @@ mod tests {
         };
 
         assert!(error.contains("OpenRouter API key"));
-        assert!(error.contains("No hay fallback"));
+        assert!(error.contains("Local ONNX"));
     }
 
     #[tokio::test]
@@ -1370,8 +1465,80 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("Local BGE-M3 ONNX model not found"));
+        assert!(error.contains("Local BGE-M3 model incomplete"));
+        assert!(error.contains(&temp.path().to_string_lossy().to_string()));
         assert!(error.contains(LOCAL_EMBEDDING_MODEL_FILE));
+        assert!(error.contains(LOCAL_EMBEDDING_ONNX_DATA_FILE));
+        assert!(error.contains(LOCAL_EMBEDDING_TOKENIZER_FILE));
+        assert!(error.contains("Install BGE-M3 from Settings"));
+        assert!(error.contains("configured BGE-M3 provider"));
+    }
+
+    #[test]
+    fn compute_and_store_for_asset_reports_last_local_init_error_when_engine_missing() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE assets (
+              id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              path TEXT NOT NULL,
+              type TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE transcriptions (
+              id TEXT PRIMARY KEY,
+              asset_id TEXT NOT NULL,
+              text_content TEXT NOT NULL,
+              language TEXT,
+              duration_ms INTEGER,
+              model TEXT NOT NULL,
+              segments TEXT,
+              confidence REAL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE TABLE vec_assets (
+              asset_id TEXT PRIMARY KEY,
+              item_id TEXT NOT NULL,
+              embedding BLOB NOT NULL
+            );
+            "#,
+        )
+        .expect("schema should be created");
+        conn.execute(
+            "INSERT INTO assets(id, item_id, path, type, created_at) VALUES ('asset-local', 'item-local', 'local.txt', 'txt', 1)",
+            [],
+        )
+        .expect("asset should insert");
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, created_at) VALUES ('ext-local', 'asset-local', 'texto para embedding', 2)",
+            [],
+        )
+        .expect("extraction should insert");
+
+        let error = compute_and_store_for_asset_with_unavailable_reason(
+            None,
+            &conn,
+            "item-local",
+            "asset-local",
+            Some("Local BGE-M3 model incomplete at C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3. Missing required files: model.onnx, model.onnx_data, tokenizer.json. Install BGE-M3 from Settings."),
+        )
+        .expect_err("missing engine should surface remembered initialization error");
+
+        assert!(error.contains("item-local"));
+        assert!(error.contains("Local BGE-M3 model incomplete"));
+        assert!(error.contains(
+            "C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3"
+        ));
+        assert!(error.contains(LOCAL_EMBEDDING_MODEL_FILE));
+        assert!(error.contains(LOCAL_EMBEDDING_ONNX_DATA_FILE));
+        assert!(error.contains(LOCAL_EMBEDDING_TOKENIZER_FILE));
     }
 
     #[test]
@@ -1420,6 +1587,58 @@ mod tests {
         assert!(info.available);
         assert!(info.missing_files.is_empty());
         assert_eq!(info.directory, temp.path().to_string_lossy());
+    }
+
+    #[test]
+    fn find_ort_dylib_resolves_hydrated_app_data_runtime_lib_for_local_bge_m3() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let app_data_root = temp.path().join("com.entropia.desktop");
+        let model_dir = app_data_root
+            .join("models")
+            .join("embeddings")
+            .join("bge-m3");
+        let runtime_lib_dir = app_data_root
+            .join("runtime")
+            .join("2026.05.0")
+            .join("resources")
+            .join("lib");
+        std::fs::create_dir_all(&model_dir).expect("model dir should be created");
+        std::fs::create_dir_all(&runtime_lib_dir).expect("runtime lib dir should be created");
+        let expected = runtime_lib_dir.join(runtime_file_names()[0]);
+        std::fs::write(&expected, b"runtime").expect("runtime dll should be writable");
+
+        let resolved = find_ort_dylib(&model_dir).expect("runtime dll should resolve");
+
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn init_local_provider_preserves_ort_error_when_required_assets_exist() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        for filename in [
+            LOCAL_EMBEDDING_MODEL_FILE,
+            LOCAL_EMBEDDING_ONNX_DATA_FILE,
+            LOCAL_EMBEDDING_TOKENIZER_FILE,
+        ] {
+            std::fs::write(temp.path().join(filename), b"asset")
+                .expect("asset file should be writable");
+        }
+
+        let error = match EmbeddingEngine::init(EmbeddingConfig::local(
+            DEFAULT_OPENROUTER_EMBEDDING_MODEL.to_string(),
+            Some(temp.path().to_path_buf()),
+        )) {
+            Ok(_) => panic!("local provider should fail because ORT runtime is absent"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("No ONNX Runtime dynamic library found")
+                || error.contains("Failed to load local BGE-M3 tokenizer"),
+            "expected runtime or tokenizer initialization error, got: {error}"
+        );
+        assert!(error.contains(&temp.path().to_string_lossy().to_string()));
+        assert!(!error.contains("Local BGE-M3 model incomplete"));
     }
 
     #[test]
