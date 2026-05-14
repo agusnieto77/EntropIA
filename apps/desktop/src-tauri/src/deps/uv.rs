@@ -895,8 +895,10 @@ mod tests {
     #[test]
     fn test_command_output_with_timeout_kills_slow_probe() {
         let mut cmd = if cfg!(windows) {
-            let mut cmd = std::process::Command::new("cmd.exe");
-            cmd.args(["/C", "ping -n 3 127.0.0.1 > nul"]);
+            let mut cmd = std::process::Command::new(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            );
+            cmd.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 2"]);
             cmd
         } else {
             let mut cmd = std::process::Command::new("sh");

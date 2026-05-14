@@ -1729,8 +1729,9 @@ mod tests {
     #[tokio::test]
     async fn run_and_stream_times_out_and_kills_child() {
         let mut cmd = if cfg!(windows) {
-            let mut cmd = Command::new("cmd.exe");
-            cmd.args(["/C", "ping -n 4 127.0.0.1 > nul"]);
+            let mut cmd =
+                Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+            cmd.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 3"]);
             cmd
         } else {
             let mut cmd = Command::new("sh");
@@ -1790,8 +1791,10 @@ mod tests {
     #[test]
     fn std_command_output_with_timeout_kills_slow_probe() {
         let cmd = if cfg!(windows) {
-            let mut cmd = std::process::Command::new("cmd.exe");
-            cmd.args(["/C", "ping -n 4 127.0.0.1 > nul"]);
+            let mut cmd = std::process::Command::new(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            );
+            cmd.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 3"]);
             cmd
         } else {
             let mut cmd = std::process::Command::new("sh");
