@@ -55,8 +55,8 @@ impl EmbeddingProvider {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            None | Some("api") | Some("openrouter") => Ok(Self::Api),
-            Some("local") | Some("offline") | Some("onnx") => Ok(Self::Local),
+            None | Some("local") | Some("offline") | Some("onnx") => Ok(Self::Local),
+            Some("api") | Some("openrouter") => Ok(Self::Api),
             Some(other) => Err(format!(
                 "Proveedor de embeddings no soportado: {other}. Usá 'api' o 'local'."
             )),
@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn config_from_settings_defaults_to_bge_m3() {
+    fn config_from_settings_defaults_to_local_bge_m3() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
         conn.execute_batch(
             "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
@@ -1328,7 +1328,7 @@ mod tests {
 
         let config = config_from_settings(&conn).expect("config should resolve");
 
-        assert_eq!(config.provider, EmbeddingProvider::Api);
+        assert_eq!(config.provider, EmbeddingProvider::Local);
         assert_eq!(config.model_name, DEFAULT_OPENROUTER_EMBEDDING_MODEL);
     }
 
@@ -1426,10 +1426,13 @@ mod tests {
     }
 
     #[test]
-    fn config_from_settings_requires_openrouter_key() {
+    fn config_from_settings_requires_openrouter_key_when_api_provider_is_selected() {
         let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
-        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-            .expect("settings table should be created");
+        conn.execute_batch(
+            "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);\
+             INSERT INTO app_settings(key, value) VALUES ('embedding_provider', 'api');",
+        )
+        .expect("settings table should be created");
 
         let error = match config_from_settings(&conn) {
             Ok(_) => panic!("missing key should fail"),

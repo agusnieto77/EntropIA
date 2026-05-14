@@ -16,6 +16,15 @@ const depsMocks = vi.hoisted(() => ({
   onRuntimeStatus: vi.fn(),
   onRuntimeProgress: vi.fn(),
   runtimeCanBootstrapAutomatically: vi.fn(),
+  llmLocalModelInfo: vi.fn(),
+  llmDownloadModel: vi.fn(),
+  embeddingLocalModelInfo: vi.fn(),
+  embeddingDownloadModel: vi.fn(),
+  listen: vi.fn(),
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: depsMocks.listen,
 }))
 
 vi.mock('$lib/deps', () => ({
@@ -63,6 +72,16 @@ vi.mock('$lib/runtime', () => ({
   runtimeCanBootstrapAutomatically: depsMocks.runtimeCanBootstrapAutomatically,
 }))
 
+vi.mock('$lib/llm', () => ({
+  llmLocalModelInfo: depsMocks.llmLocalModelInfo,
+  llmDownloadModel: depsMocks.llmDownloadModel,
+}))
+
+vi.mock('$lib/embeddings', () => ({
+  embeddingLocalModelInfo: depsMocks.embeddingLocalModelInfo,
+  embeddingDownloadModel: depsMocks.embeddingDownloadModel,
+}))
+
 describe('DependenciasTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -88,7 +107,31 @@ describe('DependenciasTab', () => {
     depsMocks.onDepsError.mockResolvedValue(vi.fn())
     depsMocks.onRuntimeStatus.mockResolvedValue(vi.fn())
     depsMocks.onRuntimeProgress.mockResolvedValue(vi.fn())
+    depsMocks.listen.mockResolvedValue(vi.fn())
     depsMocks.runtimeCanBootstrapAutomatically.mockReturnValue(false)
+    depsMocks.llmDownloadModel.mockResolvedValue('started')
+    depsMocks.embeddingDownloadModel.mockResolvedValue('started')
+    depsMocks.llmLocalModelInfo.mockResolvedValue({
+      exists: true,
+      available: true,
+      can_auto_download: false,
+      disabled_reason: null,
+      path: '/runtime/models/gemma-4-E2B-it-Q4_K_M.gguf',
+      size_bytes: 2_500_000_000,
+      filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
+      source_url: 'https://example.invalid/gemma.gguf',
+    })
+    depsMocks.embeddingLocalModelInfo.mockResolvedValue({
+      exists: true,
+      available: true,
+      can_auto_download: false,
+      directory: '/runtime/models/embeddings/bge-m3',
+      path: '/runtime/models/embeddings/bge-m3/model.onnx',
+      size_bytes: 2_200_000_000,
+      required_files: [],
+      missing_files: [],
+      source_repo: 'BAAI/bge-m3',
+    })
     depsMocks.resetDeps.mockResolvedValue(undefined)
     depsMocks.getRuntimeStatus.mockResolvedValue({
       state: 'healthy',

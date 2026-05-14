@@ -223,7 +223,9 @@ describe('SettingsView', () => {
     const localPathInput = await screen.findByLabelText('Carpeta del modelo local BGE-M3')
     expect(localPathInput).toHaveValue('')
     expect(
-      screen.getByText('C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3')
+      await screen.findByText(
+        'C:/Users/test/AppData/Roaming/com.entropia.desktop/models/embeddings/bge-m3',
+      )
     ).toBeInTheDocument()
 
     await fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }))

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event'
   import { Button } from '@entropia/ui'
   import {
     checkAllDeps,
@@ -30,6 +31,18 @@
     type RuntimeStatus,
     type RuntimeOperation,
   } from '$lib/runtime'
+  import {
+    llmDownloadModel,
+    llmLocalModelInfo,
+    type LocalModelInfo,
+    type LlmDownloadProgressPayload,
+  } from '$lib/llm'
+  import {
+    embeddingDownloadModel,
+    embeddingLocalModelInfo,
+    type EmbeddingDownloadProgressPayload,
+    type LocalEmbeddingModelInfo,
+  } from '$lib/embeddings'
 
   // ---------------------------------------------------------------------------
   // State
@@ -42,6 +55,15 @@
   let expandedErrors = $state<Set<DependencyId>>(new Set())
   let runtimeStatus = $state<RuntimeStatus | null>(null)
   let runtimeOperation = $state<RuntimeOperation | null>(null)
+  let llmModel = $state<LocalModelInfo | null>(null)
+  let embeddingModel = $state<LocalEmbeddingModelInfo | null>(null)
+  let preparingEntropia = $state(false)
+  let prepareStep = $state<string | null>(null)
+  let llmDownloading = $state(false)
+  let llmDownloadPct = $state(0)
+  let embeddingDownloading = $state(false)
+  let embeddingDownloadPct = $state(0)
+  let embeddingDownloadFile = $state('')
   let resetConfirmationOpen = $state(false)
   let resetConfirmationText = $state('')
   let resetting = $state(false)
@@ -67,6 +89,18 @@
   )
   let canClaimAllReady = $derived(allInstalled && !runtimeBlocksInstalledCapabilities)
   let depsInstalledButRuntimeBlocked = $derived(allInstalled && runtimeBlocksInstalledCapabilities)
+  let llmModelNeedsDownload = $derived(
+    llmModel != null && !llmModel.available && llmModel.can_auto_download,
+  )
+  let embeddingModelNeedsDownload = $derived(
+    embeddingModel != null && !embeddingModel.available && embeddingModel.can_auto_download,
+  )
+  let prepareEntropiaNeeded = $derived(
+    runtimeBlocksInstalledCapabilities ||
+      hasMissingOrFailed ||
+      llmModelNeedsDownload ||
+      embeddingModelNeedsDownload,
+  )
 
   let overallProgress = $derived(() => {
     if (!installing || deps.length === 0) return 0
@@ -110,6 +144,35 @@
       }),
       await onRuntimeProgress((operation) => {
         runtimeOperation = operation
+      }),
+      await listen<LlmDownloadProgressPayload>('llm:download_progress', (event) => {
+        llmDownloading = true
+        llmDownloadPct = event.payload.pct
+      }),
+      await listen('llm:download_complete', async () => {
+        llmDownloading = false
+        llmDownloadPct = 100
+        await refreshAiModelState().catch(() => undefined)
+      }),
+      await listen('llm:download_error', () => {
+        llmDownloading = false
+        llmDownloadPct = 0
+      }),
+      await listen<EmbeddingDownloadProgressPayload>('embedding:download_progress', (event) => {
+        embeddingDownloading = true
+        embeddingDownloadPct = event.payload.pct
+        embeddingDownloadFile = event.payload.file
+      }),
+      await listen('embedding:download_complete', async () => {
+        embeddingDownloading = false
+        embeddingDownloadPct = 100
+        embeddingDownloadFile = ''
+        await refreshAiModelState().catch(() => undefined)
+      }),
+      await listen('embedding:download_error', () => {
+        embeddingDownloading = false
+        embeddingDownloadPct = 0
+        embeddingDownloadFile = ''
       }),
     )
   })
@@ -160,15 +223,19 @@
   }
 
   async function refreshAllState() {
-    const [checkResults, uv, runtime] = await Promise.all([
+    const [checkResults, uv, runtime, localLlm, localEmbedding] = await Promise.all([
       checkAllDeps(),
       getUvStatus(),
       getRuntimeStatus(),
+      llmLocalModelInfo().catch(() => null),
+      embeddingLocalModelInfo().catch(() => null),
     ])
     deps = checkResults
     uvStatus = uv
     runtimeStatus = runtime
     runtimeOperation = runtime.activeOperation
+    llmModel = localLlm
+    embeddingModel = localEmbedding
   }
 
   async function refreshRuntimeState() {
@@ -176,6 +243,119 @@
     uvStatus = uv
     runtimeStatus = runtime
     runtimeOperation = runtime.activeOperation
+  }
+
+  async function refreshAiModelState() {
+    const [localLlm, localEmbedding] = await Promise.all([
+      llmLocalModelInfo().catch(() => null),
+      embeddingLocalModelInfo().catch(() => null),
+    ])
+    llmModel = localLlm
+    embeddingModel = localEmbedding
+  }
+
+  async function waitForLlmDownload() {
+    let doneUnlisten: UnlistenFn | null = null
+    let errorUnlisten: UnlistenFn | null = null
+    const cleanup = () => {
+      doneUnlisten?.()
+      errorUnlisten?.()
+    }
+
+    await new Promise<void>(async (resolve, reject) => {
+      doneUnlisten = await listen('llm:download_complete', () => {
+        cleanup()
+        resolve()
+      })
+      errorUnlisten = await listen<{ error: string }>('llm:download_error', (event) => {
+        cleanup()
+        reject(new Error(event.payload.error))
+      })
+      try {
+        await llmDownloadModel()
+      } catch (e) {
+        cleanup()
+        reject(e)
+      }
+    })
+  }
+
+  async function waitForEmbeddingDownload() {
+    let doneUnlisten: UnlistenFn | null = null
+    let errorUnlisten: UnlistenFn | null = null
+    const cleanup = () => {
+      doneUnlisten?.()
+      errorUnlisten?.()
+    }
+
+    await new Promise<void>(async (resolve, reject) => {
+      doneUnlisten = await listen('embedding:download_complete', () => {
+        cleanup()
+        resolve()
+      })
+      errorUnlisten = await listen<{ error: string }>('embedding:download_error', (event) => {
+        cleanup()
+        reject(new Error(event.payload.error))
+      })
+      try {
+        await embeddingDownloadModel()
+      } catch (e) {
+        cleanup()
+        reject(e)
+      }
+    })
+  }
+
+  async function handlePrepareEntropia() {
+    if (preparingEntropia) return
+    preparingEntropia = true
+    errorBanner = null
+    try {
+      prepareStep = 'Preparando runtime administrado'
+      if (
+        runtimeCanBootstrapAutomatically(runtimeStatus) ||
+        shouldShowRuntimeRepairAction(runtimeStatus)
+      ) {
+        const status = await repairRuntime()
+        runtimeStatus = status
+        runtimeOperation = status.activeOperation
+      }
+      await refreshAllState()
+
+      if (hasMissingOrFailed) {
+        prepareStep = 'Instalando dependencias Python'
+        if (!canInstallInCurrentDevState()) {
+          throw new Error('No hay runtime/fallback listo para instalar dependencias automáticamente.')
+        }
+        installing = true
+        await installAllDeps()
+        installing = false
+        await refreshAllState()
+      }
+
+      prepareStep = 'Descargando Gemma local'
+      await refreshAiModelState()
+      if (llmModelNeedsDownload) {
+        await waitForLlmDownload()
+        await refreshAiModelState()
+      }
+
+      prepareStep = 'Descargando BGE-M3 local'
+      if (embeddingModelNeedsDownload) {
+        await waitForEmbeddingDownload()
+        await refreshAiModelState()
+      }
+
+      prepareStep = 'Verificando preparación'
+      await refreshAllState()
+    } catch (e) {
+      errorBanner = e instanceof Error ? e.message : String(e)
+      await refreshAllState().catch(() => undefined)
+    } finally {
+      installing = false
+      preparingEntropia = false
+      prepareStep = null
+    }
   }
 
   function openResetConfirmation() {
@@ -321,6 +501,37 @@
 </script>
 
 <div class="deps-tab">
+  {#if prepareEntropiaNeeded}
+    <div class="deps-prepare-panel" role="status">
+      <div class="deps-prepare-panel__copy">
+        <strong>Prepará EntropIA para uso local</strong>
+        <span>
+          Esto hidrata el runtime, dependencias y modelos dentro de la app. Después queda listo
+          para usar sin pedirle al usuario instalaciones manuales.
+        </span>
+        {#if prepareStep}
+          <p class="deps-prepare-panel__progress">{prepareStep}</p>
+        {/if}
+        {#if llmDownloading}
+          <p class="deps-prepare-panel__progress">Gemma: {llmDownloadPct}%</p>
+        {/if}
+        {#if embeddingDownloading}
+          <p class="deps-prepare-panel__progress">
+            BGE-M3: {embeddingDownloadPct}%{embeddingDownloadFile ? ` · ${embeddingDownloadFile}` : ''}
+          </p>
+        {/if}
+      </div>
+      <Button
+        variant="primary"
+        onclick={handlePrepareEntropia}
+        loading={preparingEntropia}
+        disabled={preparingEntropia}
+      >
+        Preparar EntropIA
+      </Button>
+    </div>
+  {/if}
+
   {#if runtimeBlocksInstalledCapabilities}
     <div
       class="deps-runtime-panel"
@@ -634,6 +845,30 @@
     border-radius: var(--radius-md);
     background: rgba(245, 158, 11, 0.08);
     color: #92400e;
+  }
+
+  .deps-prepare-panel {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border: 1px solid rgba(99, 102, 241, 0.35);
+    border-radius: var(--radius-md);
+    background: rgba(99, 102, 241, 0.08);
+  }
+
+  .deps-prepare-panel__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+  }
+
+  .deps-prepare-panel__progress {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-accent, #4f46e5);
+    font-family: var(--font-mono, monospace);
   }
 
   .deps-runtime-panel__copy {
