@@ -66,11 +66,12 @@ CREATE TABLE IF NOT EXISTS extractions (
   id TEXT PRIMARY KEY,
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   text_content TEXT NOT NULL,
-  method TEXT NOT NULL CHECK(method IN ('native', 'ocr')),
+  method TEXT NOT NULL,
   confidence REAL,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique ON extractions(asset_id);
   `.trim(),
 
   '0004_fts5': `
@@ -360,6 +361,35 @@ DROP TABLE IF EXISTS __entropia_migration_0020_noop
 
   '0021_drop_unused_processing_table': `
 DROP TABLE IF EXISTS jobs
+  `.trim(),
+
+  '0022_extractions_method_and_unique_asset': `
+-- Remove the legacy method CHECK constraint and preserve one extraction row per asset.
+-- OCR now stores methods like paddle, paddle_vl, pdf_paddle and pdf_paddle_vl.
+CREATE TABLE extractions_0022 (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  text_content TEXT NOT NULL,
+  method TEXT NOT NULL,
+  confidence REAL,
+  created_at INTEGER NOT NULL
+);
+
+INSERT INTO extractions_0022 (id, asset_id, text_content, method, confidence, created_at)
+SELECT id, asset_id, text_content, method, confidence, created_at
+FROM extractions;
+
+DROP TABLE extractions;
+ALTER TABLE extractions_0022 RENAME TO extractions;
+
+DELETE FROM extractions
+WHERE rowid NOT IN (
+  SELECT MAX(rowid) FROM extractions GROUP BY asset_id
+);
+
+CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+ON extractions(asset_id)
   `.trim(),
 }
 

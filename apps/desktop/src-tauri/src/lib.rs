@@ -157,9 +157,8 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
                 );
             }
 
-            // Migrate extractions.method CHECK constraint: remove the legacy
-            // `CHECK(method IN ('native', 'ocr'))` which blocked modern OCR methods
-            // like 'paddle', 'paddle_vl', 'pdf_paddle', and 'pdf_paddle_vl'.
+            // Migrate extractions.method CHECK constraint and preserve the unique
+            // asset_id index required by OCR UPSERT persistence.
             migrate_extractions_method_check(&ui_conn)
                 .expect("Failed to migrate extractions method CHECK constraint");
             llm::ensure_llm_results_schema(&ui_conn)
@@ -855,9 +854,9 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
 
     if !has_check {
         eprintln!(
-            "[setup] extractions.method: no legacy CHECK constraint found — skipping migration"
+            "[setup] extractions.method: no legacy CHECK constraint found — ensuring indexes only"
         );
-        return Ok(());
+        return ensure_extractions_asset_indexes(conn);
     }
 
     eprintln!("[setup] Migrating extractions table to remove legacy method CHECK constraint...");
@@ -873,15 +872,33 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
            created_at INTEGER NOT NULL
          );
          INSERT INTO extractions_new SELECT * FROM extractions;
-         DROP TABLE extractions;
-         ALTER TABLE extractions_new RENAME TO extractions;
-         CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
-         COMMIT;",
+          DROP TABLE extractions;
+          ALTER TABLE extractions_new RENAME TO extractions;
+          COMMIT;",
     )
     .map_err(|e| format!("Failed to migrate extractions table: {e}"))?;
 
+    ensure_extractions_asset_indexes(conn)?;
+
     eprintln!("[setup] extractions.method CHECK constraint removed successfully");
     Ok(())
+}
+
+fn ensure_extractions_asset_indexes(conn: &Connection) -> Result<(), String> {
+    if !table_exists(conn, "extractions") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "DELETE FROM extractions
+         WHERE rowid NOT IN (
+           SELECT MAX(rowid) FROM extractions GROUP BY asset_id
+         );
+         CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique
+         ON extractions(asset_id);",
+    )
+    .map_err(|e| format!("Failed to ensure extraction asset indexes: {e}"))
 }
 
 fn ensure_layouts_schema(conn: &Connection) -> Result<(), String> {
@@ -976,4 +993,103 @@ fn ensure_layouts_schema(conn: &Connection) -> Result<(), String> {
 
     eprintln!("[setup] layouts schema ensured");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_extractions_method_check_recreates_unique_asset_index() {
+        let conn = Connection::open_in_memory().expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                item_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL,
+                size INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                text_content TEXT NOT NULL,
+                method TEXT NOT NULL CHECK(method IN ('native', 'ocr')),
+                confidence REAL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_extractions_asset_id_unique ON extractions(asset_id);
+            INSERT INTO assets(id, item_id, path, type, created_at)
+            VALUES ('asset-1', 'item-1', '/tmp/page.png', 'image', 1);
+            INSERT INTO extractions(id, asset_id, text_content, method, created_at)
+            VALUES ('ext-1', 'asset-1', 'viejo', 'ocr', 1);",
+        )
+        .expect("create legacy schema");
+
+        migrate_extractions_method_check(&conn).expect("migrate extractions");
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, method, created_at)
+             VALUES ('ext-2', 'asset-1', 'nuevo', 'paddle_vl', 2)
+             ON CONFLICT(asset_id) DO UPDATE SET
+               text_content = excluded.text_content,
+               method = excluded.method,
+               created_at = excluded.created_at",
+            [],
+        )
+        .expect("modern OCR method should upsert by asset_id");
+
+        let (row_count, text, method): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(text_content), MAX(method) FROM extractions WHERE asset_id = 'asset-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query migrated extraction");
+
+        assert_eq!(row_count, 1);
+        assert_eq!(text, "nuevo");
+        assert_eq!(method, "paddle_vl");
+        assert!(extractions_unique_asset_index_exists(&conn));
+    }
+
+    #[test]
+    fn migrate_extractions_method_check_ensures_unique_index_without_legacy_check() {
+        let conn = Connection::open_in_memory().expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE extractions (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL,
+                text_content TEXT NOT NULL,
+                method TEXT NOT NULL,
+                confidence REAL,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .expect("create modern schema without indexes");
+
+        migrate_extractions_method_check(&conn).expect("ensure indexes");
+
+        assert!(extractions_unique_asset_index_exists(&conn));
+    }
+
+    fn extractions_unique_asset_index_exists(conn: &Connection) -> bool {
+        let mut stmt = conn
+            .prepare("PRAGMA index_list('extractions')")
+            .expect("prepare index_list");
+        let indexes = stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                let unique: i64 = row.get(2)?;
+                Ok((name, unique))
+            })
+            .expect("query index_list");
+
+        let has_unique_index = indexes.filter_map(Result::ok).any(|(name, unique)| {
+            name == "idx_extractions_asset_id_unique" && unique == 1
+        });
+
+        has_unique_index
+    }
 }

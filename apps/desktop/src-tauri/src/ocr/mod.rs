@@ -2601,6 +2601,48 @@ mod tests {
     }
 
     #[test]
+    fn save_extraction_accepts_modern_methods_and_upserts_by_asset() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                item_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL,
+                size INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                text_content TEXT NOT NULL,
+                method TEXT NOT NULL,
+                confidence REAL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_extractions_asset_id_unique ON extractions(asset_id);
+            INSERT INTO assets(id, item_id, path, type, created_at)
+            VALUES ('asset-1', 'item-1', '/tmp/page.png', 'image', 1);",
+        )
+        .expect("create schema");
+
+        save_extraction(&conn, "asset-1", "texto OCRL", "paddle").expect("save OCRL");
+        save_extraction(&conn, "asset-1", "texto OCRH", "paddle_vl").expect("upsert OCRH");
+
+        let (row_count, text, method): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(text_content), MAX(method) FROM extractions WHERE asset_id = 'asset-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query extraction");
+
+        assert_eq!(row_count, 1);
+        assert_eq!(text, "texto OCRH");
+        assert_eq!(method, "paddle_vl");
+    }
+
+    #[test]
     fn managed_runtime_root_for_ocr_bootstraps_before_resolving_assets() {
         let calls = RefCell::new(Vec::new());
         let expected = PathBuf::from("/tmp/runtime-ready");
