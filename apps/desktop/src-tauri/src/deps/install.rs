@@ -14,7 +14,7 @@ use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 use super::{DepCheckResult, DependencyId, DependencyStatus, DepsState};
-use crate::deps::checks::{probe_one, ProbePythonMode};
+use crate::deps::checks::{probe_all, probe_one, ProbePythonMode};
 use crate::deps::registry::{all_deps_in_install_order, find_dep, DependencySpec};
 use crate::deps::uv::{self, UvBinary};
 use crate::runtime::manifest::RuntimeManifest;
@@ -1049,24 +1049,53 @@ fn emit_complete_best_effort(app: &tauri::AppHandle, payload: DepsCompletePayloa
     }
 }
 
-fn first_failed_prerequisite_message(
-    dep: &DependencySpec,
-    results: &[DepCheckResult],
+fn should_skip_in_full_install_due_to_prerequisite_status(
+    _dep: &DependencySpec,
+    _results: &[DepCheckResult],
 ) -> Option<String> {
-    dep.managed_prerequisites.iter().find_map(|prerequisite_id| {
-        let prerequisite_result = results.iter().find(|result| &result.id == prerequisite_id)?;
-        if matches!(prerequisite_result.status, DependencyStatus::Installed { .. }) {
-            return None;
-        }
+    // Full startup materialization is intentionally best-effort. Registry order
+    // already attempts prerequisites first; a stale post-install probe failure
+    // must not prevent installing a dependent package that may succeed once all
+    // wheels are materialized. `install_one` keeps strict prerequisite behavior.
+    None
+}
 
-        let prerequisite_name = find_dep(prerequisite_id)
-            .map(|spec| spec.display_name)
-            .unwrap_or("un prerequisito");
-        Some(format!(
-            "{} bloqueado: {} no quedó instalado correctamente en esta corrida. Repará ese prerequisito antes de continuar.",
-            dep.display_name, prerequisite_name
-        ))
-    })
+fn results_from_final_probe_statuses(
+    final_statuses: std::collections::HashMap<DependencyId, DependencyStatus>,
+) -> Vec<DepCheckResult> {
+    super::dep_results_from_map(final_statuses)
+}
+
+fn merge_final_probe_statuses_with_install_results(
+    final_statuses: std::collections::HashMap<DependencyId, DependencyStatus>,
+    install_results: &[DepCheckResult],
+) -> std::collections::HashMap<DependencyId, DependencyStatus> {
+    let mut merged = std::collections::HashMap::new();
+
+    for dep in crate::deps::registry::all_deps() {
+        let final_status = final_statuses
+            .get(&dep.id)
+            .cloned()
+            .unwrap_or(DependencyStatus::Unknown);
+
+        let status = if matches!(final_status, DependencyStatus::Installed { .. }) {
+            final_status
+        } else if let Some(DepCheckResult {
+            status: DependencyStatus::Failed { message },
+            ..
+        }) = install_results.iter().find(|result| result.id == dep.id)
+        {
+            DependencyStatus::Failed {
+                message: message.clone(),
+            }
+        } else {
+            final_status
+        };
+
+        merged.insert(dep.id.clone(), status);
+    }
+
+    merged
 }
 
 fn managed_install_plan(dep: &'static DependencySpec) -> Vec<&'static DependencySpec> {
@@ -1352,7 +1381,9 @@ pub async fn install_all(
             continue; // Already handled above.
         }
 
-        if let Some(blocked_message) = first_failed_prerequisite_message(dep, &results) {
+        if let Some(blocked_message) =
+            should_skip_in_full_install_due_to_prerequisite_status(dep, &results)
+        {
             let blocked_status = DependencyStatus::Failed {
                 message: blocked_message,
             };
@@ -1424,7 +1455,16 @@ pub async fn install_all(
     }
 
     crate::python_discovery::invalidate_probe_cache();
+    let final_statuses = probe_all(&venv_python).await;
+    let final_statuses = merge_final_probe_statuses_with_install_results(final_statuses, &results);
+    {
+        let mut map = state.0.lock().await;
+        for (id, status) in final_statuses.clone() {
+            map.statuses.insert(id, status);
+        }
+    }
     super::cache_current_statuses(state, Some(venv_python)).await;
+    let results = results_from_final_probe_statuses(final_statuses);
 
     // ── 5. Emit complete ─────────────────────────────────────────────────────
     let all_critical_installed = results.iter().all(|r| {
@@ -1772,6 +1812,105 @@ mod tests {
             .expect_err("slow subprocess should time out");
 
         assert!(error.contains("Timeout instalando timeout-test"));
+    }
+
+    #[test]
+    fn test_full_install_does_not_block_later_dep_on_failed_prerequisite_status() {
+        let paddleocr = find_dep(&DependencyId::PaddleOcr).expect("PaddleOcr present");
+        let prior_results = vec![DepCheckResult {
+            id: DependencyId::PaddlePaddle,
+            status: DependencyStatus::Failed {
+                message: "cold import timed out".to_string(),
+            },
+            version: None,
+        }];
+
+        assert!(
+            should_skip_in_full_install_due_to_prerequisite_status(paddleocr, &prior_results)
+                .is_none(),
+            "install_all is best-effort: stale prerequisite probe failures must not skip dependent installs"
+        );
+    }
+
+    #[test]
+    fn test_results_from_final_probe_statuses_reflects_fresh_paddleocr_success() {
+        let mut final_statuses = std::collections::HashMap::new();
+        for dep in crate::deps::registry::all_deps() {
+            final_statuses.insert(dep.id.clone(), DependencyStatus::Missing);
+        }
+        final_statuses.insert(
+            DependencyId::PaddlePaddle,
+            DependencyStatus::Installed { version: None },
+        );
+        final_statuses.insert(
+            DependencyId::PaddleOcr,
+            DependencyStatus::Installed { version: None },
+        );
+
+        let results = results_from_final_probe_statuses(final_statuses);
+        let paddleocr = results
+            .iter()
+            .find(|result| result.id == DependencyId::PaddleOcr)
+            .expect("PaddleOCR result present");
+
+        assert!(matches!(
+            paddleocr.status,
+            DependencyStatus::Installed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_final_probe_installed_overrides_stale_install_failure() {
+        let mut final_statuses = std::collections::HashMap::new();
+        for dep in crate::deps::registry::all_deps() {
+            final_statuses.insert(dep.id.clone(), DependencyStatus::Missing);
+        }
+        final_statuses.insert(
+            DependencyId::PaddlePaddle,
+            DependencyStatus::Installed { version: None },
+        );
+
+        let install_results = vec![DepCheckResult {
+            id: DependencyId::PaddlePaddle,
+            status: DependencyStatus::Failed {
+                message: "cold import timed out".to_string(),
+            },
+            version: None,
+        }];
+
+        let merged =
+            merge_final_probe_statuses_with_install_results(final_statuses, &install_results);
+
+        assert!(matches!(
+            merged.get(&DependencyId::PaddlePaddle),
+            Some(DependencyStatus::Installed { .. })
+        ));
+    }
+
+    #[test]
+    fn test_final_probe_preserves_install_failure_message_when_still_not_installed() {
+        let mut final_statuses = std::collections::HashMap::new();
+        for dep in crate::deps::registry::all_deps() {
+            final_statuses.insert(dep.id.clone(), DependencyStatus::Missing);
+        }
+
+        let install_results = vec![DepCheckResult {
+            id: DependencyId::PaddleOcr,
+            status: DependencyStatus::Failed {
+                message: "uv could not install paddleocr".to_string(),
+            },
+            version: None,
+        }];
+
+        let merged =
+            merge_final_probe_statuses_with_install_results(final_statuses, &install_results);
+
+        assert_eq!(
+            merged.get(&DependencyId::PaddleOcr),
+            Some(&DependencyStatus::Failed {
+                message: "uv could not install paddleocr".to_string(),
+            })
+        );
     }
 
     #[test]

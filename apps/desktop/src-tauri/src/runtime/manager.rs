@@ -135,10 +135,10 @@ impl RuntimeManager {
             .map_err(|error| format!("Failed to get app data dir: {error}"))?;
 
         let mut emit_error: Option<String> = None;
-        let status = self.ensure_ready_or_bootstrap_with_remote_support(
+        let status = self.ensure_ready_or_bootstrap_with_lazy_remote_support(
             &bundle_root,
             &app_data_dir,
-            configured_bootstrap_catalog(app_handle)?,
+            || configured_bootstrap_catalog(app_handle),
             |public_key_id| configured_bootstrap_public_key(app_handle, public_key_id),
             |source_manifest_url, release, app_data_dir, public_key_base64, on_progress| {
                 download_and_activate_remote_runtime(
@@ -171,10 +171,10 @@ impl RuntimeManager {
             .app_data_dir()
             .map_err(|error| format!("Failed to get app data dir: {error}"))?;
         let mut emit_error: Option<String> = None;
-        let status = self.ensure_ready_or_bootstrap_with_remote_support(
+        let status = self.ensure_ready_or_bootstrap_with_lazy_remote_support(
             &bundle_root,
             &app_data_dir,
-            configured_bootstrap_catalog(app_handle)?,
+            || configured_bootstrap_catalog(app_handle),
             |public_key_id| configured_bootstrap_public_key(app_handle, public_key_id),
             |source_manifest_url, release, app_data_dir, public_key_base64, on_progress| {
                 download_and_activate_remote_runtime(
@@ -198,10 +198,99 @@ impl RuntimeManager {
         Ok(status)
     }
 
-    pub fn validate_startup(&self, app_handle: &AppHandle) -> Result<RuntimeStatus, String> {
-        let status = self.status(app_handle)?;
-        self.emit_status(app_handle, &status)?;
-        Ok(status)
+    fn select_bootstrap_catalog_for_bootstrap<F>(
+        &self,
+        bundle_root: &Path,
+        app_data_dir: &Path,
+        mut remote_catalog: F,
+    ) -> Result<BootstrapRemoteCatalog, String>
+    where
+        F: FnMut() -> Result<BootstrapRemoteCatalog, String>,
+    {
+        let local_only = local_only_bootstrap_catalog();
+        let manifest = match self.load_manifest(bundle_root) {
+            Ok(manifest) => manifest,
+            Err(_) => return Ok(local_only),
+        };
+        let current_status = inspect_runtime(bundle_root, app_data_dir, &manifest)?;
+        if current_status.state == RuntimeState::Fixture
+            && self
+                .discover_hydrated_runtime_status_for_tests(app_data_dir)
+                .is_some()
+        {
+            return Ok(local_only);
+        }
+
+        let local_plan = BootstrapController::new().plan(
+            &current_status,
+            &manifest,
+            app_data_dir,
+            local_only.clone(),
+        );
+        match local_plan.source {
+            Some(crate::runtime::bootstrap::BootstrapPlanSource::BundledRelease)
+            | Some(crate::runtime::bootstrap::BootstrapPlanSource::ManagedReady) => Ok(local_only),
+            Some(crate::runtime::bootstrap::BootstrapPlanSource::TrustedRemote) | None => {
+                remote_catalog()
+            }
+        }
+    }
+
+    fn ensure_ready_or_bootstrap_with_lazy_remote_support<F, K, D, R>(
+        &self,
+        bundle_root: &Path,
+        app_data_dir: &Path,
+        mut remote_catalog: R,
+        key_provider: K,
+        remote_downloader: D,
+        mut on_progress: F,
+    ) -> Result<RuntimeStatus, String>
+    where
+        F: FnMut(RuntimeOperation),
+        K: Fn(&str) -> Result<String, String>,
+        D: Fn(
+            &str,
+            &crate::runtime::manifest::BootstrapReleaseManifest,
+            &Path,
+            &str,
+            &mut dyn FnMut(RuntimeOperation),
+        ) -> Result<crate::runtime::download::BootstrapDownloadOutcome, String>,
+        R: FnMut() -> Result<BootstrapRemoteCatalog, String>,
+    {
+        let bootstrap_catalog = self.select_bootstrap_catalog_for_bootstrap(
+            bundle_root,
+            app_data_dir,
+            &mut remote_catalog,
+        )?;
+        let selected_local_only = is_local_only_bootstrap_catalog(&bootstrap_catalog);
+        let status = self.ensure_ready_or_bootstrap_with_remote_support(
+            bundle_root,
+            app_data_dir,
+            bootstrap_catalog,
+            &key_provider,
+            &remote_downloader,
+            true,
+            |operation| on_progress(operation),
+        )?;
+
+        if !selected_local_only || !should_try_remote_after_local_bootstrap_failure(&status) {
+            return Ok(status);
+        }
+
+        let fallback_catalog = remote_catalog()?;
+        if !remote_catalog_can_fallback(&fallback_catalog) {
+            return Ok(status);
+        }
+
+        self.ensure_ready_or_bootstrap_with_remote_support(
+            bundle_root,
+            app_data_dir,
+            fallback_catalog,
+            key_provider,
+            remote_downloader,
+            false,
+            |operation| on_progress(operation),
+        )
     }
 
     pub fn hydrated_runtime_root(
@@ -393,6 +482,7 @@ impl RuntimeManager {
                     |operation| on_progress(operation),
                 )
             },
+            true,
             on_progress,
         )
     }
@@ -404,6 +494,7 @@ impl RuntimeManager {
         remote_catalog: BootstrapRemoteCatalog,
         key_provider: K,
         remote_downloader: D,
+        prefer_bundled_release: bool,
         mut on_progress: F,
     ) -> Result<RuntimeStatus, String>
     where
@@ -449,9 +540,14 @@ impl RuntimeManager {
             }
         }
 
+        let mut planning_manifest = manifest.clone();
+        if !prefer_bundled_release {
+            planning_manifest.payload_profile = "remote_fallback".to_string();
+        }
+
         let plan = BootstrapController::new().plan(
             &current_status,
-            &manifest,
+            &planning_manifest,
             app_data_dir,
             remote_catalog,
         );
@@ -569,6 +665,7 @@ impl RuntimeManager {
             remote_catalog,
             key_provider,
             remote_downloader,
+            true,
             on_progress,
         )
     }
@@ -729,6 +826,42 @@ fn configured_bootstrap_catalog(app_handle: &AppHandle) -> Result<BootstrapRemot
     };
 
     Ok(fetch_remote_catalog(source))
+}
+
+fn local_only_bootstrap_catalog() -> BootstrapRemoteCatalog {
+    BootstrapRemoteCatalog::SourceUnavailable {
+        source: None,
+        reason: "Trusted remote bootstrap source not needed while local bundle can satisfy startup"
+            .to_string(),
+    }
+}
+
+fn is_local_only_bootstrap_catalog(catalog: &BootstrapRemoteCatalog) -> bool {
+    matches!(
+        catalog,
+        BootstrapRemoteCatalog::SourceUnavailable { source: None, reason }
+            if reason == "Trusted remote bootstrap source not needed while local bundle can satisfy startup"
+    )
+}
+
+fn remote_catalog_can_fallback(catalog: &BootstrapRemoteCatalog) -> bool {
+    matches!(
+        catalog,
+        BootstrapRemoteCatalog::Available { .. }
+            | BootstrapRemoteCatalog::SourceUnavailable {
+                source: Some(_),
+                ..
+            }
+    )
+}
+
+fn should_try_remote_after_local_bootstrap_failure(status: &RuntimeStatus) -> bool {
+    status.state == RuntimeState::Damaged
+        && status.bootstrap_required
+        && status
+            .details
+            .iter()
+            .any(|detail| detail.contains("Bundled runtime"))
 }
 
 fn configured_bootstrap_public_key(
@@ -1797,6 +1930,155 @@ mod tests {
         assert!(progress_events
             .iter()
             .any(|operation| operation.stage == RuntimeOperationStage::Activating));
+    }
+
+    #[test]
+    fn status_only_reports_missing_managed_runtime_without_hydrating() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &python_sha,
+            &uv_sha,
+        );
+        write_manifest(bundle_dir.path(), &manifest);
+
+        let manager = RuntimeManager::new();
+        let status = manager
+            .status_for_tests(bundle_dir.path(), app_data_dir.path())
+            .expect("status should inspect without mutating");
+
+        assert_eq!(status.state, RuntimeState::Damaged);
+        assert_eq!(status.summary, "Runtime no hidratado");
+        assert!(!managed_pack_dir(app_data_dir.path(), &manifest.pack_version).exists());
+    }
+
+    #[test]
+    fn valid_bundled_release_hydrates_without_fetching_remote() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        write_manifest(
+            bundle_dir.path(),
+            &sample_manifest(
+                &crate::runtime::paths::current_runtime_platform(),
+                &python_sha,
+                &uv_sha,
+            ),
+        );
+
+        let manager = RuntimeManager::new();
+        let status = manager
+            .ensure_ready_or_bootstrap_with_lazy_remote_support(
+                bundle_dir.path(),
+                app_data_dir.path(),
+                || panic!("remote catalog must not be fetched for a valid local release bundle"),
+                |public_key_id| Err(format!("unexpected public key lookup: {public_key_id}")),
+                |_, _, _, _, _| panic!("remote downloader must not run"),
+                |_| {},
+            )
+            .expect("local bundle should hydrate without remote fallback");
+
+        assert_eq!(status.state, RuntimeState::Healthy);
+        assert!(manager
+            .discover_hydrated_runtime_root_for_tests(app_data_dir.path())
+            .is_some());
+    }
+
+    #[test]
+    fn corrupt_bundled_release_fetches_configured_remote_fallback() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        write_manifest(
+            bundle_dir.path(),
+            &sample_manifest(
+                &crate::runtime::paths::current_runtime_platform(),
+                &python_sha,
+                &uv_sha,
+            ),
+        );
+        write_file(bundle_dir.path(), python_relpath, b"broken");
+
+        let archive_bytes = runtime_archive_bytes();
+        let (release, public_key) = build_signed_release(&archive_bytes);
+        let remote_fetched = std::cell::Cell::new(false);
+        let manager = RuntimeManager::new();
+        let status = manager
+            .ensure_ready_or_bootstrap_with_lazy_remote_support(
+                bundle_dir.path(),
+                app_data_dir.path(),
+                || {
+                    remote_fetched.set(true);
+                    Ok(BootstrapRemoteCatalog::Available {
+                        source: BootstrapRemoteSource {
+                            manifest_url: "https://example.com/bootstrap.json".to_string(),
+                            public_key_id: "entropia-root".to_string(),
+                        },
+                        index: crate::runtime::manifest::BootstrapManifestIndex {
+                            channel: "stable".to_string(),
+                            generated_at: "2026-05-06T00:00:00Z".to_string(),
+                            releases: vec![release.clone()],
+                        },
+                    })
+                },
+                |_| Ok(public_key.clone()),
+                |source_manifest_url, release, app_data_dir, public_key_base64, on_progress| {
+                    crate::runtime::download::download_and_activate_remote_runtime_with_fetch(
+                        source_manifest_url,
+                        release,
+                        app_data_dir,
+                        public_key_base64,
+                        |_| Ok(std::io::Cursor::new(archive_bytes.clone())),
+                        on_progress,
+                    )
+                },
+                |_| {},
+            )
+            .expect("corrupt local bundle should fall back to configured remote");
+
+        assert!(remote_fetched.get(), "expected remote catalog fallback");
+        assert_eq!(status.state, RuntimeState::Healthy);
+        assert!(app_data_dir
+            .path()
+            .join("runtime")
+            .join("2026.05.1")
+            .join("manifest.json")
+            .is_file());
     }
 
     #[test]

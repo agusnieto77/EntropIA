@@ -18,6 +18,8 @@ mod debug_viz;
 
 use crate::nlp::{lookup_item_id_for_asset, NlpJob, NlpQueue};
 #[cfg(feature = "paddle-ocr")]
+use crate::path_utils::normalize_windows_path;
+#[cfg(feature = "paddle-ocr")]
 use crate::runtime::{managed_resource_path, RuntimeManager};
 use base64::Engine;
 use glm_ocr::{GlmOcrLayoutDetail, GlmOcrResponse};
@@ -34,6 +36,13 @@ const OCRH_MODE_GLM_OCR: &str = "glm_ocr";
 const OCRH_MODE_AUTO: &str = "auto";
 const OCRH_SETTING_MODE: &str = "ocrh_mode";
 const OCRH_SETTING_GLM_OCR_API_KEY: &str = "glm_ocr_api_key";
+
+#[cfg(feature = "paddle-ocr")]
+const PADDLE_OCR_REQUIRED_MODEL_FILES: &[&str] = &[
+    "PP-OCRv5_mobile_det.mnn",
+    "latin_PP-OCRv5_mobile_rec_infer.mnn",
+    "ppocr_keys_latin.txt",
+];
 
 #[cfg(feature = "paddle-ocr")]
 fn managed_runtime_root_for_ocr(
@@ -965,30 +974,66 @@ impl OcrQueue {
 #[cfg(feature = "paddle-ocr")]
 fn resolve_paddle_model_dir(app_handle: &AppHandle) -> std::path::PathBuf {
     let runtime_root = managed_runtime_root_for_ocr(app_handle).ok().flatten();
+    let bundled_resource_root = resolve_bundled_paddle_model_dir(app_handle);
+
     resolve_paddle_model_dir_from_roots(
         runtime_root.as_deref(),
+        bundled_resource_root.as_deref(),
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
     )
 }
 
 #[cfg(feature = "paddle-ocr")]
+fn resolve_bundled_paddle_model_dir(app_handle: &AppHandle) -> Option<std::path::PathBuf> {
+    // Tauri resource layouts have differed across packaging paths. Try both the
+    // configured source-preserving path and the stripped resource path.
+    for candidate in ["resources/models/ocr", "models/ocr"] {
+        if let Ok(resource_path) = app_handle
+            .path()
+            .resolve(candidate, tauri::path::BaseDirectory::Resource)
+        {
+            let resource_path = normalize_windows_path(resource_path);
+            if paddle_model_dir_has_required_files(&resource_path) {
+                return Some(resource_path);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(feature = "paddle-ocr")]
 fn resolve_paddle_model_dir_from_roots(
     managed_root: Option<&std::path::Path>,
+    bundled_resource_root: Option<&std::path::Path>,
     manifest_dir: &std::path::Path,
 ) -> std::path::PathBuf {
     if let Some(root) = managed_root {
         let managed = managed_resource_path(root, "models/ocr");
-        if managed.exists() {
+        if paddle_model_dir_has_required_files(&managed) {
             return managed;
         }
     }
 
+    if let Some(resource_root) = bundled_resource_root {
+        if paddle_model_dir_has_required_files(resource_root) {
+            return normalize_windows_path(resource_root);
+        }
+    }
+
     let dev_path = manifest_dir.join("resources").join("models").join("ocr");
-    if dev_path.exists() {
+    if paddle_model_dir_has_required_files(&dev_path) {
         return dev_path;
     }
 
     std::path::PathBuf::from("resources/models/ocr")
+}
+
+#[cfg(feature = "paddle-ocr")]
+fn paddle_model_dir_has_required_files(model_dir: &std::path::Path) -> bool {
+    PADDLE_OCR_REQUIRED_MODEL_FILES
+        .iter()
+        .all(|file_name| model_dir.join(file_name).is_file())
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────
@@ -2485,17 +2530,116 @@ mod tests {
     fn resolve_paddle_model_dir_prefers_managed_runtime_assets() {
         let runtime_dir = tempfile::tempdir().expect("runtime dir");
         let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let bundled_dir = tempfile::tempdir().expect("bundled dir");
         let managed_models = runtime_dir
             .path()
             .join("resources")
             .join("models")
             .join("ocr");
         std::fs::create_dir_all(&managed_models).expect("create model dir");
+        write_required_paddle_models(&managed_models);
+        write_required_paddle_models(bundled_dir.path());
 
-        let resolved =
-            resolve_paddle_model_dir_from_roots(Some(runtime_dir.path()), manifest_dir.path());
+        let resolved = resolve_paddle_model_dir_from_roots(
+            Some(runtime_dir.path()),
+            Some(bundled_dir.path()),
+            manifest_dir.path(),
+        );
 
         assert_eq!(resolved, managed_models);
+    }
+
+    #[cfg(feature = "paddle-ocr")]
+    #[test]
+    fn resolve_paddle_model_dir_uses_bundled_resource_when_runtime_has_no_models() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let bundled_dir = tempfile::tempdir().expect("bundled dir");
+        std::fs::create_dir_all(
+            runtime_dir
+                .path()
+                .join("resources")
+                .join("models")
+                .join("ocr"),
+        )
+        .expect("create incomplete runtime model dir");
+        write_required_paddle_models(bundled_dir.path());
+
+        let resolved = resolve_paddle_model_dir_from_roots(
+            Some(runtime_dir.path()),
+            Some(bundled_dir.path()),
+            manifest_dir.path(),
+        );
+
+        assert_eq!(resolved, bundled_dir.path());
+    }
+
+    #[cfg(feature = "paddle-ocr")]
+    #[test]
+    fn resolve_paddle_model_dir_uses_dev_models_after_missing_runtime_and_bundle() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let manifest_dir = tempfile::tempdir().expect("manifest dir");
+        let dev_models = manifest_dir.path().join("resources").join("models").join("ocr");
+        std::fs::create_dir_all(&dev_models).expect("create dev model dir");
+        write_required_paddle_models(&dev_models);
+
+        let resolved = resolve_paddle_model_dir_from_roots(
+            Some(runtime_dir.path()),
+            None,
+            manifest_dir.path(),
+        );
+
+        assert_eq!(resolved, dev_models);
+    }
+
+    #[cfg(feature = "paddle-ocr")]
+    fn write_required_paddle_models(model_dir: &std::path::Path) {
+        std::fs::create_dir_all(model_dir).expect("create model dir");
+        for file_name in PADDLE_OCR_REQUIRED_MODEL_FILES {
+            std::fs::write(model_dir.join(file_name), b"stub").expect("write required model");
+        }
+    }
+
+    #[test]
+    fn save_extraction_accepts_modern_methods_and_upserts_by_asset() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                item_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL,
+                size INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE extractions (
+                id TEXT PRIMARY KEY,
+                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                text_content TEXT NOT NULL,
+                method TEXT NOT NULL,
+                confidence REAL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_extractions_asset_id_unique ON extractions(asset_id);
+            INSERT INTO assets(id, item_id, path, type, created_at)
+            VALUES ('asset-1', 'item-1', '/tmp/page.png', 'image', 1);",
+        )
+        .expect("create schema");
+
+        save_extraction(&conn, "asset-1", "texto OCRL", "paddle").expect("save OCRL");
+        save_extraction(&conn, "asset-1", "texto OCRH", "paddle_vl").expect("upsert OCRH");
+
+        let (row_count, text, method): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(text_content), MAX(method) FROM extractions WHERE asset_id = 'asset-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query extraction");
+
+        assert_eq!(row_count, 1);
+        assert_eq!(text, "texto OCRH");
+        assert_eq!(method, "paddle_vl");
     }
 
     #[test]

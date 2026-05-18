@@ -26,6 +26,8 @@ CATEGORY_DIRS = {
     'caches': 'caches',
     'native_assets': 'resources/lib',
 }
+IGNORED_RUNTIME_DIR_NAMES = {'__pycache__'}
+IGNORED_RUNTIME_SUFFIXES = {'.pyc', '.pyo'}
 
 
 def sha256_file(path: Path) -> str:
@@ -47,13 +49,21 @@ def infer_executable(path: Path) -> bool:
     return os.access(path, os.X_OK)
 
 
+def is_ignored_runtime_artifact(path: Path) -> bool:
+    return any(part in IGNORED_RUNTIME_DIR_NAMES for part in path.parts) or path.suffix.lower() in IGNORED_RUNTIME_SUFFIXES
+
+
 def collect_entries(root: Path, relative_dir: str) -> list[dict]:
     base = root / relative_dir
     if not base.exists():
         return []
 
     entries = []
-    for path in sorted(candidate for candidate in base.rglob('*') if candidate.is_file()):
+    for path in sorted(
+        candidate
+        for candidate in base.rglob('*')
+        if candidate.is_file() and not is_ignored_runtime_artifact(candidate.relative_to(root))
+    ):
         entries.append(
             {
                 'path': path.relative_to(root).as_posix(),
@@ -150,6 +160,8 @@ def overlay_payload(payload_root: Path, destination: Path) -> None:
         relative = source.relative_to(payload_root)
         if relative.as_posix() in {'manifest.json', OVERRIDES_FILENAME}:
             continue
+        if is_ignored_runtime_artifact(relative):
+            continue
 
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +245,15 @@ def build_platform(
         )
     if destination.exists():
         shutil.rmtree(destination)
-    shutil.copytree(source, destination)
+    shutil.copytree(
+        source,
+        destination,
+        ignore=lambda directory, names: {
+            name
+            for name in names
+            if is_ignored_runtime_artifact((Path(directory) / name).relative_to(source))
+        },
+    )
 
     if resolved_payload_root is not None:
         overlay_payload(resolved_payload_root, destination)

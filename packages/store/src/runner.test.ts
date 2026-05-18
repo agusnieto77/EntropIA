@@ -133,4 +133,36 @@ describe('runMigrations — migrations 0004, 0005 and 0006', () => {
     expect(hasLayoutsTable).toBe(true)
     expect(hasUniqueIndex).toBe(true)
   })
+
+  it('creates extractions without legacy method CHECK and with unique asset index', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const extractionTableSql = client._executedSql.find((sql) =>
+      sql.includes('CREATE TABLE IF NOT EXISTS extractions')
+    )
+    const hasUniqueExtractionIndex = client._executedSql.some((sql) =>
+      sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique')
+    )
+
+    expect(extractionTableSql).toBeTruthy()
+    expect(extractionTableSql).toContain('method TEXT NOT NULL')
+    expect(extractionTableSql).not.toContain("CHECK(method IN ('native', 'ocr'))")
+    expect(hasUniqueExtractionIndex).toBe(true)
+  })
+
+  it('runs corrective extraction migration for modern OCR methods and UPSERT support', async () => {
+    const client = createMockDbClient()
+    await runMigrations(client)
+
+    const hasCorrectiveTable = client._executedSql.some((sql) =>
+      sql.includes('CREATE TABLE extractions_0022') && sql.includes('method TEXT NOT NULL')
+    )
+    const hasDuplicateCleanup = client._executedSql.some((sql) =>
+      sql.includes('DELETE FROM extractions') && sql.includes('GROUP BY asset_id')
+    )
+
+    expect(hasCorrectiveTable).toBe(true)
+    expect(hasDuplicateCleanup).toBe(true)
+  })
 })

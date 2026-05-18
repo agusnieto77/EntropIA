@@ -368,6 +368,109 @@ fn all_critical_installed(results: &HashMap<DependencyId, DependencyStatus>) -> 
         })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupManagedRuntimeDepsAction {
+    SkipUnavailable,
+    SkipRuntimeNotHealthy,
+    SkipVenvAlreadyExists,
+    InstallMissingVenv,
+}
+
+fn startup_managed_runtime_deps_action(
+    runtime: Option<&install::ManagedRuntimeContext>,
+) -> StartupManagedRuntimeDepsAction {
+    let Some(runtime) = runtime else {
+        return StartupManagedRuntimeDepsAction::SkipUnavailable;
+    };
+
+    if runtime.status.state != RuntimeState::Healthy {
+        return StartupManagedRuntimeDepsAction::SkipRuntimeNotHealthy;
+    }
+
+    if runtime.venv_python().is_file() {
+        return StartupManagedRuntimeDepsAction::SkipVenvAlreadyExists;
+    }
+
+    StartupManagedRuntimeDepsAction::InstallMissingVenv
+}
+
+pub async fn ensure_startup_release_runtime_deps_ready(
+    app: &tauri::AppHandle,
+    state: &DepsState,
+    db: &crate::db::state::AppDbState,
+) -> Result<(), String> {
+    let runtime = install::load_managed_runtime_context(app)?;
+    let action = startup_managed_runtime_deps_action(runtime.as_ref());
+    let should_install = match action {
+        StartupManagedRuntimeDepsAction::InstallMissingVenv => true,
+        StartupManagedRuntimeDepsAction::SkipVenvAlreadyExists => {
+            let results = probe_all_once(state, db).await?;
+            !all_critical_installed(&results)
+        }
+        StartupManagedRuntimeDepsAction::SkipUnavailable
+        | StartupManagedRuntimeDepsAction::SkipRuntimeNotHealthy => false,
+    };
+
+    if !should_install {
+        return Ok(());
+    }
+
+    let _guard = match crate::runtime::ops_lock::try_acquire("startup_deps_install") {
+        Ok(guard) => guard,
+        Err(error) => {
+            crate::app_logs::warn(
+                app,
+                "deps",
+                format!("Instalación inicial de dependencias omitida: {error}"),
+            );
+            return Ok(());
+        }
+    };
+
+    let runtime = install::load_managed_runtime_context(app)?;
+    match startup_managed_runtime_deps_action(runtime.as_ref()) {
+        StartupManagedRuntimeDepsAction::SkipUnavailable
+        | StartupManagedRuntimeDepsAction::SkipRuntimeNotHealthy => return Ok(()),
+        StartupManagedRuntimeDepsAction::InstallMissingVenv => {}
+        StartupManagedRuntimeDepsAction::SkipVenvAlreadyExists => {
+            invalidate_probe_cache(state).await;
+            let results = probe_all_once(state, db).await?;
+            if all_critical_installed(&results) {
+                return Ok(());
+            }
+        }
+    }
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Error obteniendo directorio de datos de la app: {e}"))?;
+
+    crate::app_logs::info(
+        app,
+        "deps",
+        "Runtime listo; instalando dependencias iniciales administradas",
+    );
+    invalidate_uv_status_cache().await;
+    let result = install::install_all(app, state, &db.db_path, &app_data_dir).await;
+    invalidate_uv_status_cache().await;
+
+    match &result {
+        Ok(()) => crate::app_logs::info(
+            app,
+            "deps",
+            "Instalación inicial de dependencias ejecutada; verificando estado final",
+        ),
+        Err(error) => crate::app_logs::error(
+            app,
+            "deps",
+            format!("Instalación inicial de dependencias falló: {error}"),
+        ),
+    }
+
+    result
+}
+
 pub fn emit_probe_complete(
     app: &tauri::AppHandle,
     results: &HashMap<DependencyId, DependencyStatus>,
@@ -721,6 +824,60 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
+    fn test_runtime_status(state: RuntimeState) -> crate::runtime::status::RuntimeStatus {
+        crate::runtime::status::RuntimeStatus {
+            state,
+            pack_version: Some("2026.05.0".to_string()),
+            repair_needed: false,
+            repair_available: false,
+            summary: "test runtime".to_string(),
+            blocked_capabilities: vec![],
+            details: vec![],
+            guidance: vec![],
+            bootstrap_eligible: false,
+            bootstrap_required: false,
+            active_operation: None,
+        }
+    }
+
+    fn test_runtime_manifest() -> crate::runtime::manifest::RuntimeManifest {
+        crate::runtime::manifest::RuntimeManifest {
+            pack_version: "2026.05.0".to_string(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: crate::runtime::paths::current_runtime_platform(),
+            payload_profile: "release".to_string(),
+            release_injection_required: false,
+            external_artifacts_required: vec![],
+            python_relpath: if cfg!(windows) {
+                "python/python.exe".to_string()
+            } else {
+                "python/bin/python3".to_string()
+            },
+            uv_relpath: if cfg!(windows) {
+                "uv/uv.exe".to_string()
+            } else {
+                "uv/bin/uv".to_string()
+            },
+            python_files: vec![],
+            uv_files: vec![],
+            script_files: vec![],
+            wheelhouse: vec![],
+            caches: vec![],
+            native_assets: vec![],
+        }
+    }
+
+    fn test_managed_runtime_context(
+        managed_root: std::path::PathBuf,
+        state: RuntimeState,
+    ) -> install::ManagedRuntimeContext {
+        install::ManagedRuntimeContext {
+            managed_root,
+            manifest: test_runtime_manifest(),
+            status: test_runtime_status(state),
+        }
+    }
+
     #[test]
     fn reset_candidate_paths_include_real_managed_venv_and_dev_state() {
         let app_data_dir = tempdir().expect("app data dir");
@@ -801,6 +958,46 @@ mod tests {
         assert_eq!(
             python,
             Some(crate::runtime::managed_venv_python_path(&managed_root))
+        );
+    }
+
+    #[test]
+    fn startup_managed_runtime_deps_action_installs_when_healthy_venv_is_missing() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let runtime = test_managed_runtime_context(managed_root, RuntimeState::Healthy);
+
+        assert_eq!(
+            startup_managed_runtime_deps_action(Some(&runtime)),
+            StartupManagedRuntimeDepsAction::InstallMissingVenv
+        );
+    }
+
+    #[test]
+    fn startup_managed_runtime_deps_action_skips_when_venv_exists() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let venv_python = install::venv_python_path(&managed_root);
+        std::fs::create_dir_all(venv_python.parent().expect("venv parent"))
+            .expect("create venv parent");
+        std::fs::write(&venv_python, b"venv-python").expect("write venv python");
+        let runtime = test_managed_runtime_context(managed_root, RuntimeState::Healthy);
+
+        assert_eq!(
+            startup_managed_runtime_deps_action(Some(&runtime)),
+            StartupManagedRuntimeDepsAction::SkipVenvAlreadyExists
+        );
+    }
+
+    #[test]
+    fn startup_managed_runtime_deps_action_skips_unhealthy_runtime() {
+        let app_data_dir = tempdir().expect("app data dir");
+        let managed_root = app_data_dir.path().join("runtime").join("2026.05.0");
+        let runtime = test_managed_runtime_context(managed_root, RuntimeState::Damaged);
+
+        assert_eq!(
+            startup_managed_runtime_deps_action(Some(&runtime)),
+            StartupManagedRuntimeDepsAction::SkipRuntimeNotHealthy
         );
     }
 

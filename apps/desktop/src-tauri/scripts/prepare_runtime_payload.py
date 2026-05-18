@@ -27,6 +27,8 @@ REQUIRED_WHEEL_PREFIXES = (
 REQUIRED_CACHE_DIRS = ('hf', 'paddlex')
 REQUIRED_LAYOUT_DIRS = ('python', 'uv', 'scripts', 'wheelhouse', 'caches', 'resources/lib')
 OVERRIDES_FILENAME = 'manifest.overrides.json'
+IGNORED_RUNTIME_DIR_NAMES = {'__pycache__'}
+IGNORED_RUNTIME_SUFFIXES = {'.pyc', '.pyo'}
 
 
 def platform_python_relpath(platform: str) -> str:
@@ -57,6 +59,10 @@ def make_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def is_ignored_runtime_artifact(path: Path) -> bool:
+    return any(part in IGNORED_RUNTIME_DIR_NAMES for part in path.parts) or path.suffix.lower() in IGNORED_RUNTIME_SUFFIXES
+
+
 def resolve_source_root(payload_source_dir: Path, platform: str) -> Path:
     platform_root = payload_source_dir / platform
     if platform_root.exists():
@@ -73,9 +79,19 @@ def copy_tree_contents(source: Path, destination: Path) -> None:
         shutil.rmtree(destination)
     destination.mkdir(parents=True)
     for child in sorted(source.iterdir()):
+        if is_ignored_runtime_artifact(child):
+            continue
         target = destination / child.name
         if child.is_dir():
-            shutil.copytree(child, target)
+            shutil.copytree(
+                child,
+                target,
+                ignore=lambda directory, names: {
+                    name
+                    for name in names
+                    if is_ignored_runtime_artifact(Path(directory) / name)
+                },
+            )
         else:
             shutil.copy2(child, target)
 

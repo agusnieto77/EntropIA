@@ -21,7 +21,8 @@ use crate::deps::registry::all_deps;
 use crate::runtime::status::{RuntimeState, RuntimeStatus};
 
 const PROBE_TIMEOUT_SECS: u64 = 45;
-const GLOBAL_PROBE_TIMEOUT_SECS: u64 = 90;
+const HEAVY_PROBE_TIMEOUT_SECS: u64 = 120;
+const GLOBAL_PROBE_TIMEOUT_HEADROOM_SECS: u64 = 30;
 const GPU_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const PROBE_PADDLEPADDLE_CUDA: &str = "import paddle; assert paddle.device.is_compiled_with_cuda(), 'PaddlePaddle CPU wheel installed on NVIDIA hardware'; print('ok')";
@@ -66,7 +67,7 @@ pub enum ProbePythonMode {
 
 /// Probe a single dependency by running its `probe_code` with `python_path`.
 ///
-/// - Spawns `python_path -c "<probe_code>"` with a 10 s per-probe timeout.
+/// - Spawns `python_path -c "<probe_code>"` with a dependency-aware per-probe timeout.
 /// - stdout contains `"ok"` → `Installed { version: None }`
 /// - Non-zero exit, timeout, or spawn error → `Missing`
 pub async fn probe_one(
@@ -83,7 +84,7 @@ pub async fn probe_one(
         .stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
 
-    let probe_result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
+    let probe_result = timeout(probe_timeout_for(dep), cmd.output()).await;
 
     match probe_result {
         Ok(Ok(output)) if output.status.success() => {
@@ -115,7 +116,8 @@ pub async fn probe_one(
 /// Probe all registered dependencies concurrently and return a status map.
 ///
 /// - Runs all probes in parallel using `tokio::task::JoinSet`.
-/// - Applies a 15 s global timeout over the entire set.
+/// - Applies a global timeout over the entire set with headroom after the
+///   slowest per-dependency timeout.
 /// - Dependencies that haven't finished when the global timeout fires are
 ///   marked `Unknown` (not yet checked).
 pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencyStatus> {
@@ -144,7 +146,7 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
                 .stderr(std::process::Stdio::piped());
             cmd.kill_on_drop(true);
 
-            let result = timeout(Duration::from_secs(PROBE_TIMEOUT_SECS), cmd.output()).await;
+            let result = timeout(probe_timeout_for_id(&id), cmd.output()).await;
             let status = match result {
                 Ok(Ok(output)) if output.status.success() => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -164,7 +166,8 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
         });
     }
 
-    // Collect results with a 15 s global timeout.
+    // Collect results with a global timeout that cannot fire before the
+    // slowest dependency-specific probe has had a fair chance to finish.
     let mut results: HashMap<DependencyId, DependencyStatus> = HashMap::new();
 
     let collect_all = async {
@@ -180,12 +183,13 @@ pub async fn probe_all(python_path: &Path) -> HashMap<DependencyId, DependencySt
         }
     };
 
-    match timeout(Duration::from_secs(GLOBAL_PROBE_TIMEOUT_SECS), collect_all).await {
+    let global_probe_timeout = global_probe_timeout_for(all_deps());
+    match timeout(global_probe_timeout, collect_all).await {
         Ok(()) => {}
         Err(_) => {
             eprintln!(
                 "[deps/checks] global probe timeout ({} s) — marking remaining deps Unknown",
-                GLOBAL_PROBE_TIMEOUT_SECS
+                global_probe_timeout.as_secs()
             );
             // Abort any tasks still running.
             join_set.abort_all();
@@ -210,6 +214,29 @@ fn probe_code_for(dep: &crate::deps::registry::DependencySpec) -> &'static str {
     }
 
     dep.probe_code
+}
+
+fn probe_timeout_for(dep: &crate::deps::registry::DependencySpec) -> Duration {
+    probe_timeout_for_id(&dep.id)
+}
+
+fn probe_timeout_for_id(id: &DependencyId) -> Duration {
+    match id {
+        DependencyId::PaddlePaddle | DependencyId::PaddleOcr => {
+            Duration::from_secs(HEAVY_PROBE_TIMEOUT_SECS)
+        }
+        _ => Duration::from_secs(PROBE_TIMEOUT_SECS),
+    }
+}
+
+fn global_probe_timeout_for(deps: &[crate::deps::registry::DependencySpec]) -> Duration {
+    let slowest_probe = deps
+        .iter()
+        .map(probe_timeout_for)
+        .max()
+        .unwrap_or_else(|| Duration::from_secs(PROBE_TIMEOUT_SECS));
+
+    slowest_probe + Duration::from_secs(GLOBAL_PROBE_TIMEOUT_HEADROOM_SECS)
 }
 
 fn detect_nvidia_gpu_hardware() -> bool {
@@ -538,6 +565,36 @@ mod tests {
         )
         .expect("create app_settings");
         conn
+    }
+
+    #[test]
+    fn test_heavy_paddle_probes_get_longer_cold_import_timeout() {
+        let fastembed = crate::deps::registry::find_dep(&DependencyId::Fastembed)
+            .expect("fastembed dep present");
+        let paddlepaddle = crate::deps::registry::find_dep(&DependencyId::PaddlePaddle)
+            .expect("PaddlePaddle dep present");
+        let paddleocr = crate::deps::registry::find_dep(&DependencyId::PaddleOcr)
+            .expect("PaddleOcr dep present");
+
+        assert_eq!(probe_timeout_for(fastembed), Duration::from_secs(45));
+        assert_eq!(probe_timeout_for(paddlepaddle), Duration::from_secs(120));
+        assert_eq!(probe_timeout_for(paddleocr), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_global_probe_timeout_allows_heavy_probe_to_finish_first() {
+        let deps = crate::deps::registry::all_deps();
+        let global_timeout = global_probe_timeout_for(deps);
+        let heaviest_timeout = deps
+            .iter()
+            .map(probe_timeout_for)
+            .max()
+            .expect("registered deps");
+
+        assert!(
+            global_timeout > heaviest_timeout,
+            "global timeout must leave headroom after the slowest per-dependency probe"
+        );
     }
 
     #[test]
