@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
-  import { navigation } from '$lib/navigation'
+  import { navigation, type View } from '$lib/navigation'
   import { getStore } from '$lib/db'
   import { locale, t } from '$lib/i18n'
   import { isCriticalMissing, onCriticalMissingChange } from '$lib/deps'
@@ -239,11 +239,17 @@
       {#each $navigation.breadcrumb as crumb, i}
         {#if i > 0}<span class="sep">/</span>{/if}
         {#if i === $navigation.breadcrumb.length - 1}
-          <span class="crumb crumb--current" class:last={i === $navigation.breadcrumb.length - 1}>
+          <span class="crumb crumb--current">
             <span class="crumb__label">{crumb}</span>
           </span>
         {:else}
-          <span class="crumb">{crumb}</span>
+          <button
+            class="crumb crumb--link"
+            type="button"
+            onclick={() => navigation.resetToPath(
+              $navigation.history.slice(0, i + 1) as [View, ...View[]]
+            )}
+          >{crumb}</button>
         {/if}
       {/each}
     </nav>
@@ -444,27 +450,43 @@
   }
   .crumb {
     color: var(--color-text-secondary);
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-sm);
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .crumb--link {
+    border: none;
+    background: none;
+    padding: 0;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color var(--transition-base);
+  }
+  .crumb--link:hover {
+    color: var(--color-text-primary);
+    text-decoration: underline;
+  }
+  .crumb--link:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
   }
   .crumb--current {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-medium);
   }
   .crumb__label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .crumb.last {
-    color: var(--color-text-primary);
-    font-weight: var(--font-weight-medium);
-  }
   .sep {
     color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   .crumb-nav {

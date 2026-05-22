@@ -363,6 +363,21 @@ DROP TABLE IF EXISTS __entropia_migration_0020_noop
 DROP TABLE IF EXISTS jobs
   `.trim(),
 
+  '0023_corpus_entries': `
+ALTER TABLE items ADD COLUMN type TEXT DEFAULT 'document';
+
+CREATE TABLE IF NOT EXISTS entries (
+  id          TEXT    PRIMARY KEY,
+  item_id     TEXT    NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  content     TEXT    NOT NULL,
+  attributes  TEXT,
+  sort_index  INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS entries_item_id_idx ON entries(item_id)
+  `.trim(),
+
   '0022_extractions_method_and_unique_asset': `
 -- Remove the legacy method CHECK constraint and preserve one extraction row per asset.
 -- OCR now stores methods like paddle, paddle_vl, pdf_paddle and pdf_paddle_vl.
@@ -469,12 +484,20 @@ export async function runMigrations(client: DbClient): Promise<void> {
   const applied = await client.select<{ name: string }>('SELECT name FROM _migrations ORDER BY id')
   const appliedSet = new Set(applied.map((row) => row.name))
 
-  // Sort migration keys by filename order (lexicographic)
-  const pending = Object.keys(MIGRATIONS)
+  // Fix: ensure items.type column has correct defaults (migration may have left NULLs)
+  if (appliedSet.has('0023_corpus_entries')) {
+    try {
+      await client.execute("UPDATE items SET type = 'document' WHERE type IS NULL OR type = ''")
+    } catch {
+      // column may not exist — will be created by pending migration
+    }
+  }
+
+  const pending2 = Object.keys(MIGRATIONS)
     .sort()
     .filter((name) => !appliedSet.has(name))
 
-  for (const name of pending) {
+  for (const name of pending2) {
     try {
       await client.execute('BEGIN')
 

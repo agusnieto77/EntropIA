@@ -23,6 +23,7 @@ export class ItemRepo {
     const createdItem: Item = {
       id: crypto.randomUUID(),
       title: data.title,
+      type: data.type ?? 'document',
       collectionId: data.collectionId,
       metadata: data.metadata ?? null,
       createdAt: now,
@@ -42,10 +43,11 @@ export class ItemRepo {
       }
 
       await this.rawClient.execute(
-        'INSERT INTO items (id, title, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO items (id, title, type, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
           createdItem.id,
           createdItem.title,
+          createdItem.type,
           createdItem.collectionId,
           createdItem.metadata,
           createdItem.createdAt,
@@ -131,6 +133,7 @@ export class ItemRepo {
         DELETE FROM assets WHERE item_id = '${esc}';
         DELETE FROM entities WHERE item_id = '${esc}';
         DELETE FROM triples WHERE item_id = '${esc}';
+        DELETE FROM entries WHERE item_id = '${esc}';
         DELETE FROM notes WHERE item_id = '${esc}';
         DELETE FROM items WHERE id = '${esc}';
         DELETE FROM collections WHERE id = '${escCollectionId}' AND id NOT IN (SELECT DISTINCT collection_id FROM items);

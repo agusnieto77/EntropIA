@@ -33,7 +33,9 @@
   const currentLocale = locale
   const activeLocale = $derived($currentLocale)
   const showExplorer = $derived(
-    $navigation.current.name === 'collection' || $navigation.current.name === 'item',
+    $navigation.current.name === 'collections' ||
+    $navigation.current.name === 'collection' ||
+    $navigation.current.name === 'item',
   )
 
   // ── Ribbon sidebar state ──

@@ -5,6 +5,7 @@
   import { CollectionCard, Button, Input, Card } from '@entropia/ui'
   import { onMount, onDestroy } from 'svelte'
   import type { Collection } from '@entropia/store'
+  import CsvImporter from '$lib/components/CsvImporter.svelte'
 
   let collections = $state<Collection[]>([])
   let searchQuery = $state('')
@@ -20,6 +21,7 @@
   let deletingId = $state<string | null>(null)
   let deletingName = $state('')
   let deleting = $state(false)
+  let showCsvImporter = $state(false)
   const currentLocale = locale
 
   let filtered = $derived(
@@ -166,6 +168,12 @@
   <header class="collections-header">
     <h1 class="collections-header__title">{$currentLocale && t('collections.title')}</h1>
     <span class="collections-header__count">{visibleCountLabel}</span>
+    <button class="collections-header__csv-btn" onclick={() => (showCsvImporter = true)}>
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+      </svg>
+      {t('collections.importCsv')}
+    </button>
   </header>
 
   {#if error}
@@ -285,24 +293,7 @@
               onclick={handleConfirmDelete}
               disabled={deleting}
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M3 6h18" />
-                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                <line x1="10" y1="11" x2="10" y2="17" />
-                <line x1="14" y1="11" x2="14" y2="17" />
-              </svg>
+              {deleting ? t('collections.deletingTitle') : t('collections.deleteConfirmAction')}
             </button>
             <Button variant="ghost" onclick={handleCancelDelete} disabled={deleting}
               >{t('collections.cancel')}</Button
@@ -310,6 +301,17 @@
           </div>
         </div>
       </Card>
+    </div>
+  {/if}
+
+  {#if showCsvImporter}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="modal-overlay" onkeydown={(e) => e.key === 'Escape' && (showCsvImporter = false)} onclick={(e) => e.target === e.currentTarget && (showCsvImporter = false)}>
+      <div class="csv-modal">
+        <Card>
+          <CsvImporter onClose={() => { showCsvImporter = false; loadCollections() }} />
+        </Card>
+      </div>
     </div>
   {/if}
 </div>
@@ -335,6 +337,25 @@
   .collections-header__count {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+    flex: 1;
+  }
+
+  .collections-header__csv-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1, 4px);
+    padding: var(--space-1, 4px) var(--space-2, 8px);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .collections-header__csv-btn:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
   }
 
   .grid {
@@ -345,6 +366,13 @@
 
   .empty {
     min-height: 220px;
+  }
+
+  .csv-modal {
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    width: min(100vw - 32px, 860px);
+    border-radius: var(--radius-lg);
   }
 
   .modal-overlay {
@@ -415,9 +443,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: var(--control-height-sm);
     height: var(--control-height-sm);
-    padding: 0;
+    padding: 0 var(--space-4);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
     border: 1px solid var(--color-danger);
     border-radius: var(--radius-md);
     background-color: var(--color-danger);

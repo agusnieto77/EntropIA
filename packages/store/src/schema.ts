@@ -17,6 +17,7 @@ export const collections = sqliteTable('collections', {
 export const items = sqliteTable('items', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
+  type: text('type').default('document'), // 'document' | 'corpus'
   collectionId: text('collection_id')
     .notNull()
     .references(() => collections.id),
@@ -191,6 +192,26 @@ export const itemTopics = sqliteTable(
   (table) => ({
     itemTopicIdx: index('idx_item_topics_item_topic').on(table.itemId, table.topicId),
     topicIdx: index('idx_item_topics_topic_id').on(table.topicId),
+  })
+)
+
+// ---------------------------------------------------------------------------
+// Entries — individual records within a corpus item (tweets, comments, articles)
+// ---------------------------------------------------------------------------
+export const entries = sqliteTable(
+  'entries',
+  {
+    id: text('id').primaryKey(),
+    itemId: text('item_id')
+      .notNull()
+      .references(() => items.id, { onDelete: 'cascade' }),
+    content: text('content').notNull(),
+    attributes: text('attributes'), // JSON blob: author, date, likes, etc.
+    sortIndex: integer('sort_index').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => ({
+    itemIdx: index('entries_item_id_idx').on(table.itemId),
   })
 )
 

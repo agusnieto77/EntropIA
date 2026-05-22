@@ -58,6 +58,7 @@
   import { listen, emit } from '@tauri-apps/api/event'
   import { invoke } from '@tauri-apps/api/core'
   import { navigation } from '$lib/navigation'
+  import CorpusView from './CorpusView.svelte'
   import {
     DOCUMENT_EXPLORER_ASSET_SELECTED_EVENT,
     DOCUMENT_EXPLORER_ASSET_SELECT_REQUEST_EVENT,
@@ -2533,6 +2534,8 @@
   <p class="status">{translate('item.loading')}</p>
 {:else if error && !item}
   <p class="error">{error}</p>
+{:else if item && item.type === 'corpus'}
+  <CorpusView itemId={item.id} />
 {:else if item}
   <div
     class="item-view"

@@ -12,6 +12,7 @@ import { FtsRepo } from './fts.repo'
 import { TripleRepo } from './triple.repo'
 import { TranscriptionRepo } from './transcription.repo'
 import { TopicRepo } from './topic.repo'
+import { EntryRepo } from './entry.repo'
 
 export interface StoreApi {
   collections: CollectionRepo
@@ -26,6 +27,7 @@ export interface StoreApi {
   triples: TripleRepo
   transcriptions: TranscriptionRepo
   topics: TopicRepo
+  entries: EntryRepo
 }
 
 export async function initStore(): Promise<StoreApi> {
@@ -50,5 +52,6 @@ export async function initStore(): Promise<StoreApi> {
     triples: new TripleRepo(db),
     transcriptions: new TranscriptionRepo(db),
     topics: new TopicRepo(db),
+    entries: new EntryRepo(db),
   }
 }

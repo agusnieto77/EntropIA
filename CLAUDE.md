@@ -20,8 +20,8 @@ The Rust backend (`apps/desktop/src-tauri/`) contains these modules:
 - **`db/`** — SQLite state management, Tauri IPC commands (`db_execute`, `db_select`, `db_select_rows`)
 - **`ocr/`** — OCR engine with PaddleOCR light + PaddleOCR-VL high mode, PDF text extraction, layout-aware OCR, async job queue
 - **`nlp/`** — FTS5 indexing, embeddings (Python subprocess), hybrid NER (ONNX BERT + spaCy + rule-based), semantic triple extraction, async job queue. NER is a sub-module (`nlp/ner/`) with its own engine registry.
-- **`layout/`** — DocLayout-YOLO document structure analysis (Python subprocess), reading order algorithm, stores results in `layouts` table
 - **`transcription/`** — Audio transcription via Python faster-whisper subprocess, async job queue
+- **`app_logs/`** — Structured log viewer. Tauri commands: `logs_get`, `logs_clear`, `logs_open_dir`. Frontend: `LogsTab.svelte` in settings.
 
 - **`llm/`** — LLM pipeline with dual backend: local Gemma via llama.cpp sidecar OR OpenRouter API. Jobs: OCR correction, entity extraction, triple extraction, summarization, classification, Q&A. Results persisted in `llm_results` table. Asset-level variants avoid context-window overflow on multi-page documents.
 - **`geo/`** — Nominatim geocoding for place entities (populates latitude/longitude/geoStatus on entities)
@@ -89,7 +89,7 @@ The desktop app does **not** use SvelteKit or file-based routing. Navigation is 
 - `collection` — single collection (requires `id`, `collectionName`)
 - `item` — single item (requires `itemId`, `collectionId`, `collectionName`, `itemTitle`)
 - `db-browser` — SQLite table browser with pagination, sorting, search, column inspection
-- `settings` — app settings (API keys, model selection, dependency manager via `DependenciasTab`)
+- `settings` — app settings (API keys, model selection, dependency manager via `DependenciasTab`, logs via `LogsTab`)
 
 NavigationStore supports `push()`, `back()`, `replace()` (sibling without stacking), `resetToPath()`, and breadcrumb-aware pub/sub that reacts to i18n locale changes.
 
@@ -104,7 +104,7 @@ Views live in `src/views/`, layout in `src/layout/`:
 1. Svelte views call repos from `@entropia/store` (e.g., `item.repo.ts`)
 2. Repos use `client.ts` which wraps Tauri's `@tauri-apps/plugin-sql` for SQL operations, or calls `invoke()` for Rust commands
 3. Rust Tauri commands (`db_execute`, `db_select`) operate on shared `AppDbState` (rusqlite)
-4. Background AI commands (`extract_text`, `index_fts`, `embed_asset`, `extract_entities`, `extract_entities_for_asset`, `extract_triples`, `transcribe_audio`, `extract_layout`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`, `LayoutQueue`). Direct read/admin commands like `similar_assets` and `backfill_asset_embeddings` use direct DB/blocking pathways instead of the queue.
+4. Background AI commands (`extract_text`, `index_fts`, `embed_asset`, `extract_entities`, `extract_entities_for_asset`, `extract_triples`, `transcribe_audio`) go through async job queues (`OcrQueue`, `NlpQueue`, `TranscriptionQueue`). Layout detection runs inside the OCR pipeline (PaddleVL). Direct read/admin commands like `similar_assets` and `backfill_asset_embeddings` use direct DB/blocking pathways instead of the queue.
 5. LLM commands (`llm_correct_ocr`, `llm_summarize`, `llm_extract_entities`, etc.) go through `LlmQueue`. Settings commands (`settings_get`, `settings_set`) use direct DB access via `AppDbState`.
 
 ### SQLite Connections
@@ -119,7 +119,7 @@ Current runtime/product architecture is **asset-only** for embeddings and simila
 
 All connections use WAL mode + foreign keys enabled. Each queue worker opens its own connection independently.
 
-On startup, `lib.rs` runs: (1) legacy migration from old `com.entropia.app` directory (SQLite bundle comparison by "richness score" + asset path rewriting), (2) `extractions.method` CHECK constraint migration (removes legacy `CHECK(method IN ('native','ocr'))` to allow PaddleOCR methods), (3) `layouts` table creation, (4) `assets.sort_index` column addition (for stable page ordering), (5) `llm_results` table creation, (6) `app_settings` table creation.
+On startup, `lib.rs` runs: (1) suppress Windows CRT error dialogs via `SetErrorMode`, (2) legacy migration from old `com.entropia.app` directory (SQLite bundle comparison by "richness score"), (3) legacy asset path rewriting, (4) deduplication of extractions/transcriptions rows (unique index enforcement), (5) `extractions.method` CHECK constraint migration, (6) `llm_results` table creation, (7) `layouts` table creation, (8) `assets.sort_index` column addition, (9) `app_settings` table creation, (10) `RuntimeManager` init + `ensure_ready_or_bootstrap`, (11) background dep check (`probe_all_once`), (12) queue workers start.
 
 ### OCR Provider Chain
 
@@ -139,7 +139,7 @@ Two layout engines available:
 - **PaddleVL** (primary) — layout detection is integrated into PaddleOCR-VL's single-pass pipeline.
 - **ONNX PP-DocLayout-S** — standalone PicoDet ONNX model (`resources/models/ocr/PP-DocLayout-S.onnx`, 4.68 MB). 23 region categories. Input: 2 tensors (image [1,3,480,480] + scale_factor [1,2]).
 
-Reading order uses union-find column grouping: regions with ≥50% horizontal overlap → same column, columns left-to-right, regions within columns top-to-bottom. Results stored in `layouts` table (Rust-side, not yet in Drizzle schema). See `AGENTS.md` for full architecture details.
+Reading order uses union-find column grouping: regions with ≥50% horizontal overlap → same column, columns left-to-right, regions within columns top-to-bottom. Results stored in `layouts` table. See `AGENTS.md` for full architecture details.
 
 ### Python Subprocess Architecture
 
@@ -215,11 +215,13 @@ CI includes extensive **pnpm lockfile forensics** (SHA256 + git blob verificatio
 
 ### Additional Schema Tables
 
-Beyond the core tables (collections, items, assets, notes, jobs, extractions, entities, embeddings, fts, triples, transcriptions, layouts, llm_results, app_settings), the Drizzle schema includes:
+Beyond the core Drizzle tables (collections, items, assets, notes, extractions, entities, triples, transcriptions, layouts, llm_results), the Drizzle schema includes:
 
 - `annotations` — visual overlays on assets (rectangle/underline with bbox, color, page). Cascade delete from assets.
 - `topics` — reusable tags (unique name).
 - `item_topics` — many-to-many junction between items and topics.
+
+**Rust-only tables** (created in `lib.rs`, not in Drizzle schema): `jobs`, `embeddings`/`vec_assets` (BLOBs), `fts` (FTS5), `app_settings`, `layouts` (also has Drizzle definition).
 
 ### Collection Export
 
@@ -242,4 +244,3 @@ Beyond the core tables (collections, items, assets, notes, jobs, extractions, en
 - Tauri dev server is hardcoded to port 1420 (`strictPort: true`).
 - Rust release profile uses LTO + `opt-level = "s"` + strip for small binaries.
 - Cargo feature flag: `paddle-ocr` (default, enables `ocr-rs` MNN backend). Without it, PaddleOCR native engine is excluded.
-- Startup (`lib.rs`): suppresses Windows CRT error dialogs via `SetErrorMode`, runs deduplication of extractions/transcriptions rows (one-per-asset enforcement), then schema migrations.

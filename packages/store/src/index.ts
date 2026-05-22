@@ -17,6 +17,7 @@ export {
   transcriptions,
   topics,
   itemTopics,
+  entries,
 } from './schema'
 
 // Migration runner
@@ -37,6 +38,8 @@ export { TranscriptionRepo } from './repos/transcription.repo'
 export type { Transcription, TranscriptionSegment } from './repos/transcription.repo'
 export { TopicRepo } from './repos/topic.repo'
 export type { Topic, ItemTopic } from './repos/topic.repo'
+export { EntryRepo } from './repos/entry.repo'
+export type { Entry, NewEntry } from './repos/entry.repo'
 
 // Store API
 export { initStore } from './repos/store'

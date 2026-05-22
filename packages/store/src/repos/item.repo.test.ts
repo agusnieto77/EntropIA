@@ -109,10 +109,11 @@ describe('ItemRepo', () => {
 
       expect(rawExecuteMock).toHaveBeenCalledOnce()
       expect(rawExecuteMock).toHaveBeenCalledWith(
-        'INSERT INTO items (id, title, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO items (id, title, type, collection_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
           result.id,
           result.title,
+          result.type,
           result.collectionId,
           result.metadata,
           result.createdAt,

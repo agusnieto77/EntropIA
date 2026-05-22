@@ -75,7 +75,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'Acta 1', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'Acta 1', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
 
     const payload = buildCollectionExportData(
@@ -162,6 +162,7 @@ describe('buildCollectionExportData', () => {
         title: 'No data',
         collectionId: 'c1',
         metadata: null,
+        type: 'document',
         createdAt: 3,
         updatedAt: 4,
       },
@@ -198,7 +199,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'UL', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'UL', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
@@ -247,7 +248,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'Multi', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'Multi', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
@@ -326,7 +327,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'OCR', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'OCR', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
@@ -369,7 +370,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'Audio', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'Audio', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
@@ -415,7 +416,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'Both', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'Both', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
@@ -470,7 +471,7 @@ describe('buildCollectionExportData', () => {
       updatedAt: 2,
     }
     const items = [
-      { id: 'i1', title: 'Empty', collectionId: 'c1', metadata: null, createdAt: 3, updatedAt: 4 },
+      { id: 'i1', title: 'Empty', collectionId: 'c1', metadata: null, type: 'document', createdAt: 3, updatedAt: 4 },
     ]
     const asset = {
       id: 'a1',
