@@ -18,6 +18,7 @@ export {
   topics,
   itemTopics,
   entries,
+  entryResults,
 } from './schema'
 
 // Migration runner
@@ -40,6 +41,8 @@ export { TopicRepo } from './repos/topic.repo'
 export type { Topic, ItemTopic } from './repos/topic.repo'
 export { EntryRepo } from './repos/entry.repo'
 export type { Entry, NewEntry } from './repos/entry.repo'
+export { EntryResultRepo } from './repos/entry-result.repo'
+export type { EntryResult, NewEntryResult } from './repos/entry-result.repo'
 
 // Store API
 export { initStore } from './repos/store'

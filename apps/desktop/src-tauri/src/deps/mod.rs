@@ -49,6 +49,7 @@ pub enum DependencyId {
     FasterWhisper,
     Spacy,
     SpacyModelEs,
+    Pysentimiento,
 }
 
 /// The runtime status of a single dependency.

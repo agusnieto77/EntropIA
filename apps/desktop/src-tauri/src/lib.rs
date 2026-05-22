@@ -9,6 +9,7 @@ mod ocr;
 mod path_utils;
 mod python_discovery;
 mod runtime;
+mod sentiment;
 mod settings;
 mod transcription;
 
@@ -452,6 +453,7 @@ migrate_legacy_asset_paths(&db_path, &app_dir)
             runtime::runtime_get_status,
             runtime::runtime_get_bootstrap_plan,
             runtime::runtime_repair,
+            sentiment::analyze_entries_sentiment,
             app_logs::logs_get,
             app_logs::logs_clear,
             app_logs::logs_open_dir,

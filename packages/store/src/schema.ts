@@ -216,6 +216,26 @@ export const entries = sqliteTable(
 )
 
 // ---------------------------------------------------------------------------
+// Entry Results — NLP analysis results for corpus entries
+// ---------------------------------------------------------------------------
+export const entryResults = sqliteTable(
+  'entry_results',
+  {
+    id: text('id').primaryKey(),
+    entryId: text('entry_id')
+      .notNull()
+      .references(() => entries.id, { onDelete: 'cascade' }),
+    jobType: text('job_type').notNull(), // 'sentiment' | 'ner' | 'emotion' | 'hateSpeech' | 'embeddings' | 'triples'
+    result: text('result').notNull(), // JSON
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => ({
+    entryIdx: index('entry_results_entry_id_idx').on(table.entryId),
+    entryJobIdx: index('entry_results_entry_job_idx').on(table.entryId, table.jobType),
+  })
+)
+
+// ---------------------------------------------------------------------------
 // LLM Results — persisted outputs from Gemma/local LLM jobs
 // ---------------------------------------------------------------------------
 export const llmResults = sqliteTable(

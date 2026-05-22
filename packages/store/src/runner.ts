@@ -378,6 +378,19 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS entries_item_id_idx ON entries(item_id)
   `.trim(),
 
+  '0024_entry_results': `
+CREATE TABLE IF NOT EXISTS entry_results (
+  id          TEXT    PRIMARY KEY,
+  entry_id    TEXT    NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+  job_type    TEXT    NOT NULL,
+  result      TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS entry_results_entry_id_idx ON entry_results(entry_id);
+CREATE INDEX IF NOT EXISTS entry_results_entry_job_idx ON entry_results(entry_id, job_type)
+  `.trim(),
+
   '0022_extractions_method_and_unique_asset': `
 -- Remove the legacy method CHECK constraint and preserve one extraction row per asset.
 -- OCR now stores methods like paddle, paddle_vl, pdf_paddle and pdf_paddle_vl.

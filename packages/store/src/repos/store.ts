@@ -13,6 +13,7 @@ import { TripleRepo } from './triple.repo'
 import { TranscriptionRepo } from './transcription.repo'
 import { TopicRepo } from './topic.repo'
 import { EntryRepo } from './entry.repo'
+import { EntryResultRepo } from './entry-result.repo'
 
 export interface StoreApi {
   collections: CollectionRepo
@@ -28,6 +29,7 @@ export interface StoreApi {
   transcriptions: TranscriptionRepo
   topics: TopicRepo
   entries: EntryRepo
+  entryResults: EntryResultRepo
 }
 
 export async function initStore(): Promise<StoreApi> {
@@ -53,5 +55,6 @@ export async function initStore(): Promise<StoreApi> {
     transcriptions: new TranscriptionRepo(db),
     topics: new TopicRepo(db),
     entries: new EntryRepo(db),
+    entryResults: new EntryResultRepo(db),
   }
 }

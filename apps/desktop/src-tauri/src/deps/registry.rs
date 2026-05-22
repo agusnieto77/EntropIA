@@ -106,6 +106,15 @@ static ALL_DEPS: &[DependencySpec] = &[
         managed_prerequisites: SPACY_MODEL_PREREQUISITES,
         install_order: 6,
     },
+    DependencySpec {
+        id: DependencyId::Pysentimiento,
+        display_name: "pysentimiento",
+        pip_spec: Some("pysentimiento>=0.7.0"),
+        probe_code: "import pysentimiento; print('ok')",
+        critical: false,
+        managed_prerequisites: NO_PREREQUISITES,
+        install_order: 7,
+    },
 ];
 
 /// Return the full static registry of all managed dependencies.
@@ -137,8 +146,8 @@ mod tests {
     fn test_registry_length() {
         assert_eq!(
             all_deps().len(),
-            7,
-            "Registry should have exactly 7 entries"
+            8,
+            "Registry should have exactly 8 entries"
         );
     }
 
