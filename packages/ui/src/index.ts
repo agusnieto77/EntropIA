@@ -67,3 +67,5 @@ export type { Entity, EntityType, EntityViewerProps } from './components/EntityV
 
 export { MapViewer } from './components/MapViewer/index'
 export type { MapViewerProps, MapMarker } from './components/MapViewer/index'
+
+export { HelpPopover } from './components/HelpPopover/index'

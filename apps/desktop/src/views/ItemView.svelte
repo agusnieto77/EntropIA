@@ -49,6 +49,7 @@
     EntityViewer,
     MapViewer,
     TopicEditor,
+    HelpPopover,
     isNoteHtmlEffectivelyEmpty,
     normalizeNoteLinkHref,
     normalizeNoteContentForRender,
@@ -3415,6 +3416,10 @@
                     >
                       {getExtractionPrimaryActionLabel(selectedAsset.type)}
                     </button>
+                    <HelpPopover
+                      title={isPdfAsset ? 'PDF' : 'OCR'}
+                      description={translate('help.ocr')}
+                    />
                     {#if !isPdfAsset}
                       <button
                         class="ocr-btn ocr-btn--high"
@@ -3426,6 +3431,10 @@
                       >
                         {translate('item.ocrHighAction')}
                       </button>
+                      <HelpPopover
+                        title={translate('item.ocrHighAction')}
+                        description={translate('help.ocrHigh')}
+                      />
                     {/if}
                     {#if llmAvailable && !ocrCorrectedAssets.has(selectedAsset.id)}
                       <button
@@ -3442,6 +3451,10 @@
                       >
                         {getCorrectionActionLabel(selectedAsset.type)}
                       </button>
+                      <HelpPopover
+                        title={getCorrectionActionLabel(selectedAsset.type)}
+                        description={translate('help.llmCorrect')}
+                      />
                     {/if}
                     {#if llmAvailable}
                       <button
@@ -3456,6 +3469,10 @@
                       >
                         {getSummaryActionLabel(selectedAsset.type)}
                       </button>
+                      <HelpPopover
+                        title={getSummaryActionLabel(selectedAsset.type)}
+                        description={translate('help.llmSummarize')}
+                      />
                     {/if}
                   </div>
                   {#if !llmAvailable}
@@ -3540,6 +3557,10 @@
                     >
                       {getTranscriptionActionLabel(busy)}
                     </button>
+                    <HelpPopover
+                      title={translate('item.transcribeTitle')}
+                      description={translate('help.transcription')}
+                    />
                     {#if llmAvailable}
                       <button
                         class="ocr-btn ocr-btn--summarize"
@@ -3636,43 +3657,67 @@
             <section class="section">
               <div class="analysis-panel analysis-panel--tabbed">
                 <div class="nlp-actions">
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
-                    onclick={handleIndexFts}
-                  >
-                    {translate('item.indexAction')}
-                    <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
-                  </button>
+                  <span class="nlp-action-group">
+                    <button
+                      class="nlp-btn"
+                      disabled={nlp.fts === 'pending' || nlp.fts === 'running'}
+                      onclick={handleIndexFts}
+                    >
+                      {translate('item.indexAction')}
+                      <span class="nlp-badge nlp-badge--{nlp.fts}">{nlp.fts}</span>
+                    </button>
+                    <HelpPopover
+                      title={translate('item.indexAction')}
+                      description={translate('help.fts')}
+                    />
+                  </span>
 
-                  <button
-                    class="nlp-btn"
-                    disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
-                    onclick={handleEmbedAsset}
-                  >
-                    {translate('item.embedAction')}
-                    <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
-                  </button>
+                  <span class="nlp-action-group">
+                    <button
+                      class="nlp-btn"
+                      disabled={!selectedAsset || nlp.embed === 'pending' || nlp.embed === 'running'}
+                      onclick={handleEmbedAsset}
+                    >
+                      {translate('item.embedAction')}
+                      <span class="nlp-badge nlp-badge--{nlp.embed}">{nlp.embed}</span>
+                    </button>
+                    <HelpPopover
+                      title={translate('item.embedAction')}
+                      description={translate('help.embeddings')}
+                    />
+                  </span>
 
-                  <button
-                    class="nlp-btn"
-                    disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
-                    onclick={handleExtractEntities}
-                  >
-                    {translate('item.nerAction')}
-                    <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
-                  </button>
+                  <span class="nlp-action-group">
+                    <button
+                      class="nlp-btn"
+                      disabled={nlp.ner === 'pending' || nlp.ner === 'running'}
+                      onclick={handleExtractEntities}
+                    >
+                      {translate('item.nerAction')}
+                      <span class="nlp-badge nlp-badge--{nlp.ner}">{nlp.ner}</span>
+                    </button>
+                    <HelpPopover
+                      title="NER"
+                      description={translate('help.ner')}
+                    />
+                  </span>
 
-                  <button
-                    class="nlp-btn"
-                    disabled={!llmAvailable ||
-                      nlp.triples === 'pending' ||
-                      nlp.triples === 'running'}
-                    onclick={handleLlmExtractTriples}
-                  >
-                    {translate('item.triplesAction')}
-                    <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
-                  </button>
+                  <span class="nlp-action-group">
+                    <button
+                      class="nlp-btn"
+                      disabled={!llmAvailable ||
+                        nlp.triples === 'pending' ||
+                        nlp.triples === 'running'}
+                      onclick={handleLlmExtractTriples}
+                    >
+                      {translate('item.triplesAction')}
+                      <span class="nlp-badge nlp-badge--{nlp.triples}">{nlp.triples}</span>
+                    </button>
+                    <HelpPopover
+                      title={translate('item.triplesAction')}
+                      description={translate('help.triples')}
+                    />
+                  </span>
                 </div>
 
                 {#if nlp.errors?.embed}
@@ -5197,7 +5242,13 @@
   .nlp-actions {
     display: flex;
     flex-direction: row;
+    flex-wrap: wrap;
     gap: var(--space-1);
+  }
+
+  .nlp-action-group {
+    display: inline-flex;
+    align-items: center;
   }
 
   .nlp-btn {

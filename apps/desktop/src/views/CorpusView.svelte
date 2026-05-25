@@ -3,6 +3,7 @@
   import { locale, t } from '$lib/i18n'
   import { invoke } from '@tauri-apps/api/core'
   import type { Item, Entry, EntryResult } from '@entropia/store'
+  import { HelpPopover } from '@entropia/ui'
 
   let { itemId }: { itemId: string } = $props()
 
@@ -273,39 +274,59 @@
     <!-- Action toolbar -->
     <div class="corpus-toolbar">
       <div class="corpus-toolbar__actions">
-        <button
-          class="corpus-action"
-          onclick={() => runAnalysis('sentiment')}
-          disabled={analyzing}
-          title={$currentLocale && translate('corpus.sentimentTitle')}
-        >
-          {$currentLocale && translate('corpus.sentiment')}
-        </button>
-        <button
-          class="corpus-action"
-          onclick={() => runAnalysis('emotion')}
-          disabled={analyzing}
-          title={$currentLocale && translate('corpus.emotionTitle')}
-        >
-          {$currentLocale && translate('corpus.emotion')}
-        </button>
-        <button
-          class="corpus-action"
-          onclick={() => runAnalysis('hate_speech')}
-          disabled={analyzing}
-          title={$currentLocale && translate('corpus.hateSpeechTitle')}
-        >
-          {$currentLocale && translate('corpus.hateSpeech')}
-        </button>
+        <span class="corpus-action-group">
+          <button
+            class="corpus-action"
+            onclick={() => runAnalysis('sentiment')}
+            disabled={analyzing}
+          >
+            {$currentLocale && translate('corpus.sentiment')}
+          </button>
+          <HelpPopover
+            title={$currentLocale && translate('corpus.sentiment')}
+            description={$currentLocale && translate('help.sentiment')}
+          />
+        </span>
+        <span class="corpus-action-group">
+          <button
+            class="corpus-action"
+            onclick={() => runAnalysis('emotion')}
+            disabled={analyzing}
+          >
+            {$currentLocale && translate('corpus.emotion')}
+          </button>
+          <HelpPopover
+            title={$currentLocale && translate('corpus.emotion')}
+            description={$currentLocale && translate('help.emotion')}
+          />
+        </span>
+        <span class="corpus-action-group">
+          <button
+            class="corpus-action"
+            onclick={() => runAnalysis('hate_speech')}
+            disabled={analyzing}
+          >
+            {$currentLocale && translate('corpus.hateSpeech')}
+          </button>
+          <HelpPopover
+            title={$currentLocale && translate('corpus.hateSpeech')}
+            description={$currentLocale && translate('help.hateSpeech')}
+          />
+        </span>
         <span class="corpus-toolbar__divider"></span>
-        <button
-          class="corpus-action"
-          onclick={() => runAnalysis('ner')}
-          disabled={analyzing}
-          title={$currentLocale && translate('corpus.nerTitle')}
-        >
-          NER
-        </button>
+        <span class="corpus-action-group">
+          <button
+            class="corpus-action"
+            onclick={() => runAnalysis('ner')}
+            disabled={analyzing}
+          >
+            NER
+          </button>
+          <HelpPopover
+            title="NER"
+            description={$currentLocale && translate('help.ner')}
+          />
+        </span>
       </div>
       <div class="corpus-toolbar__hint">
         {#if analyzing}
@@ -484,6 +505,12 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
+  }
+
+  .corpus-action-group {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
   }
 
   .corpus-toolbar__divider {
