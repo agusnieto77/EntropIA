@@ -6,6 +6,9 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-changed=icons/icon.icns");
+    println!("cargo:rerun-if-env-changed=ENTROPIA_RUNTIME_BOOTSTRAP_MANIFEST_URL");
+    println!("cargo:rerun-if-env-changed=ENTROPIA_RUNTIME_BOOTSTRAP_PUBLIC_KEY_ID");
+    println!("cargo:rerun-if-env-changed=ENTROPIA_RUNTIME_BOOTSTRAP_PUBLIC_KEY_BASE64");
 
     stage_windows_vc_runtime();
 

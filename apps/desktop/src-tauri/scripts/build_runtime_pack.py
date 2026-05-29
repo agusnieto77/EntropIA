@@ -19,13 +19,16 @@ DIST_ROOT = TAURI_ROOT / 'target' / 'runtime-pack'
 SUPPORTED_PLATFORMS = ('windows-x86_64', 'linux-x86_64')
 OVERRIDES_FILENAME = 'manifest.overrides.json'
 CATEGORY_DIRS = {
-    'python_files': 'python',
-    'uv_files': 'uv',
-    'script_files': 'scripts',
-    'wheelhouse': 'wheelhouse',
-    'caches': 'caches',
-    'native_assets': 'resources/lib',
+    'python_files': ('python',),
+    'uv_files': ('uv',),
+    'script_files': ('scripts',),
+    'wheelhouse': ('wheelhouse',),
+    'caches': ('caches',),
+    'native_assets': ('resources/lib', 'resources/models/ocr'),
 }
+REPO_RUNTIME_RESOURCE_DIRS = (
+    ('resources/models/ocr', TAURI_ROOT / 'resources' / 'models' / 'ocr'),
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -47,21 +50,22 @@ def infer_executable(path: Path) -> bool:
     return os.access(path, os.X_OK)
 
 
-def collect_entries(root: Path, relative_dir: str) -> list[dict]:
-    base = root / relative_dir
-    if not base.exists():
-        return []
-
+def collect_entries(root: Path, relative_dirs: Iterable[str]) -> list[dict]:
     entries = []
-    for path in sorted(candidate for candidate in base.rglob('*') if candidate.is_file()):
-        entries.append(
-            {
-                'path': path.relative_to(root).as_posix(),
-                'sha256': sha256_file(path),
-                'size': path.stat().st_size,
-                'executable': infer_executable(path),
-            }
-        )
+    for relative_dir in relative_dirs:
+        base = root / relative_dir
+        if not base.exists():
+            continue
+
+        for path in sorted(candidate for candidate in base.rglob('*') if candidate.is_file()):
+            entries.append(
+                {
+                    'path': path.relative_to(root).as_posix(),
+                    'sha256': sha256_file(path),
+                    'size': path.stat().st_size,
+                    'executable': infer_executable(path),
+                }
+            )
     return entries
 
 
@@ -130,7 +134,7 @@ def resolve_payload_root(payload_root: Path, platform: str) -> Path:
     if platform_root.exists():
         return platform_root
 
-    if any((payload_root / rel_dir).exists() for rel_dir in CATEGORY_DIRS.values()) or (
+    if any((payload_root / rel_dir).exists() for rel_dirs in CATEGORY_DIRS.values() for rel_dir in rel_dirs) or (
         payload_root / OVERRIDES_FILENAME
     ).exists():
         return payload_root
@@ -151,6 +155,18 @@ def overlay_payload(payload_root: Path, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+
+
+def overlay_repo_runtime_resources(destination: Path) -> None:
+    for relative_dir, source_dir in REPO_RUNTIME_RESOURCE_DIRS:
+        if not source_dir.exists():
+            continue
+
+        target_dir = destination / relative_dir
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_dir, target_dir)
 
 
 def load_manifest_overrides(payload_root: Path | None) -> dict:
@@ -196,8 +212,8 @@ def regenerate_manifest(base_manifest: dict, destination: Path, overrides: dict,
     manifest = dict(base_manifest)
     manifest.update(overrides)
 
-    for key, rel_dir in CATEGORY_DIRS.items():
-        manifest[key] = collect_entries(destination, rel_dir)
+    for key, rel_dirs in CATEGORY_DIRS.items():
+        manifest[key] = collect_entries(destination, rel_dirs)
 
     validate_manifest_contract(manifest['platform'], manifest, require_release=require_release)
     return manifest
@@ -234,6 +250,8 @@ def build_platform(
 
     if resolved_payload_root is not None:
         overlay_payload(resolved_payload_root, destination)
+
+    overlay_repo_runtime_resources(destination)
 
     manifest = regenerate_manifest(
         fixture_manifest,

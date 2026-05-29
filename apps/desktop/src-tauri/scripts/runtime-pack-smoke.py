@@ -28,6 +28,13 @@ REQUIRED_RELEASE_CACHE_DIRS = (
     'caches/hf',
     'caches/paddlex',
 )
+REQUIRED_RELEASE_NATIVE_ASSETS = {
+    'resources/models/ocr/PP-OCRv5_mobile_det.mnn',
+    'resources/models/ocr/latin_PP-OCRv5_mobile_rec_infer.mnn',
+    'resources/models/ocr/ppocr_keys_latin.txt',
+    'resources/models/ocr/PP-LCNet_x1_0_doc_ori.mnn',
+    'resources/models/ocr/PP-DocLayout-L.onnx',
+}
 CACHE_NOT_SEEDED_MARKER = 'CACHE_NOT_SEEDED.txt'
 INSTALL_PROBE_SPECS = (
     'paddlepaddle>=3.2.1,<3.3.0',
@@ -281,6 +288,12 @@ def run_smoke(platform: str, root: Path, release: bool = False, install_probe: b
             release_errors.append(f'release smoke missing seeded cache directory: {cache_dir}')
         for marker in unseeded_cache_markers(pack_root):
             release_errors.append(f'release smoke found unseeded cache marker: {marker}')
+        native_asset_paths = {entry['path'] for entry in manifest.get('native_assets', [])}
+        for asset in sorted(REQUIRED_RELEASE_NATIVE_ASSETS):
+            if asset not in native_asset_paths:
+                release_errors.append(f'release smoke missing native asset entry: {asset}')
+            if not (pack_root / asset).is_file():
+                release_errors.append(f'release smoke missing native asset file: {asset}')
         if python_relpath and (pack_root / python_relpath).exists():
             version_probes['python'] = run_version_probe(pack_root / python_relpath, platform)
         if uv_relpath and (pack_root / uv_relpath).exists():
