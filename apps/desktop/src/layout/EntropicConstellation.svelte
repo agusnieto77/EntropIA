@@ -25,7 +25,7 @@
     link: string
   }
 
-  const PALETTES: Record<string, ThemePalette> = {
+  const PALETTES = {
     dark: {
       bg: ['#080a10', '#0c0f17', '#10131b'],
       haze: ['rgba(75, 83, 106, 0.08)', 'rgba(38, 44, 62, 0.045)', 'rgba(8, 10, 16, 0)'],
@@ -44,11 +44,14 @@
       node: 'rgba(80, 90, 120, {a})',
       link: 'rgba(100, 110, 140, {a})',
     },
-  }
+  } satisfies Record<string, ThemePalette>
+
+  type PaletteKey = keyof typeof PALETTES
 
   function getCurrentPalette(): ThemePalette {
-    const theme = document.documentElement.dataset.theme ?? 'dark'
-    return PALETTES[theme] ?? PALETTES.dark
+    const theme = document.documentElement.dataset.theme
+    if (theme && theme in PALETTES) return PALETTES[theme as PaletteKey]
+    return PALETTES.dark
   }
 
   let canvas: HTMLCanvasElement

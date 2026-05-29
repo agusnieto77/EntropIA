@@ -588,13 +588,13 @@
     deleting = false
   }
 
-  let prevCollectionId = collectionId
+  let prevCollectionId: string | undefined
   $effect(() => {
-    if (collectionId !== prevCollectionId) {
-      prevCollectionId = collectionId
+    if (prevCollectionId !== undefined && collectionId !== prevCollectionId) {
       searchQuery = ''
       loadItems()
     }
+    prevCollectionId = collectionId
   })
 
   onMount(() => {

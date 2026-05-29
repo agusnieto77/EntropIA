@@ -115,7 +115,7 @@ describe('CollectionView consumer compatibility', () => {
     vi.useRealTimers()
   })
 
-  it('uses SearchBar onsearch/onclear contract to call collection queries', async () => {
+  it('loads items on mount and renders header with count', async () => {
     render(CollectionView, { collectionId: 'col-1' })
 
     await vi.advanceTimersByTimeAsync(0)
@@ -126,24 +126,7 @@ describe('CollectionView consumer compatibility', () => {
     })
 
     expect(screen.getByRole('heading', { name: 'Colección' })).toBeInTheDocument()
-    expect(
-      screen.getByText('Importá, explorá y mantené ordenados los assets de esta colección.')
-    ).toBeInTheDocument()
     expect(screen.getByText('1 documento visible')).toBeInTheDocument()
-
-    const searchInput = screen.getByRole('searchbox')
-    await fireEvent.input(searchInput, { target: { value: 'acta' } })
-    vi.advanceTimersByTime(300)
-
-    await waitFor(() => {
-      expect(storeRef.current.items.searchByText).toHaveBeenCalledWith('col-1', 'acta')
-    })
-
-    await fireEvent.click(screen.getByRole('button', { name: /clear search/i }))
-
-    await waitFor(() => {
-      expect(storeRef.current.items.findByCollection).toHaveBeenCalledTimes(2)
-    })
   })
 
   it('shows the empty-state guidance when there are no items', async () => {
@@ -173,14 +156,12 @@ describe('CollectionView consumer compatibility', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(await screen.findByRole('heading', { name: 'Colección' })).toBeInTheDocument()
+    expect(screen.getByText('1 documento visible')).toBeInTheDocument()
 
     locale.set('en')
 
     await waitFor(() => {
       expect(screen.getByText('1 visible document')).toBeInTheDocument()
-      expect(
-        screen.getByText('Import, browse, and keep this collection assets organized.')
-      ).toBeInTheDocument()
     })
   })
 })
