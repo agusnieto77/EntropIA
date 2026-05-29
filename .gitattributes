@@ -1,6 +1,2 @@
 # Keep the pnpm lockfile byte-stable across runners
 pnpm-lock.yaml text eol=lf
-
-# Runtime-pack fixture manifests validate file bytes; keep hashed text payloads CRLF-stable.
-apps/desktop/src-tauri/resources/runtime-pack/**/scripts/*.py text eol=crlf
-apps/desktop/src-tauri/resources/runtime-pack/**/wheelhouse/*.txt text eol=crlf
