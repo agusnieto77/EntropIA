@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 
@@ -251,11 +251,23 @@ where
         Some(release.archive_size),
         false,
     );
-    extract_archive_to_staging(&paths.archive_path, &staging_path)?;
+    let activation_result = (|| {
+        extract_archive_to_staging(&paths.archive_path, &staging_path)?;
 
-    let manifest_path = staging_path.join("manifest.json");
-    let runtime_manifest = RuntimeManifest::load_from_path(&manifest_path)?;
-    verify_extracted_runtime(&staging_path, &runtime_manifest, &release.pack_version)?;
+        let manifest_path = staging_path.join("manifest.json");
+        let runtime_manifest = RuntimeManifest::load_from_path(&manifest_path)?;
+        verify_extracted_runtime(&staging_path, &runtime_manifest, &release.pack_version)?;
+
+        Ok(runtime_manifest)
+    })();
+
+    let runtime_manifest = match activation_result {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            cleanup_incomplete_activation(app_data_dir, &release.pack_version, &staging_path);
+            return Err(error);
+        }
+    };
 
     emit_progress(
         on_progress,
@@ -266,22 +278,14 @@ where
         Some(release.archive_size),
         false,
     );
-    let managed_root = managed_pack_dir(app_data_dir, &release.pack_version);
-    if managed_root.exists() {
-        fs::remove_dir_all(&managed_root).map_err(|error| {
-            format!(
-                "Failed to remove existing managed runtime {}: {error}",
-                managed_root.display()
-            )
-        })?;
-    }
-    fs::rename(&staging_path, &managed_root).map_err(|error| {
-        format!(
-            "Failed to promote runtime from {} to {}: {error}",
-            staging_path.display(),
-            managed_root.display()
-        )
-    })?;
+    let managed_root =
+        match promote_staged_runtime(app_data_dir, release, &runtime_manifest, &staging_path) {
+            Ok(managed_root) => managed_root,
+            Err(error) => {
+                cleanup_incomplete_activation(app_data_dir, &release.pack_version, &staging_path);
+                return Err(error);
+            }
+        };
 
     let stage_marker = stage_marker_path(app_data_dir, &release.pack_version);
     if stage_marker.exists() {
@@ -298,6 +302,99 @@ where
         staging_path: paths.staging_path,
         managed_root,
     })
+}
+
+fn cleanup_incomplete_activation(app_data_dir: &Path, pack_version: &str, staging_path: &Path) {
+    let stage_marker = stage_marker_path(app_data_dir, pack_version);
+    if stage_marker.exists() {
+        let _ = fs::remove_file(stage_marker);
+    }
+    if staging_path.exists() {
+        let _ = fs::remove_dir_all(staging_path);
+    }
+}
+
+fn promote_staged_runtime(
+    app_data_dir: &Path,
+    release: &BootstrapReleaseManifest,
+    runtime_manifest: &RuntimeManifest,
+    staging_path: &Path,
+) -> Result<PathBuf, String> {
+    let managed_root = managed_pack_dir(app_data_dir, &release.pack_version);
+
+    if existing_managed_runtime_matches_release(&managed_root, release) {
+        fs::remove_dir_all(staging_path).map_err(|error| {
+            format!(
+                "Failed to remove redundant staging runtime {}: {error}",
+                staging_path.display()
+            )
+        })?;
+        return Ok(managed_root);
+    }
+
+    let backup_root = managed_replacement_backup_path(app_data_dir, &release.pack_version);
+    let had_existing = managed_root.exists();
+    if had_existing {
+        fs::rename(&managed_root, &backup_root).map_err(|error| {
+            format!(
+                "Failed to move existing managed runtime {} to backup {} before activation: {error}",
+                managed_root.display(),
+                backup_root.display()
+            )
+        })?;
+    }
+
+    if let Err(error) = fs::rename(staging_path, &managed_root) {
+        if had_existing && backup_root.exists() {
+            let _ = fs::rename(&backup_root, &managed_root);
+        }
+        return Err(format!(
+            "Failed to promote runtime from {} to {}: {error}",
+            staging_path.display(),
+            managed_root.display()
+        ));
+    }
+
+    if let Err(error) =
+        verify_extracted_runtime(&managed_root, runtime_manifest, &release.pack_version)
+    {
+        if had_existing && backup_root.exists() {
+            let _ = fs::remove_dir_all(&managed_root);
+            let _ = fs::rename(&backup_root, &managed_root);
+        }
+        return Err(error);
+    }
+
+    if had_existing && backup_root.exists() {
+        let _ = fs::remove_dir_all(&backup_root);
+    }
+
+    Ok(managed_root)
+}
+
+fn existing_managed_runtime_matches_release(
+    managed_root: &Path,
+    release: &BootstrapReleaseManifest,
+) -> bool {
+    let Ok(manifest) = RuntimeManifest::load_from_path(&managed_root.join("manifest.json")) else {
+        return false;
+    };
+    if manifest.pack_version != release.pack_version
+        || manifest.app_version != release.app_version
+        || manifest.platform != release.platform
+    {
+        return false;
+    }
+
+    verify_extracted_runtime(managed_root, &manifest, &release.pack_version).is_ok()
+}
+
+fn managed_replacement_backup_path(app_data_dir: &Path, pack_version: &str) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    runtime_root(app_data_dir).join(format!(".{pack_version}.replacing-{millis}"))
 }
 
 fn archive_file_name(release: &BootstrapReleaseManifest) -> &str {
@@ -631,6 +728,47 @@ mod tests {
         assert!(progress
             .iter()
             .any(|item| item.stage == RuntimeOperationStage::Activating));
+        assert!(!outcome.staging_path.exists());
+        assert!(!stage_marker_path(app_data_dir.path(), &release.pack_version).exists());
+    }
+
+    #[test]
+    fn remote_activation_reuses_existing_healthy_runtime_without_replacing_it() {
+        let app_data_dir = tempfile::tempdir().expect("app data dir");
+        let archive_bytes = runtime_archive_bytes();
+        let (release, public_key) = build_signed_release(&archive_bytes);
+
+        let first_outcome = download_and_activate_remote_runtime_with_fetch(
+            "https://example.com/runtime/bootstrap.json",
+            &release,
+            app_data_dir.path(),
+            &public_key,
+            |_| Ok(Cursor::new(archive_bytes.clone())),
+            &mut |_| {},
+        )
+        .expect("first bootstrap should succeed");
+        let sentinel = first_outcome
+            .managed_root
+            .join("venv")
+            .join("created-by-deps.txt");
+        fs::create_dir_all(sentinel.parent().expect("sentinel parent")).expect("venv dir");
+        fs::write(&sentinel, b"keep me").expect("sentinel write");
+
+        let second_outcome = download_and_activate_remote_runtime_with_fetch(
+            "https://example.com/runtime/bootstrap.json",
+            &release,
+            app_data_dir.path(),
+            &public_key,
+            |_| Ok(Cursor::new(archive_bytes.clone())),
+            &mut |_| {},
+        )
+        .expect("second bootstrap should reuse existing healthy runtime");
+
+        assert_eq!(second_outcome.managed_root, first_outcome.managed_root);
+        assert!(second_outcome.managed_root.join("manifest.json").is_file());
+        assert!(sentinel.is_file());
+        assert!(!second_outcome.staging_path.exists());
+        assert!(!stage_marker_path(app_data_dir.path(), &release.pack_version).exists());
     }
 
     #[test]
@@ -724,6 +862,13 @@ mod tests {
         .expect_err("missing extracted file must fail");
 
         assert!(error.contains("missing") || error.contains("Missing"));
+        let paths = bootstrap_download_plan_paths(
+            app_data_dir.path(),
+            &release.pack_version,
+            "runtime-pack.zip",
+        );
+        assert!(!paths.staging_path.exists());
+        assert!(!stage_marker_path(app_data_dir.path(), &release.pack_version).exists());
     }
 
     #[test]

@@ -568,4 +568,73 @@ describe('DependenciasTab', () => {
     expect(screen.getByText(/manifest not published/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reparar runtime' })).not.toBeInTheDocument()
   })
+
+  it('does not resurrect stale bootstrap progress after a healthy runtime status', async () => {
+    let statusHandler: ((status: unknown) => void) | null = null
+    let progressHandler: ((operation: unknown) => void) | null = null
+    depsMocks.onRuntimeStatus.mockImplementation(async (handler) => {
+      statusHandler = handler
+      return vi.fn()
+    })
+    depsMocks.onRuntimeProgress.mockImplementation(async (handler) => {
+      progressHandler = handler
+      return vi.fn()
+    })
+    depsMocks.getRuntimeStatus.mockResolvedValueOnce({
+      state: 'damaged',
+      packVersion: '2026.05.0',
+      repairNeeded: true,
+      repairAvailable: false,
+      summary: 'Runtime dañado',
+      blockedCapabilities: ['ocr'],
+      details: [],
+      guidance: [],
+      bootstrapEligible: true,
+      bootstrapRequired: true,
+      activeOperation: null,
+    })
+
+    render(DependenciasTab)
+
+    await waitFor(() => expect(progressHandler).toBeDefined())
+    expect(await screen.findByText(/Runtime dañado/i)).toBeInTheDocument()
+    progressHandler?.({
+      kind: 'bootstrap',
+      stage: 'downloading',
+      summary: 'Descargando runtime remoto confiable',
+      progressPercent: 35,
+      downloadedBytes: null,
+      totalBytes: null,
+      retryable: true,
+    })
+
+    expect(await screen.findByText(/35% · Descargando runtime remoto confiable/i)).toBeInTheDocument()
+
+    statusHandler?.({
+      state: 'healthy',
+      packVersion: '2026.05.0',
+      repairNeeded: false,
+      repairAvailable: false,
+      summary: 'Runtime listo',
+      blockedCapabilities: [],
+      details: [],
+      guidance: [],
+      bootstrapEligible: false,
+      bootstrapRequired: false,
+      activeOperation: null,
+    })
+    progressHandler?.({
+      kind: 'bootstrap',
+      stage: 'downloading',
+      summary: 'Descargando runtime remoto confiable',
+      progressPercent: 35,
+      downloadedBytes: null,
+      totalBytes: null,
+      retryable: true,
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText(/35% · Descargando runtime remoto confiable/i)).not.toBeInTheDocument()
+    })
+  })
 })

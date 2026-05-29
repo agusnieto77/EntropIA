@@ -16,6 +16,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Debug, Default)]
@@ -441,12 +442,9 @@ impl RuntimeManager {
         if current_status.state == RuntimeState::Healthy {
             return Ok(current_status);
         }
-        if current_status.state == RuntimeState::Fixture {
-            if let Some(existing_status) =
-                self.discover_hydrated_runtime_status_for_tests(app_data_dir)
-            {
-                return Ok(existing_status);
-            }
+        if let Some(existing_status) = self.discover_hydrated_runtime_status_for_tests(app_data_dir)
+        {
+            return Ok(existing_status);
         }
 
         let plan = BootstrapController::new().plan(
@@ -1073,22 +1071,10 @@ where
             true,
         );
     }
-    let managed_root = managed_pack_dir(app_data_dir, &manifest.pack_version);
-    if managed_root.exists() {
-        fs::remove_dir_all(&managed_root).map_err(|error| {
-            format!(
-                "Failed to remove previous managed runtime {}: {error}",
-                managed_root.display()
-            )
-        })?;
+    if let Err(error) = promote_local_staged_runtime(app_data_dir, manifest, &staging_root) {
+        cleanup_local_incomplete_activation(app_data_dir, &manifest.pack_version, &staging_root);
+        return Err(error);
     }
-    fs::rename(&staging_root, &managed_root).map_err(|error| {
-        format!(
-            "Failed to promote runtime from {} to {}: {error}",
-            staging_root.display(),
-            managed_root.display()
-        )
-    })?;
 
     let stage_marker = stage_marker_path(app_data_dir, &manifest.pack_version);
     if stage_marker.exists() {
@@ -1101,6 +1087,112 @@ where
     }
 
     Ok(())
+}
+
+fn cleanup_local_incomplete_activation(
+    app_data_dir: &Path,
+    pack_version: &str,
+    staging_root: &Path,
+) {
+    let stage_marker = stage_marker_path(app_data_dir, pack_version);
+    if stage_marker.exists() {
+        let _ = fs::remove_file(stage_marker);
+    }
+    if staging_root.exists() {
+        let _ = fs::remove_dir_all(staging_root);
+    }
+}
+
+fn promote_local_staged_runtime(
+    app_data_dir: &Path,
+    manifest: &RuntimeManifest,
+    staging_root: &Path,
+) -> Result<PathBuf, String> {
+    let managed_root = managed_pack_dir(app_data_dir, &manifest.pack_version);
+    if existing_managed_runtime_matches_manifest(&managed_root, manifest) {
+        fs::remove_dir_all(staging_root).map_err(|error| {
+            format!(
+                "Failed to remove redundant staging runtime {}: {error}",
+                staging_root.display()
+            )
+        })?;
+        return Ok(managed_root);
+    }
+
+    let backup_root = managed_replacement_backup_path(app_data_dir, &manifest.pack_version);
+    let had_existing = managed_root.exists();
+    if had_existing {
+        fs::rename(&managed_root, &backup_root).map_err(|error| {
+            format!(
+                "Failed to move previous managed runtime {} to backup {} before activation: {error}",
+                managed_root.display(),
+                backup_root.display()
+            )
+        })?;
+    }
+
+    if let Err(error) = fs::rename(staging_root, &managed_root) {
+        if had_existing && backup_root.exists() {
+            let _ = fs::rename(&backup_root, &managed_root);
+        }
+        return Err(format!(
+            "Failed to promote runtime from {} to {}: {error}",
+            staging_root.display(),
+            managed_root.display()
+        ));
+    }
+
+    let promoted_status = inspect_runtime(&managed_root, app_data_dir, manifest)?;
+    if promoted_status.state != RuntimeState::Healthy {
+        if had_existing && backup_root.exists() {
+            let _ = fs::remove_dir_all(&managed_root);
+            let _ = fs::rename(&backup_root, &managed_root);
+        }
+        return Err(format!(
+            "Promoted runtime verification failed with state {:?}",
+            promoted_status.state
+        ));
+    }
+
+    if had_existing && backup_root.exists() {
+        let _ = fs::remove_dir_all(&backup_root);
+    }
+
+    Ok(managed_root)
+}
+
+fn existing_managed_runtime_matches_manifest(
+    managed_root: &Path,
+    expected: &RuntimeManifest,
+) -> bool {
+    let Ok(manifest) = RuntimeManifest::load_from_path(&managed_root.join("manifest.json")) else {
+        return false;
+    };
+    if manifest.pack_version != expected.pack_version
+        || manifest.app_version != expected.app_version
+        || manifest.platform != expected.platform
+    {
+        return false;
+    }
+
+    inspect_runtime(
+        managed_root,
+        managed_root
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(managed_root),
+        &manifest,
+    )
+    .map(|status| status.state == RuntimeState::Healthy)
+    .unwrap_or(false)
+}
+
+fn managed_replacement_backup_path(app_data_dir: &Path, pack_version: &str) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    runtime_root(app_data_dir).join(format!(".{pack_version}.replacing-{millis}"))
 }
 
 fn write_stage_marker(app_data_dir: &Path, pack_version: &str, stage: &str) -> Result<(), String> {
@@ -1920,6 +2012,98 @@ mod tests {
         assert!(progress_events
             .iter()
             .any(|operation| operation.stage == RuntimeOperationStage::Activating));
+    }
+
+    #[test]
+    fn ensure_ready_or_bootstrap_reuses_existing_hydrated_runtime_before_remote_download() {
+        let bundle_dir = tempdir().expect("bundle dir");
+        let app_data_dir = tempdir().expect("app data dir");
+        let python_relpath = if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3"
+        };
+        let uv_relpath = if cfg!(windows) {
+            "uv/uv.exe"
+        } else {
+            "uv/bin/uv"
+        };
+        let python_sha = write_file(bundle_dir.path(), python_relpath, b"python");
+        let uv_sha = write_file(bundle_dir.path(), uv_relpath, b"uv");
+        let mut manifest = sample_manifest(
+            &crate::runtime::paths::current_runtime_platform(),
+            &python_sha,
+            &uv_sha,
+        );
+        manifest.payload_profile = "fixture".to_string();
+        manifest.release_injection_required = true;
+        manifest.external_artifacts_required = vec!["relocatable-python".to_string()];
+        write_manifest(bundle_dir.path(), &manifest);
+
+        let archive_bytes = runtime_archive_bytes();
+        let (release, public_key) = build_signed_release(&archive_bytes);
+        let manager = RuntimeManager::new();
+        manager
+            .ensure_ready_or_bootstrap_for_tests_with_remote_support(
+                bundle_dir.path(),
+                app_data_dir.path(),
+                BootstrapRemoteCatalog::Available {
+                    source: BootstrapRemoteSource {
+                        manifest_url: "https://example.com/bootstrap.json".to_string(),
+                        public_key_id: "entropia-root".to_string(),
+                    },
+                    index: crate::runtime::manifest::BootstrapManifestIndex {
+                        channel: "stable".to_string(),
+                        generated_at: "2026-05-06T00:00:00Z".to_string(),
+                        releases: vec![release.clone()],
+                    },
+                },
+                |_| Ok(public_key.clone()),
+                |source_manifest_url, release, app_data_dir, public_key_base64, on_progress| {
+                    crate::runtime::download::download_and_activate_remote_runtime_with_fetch(
+                        source_manifest_url,
+                        release,
+                        app_data_dir,
+                        public_key_base64,
+                        |_| Ok(std::io::Cursor::new(archive_bytes.clone())),
+                        on_progress,
+                    )
+                },
+                |_| {},
+            )
+            .expect("initial remote bootstrap should activate");
+
+        let downloads = std::sync::atomic::AtomicUsize::new(0);
+        let status = manager
+            .ensure_ready_or_bootstrap_for_tests_with_remote_support(
+                bundle_dir.path(),
+                app_data_dir.path(),
+                BootstrapRemoteCatalog::Available {
+                    source: BootstrapRemoteSource {
+                        manifest_url: "https://example.com/bootstrap.json".to_string(),
+                        public_key_id: "entropia-root".to_string(),
+                    },
+                    index: crate::runtime::manifest::BootstrapManifestIndex {
+                        channel: "stable".to_string(),
+                        generated_at: "2026-05-06T00:00:00Z".to_string(),
+                        releases: vec![release],
+                    },
+                },
+                |_| Ok(public_key.clone()),
+                |_source_manifest_url,
+                 _release,
+                 _app_data_dir,
+                 _public_key_base64,
+                 _on_progress| {
+                    downloads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err("download should not be called".to_string())
+                },
+                |_| {},
+            )
+            .expect("existing hydrated runtime should be reused");
+
+        assert_eq!(status.state, RuntimeState::Healthy);
+        assert_eq!(downloads.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

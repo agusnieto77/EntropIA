@@ -67,6 +67,7 @@
   let resetConfirmationOpen = $state(false)
   let resetConfirmationText = $state('')
   let resetting = $state(false)
+  let runtimeOperationInFlight = false
 
   const RESET_CONFIRMATION_PHRASE = 'resetear entorno'
 
@@ -141,8 +142,17 @@
       await onRuntimeStatus((status) => {
         runtimeStatus = status
         runtimeOperation = status.activeOperation
+        runtimeOperationInFlight = status.activeOperation != null
       }),
       await onRuntimeProgress((operation) => {
+        if (
+          !runtimeOperationInFlight &&
+          runtimeStatus?.state === 'healthy' &&
+          operation.stage !== 'checking'
+        ) {
+          return
+        }
+        runtimeOperationInFlight = true
         runtimeOperation = operation
       }),
       await listen<LlmDownloadProgressPayload>('llm:download_progress', (event) => {
@@ -234,6 +244,7 @@
     uvStatus = uv
     runtimeStatus = runtime
     runtimeOperation = runtime.activeOperation
+    runtimeOperationInFlight = runtime.activeOperation != null
     llmModel = localLlm
     embeddingModel = localEmbedding
   }
@@ -243,6 +254,7 @@
     uvStatus = uv
     runtimeStatus = runtime
     runtimeOperation = runtime.activeOperation
+    runtimeOperationInFlight = runtime.activeOperation != null
   }
 
   async function refreshAiModelState() {
