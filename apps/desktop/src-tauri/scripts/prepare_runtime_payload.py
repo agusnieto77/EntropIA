@@ -28,6 +28,7 @@ REQUIRED_CACHE_DIRS = ('hf', 'paddlex')
 REQUIRED_LAYOUT_DIRS = ('python', 'uv', 'scripts', 'wheelhouse', 'caches', 'resources/lib')
 OVERRIDES_FILENAME = 'manifest.overrides.json'
 SPACY_MODEL_WHEEL_URL = 'https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl'
+SPACY_RUNTIME_SPEC = 'spacy>=3.7.0,<3.8.0'
 
 
 def platform_python_relpath(platform: str) -> str:
@@ -98,7 +99,7 @@ def ensure_spacy_wheelhouse(platform: str, payload_root: Path) -> None:
     wheelhouse = payload_root / 'wheelhouse'
     wheelhouse.mkdir(parents=True, exist_ok=True)
     wheel_names = [normalized_name(path) for path in wheelhouse.iterdir() if path.is_file()]
-    if any(name.startswith('spacy') for name in wheel_names) and any(
+    if any(name.startswith('spacy_3.7') for name in wheel_names) and any(
         name.startswith('es_core_news_sm') for name in wheel_names
     ):
         return
@@ -123,7 +124,7 @@ def ensure_spacy_wheelhouse(platform: str, payload_root: Path) -> None:
             '--abi',
             'cp311',
         ])
-    cmd.append(SPACY_MODEL_WHEEL_URL)
+    cmd.extend([SPACY_RUNTIME_SPEC, SPACY_MODEL_WHEEL_URL])
 
     subprocess.run(cmd, check=True)
 
