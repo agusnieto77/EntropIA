@@ -33,7 +33,6 @@ REQUIRED_RELEASE_NATIVE_ASSETS = {
     'resources/models/ocr/latin_PP-OCRv5_mobile_rec_infer.mnn',
     'resources/models/ocr/ppocr_keys_latin.txt',
     'resources/models/ocr/PP-LCNet_x1_0_doc_ori.mnn',
-    'resources/models/ocr/PP-DocLayout-L.onnx',
 }
 CACHE_NOT_SEEDED_MARKER = 'CACHE_NOT_SEEDED.txt'
 INSTALL_PROBE_SPECS = (
