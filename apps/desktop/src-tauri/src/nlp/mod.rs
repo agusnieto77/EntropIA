@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
-use crate::llm::engine::{LlmConfig, LlmEngine};
 use crate::llm::LlmQueue;
 use crate::runtime::RuntimeManager;
 use embeddings::EmbeddingEngine;
@@ -847,15 +846,11 @@ async fn run_local_gemma_ner(
     tokio::task::spawn_blocking(move || {
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|error| format!("Failed to open DB for local NER fallback: {error}"))?;
-        crate::llm::ensure_default_model_downloaded_if_missing(&conn, &db_path, &app_handle)?;
-        let model_path = crate::llm::resolve_model_path(&db_path);
-        let engine = LlmEngine::init(LlmConfig {
-            model_path,
-            n_ctx: 4096,
-            n_threads: None,
-            seed: 1234,
-        })?;
+        let engine = crate::llm::get_or_init_local_gemma_engine(&conn, &db_path, &app_handle)?;
         let max_tokens = 1024;
+        let engine = engine
+            .lock()
+            .map_err(|error| format!("Local Gemma engine lock poisoned: {error}"))?;
         let truncated = crate::llm::truncate_text_for_context(engine.n_ctx(), max_tokens, &text);
         let prompt = crate::llm::prompt::extract_entities(&truncated);
         let raw = engine.generate(&prompt, max_tokens, "[nlp/ner][local]")?;

@@ -7,7 +7,7 @@ pub mod prompt;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use once_cell::sync::Lazy;
@@ -28,6 +28,11 @@ const LLM_CLOUD_PREFIX: &str = "[llm-cloud]";
 const LLM_TARGET_ASSET: &str = "asset";
 const LLM_TARGET_ITEM: &str = "item";
 const LLM_TARGET_COLLECTION: &str = "collection";
+
+pub(crate) type SharedLocalLlmEngine = Arc<Mutex<LlmEngine>>;
+
+static LOCAL_GEMMA_ENGINE: Lazy<Mutex<Option<SharedLocalLlmEngine>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Settings key for the local model filename.
 pub const LOCAL_MODEL_FILENAME_KEY: &str = "local_model_filename";
@@ -123,6 +128,33 @@ pub(crate) fn ensure_default_model_downloaded_if_missing(
         "{LLM_LOCAL_PREFIX} Default Gemma model missing; starting controlled auto-download from default source"
     );
     self::download::download_model_file(DEFAULT_MODEL_SOURCE_URL, &model_path, app_handle)
+}
+
+pub(crate) fn get_or_init_local_gemma_engine(
+    conn: &rusqlite::Connection,
+    db_path: &std::path::Path,
+    app_handle: &AppHandle,
+) -> Result<SharedLocalLlmEngine, String> {
+    let mut cached = LOCAL_GEMMA_ENGINE
+        .lock()
+        .map_err(|error| format!("Local Gemma engine cache lock poisoned: {error}"))?;
+
+    if let Some(engine) = cached.as_ref() {
+        return Ok(Arc::clone(engine));
+    }
+
+    ensure_default_model_downloaded_if_missing(conn, db_path, app_handle)?;
+    let model_path = resolve_model_path(db_path);
+    eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
+    let engine = LlmEngine::init(LlmConfig {
+        model_path,
+        n_ctx: 4096,
+        n_threads: None,
+        seed: 1234,
+    })?;
+    let engine = Arc::new(Mutex::new(engine));
+    *cached = Some(Arc::clone(&engine));
+    Ok(engine)
 }
 
 /// Resolved status of the local LLM model on disk.
@@ -1064,7 +1096,7 @@ impl LlmQueue {
             eprintln!(
                 "{LLM_LOCAL_PREFIX} Local Gemma engine will initialize lazily on first local job"
             );
-            let mut engine: Option<LlmEngine> = None;
+            let mut engine: Option<SharedLocalLlmEngine> = None;
             let mut init_error: Option<String> = None;
 
             // Ensure llm_results table exists and legacy rows are normalized.
@@ -1129,21 +1161,15 @@ impl LlmQueue {
                         let init_app_handle = app_handle.clone();
                         eprintln!("{LLM_LOCAL_PREFIX} Initializing local Gemma engine on demand for job '{job_name}'");
                         match tokio::task::spawn_blocking(move || {
-                            let init_conn = rusqlite::Connection::open(&init_db_path)
-                                .map_err(|e| format!("Failed to open DB for lazy local LLM init: {e}"))?;
-                            ensure_default_model_downloaded_if_missing(
+                            let init_conn =
+                                rusqlite::Connection::open(&init_db_path).map_err(|e| {
+                                    format!("Failed to open DB for lazy local LLM init: {e}")
+                                })?;
+                            get_or_init_local_gemma_engine(
                                 &init_conn,
                                 &init_db_path,
                                 &init_app_handle,
-                            )?;
-                            let model_path = resolve_model_path(&init_db_path);
-                            eprintln!("{LLM_LOCAL_PREFIX} OCRC configured as text-only (multimodal disabled)");
-                            LlmEngine::init(LlmConfig {
-                                model_path,
-                                n_ctx: 4096,
-                                n_threads: None,
-                                seed: 1234,
-                            })
+                            )
                         })
                         .await
                         {
@@ -1160,8 +1186,11 @@ impl LlmQueue {
                                 ));
                             }
                             Err(error) => {
-                                eprintln!("{LLM_LOCAL_PREFIX} Engine lazy local init panicked: {error}");
-                                init_error = Some(format!("Engine lazy local init panicked: {error}"));
+                                eprintln!(
+                                    "{LLM_LOCAL_PREFIX} Engine lazy local init panicked: {error}"
+                                );
+                                init_error =
+                                    Some(format!("Engine lazy local init panicked: {error}"));
                             }
                         }
                     }
@@ -1171,7 +1200,12 @@ impl LlmQueue {
                             eprintln!(
                                 "{job_log_prefix} Running job '{job_name}' for {id} via local engine"
                             );
-                            tokio::task::block_in_place(|| process_job(e, &conn, &job))
+                            tokio::task::block_in_place(|| {
+                                let engine = e.lock().map_err(|error| {
+                                    format!("Local Gemma engine lock poisoned: {error}")
+                                })?;
+                                process_job(&engine, &conn, &job)
+                            })
                         }
                         None => {
                             if llm_mode == "auto" && !api_key.is_empty() {

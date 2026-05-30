@@ -215,9 +215,14 @@ impl RuntimeManager {
             .path()
             .app_data_dir()
             .map_err(|error| format!("Failed to get app data dir: {error}"))?;
-        if let Some(root) = self.discover_hydrated_runtime_root_for_tests(&app_data_dir) {
-            return Ok(Some(root));
+
+        if matches!(compatibility_status(&manifest), Some(status) if status.state == RuntimeState::Fixture)
+        {
+            if let Some(root) = self.discover_hydrated_runtime_root_for_tests(&app_data_dir) {
+                return Ok(Some(root));
+            }
         }
+
         Ok(self.hydrated_runtime_root_for_tests(&bundle_root, &app_data_dir, &manifest))
     }
 

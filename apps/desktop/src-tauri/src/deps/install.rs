@@ -592,7 +592,10 @@ pub fn load_managed_runtime_context(
     app_handle: &tauri::AppHandle,
 ) -> Result<Option<ManagedRuntimeContext>, String> {
     let manager = app_handle.state::<RuntimeManager>();
-    let status = manager.status(app_handle)?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to get app data dir: {error}"))?;
     let bundle_root = manager.hydrated_runtime_root(app_handle)?;
 
     let Some(managed_root) = bundle_root else {
@@ -600,6 +603,15 @@ pub fn load_managed_runtime_context(
     };
 
     let manifest = RuntimeManifest::load_from_path(&managed_root.join("manifest.json"))?;
+    let status = manager
+        .inspect_hydrated_runtime_for_tests(&app_data_dir, &managed_root, &manifest)
+        .ok_or_else(|| {
+            format!(
+                "No se pudo inspeccionar el runtime administrado {}",
+                managed_root.display()
+            )
+        })?;
+
     Ok(Some(ManagedRuntimeContext {
         managed_root,
         manifest,
