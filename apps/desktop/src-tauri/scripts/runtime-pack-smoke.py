@@ -17,12 +17,15 @@ TAURI_ROOT = REPO_ROOT / 'apps' / 'desktop' / 'src-tauri'
 RUNTIME_PACK_ROOT = TAURI_ROOT / 'resources' / 'runtime-pack'
 REQUIRED_RELEASE_SCRIPTS = {
     'scripts/paddle_vl.py',
+    'scripts/spacy_ner.py',
     'scripts/transcribe.py',
 }
 REQUIRED_RELEASE_WHEELS = {
+    'es_core_news_sm',
     'paddleocr',
     'paddlepaddle',
     'faster_whisper',
+    'spacy',
 }
 REQUIRED_RELEASE_CACHE_DIRS = (
     'caches/hf',
@@ -39,10 +42,12 @@ INSTALL_PROBE_SPECS = (
     'paddlepaddle>=3.2.1,<3.3.0',
     'paddleocr[doc-parser]>=2.9.0',
     'faster-whisper>=1.0.0',
+    'https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl',
 )
 INSTALL_PROBE_IMPORTS = (
     'import paddle; from paddleocr import PaddleOCRVL; print("paddleocr ok")',
     'import faster_whisper, ctranslate2; print("faster_whisper ok")',
+    'import spacy; spacy.load("es_core_news_sm"); print("spacy ok")',
 )
 
 
@@ -78,6 +83,7 @@ def required_paths(manifest: dict) -> list[str]:
         manifest['python_relpath'],
         manifest['uv_relpath'],
         'scripts/paddle_vl.py',
+        'scripts/spacy_ner.py',
         'scripts/transcribe.py',
     ]
 

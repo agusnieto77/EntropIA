@@ -36,6 +36,12 @@
       "executable": false
     },
     {
+      "path": "scripts/spacy_ner.py",
+      "sha256": "eb0926be8a43671e0de021a4e1b51e9b56ab1753bd5f5e2aac6d61468c54c5f2",
+      "size": 2070,
+      "executable": false
+    },
+    {
       "path": "scripts/transcribe.py",
       "sha256": "11ecb216b35a7a21b1345ec131c8efda68abc53f1b5468c01f5b7fb7ea03b1cb",
       "size": 9682,

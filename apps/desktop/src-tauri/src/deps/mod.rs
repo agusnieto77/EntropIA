@@ -46,6 +46,7 @@ pub enum DependencyId {
     PaddlePaddle,
     PaddleOcr,
     FasterWhisper,
+    Spacy,
 }
 
 /// The runtime status of a single dependency.
@@ -86,7 +87,7 @@ fn default_dependency_statuses() -> HashMap<DependencyId, DependencyStatus> {
     use DependencyId::*;
 
     let mut map = HashMap::new();
-    for id in [Python, PaddlePaddle, PaddleOcr, FasterWhisper] {
+    for id in [Python, PaddlePaddle, PaddleOcr, FasterWhisper, Spacy] {
         map.insert(id, DependencyStatus::Unknown);
     }
     map

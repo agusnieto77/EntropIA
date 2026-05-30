@@ -1,4 +1,5 @@
 pub mod openrouter;
+pub mod spacy;
 pub mod types;
 
 use rusqlite::{params, Connection};
@@ -17,11 +18,37 @@ pub struct EntityExtractionBatch {
     pub entities: Vec<Entity>,
 }
 
+pub struct NerExtractionInput {
+    pub text: String,
+    pub protected_entities: Vec<Entity>,
+}
+
 pub struct OpenRouterExtractionInput {
     pub text: String,
     pub protected_entities: Vec<Entity>,
     pub api_key: String,
     pub model_name: String,
+}
+
+pub fn prepare_ner_candidates_for_item(
+    conn: &Connection,
+    item_id: &str,
+) -> Result<NerExtractionInput, String> {
+    Ok(NerExtractionInput {
+        text: text_provider::get_item_text(conn, item_id)?,
+        protected_entities: load_protected_entities(conn, item_id)?,
+    })
+}
+
+pub fn prepare_ner_candidates_for_asset(
+    conn: &Connection,
+    item_id: &str,
+    asset_id: &str,
+) -> Result<NerExtractionInput, String> {
+    Ok(NerExtractionInput {
+        text: text_provider::get_asset_text(conn, asset_id)?,
+        protected_entities: load_protected_entities(conn, item_id)?,
+    })
 }
 
 #[allow(dead_code)] // Future: LLM entity review pipeline (not yet wired)
@@ -320,7 +347,7 @@ fn load_protected_entities(conn: &Connection, item_id: &str) -> Result<Vec<Entit
         .map_err(|e| format!("Failed to collect protected entities: {e}"))
 }
 
-fn openrouter_settings(conn: &Connection) -> Result<(String, String), String> {
+pub(crate) fn openrouter_settings(conn: &Connection) -> Result<(String, String), String> {
     let api_key = crate::settings::get_setting(conn, "openrouter_api_key")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -476,7 +503,7 @@ mod tests {
             .expect_err("bad JSON should not silently fall back");
 
         assert!(error.contains("OpenRouter NER"));
-        assert!(error.contains("spaCy fallback is disabled"));
+        assert!(error.contains("failed to parse JSON"));
     }
 
     #[test]

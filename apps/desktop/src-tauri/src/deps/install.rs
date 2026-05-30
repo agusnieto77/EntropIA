@@ -946,13 +946,16 @@ fn requires_binary_only(uses_online_indexes: bool) -> bool {
     uses_online_indexes
 }
 
-fn managed_install_spec(dep: &DependencySpec, _wheelhouse_dir: Option<&Path>) -> Option<String> {
+fn managed_install_spec(dep: &DependencySpec, wheelhouse_dir: Option<&Path>) -> Option<String> {
     match dep.id {
         DependencyId::Python => None,
         DependencyId::PaddlePaddle => {
             // Dynamic resolution is handled inside install_package; for probes
             // and status checks we still return the static CPU spec.
             dep.pip_spec.map(str::to_owned)
+        }
+        DependencyId::Spacy if wheelhouse_dir.is_some() => {
+            Some("es-core-news-sm==3.7.0".to_string())
         }
         _ => dep.pip_spec.map(str::to_owned),
     }

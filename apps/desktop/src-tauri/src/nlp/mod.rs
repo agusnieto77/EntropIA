@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
+use crate::llm::engine::{LlmConfig, LlmEngine};
 use crate::llm::LlmQueue;
 use crate::runtime::RuntimeManager;
 use embeddings::EmbeddingEngine;
@@ -278,7 +279,7 @@ impl NlpQueue {
                     }
                     NlpJob::ExtractEntities { item_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let result = ner::prepare_openrouter_candidates_for_item(&conn, &item_id)
+                        let result = ner::prepare_ner_candidates_for_item(&conn, &item_id)
                             .and_then(|input| {
                                 if input.text.trim().is_empty() {
                                     Ok(None)
@@ -287,7 +288,15 @@ impl NlpQueue {
                                 }
                             });
                         let result = match result {
-                            Ok(Some(input)) => run_openrouter_ner_input(input).await,
+                            Ok(Some(input)) => {
+                                run_configured_ner_input(
+                                    &app_handle,
+                                    &db_path,
+                                    ner_fallback_config(&conn),
+                                    input,
+                                )
+                                .await
+                            }
                             Ok(None) => Ok(Vec::new()),
                             Err(error) => Err(format!("NER extraction failed: {error}")),
                         };
@@ -363,16 +372,25 @@ impl NlpQueue {
                                 pending.insert(item_id.clone());
                             }
                             emit_progress(&app_handle, &item_id, "ner", 10);
-                            let r = ner::prepare_openrouter_candidates_for_item(&conn, &item_id)
-                                .and_then(|input| {
+                            let r = ner::prepare_ner_candidates_for_item(&conn, &item_id).and_then(
+                                |input| {
                                     if input.text.trim().is_empty() {
                                         Ok(None)
                                     } else {
                                         Ok(Some(input))
                                     }
-                                });
+                                },
+                            );
                             let r = match r {
-                                Ok(Some(input)) => run_openrouter_ner_input(input).await,
+                                Ok(Some(input)) => {
+                                    run_configured_ner_input(
+                                        &app_handle,
+                                        &db_path,
+                                        ner_fallback_config(&conn),
+                                        input,
+                                    )
+                                    .await
+                                }
                                 Ok(None) => Ok(Vec::new()),
                                 Err(error) => Err(format!("NER extraction failed: {error}")),
                             };
@@ -468,11 +486,18 @@ impl NlpQueue {
 
                     NlpJob::ExtractEntitiesForAsset { item_id, asset_id } => {
                         emit_progress(&app_handle, &item_id, "ner", 10);
-                        let result = ner::prepare_openrouter_candidates_for_asset(
-                            &conn, &item_id, &asset_id,
-                        );
+                        let result =
+                            ner::prepare_ner_candidates_for_asset(&conn, &item_id, &asset_id);
                         let result = match result {
-                            Ok(input) => run_openrouter_ner_batch(input).await,
+                            Ok(input) => {
+                                run_configured_ner_batch(
+                                    &app_handle,
+                                    &db_path,
+                                    ner_fallback_config(&conn),
+                                    input,
+                                )
+                                .await
+                            }
                             Err(error) => Err(format!("NER extraction for asset failed: {error}")),
                         };
                         // Remove from asset-level dedup set so later OCR/transcription saves can refresh it.
@@ -481,7 +506,7 @@ impl NlpQueue {
                         }
                         match result {
                             Ok(batch) => {
-                                // NER now runs OpenRouter/Gemma JSON extraction for lightweight mode.
+                                // NER uses spaCy first, then falls back to Gemma/OpenRouter by mode.
                                 let final_entities = if batch.text.trim().is_empty() {
                                     Vec::new()
                                 } else {
@@ -699,6 +724,38 @@ async fn run_openrouter_ner_input(
     .map_err(|error| format!("NER extraction failed: {error}"))
 }
 
+async fn run_configured_ner_input(
+    app_handle: &AppHandle,
+    db_path: &std::path::Path,
+    fallback: NerFallbackConfig,
+    input: ner::NerExtractionInput,
+) -> Result<Vec<ner::types::Entity>, String> {
+    if input.text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    match run_spacy_ner(app_handle, db_path, &input).await {
+        Ok(entities) => return Ok(entities),
+        Err(error) => {
+            eprintln!("[nlp/ner] spaCy NER unavailable; using configured LLM fallback: {error}")
+        }
+    }
+
+    match fallback.mode {
+        NerLlmFallbackMode::Local => run_local_gemma_ner(app_handle, db_path, &input).await,
+        NerLlmFallbackMode::OpenRouter => {
+            let (api_key, model_name) = fallback.openrouter?;
+            run_openrouter_ner_input(ner::OpenRouterExtractionInput {
+                text: input.text,
+                protected_entities: input.protected_entities,
+                api_key,
+                model_name,
+            })
+            .await
+        }
+    }
+}
+
 async fn run_openrouter_ner_batch(
     input: ner::OpenRouterExtractionInput,
 ) -> Result<ner::EntityExtractionBatch, String> {
@@ -719,6 +776,98 @@ async fn run_openrouter_ner_batch(
         text: input.text,
         entities,
     })
+}
+
+async fn run_configured_ner_batch(
+    app_handle: &AppHandle,
+    db_path: &std::path::Path,
+    fallback: NerFallbackConfig,
+    input: ner::NerExtractionInput,
+) -> Result<ner::EntityExtractionBatch, String> {
+    let text = input.text.clone();
+    let entities = run_configured_ner_input(app_handle, db_path, fallback, input)
+        .await
+        .map_err(|error| format!("NER extraction for asset failed: {error}"))?;
+    Ok(ner::EntityExtractionBatch { text, entities })
+}
+
+#[derive(Clone, Copy)]
+enum NerLlmFallbackMode {
+    Local,
+    OpenRouter,
+}
+
+struct NerFallbackConfig {
+    mode: NerLlmFallbackMode,
+    openrouter: Result<(String, String), String>,
+}
+
+fn ner_fallback_config(conn: &rusqlite::Connection) -> NerFallbackConfig {
+    let mode = match crate::settings::get_setting(conn, "llm_mode")
+        .unwrap_or_else(|| "local".to_string())
+        .as_str()
+    {
+        "openrouter" | "auto" => NerLlmFallbackMode::OpenRouter,
+        _ => NerLlmFallbackMode::Local,
+    };
+    let openrouter = match mode {
+        NerLlmFallbackMode::OpenRouter => ner::openrouter_settings(conn),
+        NerLlmFallbackMode::Local => {
+            Err("OpenRouter no seleccionado para fallback NER".to_string())
+        }
+    };
+    NerFallbackConfig { mode, openrouter }
+}
+
+async fn run_spacy_ner(
+    app_handle: &AppHandle,
+    db_path: &std::path::Path,
+    input: &ner::NerExtractionInput,
+) -> Result<Vec<ner::types::Entity>, String> {
+    let app_handle = app_handle.clone();
+    let db_path = db_path.to_path_buf();
+    let text = input.text.clone();
+    let protected_entities = input.protected_entities.clone();
+    tokio::task::spawn_blocking(move || {
+        ner::spacy::extract_entities_with_spacy(&app_handle, &db_path, &text, &protected_entities)
+    })
+    .await
+    .map_err(|error| format!("spaCy NER task panicked: {error}"))?
+}
+
+async fn run_local_gemma_ner(
+    app_handle: &AppHandle,
+    db_path: &std::path::Path,
+    input: &ner::NerExtractionInput,
+) -> Result<Vec<ner::types::Entity>, String> {
+    let app_handle = app_handle.clone();
+    let db_path = db_path.to_path_buf();
+    let text = input.text.clone();
+    let protected_entities = input.protected_entities.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|error| format!("Failed to open DB for local NER fallback: {error}"))?;
+        crate::llm::ensure_default_model_downloaded_if_missing(&conn, &db_path, &app_handle)?;
+        let model_path = crate::llm::resolve_model_path(&db_path);
+        let engine = LlmEngine::init(LlmConfig {
+            model_path,
+            n_ctx: 4096,
+            n_threads: None,
+            seed: 1234,
+        })?;
+        let max_tokens = 1024;
+        let truncated = crate::llm::truncate_text_for_context(engine.n_ctx(), max_tokens, &text);
+        let prompt = crate::llm::prompt::extract_entities(&truncated);
+        let raw = engine.generate(&prompt, max_tokens, "[nlp/ner][local]")?;
+        ner::openrouter::parse_openrouter_entities(
+            &text,
+            &protected_entities,
+            &raw,
+            crate::llm::MODEL_FILENAME,
+        )
+    })
+    .await
+    .map_err(|error| format!("Local Gemma NER task panicked: {error}"))?
 }
 
 fn asset_embedding_exists(conn: &rusqlite::Connection, asset_id: &str) -> Result<bool, String> {

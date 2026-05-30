@@ -78,6 +78,15 @@ static ALL_DEPS: &[DependencySpec] = &[
         managed_prerequisites: NO_PREREQUISITES,
         install_order: 3,
     },
+    DependencySpec {
+        id: DependencyId::Spacy,
+        display_name: "spaCy NER español",
+        pip_spec: Some("https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl"),
+        probe_code: "import spacy; spacy.load('es_core_news_sm'); print('ok')",
+        critical: false,
+        managed_prerequisites: NO_PREREQUISITES,
+        install_order: 4,
+    },
 ];
 
 /// Return the full static registry of all managed dependencies.
@@ -109,8 +118,8 @@ mod tests {
     fn test_registry_length() {
         assert_eq!(
             all_deps().len(),
-            4,
-            "Registry should have exactly 4 Python runtime entries"
+            5,
+            "Registry should have exactly 5 Python runtime entries"
         );
     }
 

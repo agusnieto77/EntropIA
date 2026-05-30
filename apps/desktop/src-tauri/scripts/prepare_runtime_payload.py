@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,15 +16,18 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 TAURI_ROOT = REPO_ROOT / 'apps' / 'desktop' / 'src-tauri'
 SCRIPT_SOURCE_DIR = TAURI_ROOT / 'scripts'
 SUPPORTED_PLATFORMS = ('windows-x86_64', 'linux-x86_64')
-REQUIRED_SCRIPTS = ('paddle_vl.py', 'transcribe.py')
+REQUIRED_SCRIPTS = ('paddle_vl.py', 'spacy_ner.py', 'transcribe.py')
 REQUIRED_WHEEL_PREFIXES = (
+    'es_core_news_sm',
     'paddleocr',
     'paddlepaddle',
     'faster_whisper',
+    'spacy',
 )
 REQUIRED_CACHE_DIRS = ('hf', 'paddlex')
 REQUIRED_LAYOUT_DIRS = ('python', 'uv', 'scripts', 'wheelhouse', 'caches', 'resources/lib')
 OVERRIDES_FILENAME = 'manifest.overrides.json'
+SPACY_MODEL_WHEEL_URL = 'https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.7.0/es_core_news_sm-3.7.0-py3-none-any.whl'
 
 
 def platform_python_relpath(platform: str) -> str:
@@ -88,6 +92,40 @@ def ensure_repo_scripts(payload_root: Path) -> None:
         if not source.exists():
             raise ValueError(f'required repo script missing: {source}')
         shutil.copy2(source, target)
+
+
+def ensure_spacy_wheelhouse(platform: str, payload_root: Path) -> None:
+    wheelhouse = payload_root / 'wheelhouse'
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    wheel_names = [normalized_name(path) for path in wheelhouse.iterdir() if path.is_file()]
+    if any(name.startswith('spacy') for name in wheel_names) and any(
+        name.startswith('es_core_news_sm') for name in wheel_names
+    ):
+        return
+
+    cmd = [
+        sys.executable,
+        '-m',
+        'pip',
+        'download',
+        '--only-binary=:all:',
+        '--dest',
+        str(wheelhouse),
+    ]
+    if platform == 'windows-x86_64':
+        cmd.extend([
+            '--platform',
+            'win_amd64',
+            '--python-version',
+            '311',
+            '--implementation',
+            'cp',
+            '--abi',
+            'cp311',
+        ])
+    cmd.append(SPACY_MODEL_WHEEL_URL)
+
+    subprocess.run(cmd, check=True)
 
 
 def validate_required_payload(platform: str, payload_root: Path) -> None:
@@ -202,6 +240,7 @@ def prepare_payload(
         source = resolve_source_root(payload_source_dir, platform)
         copy_tree_contents(source, destination)
         ensure_repo_scripts(destination)
+        ensure_spacy_wheelhouse(platform, destination)
 
     validate_required_payload(platform, destination)
     write_manifest_overrides(platform, destination, pack_version, app_version)

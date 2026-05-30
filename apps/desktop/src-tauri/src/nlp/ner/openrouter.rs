@@ -68,9 +68,8 @@ pub fn parse_openrouter_entities(
 ) -> Result<Vec<Entity>, String> {
     let content = strip_markdown_fences(raw_response);
     let json = extract_json_payload(&content)?;
-    let payload: NerPayload = serde_json::from_str(json).map_err(|error| {
-        format!("OpenRouter NER failed to parse JSON: {error}. spaCy fallback is disabled.")
-    })?;
+    let payload: NerPayload = serde_json::from_str(json)
+        .map_err(|error| format!("OpenRouter NER failed to parse JSON: {error}."))?;
 
     let raw_entities = match payload {
         NerPayload::Array(items) => items,
@@ -129,9 +128,7 @@ pub fn normalize_model_name(model_name: &str) -> String {
 }
 
 pub fn openrouter_ner_unavailable(reason: &str) -> String {
-    format!(
-        "OpenRouter NER unavailable: {reason}. Configure OpenRouter API key/model. spaCy fallback is disabled."
-    )
+    format!("OpenRouter NER unavailable: {reason}. Configure OpenRouter API key/model.")
 }
 
 fn parse_openrouter_entity_type(value: &str) -> Option<EntityType> {
@@ -171,22 +168,14 @@ fn extract_json_payload(content: &str) -> Result<&str, String> {
     let start = content
         .find('[')
         .or_else(|| content.find('{'))
-        .ok_or_else(|| {
-            "OpenRouter NER did not return JSON content. spaCy fallback is disabled.".to_string()
-        })?;
+        .ok_or_else(|| "OpenRouter NER did not return JSON content.".to_string())?;
     let end = content
         .rfind(']')
         .or_else(|| content.rfind('}'))
-        .ok_or_else(|| {
-            "OpenRouter NER did not return a closed JSON payload. spaCy fallback is disabled."
-                .to_string()
-        })?;
+        .ok_or_else(|| "OpenRouter NER did not return a closed JSON payload.".to_string())?;
 
     if end < start {
-        return Err(
-            "OpenRouter NER returned malformed JSON boundaries. spaCy fallback is disabled."
-                .to_string(),
-        );
+        return Err("OpenRouter NER returned malformed JSON boundaries.".to_string());
     }
 
     Ok(&content[start..=end])

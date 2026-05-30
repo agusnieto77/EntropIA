@@ -68,6 +68,7 @@ def create_fixture_root(root: Path, platform: str = 'linux-x86_64') -> Path:
     )
     script_entries = [
         write_fixture_file(pack_root, 'scripts/paddle_vl.py', 'print("paddle fixture")\n'),
+        write_fixture_file(pack_root, 'scripts/spacy_ner.py', 'print("spacy fixture")\n'),
         write_fixture_file(pack_root, 'scripts/transcribe.py', 'print("transcribe fixture")\n'),
     ]
     manifest = {

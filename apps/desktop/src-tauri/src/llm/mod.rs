@@ -105,7 +105,7 @@ fn should_auto_download_default_model(
         && resolve_local_model_source_url(Some(conn)) == DEFAULT_MODEL_SOURCE_URL
 }
 
-fn ensure_default_model_downloaded_if_missing(
+pub(crate) fn ensure_default_model_downloaded_if_missing(
     conn: &rusqlite::Connection,
     db_path: &std::path::Path,
     app_handle: &AppHandle,
@@ -1323,7 +1323,7 @@ const TEMPLATE_OVERHEAD_TOKENS: i32 = 128;
 
 /// Truncate text so that the resulting prompt + max_tokens fits within n_ctx.
 /// Uses a conservative heuristic and cuts at sentence boundaries when possible.
-fn truncate_text_for_context(n_ctx: u32, max_tokens: i32, text: &str) -> String {
+pub(crate) fn truncate_text_for_context(n_ctx: u32, max_tokens: i32, text: &str) -> String {
     let budget_tokens = (n_ctx as i32) - max_tokens - TEMPLATE_OVERHEAD_TOKENS;
     if budget_tokens <= 0 {
         // Extremely small context — return first ~500 chars as a last resort
