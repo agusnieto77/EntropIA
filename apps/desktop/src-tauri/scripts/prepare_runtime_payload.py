@@ -77,8 +77,10 @@ def copy_tree_contents(source: Path, destination: Path) -> None:
     for child in sorted(source.iterdir()):
         target = destination / child.name
         if child.is_dir():
-            shutil.copytree(child, target)
+            shutil.copytree(child, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'))
         else:
+            if child.suffix.lower() in {'.pyc', '.pyo'}:
+                continue
             shutil.copy2(child, target)
 
 

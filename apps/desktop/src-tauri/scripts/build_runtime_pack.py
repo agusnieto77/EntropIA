@@ -31,6 +31,11 @@ REPO_RUNTIME_RESOURCE_DIRS = (
 )
 
 
+def is_generated_python_cache(path: Path) -> bool:
+    parts = set(path.parts)
+    return '__pycache__' in parts or path.suffix.lower() in {'.pyc', '.pyo'}
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as handle:
@@ -58,6 +63,8 @@ def collect_entries(root: Path, relative_dirs: Iterable[str]) -> list[dict]:
             continue
 
         for path in sorted(candidate for candidate in base.rglob('*') if candidate.is_file()):
+            if relative_dir == 'python' and is_generated_python_cache(path.relative_to(root)):
+                continue
             entries.append(
                 {
                     'path': path.relative_to(root).as_posix(),
