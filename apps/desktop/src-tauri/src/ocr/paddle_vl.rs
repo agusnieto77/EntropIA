@@ -8,7 +8,8 @@
 
 use crate::path_utils::normalize_windows_path;
 use crate::runtime::{
-    managed_hf_cache_dir, managed_paddlex_cache_dir, managed_script_path, RuntimeManager,
+    managed_hf_cache_dir, managed_paddlex_cache_dir, managed_script_path, managed_venv_python_path,
+    RuntimeManager,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -730,8 +731,34 @@ pub fn create_paddle_vl_engine_result(
         );
     }
 
-    // Find Python interpreter with paddleocr
-    let python_path = match which_python_for_paddle_vl(Some(settings_db_path)) {
+    // Find Python interpreter with PaddleOCR-VL. OCRH should prefer the
+    // freshly hydrated managed venv when release runtime is healthy, even if a
+    // stale/system Python selection exists in settings. Keep this preference
+    // local to OCRH so other Python-backed features keep their existing policy.
+    let managed_python = runtime_root.as_deref().and_then(|root| {
+        let candidate = managed_venv_python_path(root);
+        if candidate.is_file()
+            && crate::python_discovery::probe_python_module(
+                &candidate,
+                "from paddleocr import PaddleOCRVL; print('ok')",
+            )
+        {
+            crate::app_logs::info(
+                app_handle,
+                "ocrh",
+                format!(
+                    "PaddleOCR-VL usará Python del runtime administrado: {}",
+                    candidate.display()
+                ),
+            );
+            Some(candidate)
+        } else {
+            None
+        }
+    });
+    let python_path = match managed_python
+        .or_else(|| which_python_for_paddle_vl(Some(settings_db_path)))
+    {
         Some(p) => p,
         None => {
             return Err(
