@@ -913,6 +913,9 @@ fn runtime_candidates(model_dir: &Path) -> Vec<PathBuf> {
                 let path = entry.path();
                 if path.is_dir() {
                     push_names(&path.join("resources").join("lib"));
+                    for capi_dir in managed_venv_onnxruntime_capi_dirs(&path) {
+                        push_names(&capi_dir);
+                    }
                 }
             }
         }
@@ -923,6 +926,37 @@ fn runtime_candidates(model_dir: &Path) -> Vec<PathBuf> {
         let manifest_dir = PathBuf::from(manifest_dir);
         push_names(&manifest_dir.join("resources").join("lib"));
         push_names(&manifest_dir.join("resources").join("models").join("ner"));
+    }
+
+    candidates
+}
+
+fn managed_venv_onnxruntime_capi_dirs(managed_root: &Path) -> Vec<PathBuf> {
+    let venv = managed_root.join("venv").join("entropia-env");
+    if cfg!(windows) {
+        return vec![venv
+            .join("Lib")
+            .join("site-packages")
+            .join("onnxruntime")
+            .join("capi")];
+    }
+
+    let mut candidates = Vec::new();
+    let lib_dir = venv.join("lib");
+    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                candidates.push(path.join("site-packages").join("onnxruntime").join("capi"));
+            }
+        }
+    } else {
+        candidates.push(
+            lib_dir
+                .join("site-packages")
+                .join("onnxruntime")
+                .join("capi"),
+        );
     }
 
     candidates

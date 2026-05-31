@@ -376,6 +376,13 @@ fn resolve_runtime_python_choice(
     managed_runtime_python: Option<&Path>,
     managed_runtime_status: Option<&RuntimeStatus>,
 ) -> Option<PathBuf> {
+    if matches!(
+        managed_runtime_status.map(|status| &status.state),
+        Some(state) if *state != RuntimeState::Healthy
+    ) {
+        return None;
+    }
+
     if runtime_status_is_healthy(managed_runtime_status) {
         if let Some(path) = managed_runtime_python.filter(|path| path.is_file()) {
             return Some(path.to_path_buf());

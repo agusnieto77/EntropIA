@@ -311,6 +311,9 @@ impl RuntimeManager {
             "runtime",
             format!("Estado runtime: {:?} · {}", status.state, status.summary),
         );
+        for detail in &status.details {
+            crate::app_logs::info(app_handle, "runtime", format!("Detalle runtime: {detail}"));
+        }
         app_handle
             .emit("runtime://status", status)
             .map_err(|error| format!("Failed to emit runtime status event: {error}"))
@@ -1005,10 +1008,16 @@ where
                 source.display()
             ));
         }
-        if file_sha256(&source)? != entry.sha256 {
+        let actual_sha256 = file_sha256(&source)?;
+        if actual_sha256 != entry.sha256 {
             return Err(format!(
-                "Bundled runtime checksum mismatch for {}",
-                source.display()
+                "Bundled runtime checksum mismatch for {} (entry {}, expected {}, got {}, expected size {}, actual size {})",
+                source.display(),
+                entry.path,
+                entry.sha256,
+                actual_sha256,
+                entry.size,
+                fs::metadata(&source).map(|metadata| metadata.len()).unwrap_or(0)
             ));
         }
 
