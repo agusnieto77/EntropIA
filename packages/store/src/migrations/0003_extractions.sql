@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS extractions (
   id TEXT PRIMARY KEY,
   asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   text_content TEXT NOT NULL,
-  method TEXT NOT NULL CHECK(method IN ('native', 'ocr')),
+  method TEXT NOT NULL,
   confidence REAL,
   created_at INTEGER NOT NULL
 );

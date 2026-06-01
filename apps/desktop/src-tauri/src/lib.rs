@@ -864,7 +864,7 @@ fn migrate_extractions_method_check(conn: &Connection) -> Result<(), String> {
          INSERT INTO extractions_new SELECT * FROM extractions;
          DROP TABLE extractions;
          ALTER TABLE extractions_new RENAME TO extractions;
-         CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_extractions_asset_id_unique ON extractions(asset_id);
          COMMIT;",
     )
     .map_err(|e| format!("Failed to migrate extractions table: {e}"))?;
@@ -965,4 +965,74 @@ fn ensure_layouts_schema(conn: &Connection) -> Result<(), String> {
 
     eprintln!("[setup] layouts schema ensured");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_extractions_method_check_removes_legacy_check_and_preserves_upsert_target() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE assets (id TEXT PRIMARY KEY);
+             INSERT INTO assets(id) VALUES ('asset-1');
+             CREATE TABLE extractions (
+               id TEXT PRIMARY KEY,
+               asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+               text_content TEXT NOT NULL,
+               method TEXT NOT NULL CHECK(method IN ('native', 'ocr')),
+               confidence REAL,
+               created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_extractions_asset_id ON extractions(asset_id);",
+        )
+        .expect("create legacy schema");
+
+        migrate_extractions_method_check(&conn).expect("migrate extractions schema");
+
+        let create_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='extractions'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read migrated table sql");
+        assert!(!create_sql.contains("CHECK(method IN"));
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, method, confidence, created_at)
+             VALUES ('ext-1', 'asset-1', 'first', 'paddle_vl', NULL, 1)
+             ON CONFLICT(asset_id) DO UPDATE SET
+               text_content = excluded.text_content,
+               method = excluded.method,
+               confidence = excluded.confidence,
+               created_at = excluded.created_at",
+            [],
+        )
+        .expect("insert modern OCR method");
+
+        conn.execute(
+            "INSERT INTO extractions(id, asset_id, text_content, method, confidence, created_at)
+             VALUES ('ext-2', 'asset-1', 'updated', 'pdf_paddle_vl', NULL, 2)
+             ON CONFLICT(asset_id) DO UPDATE SET
+               text_content = excluded.text_content,
+               method = excluded.method,
+               confidence = excluded.confidence,
+               created_at = excluded.created_at",
+            [],
+        )
+        .expect("upsert by asset_id");
+
+        let (text, method, count): (String, String, i64) = conn
+            .query_row(
+                "SELECT text_content, method, (SELECT COUNT(*) FROM extractions) FROM extractions WHERE asset_id = 'asset-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read upserted extraction");
+        assert_eq!(text, "updated");
+        assert_eq!(method, "pdf_paddle_vl");
+        assert_eq!(count, 1);
+    }
 }
